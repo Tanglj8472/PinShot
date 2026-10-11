@@ -125,7 +125,7 @@ rust/
 - 托盘菜单 + `RegisterHotKey`（F1 / F3 / Shift+F3）
 - DXGI 整屏捕获（按适配器建 D3D 设备、拒绝全黑首帧）+ GDI `CreateDIBSection`/`BitBlt(CAPTUREBLT)` 兜底 + 每监视器 `CreateDC` + `PrintWindow`；多显示器拼成虚拟桌面；GDI 32 位 DIB 的 alpha=0 按不透明处理，避免预乘变黑
 - Per-Monitor DPI Aware v2
-- 遮罩：变暗挖洞、拖拽、移动/缩放手柄、`EnumWindows` + DWM 边框高亮、尺寸标签、放大镜 RGB/HEX
+- 遮罩：变暗挖洞、拖拽、移动/缩放手柄、`EnumWindows` + DWM 边框高亮、尺寸标签、放大镜 RGB/HEX；框选用脏矩形 + GDI `BitBlt`，不再每帧重画整张虚拟桌面
 - 自绘工具栏（原版图标）+ 20 色盘 + 线宽
 - 复制 / 保存 / 贴图 / Esc
 - 贴图：拖动、滚轮缩放、Ctrl+滚轮透明度、右键菜单、`WS_EX_TRANSPARENT` 穿透、Esc 关闭

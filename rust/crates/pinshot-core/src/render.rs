@@ -111,6 +111,20 @@ pub fn compose(base: &Raster, shapes: &[Shape]) -> Raster {
     out
 }
 
+/// Stroke vector annotations onto an existing pixmap (no full-buffer clone).
+/// Mosaic / eraser stay on the `compose()` path because they sample the photo.
+pub fn paint_shapes(pm: &mut Pixmap, shapes: &[Shape]) {
+    for sh in shapes {
+        if sh.pts.is_empty() {
+            continue;
+        }
+        match sh.kind {
+            Tool::Mosaic | Tool::Eraser => {}
+            _ => draw_shape(pm, sh),
+        }
+    }
+}
+
 fn blit_pixmap(dst: &mut Raster, pm: &Pixmap) {
     for y in 0..pm.height() {
         for x in 0..pm.width() {
@@ -145,6 +159,11 @@ fn blit_pixmap(dst: &mut Raster, pm: &Pixmap) {
 
 fn stroke_shape(sh: &Shape, w: u32, h: u32) -> Option<Pixmap> {
     let mut pm = Pixmap::new(w, h)?;
+    draw_shape(&mut pm, sh);
+    Some(pm)
+}
+
+fn draw_shape(pm: &mut Pixmap, sh: &Shape) {
     let t = Transform::identity();
     let b = sh.bounds();
     match sh.kind {
@@ -165,11 +184,12 @@ fn stroke_shape(sh: &Shape, w: u32, h: u32) -> Option<Pixmap> {
         }
         Tool::Ellipse => {
             if let Some(r) = tiny_skia::Rect::from_xywh(b.x, b.y, b.w.max(1.0), b.h.max(1.0)) {
-                let path = PathBuilder::from_oval(r)?;
-                if sh.style.filled {
-                    pm.fill_path(&path, &paint(sh.style.color), FillRule::Winding, t, None);
-                } else {
-                    pm.stroke_path(&path, &paint(sh.style.color), &stroke_for(sh), t, None);
+                if let Some(path) = PathBuilder::from_oval(r) {
+                    if sh.style.filled {
+                        pm.fill_path(&path, &paint(sh.style.color), FillRule::Winding, t, None);
+                    } else {
+                        pm.stroke_path(&path, &paint(sh.style.color), &stroke_for(sh), t, None);
+                    }
                 }
             }
         }
@@ -228,24 +248,22 @@ fn stroke_shape(sh: &Shape, w: u32, h: u32) -> Option<Pixmap> {
                     sh.style.color
                 };
                 if sh.style.filled {
-                    pm.fill_path(
-                        &PathBuilder::from_oval(oval)?,
-                        &paint(sh.style.color),
-                        FillRule::Winding,
+                    if let Some(path) = PathBuilder::from_oval(oval) {
+                        pm.fill_path(&path, &paint(sh.style.color), FillRule::Winding, t, None);
+                    }
+                }
+                if let Some(path) = PathBuilder::from_oval(oval) {
+                    pm.stroke_path(
+                        &path,
+                        &paint(ring),
+                        &Stroke {
+                            width: 2.0,
+                            ..Stroke::default()
+                        },
                         t,
                         None,
                     );
                 }
-                pm.stroke_path(
-                    &PathBuilder::from_oval(oval)?,
-                    &paint(ring),
-                    &Stroke {
-                        width: 2.0,
-                        ..Stroke::default()
-                    },
-                    t,
-                    None,
-                );
             }
         }
         Tool::Text => {
@@ -257,7 +275,6 @@ fn stroke_shape(sh: &Shape, w: u32, h: u32) -> Option<Pixmap> {
         }
         _ => {}
     }
-    Some(pm)
 }
 
 #[cfg(test)]
@@ -282,6 +299,26 @@ mod tests {
         let out = compose(&base, &[sh]);
         assert_eq!(out.get(20, 20), Some(Rgba::RED));
         assert_eq!(out.get(70, 50), Some(Rgba::WHITE));
+    }
+
+    #[test]
+    fn paint_shapes_does_not_clone_photo() {
+        let mut pm = Pixmap::new(40, 40).unwrap();
+        pm.fill(tiny_skia::Color::from_rgba8(255, 255, 255, 255));
+        let sh = Shape::new(
+            Tool::Rect,
+            vec![Point::new(5.0, 5.0), Point::new(20.0, 20.0)],
+            Style {
+                filled: true,
+                color: Rgba::RED,
+                ..Style::default()
+            },
+        );
+        paint_shapes(&mut pm, &[sh]);
+        let c = pm.pixel(10, 10).unwrap().demultiply();
+        assert_eq!((c.red(), c.green(), c.blue()), (255, 0, 0));
+        let bg = pm.pixel(30, 30).unwrap().demultiply();
+        assert_eq!((bg.red(), bg.green(), bg.blue()), (255, 255, 255));
     }
 
     #[test]

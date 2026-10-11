@@ -209,6 +209,48 @@ impl Rect {
         }
     }
 
+    pub fn inflated(self, pad: f32) -> Self {
+        Self {
+            x: self.x - pad,
+            y: self.y - pad,
+            w: self.w + pad * 2.0,
+            h: self.h + pad * 2.0,
+        }
+    }
+
+    /// Four-band subtraction: parts of `self` that do not overlap `other`.
+    pub fn subtract(self, other: Self) -> [Self; 4] {
+        let i = self.intersect(other);
+        if self.is_empty() {
+            return [Self::EMPTY; 4];
+        }
+        if i.is_empty() {
+            return [self, Self::EMPTY, Self::EMPTY, Self::EMPTY];
+        }
+        [
+            if self.y < i.y {
+                Self::new(self.x, self.y, self.w, i.y - self.y)
+            } else {
+                Self::EMPTY
+            },
+            if self.bottom() > i.bottom() {
+                Self::new(self.x, i.bottom(), self.w, self.bottom() - i.bottom())
+            } else {
+                Self::EMPTY
+            },
+            if self.x < i.x {
+                Self::new(self.x, i.y, i.x - self.x, i.h)
+            } else {
+                Self::EMPTY
+            },
+            if self.right() > i.right() {
+                Self::new(i.right(), i.y, self.right() - i.right(), i.h)
+            } else {
+                Self::EMPTY
+            },
+        ]
+    }
+
     pub fn adjusted(self, l: f32, t: f32, r: f32, b: f32) -> Self {
         Self {
             x: self.x + l,
@@ -535,5 +577,33 @@ mod tests {
     fn polyline_distance() {
         let pts = [Point::new(0.0, 0.0), Point::new(10.0, 0.0)];
         assert!((dist_to_polyline(Point::new(5.0, 2.0), &pts) - 2.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn inflated_grows() {
+        let r = Rect::new(10.0, 10.0, 20.0, 20.0).inflated(5.0);
+        assert_eq!(r, Rect::new(5.0, 5.0, 30.0, 30.0));
+    }
+
+    #[test]
+    fn subtract_center_hole() {
+        let a = Rect::new(0.0, 0.0, 100.0, 100.0);
+        let b = Rect::new(20.0, 20.0, 60.0, 60.0);
+        let parts = a.subtract(b);
+        let area: f32 = parts.iter().map(|r| r.area()).sum();
+        assert!((area - 6400.0).abs() < 0.5);
+        assert!(parts.iter().all(|r| !r.intersects(b) || r.is_empty() || {
+            // bands share the hole edge but have zero interior overlap
+            r.intersect(b).area() == 0.0
+        }));
+    }
+
+    #[test]
+    fn subtract_disjoint_keeps_self() {
+        let a = Rect::new(0.0, 0.0, 10.0, 10.0);
+        let b = Rect::new(50.0, 50.0, 10.0, 10.0);
+        let parts = a.subtract(b);
+        assert_eq!(parts[0], a);
+        assert!(parts[1].is_empty() && parts[2].is_empty() && parts[3].is_empty());
     }
 }

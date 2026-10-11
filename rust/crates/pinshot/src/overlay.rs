@@ -1,6 +1,5 @@
 //! Full-screen snip overlay session (one winit window covering the virtual desktop).
 
-use std::num::NonZeroU32;
 use std::rc::Rc;
 
 use pinshot_core::annotation::{Annotator, Tool};
@@ -11,7 +10,6 @@ use pinshot_core::magnifier::magnifier_visible;
 use pinshot_core::raster::Raster;
 use pinshot_core::render::compose;
 use pinshot_core::selection::{DetectMode, Nudge, PressKind, SelState, Selection};
-use softbuffer::{Context, Surface};
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
@@ -20,7 +18,7 @@ use winit::window::{CursorIcon, Window, WindowId};
 
 use crate::capture::Capture;
 use crate::detect::translated_windows;
-use crate::draw::{paint_overlay, present};
+use crate::draw::OverlayFront;
 use crate::toolbar::{TbAction, Toolbar};
 use crate::win32::{apply_overlay_style, hwnd_of};
 
@@ -33,7 +31,7 @@ pub enum OverlayResult {
 
 pub struct Overlay {
     window: Rc<Window>,
-    surface: Surface<Rc<Window>, Rc<Window>>,
+    front: OverlayFront,
     capture: Capture,
     sel: Selection,
     cursor: Point,
@@ -72,13 +70,12 @@ impl Overlay {
         );
         apply_overlay_style(hwnd_of(&window));
         window.set_cursor(CursorIcon::Crosshair);
-        let context = Context::new(window.clone()).map_err(|e| e.to_string())?;
-        let surface = Surface::new(&context, window.clone()).map_err(|e| e.to_string())?;
+        let front = OverlayFront::new(&capture.composed, 110)?;
         let windows = translated_windows(capture.virtual_origin);
         let overlay = Rect::new(0.0, 0.0, w as f32, h as f32);
         let mut s = Self {
             window,
-            surface,
+            front,
             capture,
             sel: Selection::new(),
             cursor: Point::ZERO,
@@ -239,16 +236,22 @@ impl Overlay {
     pub fn handle(&mut self, event: &WindowEvent) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor = Point::new(position.x as f32, position.y as f32);
+                let next = Point::new(position.x as f32, position.y as f32);
+                let same_px = next.x.round() == self.cursor.x.round()
+                    && next.y.round() == self.cursor.y.round();
+                self.cursor = next;
                 if self.annot.is_brush_live() || self.annot.is_selecting() || self.annot.live.is_some()
                 {
                     self.annot.move_to(self.img_pt(self.cursor), false);
+                    self.dirty = true;
                 } else if matches!(
                     self.sel.state,
                     SelState::Creating | SelState::Moving | SelState::Resizing
                 ) {
                     self.sel.motion(self.cursor, self.bounds());
+                    self.dirty = true;
                 } else {
+                    let prev_hover = self.hover;
                     self.update_hover();
                     if self.sel.has_sel() && self.sel.normalized().contains(self.cursor) && self.annot.tool.is_none()
                     {
@@ -256,8 +259,10 @@ impl Overlay {
                     } else {
                         self.window.set_cursor(CursorIcon::Crosshair);
                     }
+                    if !same_px || prev_hover != self.hover {
+                        self.dirty = true;
+                    }
                 }
-                self.dirty = true;
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 let pt = self.cursor;
@@ -425,16 +430,9 @@ impl Overlay {
     }
 
     pub fn redraw(&mut self) {
-        let w = self.capture.composed.width.max(1);
-        let h = self.capture.composed.height.max(1);
-        if self
-            .surface
-            .resize(
-                NonZeroU32::new(w).unwrap(),
-                NonZeroU32::new(h).unwrap(),
-            )
-            .is_err()
-        {
+        if !self.dirty {
+            self.front.present_full(hwnd_of(&self.window));
+            self.window.set_visible(true);
             return;
         }
         let over_tb = self
@@ -450,8 +448,8 @@ impl Overlay {
             matches!(self.sel.state, SelState::Creating | SelState::Resizing),
             self.sel.state == SelState::Idle && !self.sel.has_sel(),
         );
-        let pm = paint_overlay(
-            &self.capture.composed,
+        self.front.paint(
+            hwnd_of(&self.window),
             &self.sel,
             self.hover,
             self.cursor,
@@ -461,15 +459,9 @@ impl Overlay {
             &self.annot,
             self.toolbar.as_ref(),
             self.toast.as_deref(),
-            110,
+            &self.capture.composed,
         );
-        if let Ok(mut buf) = self.surface.buffer_mut() {
-            present(&mut buf, &pm);
-            let _ = buf.present();
-            // Show only after the captured frame is in the swapchain, so the
-            // first visible pixels are never an uninitialized black window.
-            self.window.set_visible(true);
-        }
+        self.window.set_visible(true);
         self.dirty = false;
     }
 
