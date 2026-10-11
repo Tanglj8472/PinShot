@@ -229,7 +229,9 @@ impl PinWin {
                 let _ = crate::clipboard::write_image(&self.rendered());
             }
             TbAction::Check => self.show_toolbar(false),
-            TbAction::Width(d) => self.annot.adjust_width(d),
+            TbAction::Width(d) => {
+                let _ = self.annot.adjust_width(d);
+            }
             TbAction::Color(i) => {
                 if let Some(tool) = self.annot.tool.filter(|t| *t != Tool::Select) {
                     let c = pinshot_core::palette_colors()[i as usize];
