@@ -62,6 +62,8 @@ pub struct Overlay {
     history_max: u32,
     #[cfg(unix)]
     key_grab: Option<crate::x11util::OverlayKeyGrab>,
+    #[cfg(unix)]
+    _ptr_grab: Option<crate::x11util::OverlayPointerGrab>,
     #[cfg(not(windows))]
     surface: Option<softbuffer::Surface<Rc<Window>, Rc<Window>>>,
 }
@@ -74,6 +76,8 @@ impl Overlay {
         history_max: u32,
         translate_on_select: bool,
         proxy: winit::event_loop::EventLoopProxy<crate::event::AppEvent>,
+        #[cfg(unix)]
+        pre_hold: Option<crate::x11util::InputHold>,
     ) -> Result<Self, String> {
         let (vx, vy) = capture.virtual_origin;
         let w = capture.composed.width;
@@ -135,6 +139,8 @@ impl Overlay {
             history_max: history_max.max(1),
             #[cfg(unix)]
             key_grab: None,
+            #[cfg(unix)]
+            _ptr_grab: None,
             #[cfg(not(windows))]
             surface,
         };
@@ -143,6 +149,11 @@ impl Overlay {
         #[cfg(unix)]
         {
             s.key_grab = native::grab_overlay_keys(&s.window, proxy);
+            // Release the pre-capture InputHold first, then grab on winit's
+            // Display. A second-client pointer grab steals ButtonPress from
+            // winit (see OverlayPointerGrab).
+            drop(pre_hold);
+            s._ptr_grab = crate::x11util::OverlayPointerGrab::grab(&s.window);
         }
         #[cfg(not(unix))]
         {
@@ -152,6 +163,10 @@ impl Overlay {
             s.cursor = Point::new(x as f32, y as f32);
             if down && s.sel.state == pinshot_core::selection::SelState::Idle {
                 let _ = s.sel.press(s.cursor, s.bounds(), false);
+                crate::logutil::log(&format!(
+                    "recover Button1 at start ({:.0},{:.0})",
+                    s.cursor.x, s.cursor.y
+                ));
             }
         }
         s.redraw();
@@ -159,6 +174,7 @@ impl Overlay {
     }
 
     fn show_toast(&mut self, text: String) {
+        crate::logutil::log(&format!("toast: {text}"));
         self.toast = Some(text);
         self.toast_until = Some(Instant::now() + Duration::from_millis(1200));
         self.dirty = true;
@@ -261,6 +277,10 @@ impl Overlay {
     fn finish_copy(&mut self) {
         if let Some(img) = self.crop() {
             self.remember();
+            crate::logutil::log(&format!(
+                "overlay copy {}x{}",
+                img.width, img.height
+            ));
             self.result = Some(OverlayResult::Copy(img, self.sel.normalized()));
             self.window.set_visible(false);
         }
@@ -771,14 +791,49 @@ impl Overlay {
     }
 
     pub fn pump_redraw(&mut self) {
+        self.recover_pointer_drag();
         self.expire_toast();
         if self.dirty {
             self.window.request_redraw();
         }
     }
 
+    /// If ButtonPress landed on the window underneath before the overlay
+    /// mapped, adopt the still-held Button1 as a selection drag.
+    fn recover_pointer_drag(&mut self) {
+        let Some((x, y, down)) = native::pointer_in_window(&self.window) else {
+            return;
+        };
+        let pt = Point::new(x as f32, y as f32);
+        self.cursor = pt;
+        if down && self.sel.state == SelState::Idle && !self.sel.has_sel() && self.annot.tool.is_none()
+        {
+            let _ = self.sel.press(pt, self.bounds(), false);
+            crate::logutil::log(&format!("recover Button1 drag ({:.0},{:.0})", pt.x, pt.y));
+            self.dirty = true;
+        } else if down && self.sel.state == SelState::Creating {
+            self.sel.motion(pt, self.bounds());
+            self.dirty = true;
+        } else if !down && self.sel.state == SelState::Creating {
+            self.sel.release(pt, self.hover, self.bounds());
+            self.relayout_toolbar();
+            if self.sel.has_sel() {
+                let r = self.sel.normalized();
+                crate::logutil::log(&format!(
+                    "recover release sel {:.0}x{:.0}",
+                    r.w, r.h
+                ));
+            }
+            self.dirty = true;
+        }
+    }
+
     pub fn next_wake(&self) -> Option<Instant> {
-        self.toast_until
+        let poll = Instant::now() + Duration::from_millis(16);
+        match self.toast_until {
+            Some(t) => Some(if t < poll { t } else { poll }),
+            None => Some(poll),
+        }
     }
 }
 

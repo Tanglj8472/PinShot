@@ -56,6 +56,9 @@ impl Selection {
         bounds: Rect,
         tool_active: bool,
     ) -> PressKind {
+        if self.state == SelState::Creating {
+            return PressKind::Create;
+        }
         if self.has_sel() && !tool_active {
             if let Some(h) = hit_handle(self.normalized(), pt, 8.0) {
                 self.state = SelState::Resizing;
@@ -291,5 +294,15 @@ mod tests {
         assert_eq!(s.normalized().x, 11.0);
         s.nudge(5.0, 0.0, Nudge::Move, bounds());
         assert_eq!(s.normalized().x, 16.0);
+    }
+
+    #[test]
+    fn second_press_while_creating_keeps_origin() {
+        let mut s = Selection::new();
+        s.press(Point::new(10.0, 10.0), bounds(), false);
+        s.motion(Point::new(80.0, 50.0), bounds());
+        assert_eq!(s.press(Point::new(80.0, 50.0), bounds(), false), PressKind::Create);
+        s.release(Point::new(80.0, 50.0), Rect::EMPTY, bounds());
+        assert_eq!(s.normalized(), Rect::new(10.0, 10.0, 70.0, 40.0));
     }
 }

@@ -4,7 +4,7 @@ use std::thread::JoinHandle;
 
 use pinshot_core::hotkey::{parse_hotkey, Command, MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN};
 use pinshot_core::Config;
-use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
 use winit::event_loop::EventLoopProxy;
 use winit::window::Window;
 use x11rb::connection::{Connection, RequestConnection};
@@ -307,7 +307,6 @@ fn overlay_grab_loop(
         return;
     };
     let mut key_grabbed = false;
-    let mut ptr_grabbed = false;
     let mut last_try = std::time::Instant::now() - std::time::Duration::from_secs(1);
     while !stop.load(std::sync::atomic::Ordering::Relaxed) {
         let want_keys = !pause_keys.load(std::sync::atomic::Ordering::Relaxed);
@@ -336,31 +335,10 @@ fn overlay_grab_loop(
                 key_grabbed = false;
                 crate::logutil::log("XUngrabKeyboard (text/IME)");
             }
-            if !ptr_grabbed {
-                let mask = EventMask::BUTTON_PRESS
-                    | EventMask::BUTTON_RELEASE
-                    | EventMask::POINTER_MOTION;
-                match c.grab_pointer(
-                    true,
-                    xid,
-                    mask,
-                    GrabMode::ASYNC,
-                    GrabMode::ASYNC,
-                    x11rb::NONE,
-                    x11rb::NONE,
-                    x11rb::CURRENT_TIME,
-                ) {
-                    Ok(cookie) => {
-                        if let Ok(r) = cookie.reply() {
-                            if r.status == x11rb::protocol::xproto::GrabStatus::SUCCESS {
-                                ptr_grabbed = true;
-                                crate::logutil::log("XGrabPointer ok");
-                            }
-                        }
-                    }
-                    Err(_) => {}
-                }
-            }
+            // Do not XGrabPointer on this second client: owner_events still
+            // delivers ButtonPress to *this* connection, and winit never sees
+            // the drag. Keyboard is forwarded via AppEvent; pointer stays on
+            // the overlay window (fullscreen override-redirect).
             let _ = c.flush();
         }
         match c.poll_for_event() {
@@ -386,7 +364,6 @@ fn overlay_grab_loop(
         }
     }
     let _ = c.ungrab_keyboard(x11rb::CURRENT_TIME);
-    let _ = c.ungrab_pointer(x11rb::CURRENT_TIME);
     let _ = c.flush();
 }
 
@@ -397,6 +374,94 @@ pub fn pointer_in_window(xid: u32) -> Option<(i32, i32, bool)> {
     let q = c.query_pointer(xid).ok()?.reply().ok()?;
     let btn1 = u16::from(q.mask) & 0x0100 != 0;
     Some((i32::from(q.win_x), i32::from(q.win_y), btn1))
+}
+
+/// `XGrabPointer` on **winit's** Xlib Display (Python `QWidget.grabMouse`).
+/// A second x11rb client must not grab the pointer: even with
+/// `owner_events=true`, ButtonPress is delivered to *that* connection and
+/// winit never sees the first drag.
+pub struct OverlayPointerGrab {
+    display: *mut std::ffi::c_void,
+}
+
+// Event-loop thread only; Drop runs on the same thread that created the window.
+unsafe impl Send for OverlayPointerGrab {}
+
+const X_GRAB_MODE_ASYNC: i32 = 1;
+const X_GRAB_SUCCESS: i32 = 0;
+const X_CURRENT_TIME: u64 = 0;
+const X_BUTTON_PRESS_MASK: u32 = 1 << 2;
+const X_BUTTON_RELEASE_MASK: u32 = 1 << 3;
+const X_POINTER_MOTION_MASK: u32 = 1 << 6;
+const X_BUTTON1_MOTION_MASK: u32 = 1 << 8;
+
+#[link(name = "X11")]
+extern "C" {
+    fn XGrabPointer(
+        display: *mut std::ffi::c_void,
+        grab_window: u64,
+        owner_events: i32,
+        event_mask: u32,
+        pointer_mode: i32,
+        keyboard_mode: i32,
+        confine_to: u64,
+        cursor: u64,
+        time: u64,
+    ) -> i32;
+    fn XUngrabPointer(display: *mut std::ffi::c_void, time: u64) -> i32;
+    fn XFlush(display: *mut std::ffi::c_void) -> i32;
+    fn XSync(display: *mut std::ffi::c_void, discard: i32) -> i32;
+}
+
+impl OverlayPointerGrab {
+    pub fn grab(window: &Window) -> Option<Self> {
+        let display = match window.display_handle().ok()?.as_raw() {
+            RawDisplayHandle::Xlib(h) => h.display?.as_ptr(),
+            _ => return None,
+        };
+        let xid = match window.window_handle().ok()?.as_raw() {
+            RawWindowHandle::Xlib(w) => w.window,
+            RawWindowHandle::Xcb(w) => u64::from(w.window.get()),
+            _ => return None,
+        };
+        let mask = X_BUTTON_PRESS_MASK
+            | X_BUTTON_RELEASE_MASK
+            | X_POINTER_MOTION_MASK
+            | X_BUTTON1_MOTION_MASK;
+        let status = unsafe {
+            XSync(display, 0);
+            XGrabPointer(
+                display,
+                xid,
+                1,
+                mask,
+                X_GRAB_MODE_ASYNC,
+                X_GRAB_MODE_ASYNC,
+                0,
+                0,
+                X_CURRENT_TIME,
+            )
+        };
+        if status == X_GRAB_SUCCESS {
+            unsafe {
+                let _ = XFlush(display);
+            }
+            crate::logutil::log("XGrabPointer ok (winit display)");
+            Some(Self { display })
+        } else {
+            crate::logutil::log(&format!("XGrabPointer status={status}"));
+            None
+        }
+    }
+}
+
+impl Drop for OverlayPointerGrab {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = XUngrabPointer(self.display, X_CURRENT_TIME);
+            let _ = XFlush(self.display);
+        }
+    }
 }
 
 fn keycode_to_keysym(c: &x11rb::rust_connection::RustConnection, code: u8, state: u16) -> u32 {

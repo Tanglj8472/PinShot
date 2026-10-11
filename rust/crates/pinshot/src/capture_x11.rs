@@ -24,8 +24,17 @@ pub struct Capture {
 impl Capture {
     pub fn grab(dump: bool) -> Result<Self, String> {
         let hold = crate::x11util::InputHold::grab();
-        let result = grab_inner();
+        let result = Self::finish_grab(grab_inner(), dump);
         drop(hold);
+        result
+    }
+
+    /// Capture while the caller already holds `InputHold` (Python `_snip_now`).
+    pub fn grab_while_held(dump: bool) -> Result<Self, String> {
+        Self::finish_grab(grab_inner(), dump)
+    }
+
+    fn finish_grab(result: Result<Self, String>, dump: bool) -> Result<Self, String> {
         let cap = result?;
         if dump || std::env::var("PINSHOT_DUMP_CAPTURE").is_ok() {
             let path = std::env::temp_dir().join("pinshot-capture.png");

@@ -3,6 +3,7 @@ use pinshot_core::color::{parse_color_text, Rgba};
 use pinshot_core::raster::Raster;
 use std::io::Write;
 use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 pub enum ClipContent {
     Image(Raster),
@@ -41,6 +42,11 @@ pub fn write_image(img: &Raster) -> Result<(), String> {
     let r = with_owner(|cb| cb.set_image(data.clone()).map_err(|e| e.to_string()));
     #[cfg(unix)]
     handoff_x11_image(img);
+    if r.is_ok() {
+        crate::logutil::log(&format!("clipboard image {}x{}", img.width, img.height));
+    } else if let Err(e) = &r {
+        crate::logutil::log(&format!("clipboard set_image: {e}"));
+    }
     r
 }
 
@@ -86,13 +92,18 @@ pub fn text_card(text: &str, _w: u32, _h: u32) -> Raster {
 #[cfg(unix)]
 fn handoff_x11_image(img: &Raster) {
     let Some(png) = encode_png(img) else {
+        crate::logutil::log("clipboard: png encode failed");
         return;
     };
-    let _ = spawn_stdin(
+    if spawn_stdin(
         "xclip",
         &["-selection", "clipboard", "-t", "image/png", "-i"],
         &png,
-    );
+    ) {
+        crate::logutil::log(&format!("clipboard xclip image/png {} bytes", png.len()));
+    } else {
+        crate::logutil::log("clipboard xclip handoff failed; arboard owner kept");
+    }
 }
 
 #[cfg(unix)]
@@ -119,13 +130,26 @@ fn spawn_stdin(bin: &str, args: &[&str], bytes: &[u8]) -> bool {
     else {
         return false;
     };
-    let ok = if let Some(mut stdin) = child.stdin.take() {
+    let wrote = if let Some(mut stdin) = child.stdin.take() {
         stdin.write_all(bytes).is_ok()
     } else {
         false
     };
-    let _ = child.wait();
-    ok
+    if !wrote {
+        let _ = child.kill();
+        return false;
+    }
+    // xclip -silent forks after stdin EOF; the parent exits. Do not block
+    // forever if a helper stays in the foreground serving CLIPBOARD.
+    let deadline = Instant::now() + Duration::from_millis(800);
+    loop {
+        match child.try_wait() {
+            Ok(Some(st)) => return st.success(),
+            Ok(None) if Instant::now() >= deadline => return true,
+            Ok(None) => std::thread::sleep(Duration::from_millis(10)),
+            Err(_) => return false,
+        }
+    }
 }
 
 #[cfg(unix)]

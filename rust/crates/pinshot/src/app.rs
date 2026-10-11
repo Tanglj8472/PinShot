@@ -88,6 +88,8 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         prefs: None,
         pin_menu: None,
         menu_pin: None,
+        #[cfg(unix)]
+        input_hold: None,
     };
     event_loop.run_app(&mut app).map_err(|e| e.to_string())
 }
@@ -120,6 +122,8 @@ struct App {
     prefs: Option<crate::prefs_win::PrefsWin>,
     pin_menu: Option<crate::pin_menu::PinMenuWin>,
     menu_pin: Option<WindowId>,
+    #[cfg(unix)]
+    input_hold: Option<crate::x11util::InputHold>,
 }
 
 impl App {
@@ -211,13 +215,19 @@ impl App {
         if !self.restore_fallback {
             0
         } else if cfg!(unix) {
-            300
+            150
         } else {
             150
         }
     }
 
     fn prepare_capture_hide(&mut self) {
+        // Python `_snip_now`: grab pointer+keyboard *before* hiding the
+        // fallback so the first drag after F1 is not delivered to Chrome.
+        #[cfg(unix)]
+        if self.input_hold.is_none() {
+            self.input_hold = Some(crate::x11util::InputHold::grab());
+        }
         if let Some(fb) = &self.fallback {
             if fb.is_visible() {
                 fb.hide();
@@ -242,7 +252,15 @@ impl App {
         }
         let translate = self.translate_next;
         self.translate_next = false;
-        match Capture::grab(self.dump_capture) {
+        #[cfg(unix)]
+        if self.input_hold.is_none() {
+            self.input_hold = Some(crate::x11util::InputHold::grab());
+        }
+        #[cfg(unix)]
+        let grabbed = Capture::grab_while_held(self.dump_capture);
+        #[cfg(not(unix))]
+        let grabbed = Capture::grab(self.dump_capture);
+        match grabbed {
             Ok(cap) => match Overlay::start(
                 event_loop,
                 cap,
@@ -250,11 +268,25 @@ impl App {
                 self.cfg.history_max,
                 translate,
                 self.proxy.clone(),
+                #[cfg(unix)]
+                self.input_hold.take(),
             ) {
                 Ok(ov) => self.overlay = Some(ov),
-                Err(e) => eprintln!("PinShot overlay: {e}"),
+                Err(e) => {
+                    #[cfg(unix)]
+                    {
+                        self.input_hold = None;
+                    }
+                    eprintln!("PinShot overlay: {e}");
+                }
             },
-            Err(e) => eprintln!("PinShot capture: {e}"),
+            Err(e) => {
+                #[cfg(unix)]
+                {
+                    self.input_hold = None;
+                }
+                eprintln!("PinShot capture: {e}");
+            }
         }
     }
 
