@@ -7,6 +7,7 @@ on:
     paths:
       - "rust/**"
       - ".github/workflows/build-rust-windows.yml"
+      - ".github/workflows/build-rust-linux.yml"
   workflow_dispatch:
 
 jobs:
