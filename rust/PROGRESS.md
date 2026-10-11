@@ -2,7 +2,7 @@
 
 对照源：`main` 上的 Python/PySide6 PinShot。Rust 在 `rust/`，分支 `rust`。Python 源码不改。
 
-最后更新：2026-10-11（实机报告 rust@52d5642；本文件首版入库）。
+最后更新：2026-10-11（A–L 已关；接 `aa86d9d` 进度报告之后）。
 
 ---
 
@@ -61,12 +61,19 @@
 |---|---|
 | `96a68a4` | `clamp_f32` 防 min>max panic；工具切换只改新图默认；`PinSnapshot.shapes`；放大镜整数格 |
 | `52d5642` | overlay `XGrabKeyboard`+`XSetInputFocus`；pin 改为托管窗并在点击时聚焦；进程内完整右键菜单；Linux 主循环设置窗；`_NET_WM_WINDOW_OPACITY`；原图+shapes 会话；颜色面板线宽；选中手柄；panic 写 `pinshot.log` |
+| `aa86d9d` | 中文进度报告（本文件首版） |
+
+### 52d5642 实机 A–L（本轮）
+
+| SHA | 内容 |
+|---|---|
+| （本提交） | prefs 整行命中 + 标题/主题/fallback 即改；Tab 子窗+AT-SPI 矩形；R/`,` 历史回放；F1 首笔拖动（指针查询+GrabPointer）；箭头头；文字首击/Ctrl+Enter/IME 放抓；点边选中+滚轮改宽；剪贴板常驻+`xclip`；pin 光标锚缩放；默认 F4；恢复不弹 toast；toast 1.2s；键盘 `owner_events=false` |
 
 ---
 
 ## 已发现的全部问题（各轮测试）
 
-状态：`已修` / `未关`。未关项对应 52d5642 实机报告 A–L。
+状态：`已修` / `未关`。52d5642 实机 A–L 本轮已关。
 
 ### Windows 早期轮次
 
@@ -94,24 +101,24 @@
 
 ### Linux 52d5642 实机（Xfce/xfwm4 1920×1200，2026-10-11）
 
-报告里 **PASS** 的不再单列。下列为 **FAIL A–L**，本文件入库时全部 `未关`。
+报告里 **PASS** 的不再单列。下列为 **FAIL A–L**。
 
-| ID | 问题 | 状态 | 拟修 |
+| ID | 问题 | 状态 | 修法 |
 |---|---|---|---|
-| A | 语言/主题/登录等值按钮只响应字段左半边 | 未关 | 命中区覆盖整行（含右侧值盒） |
-| B | 切英文不完整：标题仍「首选项」；「PinShot Preferences」字叠在语言行；fallback 要重启才换语言；Apply 在 Cancel 右侧多画 “Apply”；Light 主题无变化 | 未关 | 改标题/重绘 fallback、去掉叠字、状态文案、窗体配色 |
-| C | Tab 元素模式只高亮整窗（AT-SPI probe false）；R 不能回上次选区；逗号出 toast 但不回放历史；toast 不消失 | 未关 | 加强 X11 子窗元素框；Shift+R 与 R；历史回放；toast 超时 |
-| D | F1 后第一笔拖动有时丢失（第二次 F1） | 未关 | 抓取/隐藏时序，避免第一笔被吃 |
-| E | 箭头工具画出的是无箭头直线 | 未关 | 默认/绘制箭头；确认 `style.arrow` 进 compose |
-| F | 文字：第一击无框（键入丢失）；第二击才有；Ctrl+Enter 提交带「–」；中文被丢（无 IME） | 未关 | 首击即出编辑框；过滤控制字符；文字编辑时放键盘抓取以便 IME |
-| G | 点图形边选不中（无 8 手柄）；文字工具点边上会新开文本；滚轮在图形上不改线宽 | 未关 | 命中已有图形则选中；滚轮命中目标 |
-| H | Ctrl+C 日志已复制，overlay 关掉后剪贴板空 | 未关 | 关窗前交给 CLIPBOARD_MANAGER / 常驻 owner |
-| I | pin 滚轮缩小锚在左上，指针离开窗口，多余滚轮被桌面吃掉切工作区 | 未关 | 以光标为锚缩放，保持指针在 pin 上 |
-| J | 配置里 `hotkey_clickthrough=""`；热键页显示「—」；菜单穿透无勾 | 未关 | 默认 F4；菜单勾选可见 |
-| K | 恢复的每张 pin 弹出「Opacity: 100%」且不消失 | 未关 | 恢复不弹；toast 超时 |
-| L | overlay 打开时 Chrome 偶尔仍收到键；overlay 重绘有时慢 | 未关 | 丢焦点时重抓键盘；减少每帧全幅 present |
+| A | 语言/主题/登录等值按钮只响应字段左半边 | 已修 | 命中区覆盖整行（含右侧值盒） |
+| B | 切英文不完整：标题仍「首选项」；「PinShot Preferences」字叠在语言行；fallback 要重启才换语言；Apply 在 Cancel 右侧多画 “Apply”；Light 主题无变化 | 已修 | 去掉叠字标题；`set_title`；Apply 后重绘 fallback；状态「已应用。」；`UiTheme` 浅/深 |
+| C | Tab 元素模式只高亮整窗（AT-SPI probe false）；R 不能回上次选区；逗号出 toast 但不回放历史；toast 不消失 | 已修 | 按 client 走 viewable 子窗 + AT-SPI 矩形；R 与 Shift+R；空历史不 toast；`replace_shot` 全幅刷新；toast 1.2s |
+| D | F1 后第一笔拖动有时丢失（第二次 F1） | 已修 | 映射后 `XQueryPointer`：若 Button1 已按下则合成 Creating；`XGrabPointer` |
+| E | 箭头工具画出的是无箭头直线 | 已修 | Line 默认无箭头；Arrow 开箭头；更大箭头头 |
+| F | 文字：第一击无框（键入丢失）；第二击才有；Ctrl+Enter 提交带「–」；中文被丢（无 IME） | 已修 | 空编辑器重定位不提交；Ctrl 不插入；滤 en/em dash；文字时 ungrab 键盘给 IME |
+| G | 点图形边选不中（无 8 手柄）；文字工具点边上会新开文本；滚轮在图形上不改线宽 | 已修 | 与 Python 相同：非橡皮/马赛克点中即选；`wheel_at` |
+| H | Ctrl+C 日志已复制，overlay 关掉后剪贴板空 | 已修 | 进程内常驻 `Clipboard` + `xclip -t image/png` 移交 |
+| I | pin 滚轮缩小锚在左上，指针离开窗口，多余滚轮被桌面吃掉切工作区 | 已修 | `set_scale_at` 以光标为锚 |
+| J | 配置里 `hotkey_clickthrough=""`；热键页显示「—」；菜单穿透无勾 | 已修 | 默认/空值填 F4；菜单勾选改画色块（字体无 ✓） |
+| K | 恢复的每张 pin 弹出「Opacity: 100%」且不消失 | 已修 | `set_opacity_ex(..., false)`；toast 1.2s 后清 |
+| L | overlay 打开时 Chrome 偶尔仍收到键；overlay 重绘有时慢 | 已修 | `XGrabKeyboard(owner_events=false)` + 丢焦点重抓；无 dirty 不 present |
 
-附：该轮「贴剪贴板按钮」和「8 手柄」未测完，修 G 后一并在 Xvfb+xfwm4+xdotool 上补验。
+附：该轮「贴剪贴板按钮」和「8 手柄」随 G / 单元测试补验；Xvfb+xfwm4+xdotool 做焦点/历史/toast 回归。
 
 ---
 
@@ -119,13 +126,13 @@
 
 | 状态 | 行数 |
 |---|---|
-| done | 97 |
-| partial | 13 |
+| done | 99 |
+| partial | 11 |
 | missing | 4 |
 | impossible | 6 |
 | **合计** | **120** |
 
-仍偏 partial/missing 的大块：属性面板细节、自定义取色、pin 阴影/缩略图、AT-SPI 矩形合并、逐工具子面板、画笔 8ms 采样、像素级 hit。文末「zenity-less pin menu」已过时（`52d5642` 已有 `PinMenuWin`）。
+仍偏 partial/missing 的大块：属性面板细节、自定义取色、pin 阴影/缩略图、无 a11y 总线时的 AT-SPI、逐工具子面板、画笔 8ms 采样、像素级 hit。
 
 ---
 
@@ -133,10 +140,10 @@
 
 | 项 | 说明 |
 |---|---|
-| AT-SPI | 子进程探测是否可用；矩形尚未并入元素模式。无 a11y 总线时 `probe false`，只能走 X11 子窗 |
-| IME / 中文输入 | overlay 为 override-redirect + `XGrabKeyboard`，会抢走输入法。文字编辑应临时 ungrab |
+| AT-SPI | 子进程探测 + 矩形转储；无 a11y 总线时 `probe false`，走 X11 viewable 子窗 |
+| IME / 中文输入 | 文字编辑时 ungrab 键盘，交给 winit/XIM；抓取恢复后仍可能丢预编辑 |
 | 合成器 | `_NET_WM_WINDOW_OPACITY`、阴影依赖 picom/compton；无合成器时属性在、观感不变 |
-| 剪贴板 owner | X11 上关 overlay 即丢 selection，除非交给 clipboard manager（H） |
+| 剪贴板 owner | 进程内 arboard + `xclip` 移交；无 xclip 时依赖进程不退出 |
 | 纯 Wayland | 与 Python 相同，只走 X11/XWayland |
 | 划词翻译 | Linux 上 Python 也拒绝，Rust 同样 |
 | 排除截图 (WDA) | 仅 Windows 10 2004+ |
@@ -145,9 +152,8 @@
 
 ## 下一步（按优先级）
 
-1. **P0 — 52d5642 报告 A–L 全部关掉**（本轮）：prefs 命中/i18n、历史/toast、首笔拖动、箭头、文字框/IME、点选+滚轮、剪贴板移交、pin 锚点缩放、F4 穿透、恢复 toast、overlay 抢键与重绘。Xvfb+xfwm4+xdotool 回归，更新本文件与 `PARITY.md`。
-2. **P1 — 对齐缺口**：AT-SPI 矩形合并、属性面板（填充/虚线/模糊/字体）、自定义取色、pin 阴影。
-3. **P2 — Windows 再对齐**：在 Linux 稳定后，用同一套 core 把 Windows 宿主接到同等行为；CI 两边保持绿。
-4. **P3 — 体积与 OCR**：默认 exe 保持无模型；`--features ocr` / `pinshot-ocr` 文档化。
+1. **P1 — 对齐缺口**：无 a11y 时更细的控件框、属性面板（填充/虚线/模糊/字体）、自定义取色、pin 阴影。
+2. **P2 — Windows 再对齐**：在 Linux 稳定后，用同一套 core 把 Windows 宿主接到同等行为；CI 两边保持绿。
+3. **P3 — 体积与 OCR**：默认 exe 保持无模型；`--features ocr` / `pinshot-ocr` 文档化。
 
 验证约定：Linux 改动必须在 **Xvfb + xfwm4 + xdotool**（以及有桌面时的 `:1` Xfce）上做焦点/按键/菜单回归。

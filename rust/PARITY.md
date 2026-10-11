@@ -21,9 +21,9 @@ Counts at the bottom. Python sources are not modified.
 | `set_skip_taskbar` | `apply_pin_style` `_NET_WM_STATE_SKIP_TASKBAR` | done | |
 | `x11pass.set_input_passthrough` | `x11util::set_click_through` XShape Input | done | |
 | `winlist.window_rects` | `detect_x11::window_rects` | done | `_NET_CLIENT_LIST_STACKING` + frame extents |
-| `winlist.element_rects` | `detect_x11::collect_elements` | partial | X11 children; AT-SPI probed in subprocess, rects not yet merged |
+| `winlist.element_rects` | `detect_x11::collect_elements` | partial | X11 viewable client children + AT-SPI extents via subprocess when the a11y bus is up |
 | `winlist.atspi_available` | `detect_x11::atspi_available` | done | Same subprocess safety rule |
-| `x11clip.read` | `arboard` | partial | image/png + text; no raw target prefer |
+| `x11clip.read` | `arboard` + process-lifetime owner + `xclip` handoff | done | Overlay close no longer drops CLIPBOARD |
 | `autostart.py` XDG desktop | `autostart_xdg.rs` | done | `~/.config/autostart/pinshot.desktop` |
 | Windows HKCU Run | `autostart.rs` | done | |
 | `settings.data_dir` `~/.local/share/PinShot` | `config::data_dir` | done | Split from `config_dir` (`~/.config/PinShot`) |
@@ -62,7 +62,7 @@ Counts at the bottom. Python sources are not modified.
 | Magnifier 15×15 @ 8×, C / Shift | `magnifier.rs` + overlay keys | done |
 | Drag / move / 8 handles | `selection.rs` | done |
 | Toolbar + OCR/Translate | `toolbar.rs` | done |
-| `,` `.` history / Shift+R last rect | `history.rs` + overlay | done |
+| `,` `.` history / Shift+R last rect | `history.rs` + overlay | done | R and Shift+R both reuse last; toast 1.2s |
 | Esc confirm abort | MessageBox / zenity | done |
 | Ctrl+C / Enter copy, Ctrl+S save, Ctrl+T / F3 pin | overlay keys | done |
 | Ctrl+A full screen | done |
@@ -116,7 +116,7 @@ Counts at the bottom. Python sources are not modified.
 | Python | Rust | Status |
 |---|---|---|
 | Frameless always-on-top + skip taskbar | winit + EWMH / WS_EX_TOOLWINDOW | done |
-| Drag move, wheel zoom (top-left), Ctrl+wheel opacity | done | Linux `_NET_WM_WINDOW_OPACITY` |
+| Drag move, wheel zoom (cursor-anchored), Ctrl+wheel opacity | done | Zoom keeps the pointer on the pin; Linux `_NET_WM_WINDOW_OPACITY` |
 | Annotating: wheel → `ann.wheel` not zoom | done |
 | Space / right-click Show toolbar | Space = toolbar; right-click = full menu | done | Never falls back to toolbar |
 | TOOL_KEYS R E P T N … | R E P T N + 1/2/3/4 | done |
@@ -134,10 +134,10 @@ Counts at the bottom. Python sources are not modified.
 | Python | Rust | Status |
 |---|---|---|
 | `prefs.PrefsDialog` General/Hotkeys/Output + Advanced | `prefs.rs` egui (Win) / `prefs_win.rs` main-loop (Linux) | done |
-| zh/en only, light/dark/system | done | Linux system theme = light |
+| zh/en only, light/dark/system | done | Linux prefs/fallback repaint on Apply; system ≈ GTK_THEME |
 | Hotkey conflict detection | `hotkey::find_conflicts` | done |
 | Groups add/rename/remove | done |
-| `theme.py` apply + watch | egui visuals | partial | No live Qt palette watch |
+| `theme.py` apply + watch | `UiTheme` + egui visuals | done | Prefs/fallback/pin-menu follow light/dark; no live gtk-settings watch |
 | `i18n.STRINGS` every key | `i18n.rs` PAIRS | done | Extra Phase-1 strings kept |
 | `group_label` | `groups::label` | done |
 
@@ -194,10 +194,10 @@ Rust config default `language = "zh_CN"` (Phase 1) vs Python QSettings default `
 
 | Status | Rows |
 |---|---|
-| done | 97 |
-| partial | 13 |
+| done | 99 |
+| partial | 11 |
 | missing | 4 |
 | impossible | 6 |
 | **total** | **120** |
 
-Partial/missing that still need Windows or Xfce hands-on: property panel, pin shadow/thumb, AT-SPI rect merge, zenity-less pin menu, custom color dialog, per-tool toolbar panel.
+Partial/missing that still need Windows or Xfce hands-on: property panel, pin shadow/thumb, AT-SPI when the a11y bus is down, custom color dialog, per-tool toolbar panel.
