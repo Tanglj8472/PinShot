@@ -2,7 +2,7 @@
 
 对照源：`main` 上的 Python/PySide6 PinShot。Rust 在 `rust/`，分支 `rust`。Python 源码不改。
 
-最后更新：2026-10-11（A–L 已关；Xvfb+xfwm4+xdotool 15/15；HEAD `d01fe6c`）。
+最后更新：2026-10-11（0098973 实机 11 项已关；键盘缓存抓取、历史落盘、滚轮锚光标、toast 实测宽）。
 
 ---
 
@@ -72,12 +72,31 @@
 | `b2e09b0` | 进度报告写入 A–L 修复 SHA |
 | `b2495fb` | F1 隐藏 fallback 起就 `InputHold`；剪贴板 `xclip` 不阻塞 + 日志 |
 | `d01fe6c` | **不要**在第二路 X 客户端或 winit 的 Xlib Display 上 `XGrabPointer`（事件进错连接）。overlay 期间 `ControlFlow::Poll` + 根窗口 `QueryPointer` 认领 Button1 |
+| `0098973` | 记录 d01fe6c 的 Xvfb A–L 15/15 |
+
+### 0098973 实机 11 项（本轮）
+
+实机 Xfce/xfwm4 上 A,B,D,E,G,H,K 已过；下列 11 项在真实鼠标/快打字下仍开。Xvfb 慢节拍曾误报通过。
+
+| ID | 问题 | 状态 | 修法 |
+|---|---|---|---|
+| 1 | 文字快打 “hello”+Ctrl+Enter 只留下 “hel” | 已修 | 缓存 `GetKeyboardMapping`；拉丁文保持抓键（只在 IME preedit 时放）；带 ControlMask 的可打印字仍插入（晚到的 l/o） |
+| 2 | pin 滚轮缩在中心，指针离开后多余格切工作区 | 已修 | 每格 `QueryPointer` 窗口坐标为锚；`ConfigureWindow` 一次写 x,y,w,h（避 xfwm4 中心重力） |
+| 3 | `,` `.` 打出 toast 但画面不变；`.` 清选区 | 已修 | 按键立刻 `request_redraw`；回放 `replace_shot` 保持 `primed=false`；回到 live 时保留选区（Python 同） |
+| 4 | 新进程 R 无上次选区 | 已修 | `data_dir/history/` 落盘 PNG+rect；启动加载；R 用最后一条 |
+| 5 | toast 淡出后中心残留残字 | 已修 | 用 `text::measure` 算盒宽，恢复矩形再胀 12px |
+| 6 | 按键后要鼠标动才重绘 | 已修 | 每个 X11Key / handle 脏时 `window.request_redraw()` |
+| 7 | Esc 后立刻 F1 无日志 | 已修 | `OverlayKeyGrab::release` join 后立刻 ungrab；overlay 内 F1 → `Resnip`；关闭时队列里的 F1 转 `Hotkey::Snip` |
+| 8 | 点矩形后第一笔快拖仍是箭头，第二笔空 | 已修 | 按下前 `QueryPointer`；`recover` 在 Button1 上升沿补 `annot.press`（工具栏点击不补） |
+| 9 | 滚轮改选中图形线宽后面板仍显示 3 | 已修 | 面板用 `option_width()`（选中/live），滚轮后 `relayout` |
+| 10 | 穿透项无勾；页脚 Zoom/Opacity 中文未译 | 已修 | 可勾项始终画勾槽；`match_pattern` 只拿 `{0}` 后到下一占位的分隔符 |
+| 11 | overlay 开着 Chrome 仍收到 Tab | 已修 | 先放 `InputHold` 再立刻 `XGrabKeyboard(owner_events=false)`；失败 8ms 重试（不再等 80ms） |
 
 ---
 
 ## 已发现的全部问题（各轮测试）
 
-状态：`已修` / `未关`。52d5642 实机 A–L 本轮已关。Xvfb `:10` + xfwm4 + xdotool 回归 **15/15 PASS**（`d01fe6c`）。
+状态：`已修` / `未关`。52d5642 实机 A–L 与 0098973 实机 11 项本轮已关。
 
 ### Windows 早期轮次
 
@@ -163,7 +182,7 @@
 | 项 | 说明 |
 |---|---|
 | AT-SPI | 子进程探测 + 矩形转储；无 a11y 总线时 `probe false`，走 X11 viewable 子窗 |
-| IME / 中文输入 | 文字编辑时 ungrab 键盘，交给 winit/XIM；抓取恢复后仍可能丢预编辑 |
+| IME / 中文输入 | 仅 IME preedit 时放抓给 XIM；拉丁文保持 `XGrabKeyboard`（快打不再丢字） |
 | 合成器 | `_NET_WM_WINDOW_OPACITY`、阴影依赖 picom/compton；无合成器时属性在、观感不变 |
 | 剪贴板 owner | 进程内 arboard + `xclip` 移交；无 xclip 时依赖进程不退出 |
 | 纯 Wayland | 与 Python 相同，只走 X11/XWayland |

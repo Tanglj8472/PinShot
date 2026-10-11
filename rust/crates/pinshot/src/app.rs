@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use pinshot_core::config::{self, data_dir, Config};
-use pinshot_core::history::SnipHistory;
+use pinshot_core::history::{HistoryEntry, HistoryFile, SnipHistory};
 use pinshot_core::hotkey::Command;
 use pinshot_core::i18n::{set_lang, tr};
 use pinshot_core::raster::Raster;
@@ -350,7 +350,9 @@ impl App {
         };
         self.history = ov.history.clone();
         self.history.entries.truncate(self.cfg.history_max as usize);
+        self.persist_history();
         self.overlay = None;
+        let resnip = matches!(res, OverlayResult::Resnip);
         match res {
             OverlayResult::Copy(img, _) => {
                 if clipboard::write_image(&img).is_ok() {
@@ -376,8 +378,13 @@ impl App {
             }
             OverlayResult::Ocr(img, translate) => self.spawn_ocr(img, translate),
             OverlayResult::Cancel => {}
+            OverlayResult::Resnip => {}
         }
-        self.restore_fallback_if_needed();
+        if resnip {
+            self.request_snip(event_loop, false);
+        } else {
+            self.restore_fallback_if_needed();
+        }
     }
 
     fn spawn_ocr(&self, img: Raster, translate: bool) {
@@ -516,6 +523,66 @@ impl App {
                 p.persist_needed = false;
             }
         }
+    }
+
+    fn persist_history(&self) {
+        let dir = HistoryFile::dir(&data_dir());
+        let _ = std::fs::create_dir_all(&dir);
+        if let Ok(rd) = std::fs::read_dir(&dir) {
+            for e in rd.flatten() {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+        let mut names = Vec::new();
+        let mut kept = SnipHistory::new();
+        for e in &self.history.entries {
+            let name = format!("hist-{:03}.png", names.len());
+            let png = encode_png(&e.image);
+            if png.is_empty() {
+                continue;
+            }
+            if std::fs::write(dir.join(&name), png).is_err() {
+                continue;
+            }
+            names.push(name);
+            kept.entries.push(e.clone());
+        }
+        let file = kept.to_file(&names);
+        if let Ok(text) = file.to_toml() {
+            let _ = std::fs::write(HistoryFile::path(&data_dir()), text);
+        }
+    }
+
+    fn restore_history(&mut self) {
+        let dir = data_dir();
+        let Ok(text) = std::fs::read_to_string(HistoryFile::path(&dir)) else {
+            return;
+        };
+        let Ok(file) = HistoryFile::from_toml(&text) else {
+            return;
+        };
+        let hist_dir = HistoryFile::dir(&dir);
+        let mut hist = SnipHistory::new();
+        for meta in file.entries {
+            let Ok(bytes) = std::fs::read(hist_dir.join(&meta.file)) else {
+                continue;
+            };
+            let Some(img) = decode_png(&bytes) else {
+                continue;
+            };
+            hist.entries.push(HistoryEntry {
+                rect: meta.rect(),
+                image: img,
+            });
+        }
+        hist.idx = hist.entries.len();
+        if !hist.entries.is_empty() {
+            crate::logutil::log(&format!(
+                "restored {} snip history entries",
+                hist.entries.len()
+            ));
+        }
+        self.history = hist;
     }
 
     fn reap_pins(&mut self) {
@@ -663,6 +730,7 @@ impl ApplicationHandler<AppEvent> for App {
         if !self.session_restored {
             self.session_restored = true;
             self.restore_session(event_loop);
+            self.restore_history();
         }
         if self.start_prefs {
             self.start_prefs = false;

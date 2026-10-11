@@ -348,7 +348,15 @@ fn match_pattern(s: &str, pat: &str, tpl: &str) -> Option<String> {
             values.push(rest.to_string());
             rest = "";
         } else {
-            let stop = rest.find(after_ph).unwrap_or(rest.len());
+            // Only the literal text until the next `{n}` is the separator.
+            // Searching for `after_ph` itself fails when it still contains `{1}`.
+            let sep_end = after_ph.find('{').unwrap_or(after_ph.len());
+            let sep = &after_ph[..sep_end];
+            let stop = if sep.is_empty() {
+                rest.len()
+            } else {
+                rest.find(sep).unwrap_or(rest.len())
+            };
             values.push(rest[..stop].to_string());
             rest = &rest[stop..];
         }
@@ -437,6 +445,10 @@ mod tests {
             assert_eq!(tr("Zoom: 150%"), "缩放：150%");
             assert_eq!(tr("Copied #FF8800"), "已复制 #FF8800");
             assert_eq!(tr("Detection: window"), "检测：窗口");
+            assert_eq!(
+                tr("Zoom 68%  ·  Opacity 100%"),
+                "缩放 68%  ·  不透明度 100%"
+            );
         });
     }
 

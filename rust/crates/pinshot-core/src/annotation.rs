@@ -556,6 +556,20 @@ impl Annotator {
         self.tool
     }
 
+    /// Width shown in the toolbar panel: live / selected shape, else the tool default.
+    pub fn option_width(&self) -> i32 {
+        if let Some(live) = &self.live {
+            return live.style.width;
+        }
+        if let Some(i) = self.option_target() {
+            return self.shapes[i].style.width;
+        }
+        if let Some(t) = self.tool.filter(|t| *t != Tool::Select) {
+            return self.style(t).width;
+        }
+        0
+    }
+
     pub fn adjust_width(&mut self, delta: i32) -> bool {
         if delta == 0 {
             return false;
@@ -1194,6 +1208,20 @@ mod tests {
         assert!(a.option_target().is_none());
         a.adjust_width(2);
         assert_eq!(a.live.as_ref().unwrap().style.width, 5);
+        assert_eq!(a.option_width(), 5);
+    }
+
+    #[test]
+    fn option_width_follows_selected_not_tool_default() {
+        let mut a = Annotator::new();
+        a.set_tool(Some(Tool::Rect));
+        a.add(rect_shape());
+        a.selected = Some(0);
+        a.shapes[0].style.width = 9;
+        assert_eq!(a.style(Tool::Rect).width, 3);
+        assert_eq!(a.option_width(), 9);
+        a.adjust_width(1);
+        assert_eq!(a.option_width(), 10);
     }
 
     #[test]

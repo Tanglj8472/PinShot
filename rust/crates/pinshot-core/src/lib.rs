@@ -26,7 +26,7 @@ pub use color::{parse_color_text, palette_colors, Rgba, PALETTE};
 pub use config::{config_dir, config_path, data_dir, Config, ConfigError};
 pub use geom::{hover_rect, phys_to_logical, Handle, Point, Rect};
 pub use groups::{label as group_label, DEFAULT_GROUP};
-pub use history::{HistoryEntry, HistoryView, SnipHistory};
+pub use history::{HistoryEntry, HistoryFile, HistoryMetaEntry, HistoryView, SnipHistory};
 pub use hooks::{
     ElementDetector, ElementDetectorStub, OcrEngine, OcrStub, SettingsUi, SettingsUiStub,
     Translator, TranslatorStub,

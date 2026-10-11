@@ -331,7 +331,6 @@ impl OverlayFront {
             self.gdi.write_rect(&self.frame, bounds);
             self.gdi.blit_rect(hwnd, bounds);
         }
-        self.primed = true;
         Ok(())
     }
 
@@ -731,11 +730,27 @@ pub fn paint_toolbar(pm: &mut Pixmap, tb: &Toolbar) -> Rect {
 }
 
 pub fn paint_toast(pm: &mut Pixmap, text: &str, w: u32, h: u32) -> Rect {
-    let tw = text.chars().count() as f32 * 9.0 + 28.0;
-    let boxr = Rect::new((w as f32 - tw) / 2.0, h as f32 / 2.0 - 22.0, tw, 44.0);
+    let (tw, th) = crate::text::measure(text, 16, true);
+    let box_w = (tw as f32 + 28.0).max(80.0);
+    let box_h = (th as f32 + 16.0).max(44.0);
+    let boxr = Rect::new(
+        (w as f32 - box_w) / 2.0,
+        h as f32 / 2.0 - box_h / 2.0,
+        box_w,
+        box_h,
+    );
     fill_rect(pm, boxr, Rgba::rgba(20, 20, 20, 220));
-    blit_into(pm, text, boxr.x as i32 + 14, boxr.y as i32 + 12, 16, Rgba::WHITE, true);
-    boxr.inflated(2.0)
+    blit_into(
+        pm,
+        text,
+        boxr.x as i32 + 14,
+        boxr.y as i32 + 12,
+        16,
+        Rgba::WHITE,
+        true,
+    );
+    // Inflate past glyph overflow so expire restores the leftover pixels.
+    boxr.inflated(12.0)
 }
 
 fn blit_into(pm: &mut Pixmap, text: &str, x: i32, y: i32, px: i32, color: Rgba, bold: bool) {
@@ -862,5 +877,25 @@ pub fn present(buf: &mut [u32], pm: &Pixmap) {
     for i in 0..n {
         let o = i * 4;
         buf[i] = (data[o] as u32) << 16 | (data[o + 1] as u32) << 8 | data[o + 2] as u32;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn toast_rect_covers_measured_glyphs() {
+        let mut pm = Pixmap::new(1280, 800).unwrap();
+        let text = "上次选区 Last snip area";
+        let r = paint_toast(&mut pm, text, 1280, 800);
+        let (tw, _th) = crate::text::measure(text, 16, true);
+        assert!(
+            r.w >= tw as f32 + 20.0,
+            "toast restore {} too narrow for glyphs {}",
+            r.w,
+            tw
+        );
+        assert!((r.x + r.w / 2.0 - 640.0).abs() < 40.0);
     }
 }

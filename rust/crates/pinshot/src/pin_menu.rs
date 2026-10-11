@@ -30,6 +30,7 @@ enum Row {
         label: String,
         action: PinMenuAction,
         checked: bool,
+        checkable: bool,
         indent: bool,
     },
 }
@@ -212,6 +213,7 @@ impl PinMenuWin {
                 Row::Item {
                     label,
                     checked,
+                    checkable,
                     indent,
                     ..
                 } => {
@@ -220,9 +222,17 @@ impl PinMenuWin {
                         fill_rect(&mut pm, *r, Rgba::rgb(196, 217, 242));
                     }
                     let mut x = if *indent { 28.0 } else { 12.0 };
-                    if *checked {
+                    if *checkable || *checked {
                         let boxr = Rect::new(x, r.y + 5.0, 12.0, 12.0);
-                        fill_rect(&mut pm, boxr, Rgba::rgb(40, 140, 80));
+                        fill_rect(
+                            &mut pm,
+                            boxr,
+                            if *checked {
+                                Rgba::rgb(40, 140, 80)
+                            } else {
+                                Rgba::rgb(247, 247, 247)
+                            },
+                        );
                         stroke_rect(&mut pm, boxr, Rgba::rgb(20, 20, 20), 1.0);
                         x += 16.0;
                     }
@@ -251,8 +261,8 @@ fn build_rows(state: &PinMenuState) -> Vec<Row> {
         item(tr("Copy image"), PinMenuAction::Copy, false, false),
         item(tr("Save image as…"), PinMenuAction::Save, false, false),
         Row::Sep,
-        item(tr("Show toolbar"), PinMenuAction::ToggleToolbar, state.annotating, false),
-        item(
+        check_item(tr("Show toolbar"), PinMenuAction::ToggleToolbar, state.annotating, false),
+        check_item(
             tr("Click-through"),
             PinMenuAction::ToggleClickThrough,
             state.click_through,
@@ -263,7 +273,7 @@ fn build_rows(state: &PinMenuState) -> Vec<Row> {
     ];
     for pct in [25, 50, 75, 100, 150, 200, 400] {
         let on = (state.scale * 100.0 - pct as f32).abs() < 0.6;
-        rows.push(item(format!("{pct}%"), PinMenuAction::Zoom(pct), on, true));
+        rows.push(check_item(format!("{pct}%"), PinMenuAction::Zoom(pct), on, true));
     }
     rows.push(Row::Head(tr("Image")));
     rows.push(item(tr("Rotate left"), PinMenuAction::Rotate(-1), false, true));
@@ -277,7 +287,7 @@ fn build_rows(state: &PinMenuState) -> Vec<Row> {
     rows.push(Row::Head(tr("Move to group")));
     for g in &state.groups {
         let on = g.eq_ignore_ascii_case(&state.group);
-        rows.push(item(
+        rows.push(check_item(
             groups::label(g),
             PinMenuAction::MoveGroup(g.clone()),
             on,
@@ -304,10 +314,25 @@ fn build_rows(state: &PinMenuState) -> Vec<Row> {
 }
 
 fn item(label: impl Into<String>, action: PinMenuAction, checked: bool, indent: bool) -> Row {
+    item_ex(label, action, checked, false, indent)
+}
+
+fn check_item(label: impl Into<String>, action: PinMenuAction, checked: bool, indent: bool) -> Row {
+    item_ex(label, action, checked, true, indent)
+}
+
+fn item_ex(
+    label: impl Into<String>,
+    action: PinMenuAction,
+    checked: bool,
+    checkable: bool,
+    indent: bool,
+) -> Row {
     Row::Item {
         label: label.into(),
         action,
         checked,
+        checkable,
         indent,
     }
 }
@@ -330,5 +355,35 @@ mod tests {
     fn tiny_pin_menu_pos_does_not_panic() {
         let (x, y) = clamp_menu_pos(10, 10, 268, 800, 40, 20);
         assert_eq!((x, y), (0, 0));
+    }
+
+    #[test]
+    fn click_through_row_is_checkable_and_checked() {
+        let state = PinMenuState {
+            annotating: false,
+            click_through: true,
+            scale: 0.68,
+            opacity: 1.0,
+            group: "Default".into(),
+            groups: vec!["Default".into()],
+            img_w: 100,
+            img_h: 80,
+        };
+        let rows = build_rows(&state);
+        let ct = rows.iter().find_map(|r| match r {
+            Row::Item {
+                action: PinMenuAction::ToggleClickThrough,
+                checked,
+                checkable,
+                ..
+            } => Some((*checked, *checkable)),
+            _ => None,
+        });
+        assert_eq!(ct, Some((true, true)));
+        let footer = rows.iter().rev().find_map(|r| match r {
+            Row::Head(s) if s.contains('%') => Some(s.clone()),
+            _ => None,
+        });
+        assert!(footer.is_some());
     }
 }

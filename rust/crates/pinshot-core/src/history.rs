@@ -1,7 +1,10 @@
 //! Snip history: full-desktop frames + selection rects. `,` / `.` step; newest last.
+//! Last entries are also persisted under `data_dir/history` so `R` works after a restart.
 
 use crate::geom::Rect;
 use crate::raster::Raster;
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug)]
 pub struct HistoryEntry {
@@ -58,6 +61,63 @@ impl SnipHistory {
     pub fn is_live(&self) -> bool {
         self.idx >= self.entries.len()
     }
+
+    pub fn to_file(&self, names: &[String]) -> HistoryFile {
+        HistoryFile {
+            entries: self
+                .entries
+                .iter()
+                .zip(names.iter())
+                .map(|(e, file)| HistoryMetaEntry {
+                    file: file.clone(),
+                    x: e.rect.x,
+                    y: e.rect.y,
+                    w: e.rect.w,
+                    h: e.rect.h,
+                })
+                .collect(),
+        }
+    }
+}
+
+/// On-disk sidecar for last snips (PNG files live next to `history.toml`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct HistoryFile {
+    #[serde(default)]
+    pub entries: Vec<HistoryMetaEntry>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct HistoryMetaEntry {
+    pub file: String,
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+}
+
+impl HistoryMetaEntry {
+    pub fn rect(&self) -> Rect {
+        Rect::new(self.x, self.y, self.w, self.h)
+    }
+}
+
+impl HistoryFile {
+    pub fn dir(data: &Path) -> PathBuf {
+        data.join("history")
+    }
+
+    pub fn path(data: &Path) -> PathBuf {
+        Self::dir(data).join("history.toml")
+    }
+
+    pub fn to_toml(&self) -> Result<String, String> {
+        toml::to_string_pretty(self).map_err(|e| e.to_string())
+    }
+
+    pub fn from_toml(s: &str) -> Result<Self, String> {
+        toml::from_str(s).map_err(|e| e.to_string())
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -106,5 +166,21 @@ mod tests {
         assert!(matches!(h.step(-1), HistoryView::Replay(_)));
         assert!(matches!(h.step(1), HistoryView::Replay(_)));
         assert!(matches!(h.step(1), HistoryView::Live));
+    }
+
+    #[test]
+    fn history_file_toml_roundtrip() {
+        let f = HistoryFile {
+            entries: vec![HistoryMetaEntry {
+                file: "hist-000.png".into(),
+                x: 10.0,
+                y: 20.0,
+                w: 100.0,
+                h: 80.0,
+            }],
+        };
+        let back = HistoryFile::from_toml(&f.to_toml().unwrap()).unwrap();
+        assert_eq!(back.entries[0].rect(), Rect::new(10.0, 20.0, 100.0, 80.0));
+        assert_eq!(HistoryFile::path(Path::new("/tmp/ps")).file_name().unwrap(), "history.toml");
     }
 }

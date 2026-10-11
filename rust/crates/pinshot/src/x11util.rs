@@ -265,6 +265,7 @@ pub fn focus_window(window: &Window) {
 pub struct OverlayKeyGrab {
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pause_keys: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    join: Option<std::thread::JoinHandle<()>>,
 }
 
 impl OverlayKeyGrab {
@@ -273,13 +274,18 @@ impl OverlayKeyGrab {
         let pause_keys = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let flag = stop.clone();
         let pause = pause_keys.clone();
-        let _ = std::thread::Builder::new()
+        let join = std::thread::Builder::new()
             .name("pinshot-overlay-grab".into())
-            .spawn(move || overlay_grab_loop(xid, proxy, flag, pause));
-        Self { stop, pause_keys }
+            .spawn(move || overlay_grab_loop(xid, proxy, flag, pause))
+            .ok();
+        Self {
+            stop,
+            pause_keys,
+            join,
+        }
     }
 
-    /// Ungrab the keyboard while a text editor is open so XIM / winit IME can work.
+    /// Ungrab the keyboard while XIM / winit IME is composing (not Latin text).
     pub fn set_pause_keys(&self, pause: bool) {
         self.pause_keys
             .store(pause, std::sync::atomic::Ordering::Relaxed);
@@ -289,12 +295,55 @@ impl OverlayKeyGrab {
         self.pause_keys
             .store(false, std::sync::atomic::Ordering::Relaxed);
     }
+
+    /// Only the grabbing connection can ungrab. Join so Esc→F1 is not eaten.
+    pub fn release(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(h) = self.join.take() {
+            let _ = h.join();
+        }
+    }
 }
 
 impl Drop for OverlayKeyGrab {
     fn drop(&mut self) {
-        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.release();
     }
+}
+
+struct KeyMap {
+    min: u8,
+    stride: usize,
+    keysyms: Vec<u32>,
+}
+
+fn load_keymap(c: &x11rb::rust_connection::RustConnection) -> Option<KeyMap> {
+    let setup = c.setup();
+    let min = setup.min_keycode;
+    let count = setup.max_keycode.saturating_sub(min).saturating_add(1);
+    let map = c.get_keyboard_mapping(min, count).ok()?.reply().ok()?;
+    Some(KeyMap {
+        min,
+        stride: map.keysyms_per_keycode as usize,
+        keysyms: map.keysyms,
+    })
+}
+
+fn keysym_from_map(map: &KeyMap, code: u8, state: u16) -> u32 {
+    if code < map.min || map.stride == 0 {
+        return 0;
+    }
+    let idx = (code - map.min) as usize * map.stride;
+    if idx >= map.keysyms.len() {
+        return 0;
+    }
+    let shift = state & SHIFT != 0;
+    let slot = if shift && map.stride > 1 { idx + 1 } else { idx };
+    map.keysyms
+        .get(slot)
+        .copied()
+        .filter(|k| *k != 0)
+        .unwrap_or(map.keysyms[idx])
 }
 
 fn overlay_grab_loop(
@@ -306,16 +355,18 @@ fn overlay_grab_loop(
     let Ok((c, _)) = conn() else {
         return;
     };
+    let mut map = load_keymap(&c);
     let mut key_grabbed = false;
     let mut last_try = std::time::Instant::now() - std::time::Duration::from_secs(1);
-    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-        let want_keys = !pause_keys.load(std::sync::atomic::Ordering::Relaxed);
-        let now = std::time::Instant::now();
-        if now.duration_since(last_try) >= std::time::Duration::from_millis(80) {
-            last_try = now;
-            let _ = c.map_window(xid);
-            let _ = c.set_input_focus(InputFocus::PARENT, xid, x11rb::CURRENT_TIME);
-            if want_keys && !key_grabbed {
+    loop {
+        let stopping = stop.load(std::sync::atomic::Ordering::Relaxed);
+        let want_keys = !stopping && !pause_keys.load(std::sync::atomic::Ordering::Relaxed);
+        if want_keys && !key_grabbed {
+            let now = std::time::Instant::now();
+            if now.duration_since(last_try) >= std::time::Duration::from_millis(8) {
+                last_try = now;
+                let _ = c.map_window(xid);
+                let _ = c.set_input_focus(InputFocus::PARENT, xid, x11rb::CURRENT_TIME);
                 match c.grab_keyboard(false, xid, x11rb::CURRENT_TIME, GrabMode::ASYNC, GrabMode::ASYNC)
                 {
                     Ok(cookie) => match cookie.reply() {
@@ -330,47 +381,96 @@ fn overlay_grab_loop(
                     },
                     Err(e) => crate::logutil::log(&format!("XGrabKeyboard: {e}")),
                 }
-            } else if !want_keys && key_grabbed {
-                let _ = c.ungrab_keyboard(x11rb::CURRENT_TIME);
-                key_grabbed = false;
-                crate::logutil::log("XUngrabKeyboard (text/IME)");
+                let _ = c.flush();
             }
-            // Do not XGrabPointer on this second client: owner_events still
-            // delivers ButtonPress to *this* connection, and winit never sees
-            // the drag. Keyboard is forwarded via AppEvent; pointer stays on
-            // the overlay window (fullscreen override-redirect).
+        } else if !want_keys && key_grabbed {
+            let _ = c.ungrab_keyboard(x11rb::CURRENT_TIME);
             let _ = c.flush();
+            key_grabbed = false;
+            crate::logutil::log(if stopping {
+                "XUngrabKeyboard (overlay close)"
+            } else {
+                "XUngrabKeyboard (text/IME)"
+            });
         }
         match c.poll_for_event() {
             Ok(Some(Event::KeyPress(ev))) => {
-                let keysym = keycode_to_keysym(&c, ev.detail, u16::from(ev.state));
-                let _ = proxy.send_event(crate::event::AppEvent::X11Key {
-                    keysym,
-                    mods: u16::from(ev.state),
-                    pressed: true,
-                });
+                let keysym = map
+                    .as_ref()
+                    .map(|m| keysym_from_map(m, ev.detail, u16::from(ev.state)))
+                    .unwrap_or(0);
+                if stopping && keysym == 0xffbe {
+                    let _ = proxy.send_event(crate::event::AppEvent::Hotkey(
+                        pinshot_core::hotkey::Command::Snip,
+                    ));
+                } else {
+                    let _ = proxy.send_event(crate::event::AppEvent::X11Key {
+                        keysym,
+                        mods: u16::from(ev.state),
+                        pressed: true,
+                    });
+                }
             }
             Ok(Some(Event::KeyRelease(ev))) => {
-                let keysym = keycode_to_keysym(&c, ev.detail, u16::from(ev.state));
-                let _ = proxy.send_event(crate::event::AppEvent::X11Key {
-                    keysym,
-                    mods: u16::from(ev.state),
-                    pressed: false,
-                });
+                if !stopping {
+                    let keysym = map
+                        .as_ref()
+                        .map(|m| keysym_from_map(m, ev.detail, u16::from(ev.state)))
+                        .unwrap_or(0);
+                    let _ = proxy.send_event(crate::event::AppEvent::X11Key {
+                        keysym,
+                        mods: u16::from(ev.state),
+                        pressed: false,
+                    });
+                }
+            }
+            Ok(Some(Event::MappingNotify(_))) => {
+                map = load_keymap(&c);
             }
             Ok(Some(_)) => {}
-            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(8)),
+            Ok(None) => {
+                if stopping {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
             Err(_) => break,
         }
+        if stopping {
+            // Drain anything already queued, then ungrab so the next F1 reaches HotkeyHost.
+            while let Ok(Some(ev)) = c.poll_for_event() {
+                if let Event::KeyPress(kev) = ev {
+                    let keysym = map
+                        .as_ref()
+                        .map(|m| keysym_from_map(m, kev.detail, u16::from(kev.state)))
+                        .unwrap_or(0);
+                    if keysym == 0xffbe {
+                        let _ = proxy.send_event(crate::event::AppEvent::Hotkey(
+                            pinshot_core::hotkey::Command::Snip,
+                        ));
+                    }
+                }
+            }
+            break;
+        }
     }
-    let _ = c.ungrab_keyboard(x11rb::CURRENT_TIME);
+    if key_grabbed {
+        let _ = c.ungrab_keyboard(x11rb::CURRENT_TIME);
+    }
     let _ = c.flush();
 }
 
-/// Root-relative pointer and Button1. A second X client must not
-/// `XGrabPointer`: those events never reach winit's XCB loop (same as
-/// grabbing on the Xlib Display handle).
-pub fn pointer_in_window(xid: u32) -> Option<(i32, i32, bool)> {
+/// Root + window-relative pointer and Button1.
+#[derive(Clone, Copy, Debug)]
+pub struct PointerState {
+    pub root_x: i32,
+    pub root_y: i32,
+    pub win_x: i32,
+    pub win_y: i32,
+    pub btn1: bool,
+}
+
+pub fn pointer_state(xid: u32) -> Option<PointerState> {
     let (c, screen) = conn().ok()?;
     let root = c.setup().roots.get(screen).map(|s| s.root).unwrap_or(xid);
     let q = c
@@ -379,31 +479,55 @@ pub fn pointer_in_window(xid: u32) -> Option<(i32, i32, bool)> {
         .and_then(|c| c.reply().ok())
         .or_else(|| c.query_pointer(root).ok().and_then(|c| c.reply().ok()))?;
     let btn1 = u16::from(q.mask) & 0x0100 != 0;
-    // Prefer root coords: overlay is fullscreen at the virtual origin.
-    Some((i32::from(q.root_x), i32::from(q.root_y), btn1))
+    Some(PointerState {
+        root_x: i32::from(q.root_x),
+        root_y: i32::from(q.root_y),
+        win_x: i32::from(q.win_x),
+        win_y: i32::from(q.win_y),
+        btn1,
+    })
 }
 
-fn keycode_to_keysym(c: &x11rb::rust_connection::RustConnection, code: u8, state: u16) -> u32 {
-    let setup = c.setup();
-    let min = setup.min_keycode;
-    if code < min {
-        return 0;
-    }
-    let count = setup.max_keycode.saturating_sub(min).saturating_add(1);
-    let Ok(cookie) = c.get_keyboard_mapping(min, count) else {
-        return 0;
+/// Root-relative pointer and Button1. Overlay recover uses the virtual origin.
+pub fn pointer_in_window(xid: u32) -> Option<(i32, i32, bool)> {
+    let p = pointer_state(xid)?;
+    Some((p.root_x, p.root_y, p.btn1))
+}
+
+/// Window-relative pointer (pin zoom anchor).
+pub fn pointer_in_client(xid: u32) -> Option<(i32, i32, bool)> {
+    let p = pointer_state(xid)?;
+    Some((p.win_x, p.win_y, p.btn1))
+}
+
+/// Atomic x/y/w/h so xfwm4 cannot resize about the center before the move.
+pub fn configure_geom(xid: u32, x: i32, y: i32, w: u32, h: u32) {
+    let Ok((c, _)) = conn() else {
+        return;
     };
-    let Ok(map) = cookie.reply() else {
-        return 0;
-    };
-    let stride = map.keysyms_per_keycode as usize;
-    let idx = (code - min) as usize * stride;
-    if idx >= map.keysyms.len() {
-        return 0;
+    let aux = x11rb::protocol::xproto::ConfigureWindowAux::new()
+        .x(x)
+        .y(y)
+        .width(w.max(1))
+        .height(h.max(1));
+    let _ = c.configure_window(xid, &aux);
+    let _ = c.flush();
+}
+
+#[cfg(test)]
+mod keymap_tests {
+    use super::{keysym_from_map, KeyMap, SHIFT};
+
+    #[test]
+    fn cached_map_shift_slot() {
+        let map = KeyMap {
+            min: 8,
+            stride: 2,
+            keysyms: vec![0, 0, b'a' as u32, b'A' as u32],
+        };
+        assert_eq!(keysym_from_map(&map, 9, 0), b'a' as u32);
+        assert_eq!(keysym_from_map(&map, 9, SHIFT), b'A' as u32);
     }
-    let shift = state & SHIFT != 0;
-    let slot = if shift && stride > 1 { idx + 1 } else { idx };
-    map.keysyms.get(slot).copied().filter(|k| *k != 0).unwrap_or(map.keysyms[idx])
 }
 
 pub fn set_click_through(window: &Window, on: bool, _opacity: f32) {

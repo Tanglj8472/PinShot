@@ -62,7 +62,7 @@ Counts at the bottom. Python sources are not modified.
 | Magnifier 15×15 @ 8×, C / Shift | `magnifier.rs` + overlay keys | done |
 | Drag / move / 8 handles | `selection.rs` | done | First F1 drag recovered via `QueryPointer` (no second-client `XGrabPointer`) |
 | Toolbar + OCR/Translate | `toolbar.rs` | done |
-| `,` `.` history / Shift+R last rect | `history.rs` + overlay | done | R and Shift+R both reuse last; toast 1.2s |
+| `,` `.` history / Shift+R last rect | `history.rs` + overlay + `data_dir/history` | done | Live keeps the selection; R works after restart; keys `request_redraw` |
 | Esc confirm abort | MessageBox / zenity | done |
 | Ctrl+C / Enter copy, Ctrl+S save, Ctrl+T / F3 pin | overlay keys | done |
 | Ctrl+A full screen | done |
@@ -87,7 +87,7 @@ Counts at the bottom. Python sources are not modified.
 | `adjust_width` + 0.5s undo merge | done |
 | `wheel` trunc(angle/120) | `Annotator::wheel` | done |
 | `start_text` / `commit_text` / `begin_edit_text` | done + painted dashed editor | done |
-| `key` Esc/Enter/IME | overlay + pin + `Ime::Commit` + Linux `XGrabKeyboard` | done | Overlay is override-redirect; grab forwards `AppEvent::X11Key` |
+| `key` Esc/Enter/IME | overlay + pin + `Ime::Commit` + Linux `XGrabKeyboard` | done | Cached keymap; Latin stays grabbed; IME preedit pauses; Esc join-ungrabs so F1 is not eaten |
 | `press` select-on-click, mosaic no-steal | done |
 | `_resize_selected` number/polyline/rect | done |
 | `_push_edit` / undo 50 / redo | `UndoStack` | done |
@@ -107,7 +107,7 @@ Counts at the bottom. Python sources are not modified.
 | Tool order Rect Ellipse Line Arrow Pen Marker Mosaic Text Number | `toolbar.rs` | done |
 | OCR / Translate / Undo Redo Close Pin Save Copy | done |
 | Pin Check (done) | `TbAction::Check` | done |
-| Palette 20 + width −/+ | done |
+| Palette 20 + width −/+ | done | Panel shows `option_width` (selected/live), not the tool default |
 | Per-tool panel (filled, dash, blur, font…) | missing | Colors + width only |
 | Tips / i18n keys | `Tool::tip` + `tr` | done |
 
@@ -116,7 +116,7 @@ Counts at the bottom. Python sources are not modified.
 | Python | Rust | Status |
 |---|---|---|
 | Frameless always-on-top + skip taskbar | winit + EWMH / WS_EX_TOOLWINDOW | done |
-| Drag move, wheel zoom (cursor-anchored), Ctrl+wheel opacity | done | Zoom keeps the pointer on the pin; Linux `_NET_WM_WINDOW_OPACITY` |
+| Drag move, wheel zoom (cursor-anchored), Ctrl+wheel opacity | done | Each notch `QueryPointer` + atomic `ConfigureWindow` x,y,w,h so xfwm4 cannot center-resize |
 | Annotating: wheel → `ann.wheel` not zoom | done |
 | Space / right-click Show toolbar | Space = toolbar; right-click = full menu | done | Never falls back to toolbar |
 | TOOL_KEYS R E P T N … | R E P T N + 1/2/3/4 | done |
@@ -138,7 +138,7 @@ Counts at the bottom. Python sources are not modified.
 | Hotkey conflict detection | `hotkey::find_conflicts` | done |
 | Groups add/rename/remove | done |
 | `theme.py` apply + watch | `UiTheme` + egui visuals | done | Prefs/fallback/pin-menu follow light/dark; no live gtk-settings watch |
-| `i18n.STRINGS` every key | `i18n.rs` PAIRS | done | Extra Phase-1 strings kept |
+| `i18n.STRINGS` every key | `i18n.rs` PAIRS | done | Two-placeholder `Zoom {0}%  ·  Opacity {1}%` matches; pin-menu footer uses `tr` |
 | `group_label` | `groups::label` | done |
 
 ## Capture / clipboard / cards
@@ -173,7 +173,7 @@ Counts at the bottom. Python sources are not modified.
 |---|---|---|
 | `icons.py` app + toolbar | `icons.rs` | done |
 | `session.py` groups + persist | `session.rs` + `groups.rs` | done |
-| Overlay `HISTORY` | `history.rs` | done |
+| Overlay `HISTORY` | `history.rs` + PNG sidecar under `data_dir/history` | done | Process-global in Python; Rust also persists last N so R works on a fresh launch |
 
 ## Defaults / shortcuts / menu strings
 

@@ -91,9 +91,35 @@ pub fn pointer_in_window(window: &Window) -> Option<(i32, i32, bool)> {
     crate::x11util::xid_of(window).and_then(crate::x11util::pointer_in_window)
 }
 
+#[cfg(unix)]
+pub fn pointer_in_client(window: &Window) -> Option<(i32, i32, bool)> {
+    crate::x11util::xid_of(window).and_then(crate::x11util::pointer_in_client)
+}
+
+#[cfg(unix)]
+pub fn configure_window_geom(window: &Window, x: i32, y: i32, w: u32, h: u32) -> bool {
+    match crate::x11util::xid_of(window) {
+        Some(xid) => {
+            crate::x11util::configure_geom(xid, x, y, w, h);
+            true
+        }
+        None => false,
+    }
+}
+
 #[cfg(not(unix))]
 pub fn pointer_in_window(_window: &Window) -> Option<(i32, i32, bool)> {
     None
+}
+
+#[cfg(not(unix))]
+pub fn pointer_in_client(_window: &Window) -> Option<(i32, i32, bool)> {
+    None
+}
+
+#[cfg(not(unix))]
+pub fn configure_window_geom(_window: &Window, _x: i32, _y: i32, _w: u32, _h: u32) -> bool {
+    false
 }
 
 #[cfg(not(unix))]

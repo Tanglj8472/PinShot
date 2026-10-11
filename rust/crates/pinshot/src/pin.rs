@@ -162,22 +162,28 @@ impl PinWin {
     pub fn set_scale_at(&mut self, s: f32, anchor: Option<Point>) {
         let old = self.scale.max(0.01);
         let new = pinshot_core::geom::clamp_f32(s, 0.05, 8.0);
+        if (new - old).abs() < f32::EPSILON {
+            return;
+        }
         let tl = self.window.outer_position().ok();
         self.scale = new;
         let w = ((self.img.width as f32) * self.scale).round().max(8.0) as u32;
         let h = ((self.img.height as f32) * self.scale).round().max(8.0) as u32;
-        let _ = self.window.request_inner_size(PhysicalSize::new(w, h));
         if let Some(p) = tl {
-            if let Some(a) = anchor {
-                let nx = p.x + (a.x * (1.0 - new / old)).round() as i32;
-                let ny = p.y + (a.y * (1.0 - new / old)).round() as i32;
+            let (nx, ny) = match anchor {
+                Some(a) => zoom_pos((p.x, p.y), a, old, new),
+                None => (p.x, p.y),
+            };
+            if !native::configure_window_geom(&self.window, nx, ny, w, h) {
+                let _ = self.window.request_inner_size(PhysicalSize::new(w, h));
                 self.window.set_outer_position(PhysicalPosition::new(nx, ny));
-            } else {
-                self.window.set_outer_position(p);
             }
+        } else {
+            let _ = self.window.request_inner_size(PhysicalSize::new(w, h));
         }
         self.persist_needed = true;
         self.dirty = true;
+        self.window.request_redraw();
     }
 
     pub fn set_opacity(&mut self, o: f32) {
@@ -256,9 +262,7 @@ impl PinWin {
         let sel = Rect::new(0.0, 0.0, iw as f32, ih as f32);
         let over = Rect::new(0.0, 0.0, iw.max(420) as f32, ih as f32 + 90.0);
         let mut tb = Toolbar::layout_pin(sel, over, self.annot.tool, self.arrow_on);
-        if let Some(t) = self.annot.tool {
-            tb.set_width_value(self.annot.style(t).width);
-        }
+        tb.set_width_value(self.annot.option_width());
         self.toolbar = Some(tb);
     }
 
@@ -276,9 +280,13 @@ impl PinWin {
             (w, h)
         };
         let tl = self.window.outer_position().ok();
-        let _ = self.window.request_inner_size(PhysicalSize::new(ww, hh));
         if let Some(p) = tl {
-            self.window.set_outer_position(p);
+            if !native::configure_window_geom(&self.window, p.x, p.y, ww, hh) {
+                let _ = self.window.request_inner_size(PhysicalSize::new(ww, hh));
+                self.window.set_outer_position(p);
+            }
+        } else {
+            let _ = self.window.request_inner_size(PhysicalSize::new(ww, hh));
         }
     }
 
@@ -396,6 +404,9 @@ impl PinWin {
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
+                if let Some((x, y, _)) = native::pointer_in_client(&self.window) {
+                    self.last_cursor = Point::new(x as f32, y as f32);
+                }
                 let angle = match delta {
                     MouseScrollDelta::LineDelta(_, y) => (*y * 120.0) as i32,
                     MouseScrollDelta::PixelDelta(p) => p.y as i32,
@@ -407,6 +418,7 @@ impl PinWin {
                         || self.annot.hit_test(self.img_pt(self.last_cursor)).is_some())
                 {
                     if self.annot.wheel_at(self.img_pt(self.last_cursor), angle) {
+                        self.relayout_tb();
                         self.dirty = true;
                     }
                 } else if angle > 0 {
@@ -847,6 +859,27 @@ impl PinWin {
 
     pub fn next_wake(&self) -> Option<Instant> {
         self.toast_until
+    }
+}
+
+/// Keep the image pixel under `anchor` fixed while the scale changes.
+pub fn zoom_pos(tl: (i32, i32), anchor: Point, old: f32, new: f32) -> (i32, i32) {
+    let old = old.max(0.01);
+    let nx = tl.0 + (anchor.x * (1.0 - new / old)).round() as i32;
+    let ny = tl.1 + (anchor.y * (1.0 - new / old)).round() as i32;
+    (nx, ny)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zoom_out_moves_origin_so_pointer_stays() {
+        // Pin at (100,100), pointer 50px inside. Zoom 1.0 → 0.5 should move
+        // the window by +25 so the same image pixel stays under the pointer.
+        let (x, y) = zoom_pos((100, 100), Point::new(50.0, 40.0), 1.0, 0.5);
+        assert_eq!((x, y), (125, 120));
     }
 }
 
