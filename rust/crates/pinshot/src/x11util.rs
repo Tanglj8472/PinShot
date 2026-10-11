@@ -501,15 +501,37 @@ pub fn pointer_in_client(xid: u32) -> Option<(i32, i32, bool)> {
 }
 
 /// Atomic x/y/w/h so xfwm4 cannot resize about the center before the move.
+/// Managed pins go through `_NET_MOVERESIZE_WINDOW` (the WM owns ConfigureRequest).
 pub fn configure_geom(xid: u32, x: i32, y: i32, w: u32, h: u32) {
-    let Ok((c, _)) = conn() else {
+    let Ok((c, screen)) = conn() else {
         return;
     };
+    let w = w.max(1);
+    let h = h.max(1);
+    let root = c.setup().roots.get(screen).map(|s| s.root).unwrap_or(xid);
+    if let Ok(atom) = c.intern_atom(false, b"_NET_MOVERESIZE_WINDOW") {
+        if let Ok(atom) = atom.reply() {
+            // StaticGravity | x,y,w,h present | source=pager
+            let info: u32 = 10 | (1 << 8) | (1 << 9) | (1 << 10) | (1 << 11) | (2 << 12);
+            let ev = ClientMessageEvent::new(
+                32,
+                xid,
+                atom.atom,
+                [info, x as u32, y as u32, w, h],
+            );
+            let _ = c.send_event(
+                false,
+                root,
+                EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY,
+                ev,
+            );
+        }
+    }
     let aux = x11rb::protocol::xproto::ConfigureWindowAux::new()
         .x(x)
         .y(y)
-        .width(w.max(1))
-        .height(h.max(1));
+        .width(w)
+        .height(h);
     let _ = c.configure_window(xid, &aux);
     let _ = c.flush();
 }

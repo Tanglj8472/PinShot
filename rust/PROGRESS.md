@@ -80,8 +80,8 @@
 
 | ID | 问题 | 状态 | 修法 |
 |---|---|---|---|
-| 1 | 文字快打 “hello”+Ctrl+Enter 只留下 “hel” | 已修 | 缓存 `GetKeyboardMapping`；拉丁文保持抓键（只在 IME preedit 时放）；带 ControlMask 的可打印字仍插入（晚到的 l/o） |
-| 2 | pin 滚轮缩在中心，指针离开后多余格切工作区 | 已修 | 每格 `QueryPointer` 窗口坐标为锚；`ConfigureWindow` 一次写 x,y,w,h（避 xfwm4 中心重力） |
+| 1 | 文字快打 “hello”+Ctrl+Enter 只留下 “hel” | 已修 | 缓存 keymap；拉丁文保持抓键；`0xff00+` 不当成 Unicode（Control_L≠￣）；晚到的字母仍插入 |
+| 2 | pin 滚轮缩在中心，指针离开后多余格切工作区 | 已修 | 每格 `QueryPointer` 窗口坐标为锚；`_NET_MOVERESIZE_WINDOW` + ConfigureWindow 一次写 x,y,w,h |
 | 3 | `,` `.` 打出 toast 但画面不变；`.` 清选区 | 已修 | 按键立刻 `request_redraw`；回放 `replace_shot` 保持 `primed=false`；回到 live 时保留选区（Python 同） |
 | 4 | 新进程 R 无上次选区 | 已修 | `data_dir/history/` 落盘 PNG+rect；启动加载；R 用最后一条 |
 | 5 | toast 淡出后中心残留残字 | 已修 | 用 `text::measure` 算盒宽，恢复矩形再胀 12px |
@@ -197,4 +197,18 @@
 2. **P2 — Windows 再对齐**：在 Linux 稳定后，用同一套 core 把 Windows 宿主接到同等行为；CI 两边保持绿。
 3. **P3 — 体积与 OCR**：默认 exe 保持无模型；`--features ocr` / `pinshot-ocr` 文档化。
 
-验证约定：Linux 改动必须在 **Xvfb + xfwm4 + xdotool**（以及有桌面时的 `:1` Xfce）上做焦点/按键/菜单回归。
+验证约定：Linux 改动必须在 **Xvfb + xfwm4 + xdotool**（以及有桌面时的 `:1` Xfce）上做焦点/按键/菜单回归。本轮用 `type --delay 20`、两步快拖、连续滚轮格。
+
+### Xvfb 0098973 十一项（`:20` 1920×1200 + xfwm4）
+
+| 项 | 结果 |
+|---|---|
+| 1 快打 hello + Ctrl+Enter | PASS（`text commit "hello"`，画面无 ￣） |
+| 2 pin 连续缩小锚光标 | PASS（80×50→55×34，原点 40,40→44,44） |
+| 3/6 `,` `.` 不移鼠标即重绘 | PASS（toast「截图历史」） |
+| 4 重启后 R | PASS（`restored 1` + toast「上次选区」） |
+| 5 toast 淡出无残字 | PASS（中心无残留） |
+| 7 Esc 后立刻 F1 | PASS（ungrab + 重新 mapped） |
+| 10 菜单勾槽 + 中文页脚 | PASS |
+| 11 Tab 不到 xev | PASS |
+| 8/9 工具栏命中 | 脚本点偏时会 miss；`tb Tool(Text)` / `recover annot press` 在对准后通过 |

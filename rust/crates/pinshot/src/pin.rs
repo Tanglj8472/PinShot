@@ -174,10 +174,22 @@ impl PinWin {
                 Some(a) => zoom_pos((p.x, p.y), a, old, new),
                 None => (p.x, p.y),
             };
-            if !native::configure_window_geom(&self.window, nx, ny, w, h) {
+            if native::configure_window_geom(&self.window, nx, ny, w, h) {
+                // Keep winit's cached size in sync; the WM already has x,y,w,h.
+                let _ = self.window.request_inner_size(PhysicalSize::new(w, h));
+            } else {
                 let _ = self.window.request_inner_size(PhysicalSize::new(w, h));
                 self.window.set_outer_position(PhysicalPosition::new(nx, ny));
             }
+            crate::logutil::log(&format!(
+                "pin zoom {old:.3}->{new:.3} {}x{} @ {},{} anchor {:.0},{:.0}",
+                w,
+                h,
+                nx,
+                ny,
+                anchor.map(|a| a.x).unwrap_or(0.0),
+                anchor.map(|a| a.y).unwrap_or(0.0)
+            ));
         } else {
             let _ = self.window.request_inner_size(PhysicalSize::new(w, h));
         }

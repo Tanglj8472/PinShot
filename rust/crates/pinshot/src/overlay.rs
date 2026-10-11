@@ -438,6 +438,7 @@ impl Overlay {
                 }
             }
         }
+        crate::logutil::log(&format!("tb {a:?}"));
         self.relayout_toolbar();
         self.held_btn1 = true;
         self.mark_dirty();
@@ -617,7 +618,12 @@ impl Overlay {
         if self.annot.text_edit.is_some() {
             match key {
                 Key::Named(NamedKey::Escape) => self.annot.commit_text(true),
-                Key::Named(NamedKey::Enter) => self.annot.commit_text(false),
+                Key::Named(NamedKey::Enter) => {
+                    if let Some(ed) = &self.annot.text_edit {
+                        crate::logutil::log(&format!("text commit {:?}", ed.text));
+                    }
+                    self.annot.commit_text(false);
+                }
                 Key::Named(NamedKey::Backspace) => self.annot.type_text('\u{8}'),
                 Key::Named(NamedKey::F1) => {
                     self.annot.commit_text(true);
@@ -876,7 +882,7 @@ impl Overlay {
             let drawing = self.annot.live.is_some()
                 || self.annot.is_selecting()
                 || self.annot.is_brush_live();
-            if down && !self.held_btn1 && !drawing {
+            if down && !self.held_btn1 && !drawing && self.sel.normalized().contains(pt) {
                 if self.annot.press(self.img_pt(pt), false) {
                     crate::logutil::log(&format!(
                         "recover annot press ({:.0},{:.0})",
@@ -949,6 +955,9 @@ fn keysym_to_winit(keysym: u32) -> Option<(Key, Option<String>)> {
         0xffff | 0xff9f => Some(NamedKey::Delete),
         0xff09 => Some(NamedKey::Tab),
         0xffe1 | 0xffe2 => Some(NamedKey::Shift),
+        0xffe3 | 0xffe4 => Some(NamedKey::Control),
+        0xffe9 | 0xffea => Some(NamedKey::Alt),
+        0xffeb | 0xffec => Some(NamedKey::Super),
         0xff51 | 0xff96 => Some(NamedKey::ArrowLeft),
         0xff52 | 0xff97 => Some(NamedKey::ArrowUp),
         0xff53 | 0xff98 => Some(NamedKey::ArrowRight),
@@ -967,10 +976,37 @@ fn keysym_to_winit(keysym: u32) -> Option<(Key, Option<String>)> {
     if let Some(n) = named {
         return Some((Key::Named(n), None));
     }
+    // X11 function-key range (0xff00–0xffff): never treat as Unicode text.
+    // Control_L is 0xffe3; char::from_u32 maps that to '￣' and used to leak into text.
+    if keysym >= 0xff00 {
+        return None;
+    }
     let ch = char::from_u32(keysym)?;
     if ch.is_control() {
         return None;
     }
     let s = ch.to_string();
     Some((Key::Character(s.clone().into()), Some(s)))
+}
+
+#[cfg(test)]
+mod keysym_tests {
+    use super::keysym_to_winit;
+    use winit::keyboard::{Key, NamedKey};
+
+    #[test]
+    fn control_l_is_modifier_not_macron() {
+        match keysym_to_winit(0xffe3) {
+            Some((Key::Named(NamedKey::Control), None)) => {}
+            other => panic!("Control_L became {other:?}"),
+        }
+        assert!(keysym_to_winit(0xffe5).is_none()); // Caps_Lock
+    }
+
+    #[test]
+    fn latin_letters_keep_text() {
+        let (k, t) = keysym_to_winit(b'h' as u32).unwrap();
+        assert!(matches!(k, Key::Character(c) if c.as_str() == "h"));
+        assert_eq!(t.as_deref(), Some("h"));
+    }
 }

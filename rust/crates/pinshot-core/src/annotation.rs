@@ -874,7 +874,11 @@ impl Annotator {
         if let Some(ed) = &mut self.text_edit {
             if ch == '\u{8}' {
                 ed.text.pop();
-            } else if !ch.is_control() && ch != '\u{2013}' && ch != '\u{2014}' {
+            } else if !ch.is_control()
+                && ch != '\u{2013}'
+                && ch != '\u{2014}'
+                && ch != '\u{ffe3}'
+            {
                 ed.text.push(ch);
             }
         }
@@ -1176,6 +1180,8 @@ mod tests {
         a.press(Point::new(8.0, 8.0), false);
         a.type_text('H');
         a.type_text('i');
+        a.type_text('\u{ffe3}');
+        a.type_text('\u{2014}');
         a.commit_text(false);
         assert_eq!(a.shapes.len(), 1);
         assert_eq!(a.shapes[0].text, "Hi");
