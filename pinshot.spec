@@ -25,6 +25,12 @@ a = Analysis(
 )
 pyz = PYZ(a.pure)
 
+# Qt 6.12 uses Windows' ICU exports. A versioned third-party ICU found on
+# PATH has incompatible symbol names and must not shadow the system DLL.
+if sys.platform == "win32":
+    a.binaries = [item for item in a.binaries
+                  if not os.path.basename(item[0]).lower().startswith("icu")]
+
 exe = EXE(
     pyz, a.scripts, [],
     exclude_binaries=True,          # --onedir

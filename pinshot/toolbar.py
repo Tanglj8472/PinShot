@@ -165,13 +165,13 @@ class ToolDock(QWidget):
             if self.isVisible(): self.panel.show(); self._fit_panel()
             else: self.panel.hide()
             return
-        st = self.ann.styles[tool]; S = lambda k: (lambda v: setattr(st, k, v))
+        st = self.ann.styles[tool]; S = lambda k: (lambda v: self.ann.set_style_value(tool, k, v))
         if tool in ("rect", "ellipse"):
             self._choice([(False, "Outline"), (True, "Filled")], lambda: st.filled, S("filled"), "fill")
             self._spin("Width", 1, 60, lambda: st.width, S("width"), "width")
         elif tool == "line":
             c = QComboBox(); c.addItems(["solid", "dash", "dot"]); c.setCurrentText(st.line_style); c.setObjectName("line_style")
-            c.currentTextChanged.connect(lambda v: (setattr(st, "line_style", v), self.ann.changed.emit())); self.panel_lay.addWidget(c)
+            c.currentTextChanged.connect(lambda v: (S("line_style")(v), self.ann.changed.emit())); self.panel_lay.addWidget(c)
             self._toggle("Arrow", lambda: st.arrow, S("arrow"), "Arrow at end")
             self._spin("Width", 1, 60, lambda: st.width, S("width"), "width")
         elif tool in ("pen", "marker"):
@@ -181,7 +181,7 @@ class ToolDock(QWidget):
             self._choice([("mosaic", "Mosaic"), ("blur", "Blur")], lambda: st.effect, S("effect"), "effect")
             self.panel_lay.addWidget(QLabel("Size"))
             sl = QSlider(Qt.Horizontal); sl.setRange(1, 30); sl.setValue(st.size); sl.setFixedWidth(110); sl.setObjectName("size")
-            v = QLabel(str(st.size)); sl.valueChanged.connect(lambda x: (setattr(st, "size", x), v.setText(str(x)), self.ann.changed.emit()))
+            v = QLabel(str(st.size)); sl.valueChanged.connect(lambda x: (S("size")(x), v.setText(str(x)), self.ann.changed.emit()))
             self.panel_lay.addWidget(sl); self.panel_lay.addWidget(v); self.slider = sl
         elif tool == "text":
             self._toggle("B", lambda: st.bold, S("bold"), "Bold").setObjectName("opt_bold")
@@ -189,14 +189,14 @@ class ToolDock(QWidget):
             self._toggle("Outline", lambda: st.outline, S("outline"), "Outline / halo")
             f = QFontComboBox(); f.setObjectName("font"); f.setFixedWidth(140)
             if st.family: f.setCurrentText(st.family)
-            f.currentFontChanged.connect(lambda q: (setattr(st, "family", q.family()), self.ann.changed.emit())); self.panel_lay.addWidget(f)
+            f.currentFontChanged.connect(lambda q: (S("family")(q.family()), self.ann.changed.emit())); self.panel_lay.addWidget(f)
             self._spin("Size", 8, 120, lambda: st.font_size, S("font_size"), "font_size")
         elif tool == "eraser":
             self._choice([("brush", "Brush"), ("rect", "Rect")], lambda: st.mode, S("mode"), "mode")
             self._spin("Width", 2, 80, lambda: st.width, S("width"), "width")
         elif tool == "number":
             def _set_num_w(v):
-                st.width = v; st.font_size = max(8, int(v * 0.65))
+                S("width")(v); S("font_size")(max(8, int(v * 0.65)))
             self._spin("Size", 12, 80, lambda: st.width, _set_num_w, "width")
             self._toggle("Filled", lambda: st.filled, S("filled"), "Filled circle")
         if tool not in ("mosaic", "eraser", "select"):

@@ -226,7 +226,7 @@ class SnipOverlay(QWidget):
         dim = QPainterPath(); dim.addRect(QRectF(self.rect()))
         hole = QPainterPath(); hole.addRect(QRectF(r)); p.fillPath(dim.subtracted(hole), QColor(0, 0, 0, 110))
         if self.ann.shapes or self.ann.live:
-            p.save(); p.setClipRect(self.sel.normalized()); p.scale(1 / self.dpr, 1 / self.dpr); self.ann.paint(p); p.restore()
+            p.save(); p.scale(1 / self.dpr, 1 / self.dpr); self.ann.paint(p); p.restore()
         if not r.isEmpty():
             p.setPen(QPen(BLUE, 1 if self.state == "idle" else 1)); p.setBrush(Qt.NoBrush); p.drawRect(r.adjusted(0, 0, -1, -1))
             if self.has_sel() and not self.ann.tool:
@@ -306,8 +306,9 @@ class SnipOverlay(QWidget):
         pt = e.position().toPoint(); self.cur = pt
         if self.dock.isVisible() and self.dock.contains_global(e.globalPosition().toPoint()):
             return   # never treat toolbar/sub-panel presses as selection presses
-        if self.ann.tool and self.has_sel() and (self.sel.normalized().contains(pt) or e.button() == Qt.RightButton):
-            self.ann.press(QPointF(pt), e.button(), e.modifiers()); return
+        if self.has_sel() and self.ann.press(QPointF(pt), e.button(), e.modifiers()):
+            if self.ann._sel_mode: self.setCursor(Qt.ClosedHandCursor)
+            return
         if e.button() == Qt.RightButton:
             if self.has_sel():   # right-click: reset selection, again exits
                 self.sel = QRect(); self.state = "idle"; self.ann.set_tool(None); self.ann.clear(); self._place_dock()
@@ -347,11 +348,13 @@ class SnipOverlay(QWidget):
             if h.startswith("b") or h == "b": r.setBottom(c.y() - 1)
             self.sel = r
         else:
+            self.ann.hover(QPointF(self.cur))
             self._update_hover()
             h = self._hit_handle(self.cur)
             cur = {"tl": Qt.SizeFDiagCursor, "br": Qt.SizeFDiagCursor, "tr": Qt.SizeBDiagCursor, "bl": Qt.SizeBDiagCursor,
                    "l": Qt.SizeHorCursor, "r": Qt.SizeHorCursor, "t": Qt.SizeVerCursor, "b": Qt.SizeVerCursor}.get(h)
-            if cur and not self.ann.tool: self.setCursor(cur)
+            if self.ann.selected: self.setCursor(Qt.OpenHandCursor)
+            elif cur and not self.ann.tool: self.setCursor(cur)
             elif self.has_sel() and self.sel.normalized().contains(self.cur) and not self.ann.tool: self.setCursor(Qt.SizeAllCursor)
             else: self.setCursor(Qt.CrossCursor)
         self.update()
