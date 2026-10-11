@@ -20,6 +20,10 @@ pub struct Config {
     pub hotkey_hide_all: String,
     pub hotkey_clickthrough: String,
     pub hotkey_restore: String,
+    pub hotkey_selection_translate: String,
+    pub hotkey_capture_translate: String,
+    pub run_at_login: bool,
+    pub groups: Vec<String>,
     pub quick_save_folder: String,
     pub image_quality: u8,
     pub snip_delay: u32,
@@ -42,6 +46,10 @@ impl Default for Config {
             hotkey_hide_all: "Shift+F3".into(),
             hotkey_clickthrough: String::new(),
             hotkey_restore: "Ctrl+Shift+Z".into(),
+            hotkey_selection_translate: "F5".into(),
+            hotkey_capture_translate: "F6".into(),
+            run_at_login: false,
+            groups: vec!["Default".into(), "Group 1".into(), "Group 2".into(), "Group 3".into()],
             quick_save_folder: String::new(),
             image_quality: 92,
             snip_delay: 0,
@@ -74,6 +82,16 @@ impl Config {
         self.history_max = self.history_max.max(1);
         self.closed_pins_max = self.closed_pins_max.max(1);
         self.dim_alpha = self.dim_alpha.min(200);
+        if !matches!(self.theme.as_str(), "system" | "light" | "dark") {
+            self.theme = "system".into();
+        }
+        self.groups = crate::groups::dedupe(&self.groups);
+        if self.hotkey_selection_translate.trim().is_empty() {
+            self.hotkey_selection_translate = "F5".into();
+        }
+        if self.hotkey_capture_translate.trim().is_empty() {
+            self.hotkey_capture_translate = "F6".into();
+        }
         if self.schema_version == 0 {
             self.schema_version = SCHEMA_VERSION;
         }
@@ -140,6 +158,11 @@ pub fn config_dir() -> PathBuf {
 
 pub fn config_path() -> PathBuf {
     config_dir().join("config.toml")
+}
+
+/// Same as [`config_dir`]: `%APPDATA%\PinShot` (OCR models, session).
+pub fn data_dir() -> PathBuf {
+    config_dir()
 }
 
 pub fn load() -> Result<Config, ConfigError> {
@@ -217,5 +240,14 @@ mod tests {
     #[test]
     fn bad_toml_errors() {
         assert!(Config::from_toml("language = [").is_err());
+    }
+
+    #[test]
+    fn old_toml_fills_new_fields() {
+        let c = Config::from_toml("language = \"en\"\nhotkey_snip = \"F2\"\n").unwrap();
+        assert_eq!(c.language, "en");
+        assert_eq!(c.hotkey_snip, "F2");
+        assert_eq!(c.hotkey_selection_translate, "F5");
+        assert!(c.groups.iter().any(|g| g == "Default"));
     }
 }

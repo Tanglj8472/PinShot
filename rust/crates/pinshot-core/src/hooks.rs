@@ -55,7 +55,7 @@ pub struct OcrStub;
 
 impl OcrEngine for OcrStub {
     fn recognize(&self, _image: &Raster) -> Result<String, String> {
-        Err("OCR not implemented (Phase 1 stub; planned: ort + PP-OCRv5)".into())
+        Err("OCR not available in this build. Use pinshot-ocr.exe.".into())
     }
 }
 

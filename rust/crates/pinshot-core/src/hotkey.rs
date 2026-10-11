@@ -101,6 +101,8 @@ pub enum Command {
     ClickThrough,
     Quit,
     OpenSettings,
+    SelectionTranslate,
+    CaptureTranslate,
 }
 
 impl Command {
@@ -113,8 +115,89 @@ impl Command {
             "clickthrough" => Self::ClickThrough,
             "quit" => Self::Quit,
             "prefs" | "settings" => Self::OpenSettings,
+            "selection" | "selection_translate" => Self::SelectionTranslate,
+            "translate" | "capture_translate" => Self::CaptureTranslate,
             _ => return None,
         })
+    }
+}
+
+/// Named binding used by prefs / RegisterHotKey.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Binding {
+    pub id: &'static str,
+    pub seq: String,
+}
+
+pub fn bindings_from_config(cfg: &crate::config::Config) -> Vec<Binding> {
+    vec![
+        Binding { id: "snip", seq: cfg.hotkey_snip.clone() },
+        Binding { id: "pin", seq: cfg.hotkey_pin.clone() },
+        Binding { id: "hide_all", seq: cfg.hotkey_hide_all.clone() },
+        Binding { id: "restore", seq: cfg.hotkey_restore.clone() },
+        Binding { id: "clickthrough", seq: cfg.hotkey_clickthrough.clone() },
+        Binding { id: "selection_translate", seq: cfg.hotkey_selection_translate.clone() },
+        Binding { id: "capture_translate", seq: cfg.hotkey_capture_translate.clone() },
+    ]
+}
+
+/// Pairs of binding ids that share the same parsed hotkey.
+pub fn find_conflicts(bindings: &[Binding]) -> Vec<(String, String, String)> {
+    let mut parsed: Vec<(&str, Hotkey)> = Vec::new();
+    let mut out = Vec::new();
+    for b in bindings {
+        let Some(hk) = parse_hotkey(&b.seq) else {
+            continue;
+        };
+        if let Some((other, _)) = parsed.iter().find(|(_, h)| *h == hk) {
+            out.push((other.to_string(), b.id.to_string(), b.seq.clone()));
+        }
+        parsed.push((b.id, hk));
+    }
+    out
+}
+
+pub fn normalize_seq(seq: &str) -> String {
+    let seq = seq.trim();
+    if seq.is_empty() {
+        return String::new();
+    }
+    match parse_hotkey(seq) {
+        Some(_) => {
+            let parts: Vec<&str> = seq.split('+').map(|p| p.trim()).filter(|p| !p.is_empty()).collect();
+            parts
+                .iter()
+                .enumerate()
+                .map(|(i, p)| {
+                    if i + 1 == parts.len() {
+                        let u = p.to_ascii_uppercase();
+                        if u.starts_with('F') && u.len() > 1 && u[1..].chars().all(|c| c.is_ascii_digit()) {
+                            u
+                        } else if p.len() == 1 {
+                            u
+                        } else {
+                            // keep named keys readable
+                            let mut s = p.to_string();
+                            if let Some(c) = s.get_mut(0..1) {
+                                c.make_ascii_uppercase();
+                            }
+                            s
+                        }
+                    } else {
+                        match p.to_ascii_lowercase().as_str() {
+                            "ctrl" | "control" => "Ctrl",
+                            "shift" => "Shift",
+                            "alt" => "Alt",
+                            "win" | "super" | "meta" => "Win",
+                            _ => p,
+                        }
+                        .to_string()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("+")
+        }
+        None => seq.to_string(),
     }
 }
 
@@ -149,5 +232,26 @@ mod tests {
         assert!(parse_hotkey("").is_none());
         assert!(parse_hotkey("Foo+F1").is_none());
         assert!(parse_hotkey("F99").is_none());
+    }
+
+    #[test]
+    fn conflicts_same_key() {
+        let b = [
+            Binding { id: "snip", seq: "F1".into() },
+            Binding { id: "pin", seq: "F1".into() },
+            Binding { id: "hide_all", seq: "Shift+F3".into() },
+        ];
+        let c = find_conflicts(&b);
+        assert_eq!(c.len(), 1);
+        assert_eq!(c[0].2, "F1");
+    }
+
+    #[test]
+    fn empty_bindings_do_not_conflict() {
+        let b = [
+            Binding { id: "snip", seq: "F1".into() },
+            Binding { id: "clickthrough", seq: String::new() },
+        ];
+        assert!(find_conflicts(&b).is_empty());
     }
 }
