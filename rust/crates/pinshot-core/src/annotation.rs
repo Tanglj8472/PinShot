@@ -516,6 +516,12 @@ impl Annotator {
         setter(self.style_mut(kind));
     }
 
+    /// Change the default style for *new* drawings only (picking Arrow/Line in
+    /// the toolbar must not rewrite the last committed shape).
+    pub fn set_style_default(&mut self, kind: Tool, setter: impl Fn(&mut Style)) {
+        setter(self.style_mut(kind));
+    }
+
     /// Index of the committed shape that style/width edits apply to.
     /// Python: `live or selected or edit_target or width_target` — live is handled
     /// separately because it is not in `shapes`.
@@ -708,9 +714,11 @@ impl Annotator {
     pub fn press(&mut self, img_pt: Point, shift: bool) -> bool {
         let tool = self.tool;
 
+        // Draw tools start a new shape. Only Select (or no tool + handle) edits
+        // existing ones — otherwise the first drag after switching tools restyles
+        // or continues the previous shape.
         if tool == Some(Tool::Select)
-            || (tool != Some(Tool::Eraser)
-                && tool != Some(Tool::Mosaic)
+            || (tool.is_none()
                 && (self.hit_test(img_pt).is_some() || self.hit_handle_of_selected(img_pt).is_some()))
         {
             if let Some(h) = self.hit_handle_of_selected(img_pt) {
@@ -994,19 +1002,16 @@ mod tests {
     }
 
     #[test]
-    fn drag_existing_with_drawing_tool() {
+    fn drag_existing_with_drawing_tool_starts_new_shape() {
         let mut a = Annotator::new();
         a.set_tool(Some(Tool::Rect));
         a.add(rect_shape());
         assert!(a.press(Point::new(40.0, 80.0), false));
         a.move_to(Point::new(70.0, 100.0), false);
         a.release(Point::new(70.0, 100.0));
-        assert_eq!(a.shapes.len(), 1);
-        assert_eq!(a.shapes[0].pts[0], Point::new(70.0, 60.0));
-        a.undo();
+        assert_eq!(a.shapes.len(), 2);
         assert_eq!(a.shapes[0].pts[0], Point::new(40.0, 40.0));
-        a.redo();
-        assert_eq!(a.shapes[0].pts[0], Point::new(70.0, 60.0));
+        assert_eq!(a.shapes[1].kind, Tool::Rect);
     }
 
     #[test]
@@ -1197,5 +1202,34 @@ mod tests {
         a.commit_text(true);
         assert!(a.shapes.is_empty());
         assert!(a.text_edit.is_none());
+    }
+
+    #[test]
+    fn picking_arrow_does_not_convert_last_line() {
+        let mut a = Annotator::new();
+        a.set_style_default(Tool::Line, |s| s.arrow = false);
+        a.set_tool(Some(Tool::Line));
+        a.press(Point::new(0.0, 0.0), false);
+        a.move_to(Point::new(40.0, 0.0), false);
+        a.release(Point::new(40.0, 0.0));
+        assert_eq!(a.shapes.len(), 1);
+        assert!(!a.shapes[0].style.arrow);
+        a.set_tool(Some(Tool::Line));
+        a.set_style_default(Tool::Line, |s| s.arrow = true);
+        assert!(!a.shapes[0].style.arrow);
+        assert!(a.style(Tool::Line).arrow);
+    }
+
+    #[test]
+    fn new_tool_draws_instead_of_selecting_previous() {
+        let mut a = Annotator::new();
+        a.set_tool(Some(Tool::Line));
+        a.press(Point::new(0.0, 0.0), false);
+        a.move_to(Point::new(30.0, 0.0), false);
+        a.release(Point::new(30.0, 0.0));
+        a.set_tool(Some(Tool::Pen));
+        assert!(a.press(Point::new(15.0, 0.0), false));
+        assert!(a.live.as_ref().map(|s| s.kind) == Some(Tool::Pen));
+        assert_eq!(a.shapes.len(), 1);
     }
 }

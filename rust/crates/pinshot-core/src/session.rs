@@ -1,5 +1,6 @@
 //! Persist open pins + groups as PNG blobs + `session.toml`.
 
+use crate::annotation::Shape;
 use crate::geom::Point;
 use crate::groups;
 use serde::{Deserialize, Serialize};
@@ -14,6 +15,8 @@ pub struct PinSnapshot {
     pub scale: f32,
     pub opacity: f32,
     pub group: String,
+    #[serde(default)]
+    pub shapes: Vec<Shape>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
@@ -133,11 +136,38 @@ mod tests {
                 scale: 1.5,
                 opacity: 0.8,
                 group: "Work".into(),
+                shapes: Vec::new(),
             }],
         };
         let back = SessionFile::from_toml(&s.to_toml().unwrap()).unwrap();
         assert_eq!(back.pins[0].group, "Work");
         assert_eq!(back.pins[0].scale, 1.5);
+    }
+
+    #[test]
+    fn shapes_survive_toml_roundtrip() {
+        use crate::annotation::{Shape, Style, Tool};
+        let sh = Shape::new(
+            Tool::Line,
+            vec![Point::new(1.0, 2.0), Point::new(8.0, 9.0)],
+            Style::default(),
+        );
+        let s = SessionFile {
+            groups: vec!["Default".into()],
+            pins: vec![PinSnapshot {
+                file: "pin-000.png".into(),
+                x: 1,
+                y: 2,
+                scale: 1.0,
+                opacity: 1.0,
+                group: "Default".into(),
+                shapes: vec![sh.clone()],
+            }],
+        };
+        let back = SessionFile::from_toml(&s.to_toml().unwrap()).unwrap();
+        assert_eq!(back.pins[0].shapes.len(), 1);
+        assert_eq!(back.pins[0].shapes[0].kind, Tool::Line);
+        assert_eq!(back.pins[0].shapes[0].pts[1], Point::new(8.0, 9.0));
     }
 
     #[test]

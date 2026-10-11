@@ -36,17 +36,19 @@ pub fn magnifier_visible(
 /// Place the 15×15 ×8 grid next to the cursor, flipping when it would clip.
 pub fn layout_magnifier(cursor: Point, overlay: Rect, color: Rgba, phys: Point) -> Magnifier {
     let size = (MAG_N * MAG_ZOOM) as f32;
-    let mut x = cursor.x + 22.0;
-    let mut y = cursor.y + 22.0;
+    let mut x = (cursor.x + 22.0).floor();
+    let mut y = (cursor.y + 22.0).floor();
     if x + size > overlay.right() {
-        x = cursor.x - 22.0 - size;
+        x = (cursor.x - 22.0 - size).floor();
     }
     if y + size + MAG_INFO_H > overlay.bottom() {
-        y = cursor.y - 22.0 - size - MAG_INFO_H;
+        y = (cursor.y - 22.0 - size - MAG_INFO_H).floor();
     }
+    x = crate::geom::clamp_f32(x, overlay.x, overlay.right() - size);
+    y = crate::geom::clamp_f32(y, overlay.y, overlay.bottom() - size - MAG_INFO_H);
     Magnifier {
-        grid: Rect::new(x, y, size, size),
-        info: Rect::new(x, y + size, size, MAG_INFO_H),
+        grid: Rect::new(x.floor(), y.floor(), size, size),
+        info: Rect::new(x.floor(), y.floor() + size, size, MAG_INFO_H),
         color,
         phys,
     }

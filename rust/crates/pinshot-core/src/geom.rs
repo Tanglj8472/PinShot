@@ -2,6 +2,29 @@
 
 use serde::{Deserialize, Serialize};
 
+/// `f32::clamp` panics when `min > max` (or NaN). Toolbar/menu placement hits
+/// that when a pin is narrower than the chrome.
+pub fn clamp_f32(v: f32, a: f32, b: f32) -> f32 {
+    let lo = if a.is_finite() && b.is_finite() {
+        a.min(b)
+    } else if a.is_finite() {
+        a
+    } else if b.is_finite() {
+        b
+    } else {
+        return if v.is_finite() { v } else { 0.0 };
+    };
+    let hi = if a.is_finite() && b.is_finite() {
+        a.max(b)
+    } else {
+        lo
+    };
+    if !v.is_finite() {
+        return lo;
+    }
+    v.clamp(lo, hi)
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Point {
     pub x: f32,
@@ -55,8 +78,8 @@ impl Point {
 
     pub fn clamp_to(self, r: Rect) -> Self {
         Self {
-            x: self.x.clamp(r.x, r.right()),
-            y: self.y.clamp(r.y, r.bottom()),
+            x: clamp_f32(self.x, r.x, r.right()),
+            y: clamp_f32(self.y, r.y, r.bottom()),
         }
     }
 
@@ -266,10 +289,10 @@ impl Rect {
 
     pub fn clamp_inside(self, bounds: Self) -> Self {
         let mut r = self.normalized();
-        r.w = r.w.min(bounds.w);
-        r.h = r.h.min(bounds.h);
-        r.x = r.x.clamp(bounds.x, bounds.right() - r.w);
-        r.y = r.y.clamp(bounds.y, bounds.bottom() - r.h);
+        r.w = r.w.min(bounds.w.max(0.0));
+        r.h = r.h.min(bounds.h.max(0.0));
+        r.x = clamp_f32(r.x, bounds.x, bounds.right() - r.w);
+        r.y = clamp_f32(r.y, bounds.y, bounds.bottom() - r.h);
         r
     }
 
@@ -605,5 +628,14 @@ mod tests {
         let parts = a.subtract(b);
         assert_eq!(parts[0], a);
         assert!(parts[1].is_empty() && parts[2].is_empty() && parts[3].is_empty());
+    }
+
+    #[test]
+    fn clamp_f32_inverted_range_does_not_panic() {
+        assert_eq!(clamp_f32(5.0, 0.0, -12.0), 0.0);
+        assert_eq!(clamp_f32(-3.0, 0.0, -12.0), -3.0);
+        assert_eq!(clamp_f32(8.0, 10.0, 20.0), 10.0);
+        let r = Rect::new(0.0, 0.0, 40.0, 20.0).clamp_inside(Rect::new(0.0, 0.0, 30.0, 20.0));
+        assert!(r.w <= 30.0);
     }
 }
