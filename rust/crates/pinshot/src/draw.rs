@@ -249,6 +249,25 @@ impl OverlayFront {
         Rect::new(0.0, 0.0, self.frame.width() as f32, self.frame.height() as f32)
     }
 
+    /// Swap the frozen desktop (history replay). Same virtual size expected.
+    pub fn replace_shot(&mut self, shot: &Raster, hwnd: HWND) -> Result<(), String> {
+        let shot_pm = shot.to_skia().ok_or("capture pixmap")?;
+        if shot_pm.width() != self.frame.width() || shot_pm.height() != self.frame.height() {
+            *self = Self::new(shot, self.dim)?;
+            return Ok(());
+        }
+        self.shot = shot_pm;
+        self.frame = self.shot.clone();
+        fill_rect(&mut self.frame, self.bounds(), Rgba::rgba(0, 0, 0, self.dim));
+        self.last_hole = Rect::EMPTY;
+        self.last_chrome.clear();
+        self.primed = false;
+        self.gdi.write_rect(&self.frame, self.bounds());
+        self.gdi.blit_rect(hwnd, self.bounds());
+        self.primed = true;
+        Ok(())
+    }
+
     fn restore(&mut self, r: Rect, hole: Rect) {
         let r = clip_rect(r, self.bounds());
         if r.is_empty() {
@@ -516,7 +535,7 @@ fn paint_magnifier(
     mag.grid.union(mag.info).inflated(2.0)
 }
 
-fn paint_toolbar(pm: &mut Pixmap, tb: &Toolbar) -> Rect {
+pub fn paint_toolbar(pm: &mut Pixmap, tb: &Toolbar) -> Rect {
     fill_rect(pm, tb.bar, Rgba::rgb(247, 247, 247));
     stroke_rect(pm, tb.bar, Rgba::rgb(154, 154, 154), 1.0);
     for b in &tb.buttons {

@@ -178,11 +178,13 @@ impl HotkeyHost {
             let _ = ShowWindow(hwnd, SW_HIDE);
             let _ = UpdateWindow(hwnd);
 
-            let specs: [(&str, Command); 4] = [
+            let specs: [(&str, Command); 6] = [
                 (&cfg.hotkey_snip, Command::Snip),
                 (&cfg.hotkey_pin, Command::PinClipboard),
                 (&cfg.hotkey_hide_all, Command::HideAllPins),
                 (&cfg.hotkey_restore, Command::RestoreClosed),
+                (&cfg.hotkey_selection_translate, Command::SelectionTranslate),
+                (&cfg.hotkey_capture_translate, Command::CaptureTranslate),
             ];
             let mut ids = Vec::new();
             let mut binds = Vec::new();

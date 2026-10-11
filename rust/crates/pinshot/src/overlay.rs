@@ -9,6 +9,7 @@ use pinshot_core::i18n::tr;
 use pinshot_core::magnifier::magnifier_visible;
 use pinshot_core::raster::Raster;
 use pinshot_core::render::compose;
+use pinshot_core::history::{HistoryEntry, HistoryView, SnipHistory};
 use pinshot_core::selection::{DetectMode, Nudge, PressKind, SelState, Selection};
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
@@ -17,7 +18,7 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{CursorIcon, Window, WindowId};
 
 use crate::capture::Capture;
-use crate::detect::translated_windows;
+use crate::detect::{element_source, translated_elements, translated_windows};
 use crate::draw::OverlayFront;
 use crate::toolbar::{TbAction, Toolbar};
 use crate::win32::{apply_overlay_style, hwnd_of};
@@ -26,6 +27,7 @@ pub enum OverlayResult {
     Copy(Raster, Rect),
     Pin(Raster, Rect, (i32, i32)),
     Save(Raster),
+    Ocr(Raster, bool),
     Cancel,
 }
 
@@ -48,10 +50,18 @@ pub struct Overlay {
     dpr: f32,
     result: Option<OverlayResult>,
     dirty: bool,
+    pub history: SnipHistory,
+    live_shot: Option<Raster>,
+    translate_on_select: bool,
 }
 
 impl Overlay {
-    pub fn start(event_loop: &ActiveEventLoop, capture: Capture) -> Result<Self, String> {
+    pub fn start(
+        event_loop: &ActiveEventLoop,
+        capture: Capture,
+        history: SnipHistory,
+        translate_on_select: bool,
+    ) -> Result<Self, String> {
         let (vx, vy) = capture.virtual_origin;
         let w = capture.composed.width;
         let h = capture.composed.height;
@@ -92,6 +102,9 @@ impl Overlay {
             dpr: 1.0,
             result: None,
             dirty: true,
+            history,
+            live_shot: None,
+            translate_on_select,
         };
         s.redraw();
         Ok(s)
@@ -152,8 +165,19 @@ impl Overlay {
         Some(composed.crop(self.sel.normalized()))
     }
 
+    fn remember(&mut self) {
+        self.history.push(
+            HistoryEntry {
+                rect: self.sel.normalized(),
+                image: self.capture.composed.clone(),
+            },
+            10,
+        );
+    }
+
     fn finish_copy(&mut self) {
         if let Some(img) = self.crop() {
+            self.remember();
             self.result = Some(OverlayResult::Copy(img, self.sel.normalized()));
             self.window.set_visible(false);
         }
@@ -161,6 +185,7 @@ impl Overlay {
 
     fn finish_pin(&mut self) {
         if let Some(img) = self.crop() {
+            self.remember();
             let (vx, vy) = self.capture.virtual_origin;
             let r = self.sel.normalized();
             self.result = Some(OverlayResult::Pin(
@@ -174,8 +199,67 @@ impl Overlay {
 
     fn finish_save(&mut self) {
         if let Some(img) = self.crop() {
+            self.remember();
             self.result = Some(OverlayResult::Save(img));
             self.window.set_visible(false);
+        }
+    }
+
+    fn finish_ocr(&mut self, translate: bool) {
+        if !self.sel.has_sel() {
+            return;
+        }
+        let img = self.capture.composed.crop(self.sel.normalized());
+        self.remember();
+        self.result = Some(OverlayResult::Ocr(img, translate));
+        self.window.set_visible(false);
+    }
+
+    fn step_history(&mut self, dir: i32) {
+        if self.live_shot.is_none() {
+            self.live_shot = Some(self.capture.composed.clone());
+        }
+        match self.history.step(dir) {
+            HistoryView::Live => {
+                if let Some(live) = self.live_shot.clone() {
+                    self.apply_replay(&live, None);
+                }
+                self.toast = Some(tr("Snip history"));
+            }
+            HistoryView::Replay(e) => {
+                let img = e.image.clone();
+                let rect = e.rect;
+                self.apply_replay(&img, Some(rect));
+                self.toast = Some(tr("Snip history"));
+            }
+        }
+        self.dirty = true;
+    }
+
+    fn reuse_last(&mut self) {
+        if let Some(e) = self.history.last().cloned() {
+            if self.live_shot.is_none() {
+                self.live_shot = Some(self.capture.composed.clone());
+            }
+            self.apply_replay(&e.image, Some(e.rect));
+            self.toast = Some(tr("Last snip area"));
+            self.dirty = true;
+        }
+    }
+
+    fn apply_replay(&mut self, img: &Raster, rect: Option<Rect>) {
+        self.capture.composed = img.clone();
+        let _ = self.front.replace_shot(img, hwnd_of(&self.window));
+        self.annot.clear();
+        if let Some(r) = rect {
+            self.sel.set_rect(r, self.bounds());
+            self.relayout_toolbar();
+        }
+    }
+
+    fn load_elements(&mut self) {
+        if self.elements.is_empty() {
+            self.elements = translated_elements(self.capture.virtual_origin);
         }
     }
 
@@ -209,6 +293,9 @@ impl Overlay {
             TbAction::Pin => self.finish_pin(),
             TbAction::Save => self.finish_save(),
             TbAction::Copy => self.finish_copy(),
+            TbAction::Ocr => self.finish_ocr(false),
+            TbAction::Translate => self.finish_ocr(true),
+            TbAction::Check => {}
             TbAction::Width(d) => {
                 self.annot.adjust_width(d);
             }
@@ -228,7 +315,10 @@ impl Overlay {
             self.cancel();
             return;
         }
-        if crate::dialog::confirm_abort(hwnd_of(&self.window)) {
+        let skip = pinshot_core::config::load()
+            .map(|c| c.skip_abort_confirm)
+            .unwrap_or(false);
+        if skip || crate::dialog::confirm_abort(hwnd_of(&self.window)) {
             self.cancel();
         }
     }
@@ -299,6 +389,9 @@ impl Overlay {
                     } else {
                         self.sel.release(pt, self.hover, self.bounds());
                         self.relayout_toolbar();
+                        if self.translate_on_select && self.sel.has_sel() {
+                            self.finish_ocr(true);
+                        }
                     }
                     self.dirty = true;
                 }
@@ -387,10 +480,22 @@ impl Overlay {
             }
             Key::Named(NamedKey::Tab) => {
                 self.detect = self.detect.toggle();
-                self.toast = Some(tr(&format!("Detection: {}", self.detect.id())));
+                if self.detect == DetectMode::Element {
+                    self.load_elements();
+                    self.toast = Some(format!(
+                        "{} ({})",
+                        tr("Element detection"),
+                        element_source()
+                    ));
+                } else {
+                    self.toast = Some(tr("Window detection"));
+                }
                 self.update_hover();
                 self.dirty = true;
             }
+            Key::Character(c) if c == "," => self.step_history(-1),
+            Key::Character(c) if c == "." => self.step_history(1),
+            Key::Character(c) if c.eq_ignore_ascii_case("r") => self.reuse_last(),
             Key::Named(NamedKey::ArrowLeft) => self.sel.nudge(-1.0, 0.0, Nudge::Move, self.bounds()),
             Key::Named(NamedKey::ArrowRight) => self.sel.nudge(1.0, 0.0, Nudge::Move, self.bounds()),
             Key::Named(NamedKey::ArrowUp) => self.sel.nudge(0.0, -1.0, Nudge::Move, self.bounds()),

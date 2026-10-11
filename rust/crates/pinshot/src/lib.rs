@@ -3,6 +3,8 @@
 #[cfg(windows)]
 mod app;
 #[cfg(windows)]
+mod autostart;
+#[cfg(windows)]
 mod event;
 #[cfg(windows)]
 mod capture;
@@ -15,9 +17,17 @@ mod dialog;
 #[cfg(windows)]
 mod draw;
 #[cfg(windows)]
+mod ipc;
+#[cfg(windows)]
+mod ocr_run;
+#[cfg(windows)]
 mod overlay;
 #[cfg(windows)]
 mod pin;
+#[cfg(windows)]
+mod prefs;
+#[cfg(windows)]
+mod result_win;
 #[cfg(windows)]
 mod text;
 #[cfg(windows)]

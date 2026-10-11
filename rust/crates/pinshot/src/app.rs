@@ -1,23 +1,29 @@
-//! Application shell: tray, hotkeys, overlay, pins.
+//! Application shell: tray, hotkeys, overlay, pins, prefs, session, OCR.
 
-use std::time::Instant;
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
-use pinshot_core::config::{self, Config};
-use pinshot_core::hooks::{SettingsUi, SettingsUiStub};
+use pinshot_core::config::{self, data_dir, Config};
+use pinshot_core::history::SnipHistory;
 use pinshot_core::hotkey::Command;
 use pinshot_core::i18n::{set_lang, tr};
 use pinshot_core::raster::Raster;
+use pinshot_core::session::{
+    next_pin_filename, pin_png_path, ClosedPin, ClosedStack, PinSnapshot, SessionFile,
+};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::ModifiersState;
 use winit::application::ApplicationHandler;
 use winit::window::WindowId;
 
+use crate::autostart;
 use crate::capture::Capture;
 use crate::clipboard::{self, ClipContent};
 use crate::event::{AppEvent, TrayCmd};
 use crate::overlay::{Overlay, OverlayResult};
 use crate::pin::PinWin;
+use crate::prefs;
 use crate::tray::Tray;
 use crate::win32::{self, HotkeyHost};
 
@@ -25,14 +31,32 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     win32::init_dpi();
     let cfg = config::load().unwrap_or_default();
     set_lang(cfg.lang());
+
+    let cmd = crate::ipc::parse_cli_cmd(&args);
+    match crate::ipc::claim_or_forward(cmd)? {
+        crate::ipc::Boot::Forwarded => return Ok(()),
+        crate::ipc::Boot::Primary(mtx) => {
+            std::mem::forget(mtx);
+        }
+    }
+
     let start_snip = args.iter().any(|a| a == "--snip" || a == "snip");
-    let start_pin = args.iter().any(|a| a == "--pin" || a == "pin");
+    let start_pin = args.iter().any(|a| a == "--pin" || a == "--pin-clipboard" || a == "pin");
+    let start_prefs = args.iter().any(|a| a == "--prefs" || a == "prefs");
+    let start_translate = args.iter().any(|a| a == "--translate" || a == "translate");
     let dump_capture = args.iter().any(|a| a == "--dump-capture");
 
     let event_loop = EventLoop::<AppEvent>::with_user_event()
         .build()
         .map_err(|e| e.to_string())?;
     let proxy = event_loop.create_proxy();
+    crate::ipc::spawn_server(proxy.clone());
+
+    let mut group_vis = HashMap::new();
+    for g in &cfg.groups {
+        group_vis.insert(g.clone(), true);
+    }
+
     let mut app = App {
         cfg,
         proxy,
@@ -40,14 +64,20 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         tray: None,
         overlay: None,
         pins: Vec::new(),
-        closed: Vec::new(),
-        settings: SettingsUiStub::default(),
+        closed: ClosedStack::default(),
+        history: SnipHistory::new(),
+        group_vis,
         start_snip,
         start_pin,
+        start_prefs,
+        start_translate,
         dump_capture,
         mods: ModifiersState::empty(),
         last_click: None,
         pins_hidden: false,
+        snip_at: None,
+        translate_next: false,
+        session_restored: false,
     };
     event_loop.run_app(&mut app).map_err(|e| e.to_string())
 }
@@ -59,23 +89,71 @@ struct App {
     tray: Option<Tray>,
     overlay: Option<Overlay>,
     pins: Vec<PinWin>,
-    closed: Vec<(Raster, (i32, i32))>,
-    settings: SettingsUiStub,
+    closed: ClosedStack,
+    history: SnipHistory,
+    group_vis: HashMap<String, bool>,
     start_snip: bool,
     start_pin: bool,
+    start_prefs: bool,
+    start_translate: bool,
     dump_capture: bool,
     mods: ModifiersState,
     last_click: Option<(WindowId, Instant)>,
     pins_hidden: bool,
+    snip_at: Option<Instant>,
+    translate_next: bool,
+    session_restored: bool,
 }
 
 impl App {
+    fn group_list(&self) -> Vec<(String, bool)> {
+        self.cfg
+            .groups
+            .iter()
+            .map(|g| (g.clone(), *self.group_vis.get(g).unwrap_or(&true)))
+            .collect()
+    }
+
+    fn rebuild_tray(&mut self) {
+        match Tray::new(&self.group_list()) {
+            Ok(t) => self.tray = Some(t),
+            Err(e) => eprintln!("PinShot tray: {e}"),
+        }
+    }
+
+    fn apply_cfg(&mut self, cfg: Config) {
+        set_lang(cfg.lang());
+        if cfg.run_at_login != autostart::is_enabled() {
+            if let Err(e) = autostart::set_enabled(cfg.run_at_login) {
+                eprintln!("PinShot autostart: {e}");
+            }
+        }
+        self.cfg = cfg;
+        self.hotkeys = None;
+        self.rebuild_tray();
+    }
+
+    fn request_snip(&mut self, translate: bool) {
+        if self.overlay.is_some() {
+            return;
+        }
+        self.translate_next = translate;
+        let delay = self.cfg.snip_delay;
+        if delay == 0 {
+            self.snip_at = Some(Instant::now());
+        } else {
+            self.snip_at = Some(Instant::now() + Duration::from_secs(delay as u64));
+        }
+    }
+
     fn begin_snip(&mut self, event_loop: &ActiveEventLoop) {
         if self.overlay.is_some() {
             return;
         }
+        let translate = self.translate_next;
+        self.translate_next = false;
         match Capture::grab(self.dump_capture) {
-            Ok(cap) => match Overlay::start(event_loop, cap) {
+            Ok(cap) => match Overlay::start(event_loop, cap, self.history.clone(), translate) {
                 Ok(ov) => self.overlay = Some(ov),
                 Err(e) => eprintln!("PinShot overlay: {e}"),
             },
@@ -85,22 +163,38 @@ impl App {
 
     fn pin_clipboard(&mut self, event_loop: &ActiveEventLoop) {
         match clipboard::read_best() {
-            ClipContent::Image(img) => self.spawn_pin(event_loop, img, None),
+            ClipContent::Image(img) => self.spawn_pin(event_loop, img, None, None),
             ClipContent::Color(c) => {
-                self.spawn_pin(event_loop, clipboard::color_card(c, 220, 140), None)
+                self.spawn_pin(event_loop, clipboard::color_card(c, 220, 140), None, None)
             }
             ClipContent::Text(t) => {
-                self.spawn_pin(event_loop, clipboard::text_card(&t, 280, 120), None)
+                self.spawn_pin(event_loop, clipboard::text_card(&t, 280, 120), None, None)
             }
             ClipContent::Empty => eprintln!("{}", tr("Clipboard has no image or text")),
         }
     }
 
-    fn spawn_pin(&mut self, event_loop: &ActiveEventLoop, img: Raster, pos: Option<(i32, i32)>) {
+    fn spawn_pin(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        img: Raster,
+        pos: Option<(i32, i32)>,
+        group: Option<String>,
+    ) {
         let n = self.pins.len() as i32;
         let pos = pos.unwrap_or((40 + n * 24, 40 + n * 24));
         match PinWin::create(event_loop, img, pos) {
-            Ok(p) => self.pins.push(p),
+            Ok(mut p) => {
+                if let Some(g) = group {
+                    p.group = g;
+                }
+                let vis = *self.group_vis.get(&p.group).unwrap_or(&true);
+                if !vis || self.pins_hidden {
+                    p.hide();
+                }
+                self.pins.push(p);
+                self.persist_session();
+            }
             Err(e) => eprintln!("PinShot pin: {e}"),
         }
     }
@@ -112,6 +206,8 @@ impl App {
         let Some(res) = ov.take_result() else {
             return;
         };
+        self.history = ov.history.clone();
+        self.history.entries.truncate(self.cfg.history_max as usize);
         self.overlay = None;
         match res {
             OverlayResult::Copy(img, _) => {
@@ -119,16 +215,31 @@ impl App {
                     eprintln!("{}", tr("Copied to clipboard"));
                 }
             }
-            OverlayResult::Pin(img, _, pos) => self.spawn_pin(event_loop, img, Some(pos)),
+            OverlayResult::Pin(img, _, pos) => self.spawn_pin(event_loop, img, Some(pos), None),
             OverlayResult::Save(img) => {
-                if let Some(path) = crate::dialog::save_path("pinshot.png") {
+                let folder = self.cfg.quick_save_folder.trim();
+                let suggested = if folder.is_empty() {
+                    "pinshot.png".into()
+                } else {
+                    format!("{folder}\\pinshot.png")
+                };
+                if let Some(path) = crate::dialog::save_path(&suggested) {
                     if crate::dialog::save_raster(&img, &path, self.cfg.image_quality).is_ok() {
                         eprintln!("{}", tr(&format!("Saved {path}")));
                     }
                 }
             }
+            OverlayResult::Ocr(img, translate) => self.spawn_ocr(img, translate),
             OverlayResult::Cancel => {}
         }
+    }
+
+    fn spawn_ocr(&self, img: Raster, translate: bool) {
+        let proxy = self.proxy.clone();
+        std::thread::spawn(move || {
+            let text = crate::ocr_run::recognize(&img).unwrap_or_else(|e| e);
+            let _ = proxy.send_event(AppEvent::OcrDone(text, translate));
+        });
     }
 
     fn toggle_pins(&mut self) {
@@ -136,15 +247,111 @@ impl App {
         for p in &self.pins {
             if self.pins_hidden {
                 p.hide();
-            } else {
+            } else if *self.group_vis.get(&p.group).unwrap_or(&true) {
                 p.show();
             }
         }
     }
 
+    fn toggle_group(&mut self, name: String) {
+        let vis = !*self.group_vis.get(&name).unwrap_or(&true);
+        self.group_vis.insert(name.clone(), vis);
+        for p in &self.pins {
+            if p.group.eq_ignore_ascii_case(&name) {
+                if vis && !self.pins_hidden {
+                    p.show();
+                } else {
+                    p.hide();
+                }
+            }
+        }
+        self.rebuild_tray();
+    }
+
     fn restore_closed(&mut self, event_loop: &ActiveEventLoop) {
-        if let Some((img, pos)) = self.closed.pop() {
-            self.spawn_pin(event_loop, img, Some(pos));
+        if let Some(c) = self.closed.pop() {
+            if let Some(img) = decode_png(&c.png) {
+                self.spawn_pin(event_loop, img, Some(c.pos), Some(c.group));
+            }
+        }
+    }
+
+    fn selection_translate(&self) {
+        let proxy = self.proxy.clone();
+        std::thread::spawn(move || {
+            let backup = clipboard::read_best();
+            if crate::result_win::send_ctrl_c().is_err() {
+                let _ = proxy.send_event(AppEvent::OcrDone(String::new(), true));
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(80));
+            let text = match clipboard::read_best() {
+                ClipContent::Text(t) => t,
+                _ => String::new(),
+            };
+            // restore image if we stole it
+            if let ClipContent::Image(img) = backup {
+                let _ = clipboard::write_image(&img);
+            }
+            let _ = proxy.send_event(AppEvent::OcrDone(text, true));
+        });
+    }
+
+    fn persist_session(&self) {
+        let dir = data_dir();
+        let mut snaps = Vec::new();
+        for p in &self.pins {
+            if p.closed {
+                continue;
+            }
+            let file = next_pin_filename(&snaps);
+            let png = encode_png(&p.rendered());
+            if png.is_empty() {
+                continue;
+            }
+            let path = pin_png_path(&dir, &file);
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if std::fs::write(&path, &png).is_err() {
+                continue;
+            }
+            let (x, y) = p.pos();
+            snaps.push(PinSnapshot {
+                file,
+                x,
+                y,
+                scale: p.scale,
+                opacity: p.opacity,
+                group: p.group.clone(),
+            });
+        }
+        let sess = SessionFile {
+            groups: self.cfg.groups.clone(),
+            pins: snaps,
+        };
+        let _ = sess.save(&dir);
+    }
+
+    fn restore_session(&mut self, event_loop: &ActiveEventLoop) {
+        let dir = data_dir();
+        let sess = SessionFile::load(&dir).unwrap_or_default();
+        if !sess.groups.is_empty() {
+            self.cfg.groups = sess.groups;
+        }
+        for snap in sess.pins {
+            let path = pin_png_path(&dir, &snap.file);
+            let Ok(bytes) = std::fs::read(path) else {
+                continue;
+            };
+            let Some(img) = decode_png(&bytes) else {
+                continue;
+            };
+            self.spawn_pin(event_loop, img, Some((snap.x, snap.y)), Some(snap.group));
+            if let Some(p) = self.pins.last_mut() {
+                p.set_scale(snap.scale);
+                p.set_opacity(snap.opacity);
+            }
         }
     }
 
@@ -153,15 +360,37 @@ impl App {
         while i < self.pins.len() {
             if self.pins[i].closed {
                 let p = self.pins.remove(i);
-                if self.closed.len() >= self.cfg.closed_pins_max as usize {
-                    self.closed.remove(0);
-                }
-                self.closed.push((p.img.clone(), (40, 40)));
+                self.closed.push(
+                    ClosedPin {
+                        png: encode_png(&p.rendered()),
+                        pos: p.pos(),
+                        scale: p.scale,
+                        opacity: p.opacity,
+                        group: p.group.clone(),
+                    },
+                    self.cfg.closed_pins_max,
+                );
             } else {
                 i += 1;
             }
         }
     }
+}
+
+fn encode_png(img: &Raster) -> Vec<u8> {
+    let rgba = image::RgbaImage::from_raw(img.width, img.height, img.pixels.clone());
+    let Some(rgba) = rgba else {
+        return Vec::new();
+    };
+    let mut buf = Vec::new();
+    let dynimg = image::DynamicImage::ImageRgba8(rgba);
+    let _ = dynimg.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png);
+    buf
+}
+
+fn decode_png(bytes: &[u8]) -> Option<Raster> {
+    let img = image::load_from_memory(bytes).ok()?.to_rgba8();
+    Raster::from_rgba(img.width(), img.height(), img.into_raw())
 }
 
 impl ApplicationHandler<AppEvent> for App {
@@ -173,14 +402,23 @@ impl ApplicationHandler<AppEvent> for App {
             }
         }
         if self.tray.is_none() {
-            match Tray::new() {
-                Ok(t) => self.tray = Some(t),
-                Err(e) => eprintln!("PinShot tray: {e}"),
-            }
+            self.rebuild_tray();
+        }
+        if !self.session_restored {
+            self.session_restored = true;
+            self.restore_session(event_loop);
+        }
+        if self.start_prefs {
+            self.start_prefs = false;
+            prefs::open(self.cfg.clone(), self.proxy.clone());
         }
         if self.start_snip {
             self.start_snip = false;
-            self.begin_snip(event_loop);
+            self.request_snip(false);
+        }
+        if self.start_translate {
+            self.start_translate = false;
+            self.request_snip(true);
         }
         if self.start_pin {
             self.start_pin = false;
@@ -190,11 +428,9 @@ impl ApplicationHandler<AppEvent> for App {
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
         match event {
-            AppEvent::Hotkey(Command::Snip) => self.begin_snip(event_loop),
+            AppEvent::Hotkey(Command::Snip) => self.request_snip(false),
             AppEvent::Hotkey(Command::PinClipboard) => {
-                if self.overlay.is_some() {
-                    // F3 during snip is handled by the overlay window.
-                } else {
+                if self.overlay.is_none() {
                     self.pin_clipboard(event_loop);
                 }
             }
@@ -206,13 +442,30 @@ impl ApplicationHandler<AppEvent> for App {
                     p.set_click_through(on);
                 }
             }
-            AppEvent::Hotkey(Command::Quit) => event_loop.exit(),
-            AppEvent::Hotkey(Command::OpenSettings) => self.settings.open(),
-            AppEvent::Tray(TrayCmd::Snip) => self.begin_snip(event_loop),
+            AppEvent::Hotkey(Command::Quit) => {
+                self.persist_session();
+                event_loop.exit();
+            }
+            AppEvent::Hotkey(Command::OpenSettings) => {
+                prefs::open(self.cfg.clone(), self.proxy.clone());
+            }
+            AppEvent::Hotkey(Command::CaptureTranslate) => self.request_snip(true),
+            AppEvent::Hotkey(Command::SelectionTranslate) => self.selection_translate(),
+            AppEvent::Tray(TrayCmd::Snip) => self.request_snip(false),
             AppEvent::Tray(TrayCmd::Pin) => self.pin_clipboard(event_loop),
             AppEvent::Tray(TrayCmd::HideAll) => self.toggle_pins(),
-            AppEvent::Tray(TrayCmd::Settings) => self.settings.open(),
-            AppEvent::Tray(TrayCmd::Quit) => event_loop.exit(),
+            AppEvent::Tray(TrayCmd::Settings) => prefs::open(self.cfg.clone(), self.proxy.clone()),
+            AppEvent::Tray(TrayCmd::Quit) => {
+                self.persist_session();
+                event_loop.exit();
+            }
+            AppEvent::Tray(TrayCmd::Translate) => self.request_snip(true),
+            AppEvent::Tray(TrayCmd::Restore) => self.restore_closed(event_loop),
+            AppEvent::Tray(TrayCmd::ToggleGroup(name)) => self.toggle_group(name),
+            AppEvent::PrefsApplied(cfg) => self.apply_cfg(cfg),
+            AppEvent::RaisePrefs => {}
+            AppEvent::Ipc(_) => {}
+            AppEvent::OcrDone(text, translate) => crate::result_win::open(text, translate),
         }
     }
 
@@ -266,6 +519,14 @@ impl ApplicationHandler<AppEvent> for App {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         event_loop.set_control_flow(ControlFlow::Wait);
+        if let Some(at) = self.snip_at {
+            if Instant::now() >= at {
+                self.snip_at = None;
+                self.begin_snip(event_loop);
+            } else {
+                event_loop.set_control_flow(ControlFlow::WaitUntil(at));
+            }
+        }
         if let Some(tray) = &self.tray {
             if let Some(cmd) = tray.poll() {
                 let _ = self.proxy.send_event(AppEvent::Tray(cmd));
@@ -278,7 +539,11 @@ impl ApplicationHandler<AppEvent> for App {
             p.tick_glow();
             p.pump_redraw();
         }
+        let before = self.pins.len();
         self.reap_pins();
-        let _ = event_loop;
+        if self.pins.len() != before {
+            self.persist_session();
+        }
+        crate::result_win::raise_above_pins();
     }
 }

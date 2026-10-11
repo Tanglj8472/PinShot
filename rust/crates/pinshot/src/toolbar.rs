@@ -17,6 +17,9 @@ pub enum TbAction {
     Copy,
     Width(i32),
     Color(u8),
+    Ocr,
+    Translate,
+    Check,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -42,6 +45,14 @@ const PAD: f32 = 4.0;
 
 impl Toolbar {
     pub fn layout(sel: Rect, overlay: Rect, active: Option<Tool>, arrow_on: bool) -> Self {
+        Self::layout_ex(sel, overlay, active, arrow_on, false)
+    }
+
+    pub fn layout_pin(sel: Rect, overlay: Rect, active: Option<Tool>, arrow_on: bool) -> Self {
+        Self::layout_ex(sel, overlay, active, arrow_on, true)
+    }
+
+    pub fn layout_ex(sel: Rect, overlay: Rect, active: Option<Tool>, arrow_on: bool, for_pin: bool) -> Self {
         let tools = [
             (IconKind::Rect, TbAction::Tool(Tool::Rect), "Rectangle"),
             (IconKind::Ellipse, TbAction::Tool(Tool::Ellipse), "Ellipse"),
@@ -53,14 +64,27 @@ impl Toolbar {
             (IconKind::Text, TbAction::Tool(Tool::Text), "Text"),
             (IconKind::Number, TbAction::Tool(Tool::Number), "Numbered marker (N)"),
         ];
-        let acts = [
-            (IconKind::Undo, TbAction::Undo, "Undo (Ctrl+Z)"),
-            (IconKind::Redo, TbAction::Redo, "Redo (Ctrl+Y)"),
-            (IconKind::Close, TbAction::Close, "Cancel (Esc)"),
-            (IconKind::Pin, TbAction::Pin, "Pin to screen (Ctrl+T)"),
-            (IconKind::Save, TbAction::Save, "Save as… (Ctrl+S)"),
-            (IconKind::Copy, TbAction::Copy, "Copy (Ctrl+C / Enter)"),
-        ];
+        let acts: Vec<(IconKind, TbAction, &'static str)> = if for_pin {
+            vec![
+                (IconKind::Undo, TbAction::Undo, "Undo (Ctrl+Z)"),
+                (IconKind::Redo, TbAction::Redo, "Redo (Ctrl+Y)"),
+                (IconKind::Check, TbAction::Check, "Show toolbar"),
+                (IconKind::Save, TbAction::Save, "Save as… (Ctrl+S)"),
+                (IconKind::Copy, TbAction::Copy, "Copy (Ctrl+C / Enter)"),
+                (IconKind::Close, TbAction::Close, "Close"),
+            ]
+        } else {
+            vec![
+                (IconKind::Text, TbAction::Ocr, "Recognize text"),
+                (IconKind::Copy, TbAction::Translate, "Recognize and translate"),
+                (IconKind::Undo, TbAction::Undo, "Undo (Ctrl+Z)"),
+                (IconKind::Redo, TbAction::Redo, "Redo (Ctrl+Y)"),
+                (IconKind::Close, TbAction::Close, "Cancel (Esc)"),
+                (IconKind::Pin, TbAction::Pin, "Pin to screen (Ctrl+T)"),
+                (IconKind::Save, TbAction::Save, "Save as… (Ctrl+S)"),
+                (IconKind::Copy, TbAction::Copy, "Copy (Ctrl+C / Enter)"),
+            ]
+        };
         let n = (tools.len() + 1 + acts.len()) as f32;
         let w = PAD * 2.0 + n * CELL + 8.0;
         let h = CELL + PAD * 2.0;
