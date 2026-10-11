@@ -108,13 +108,28 @@ class ResultWindow(QWidget):
     def raise_above_pins(self):
         """Pins and this window share the always-on-top layer; push pins to the bottom of that
         layer (XLowerWindow) and raise this one (XRaiseWindow + activate)."""
+        from .platform import current as _plat
+        _plat().raise_on_top(self, self.windows_to_lower())
+
+    def windows_to_lower(self):
+        """Every other visible always-on-top top-level window, however it was created
+        (session-restored pins, history pins, pin toolbars...), plus the pin registry."""
+        from PySide6.QtWidgets import QApplication
+        out = []
         try:
             from .pin_window import ALL_PINS
-            for p in list(ALL_PINS):
-                if p.isVisible(): p.lower()
+            out = [p for p in ALL_PINS if p.isVisible()]
         except Exception:
             pass
-        self.raise_(); self.activateWindow()
+        for w in QApplication.topLevelWidgets():
+            try:
+                if (w is not self and w not in out and w.isVisible() and not isinstance(w, ResultWindow)
+                        and w.windowFlags() & Qt.WindowStaysOnTopHint
+                        and w.__class__.__name__ != "SnipOverlay"):
+                    out.append(w)
+            except RuntimeError:
+                pass
+        return out
 
     def closeEvent(self, event):
         self.closed = True; self.request += 1

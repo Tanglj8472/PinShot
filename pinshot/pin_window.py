@@ -31,9 +31,22 @@ def _tip_show(pos, text, *a):
     QToolTip.showText(pos, tr(text), *a)
 
 
+def _x11():
+    from PySide6.QtGui import QGuiApplication
+    return QGuiApplication.platformName() == "xcb"
+
+
+def pin_flags():
+    """On X11, Qt.Tool windows get WM_TRANSIENT_FOR=<client leader>; xfwm4 (and others) then keep
+    them above *every* other window of the app, so the OCR window could never cover a pin.
+    Use a plain always-on-top window there and hide it from the taskbar via EWMH instead."""
+    base = Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
+    return base | (Qt.Window if _x11() else Qt.Tool)
+
+
 class PinWindow(QWidget):
     def __init__(self, pm: QPixmap, pos: QPoint = None):
-        super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+        super().__init__(None, pin_flags())
         self.setAttribute(Qt.WA_DeleteOnClose)
         self.can_shadow = _composited()
         if self.can_shadow: self.setAttribute(Qt.WA_TranslucentBackground)
@@ -51,6 +64,13 @@ class PinWindow(QWidget):
         if pos is not None: self.move(pos - QPoint(self.M, self.M))
         ALL_PINS.append(self)
         self._glow_timer = QTimer(self, interval=40); self._glow_timer.timeout.connect(self._fade); self._glow_timer.start()
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        if _x11():
+            from .x11raise import set_skip_taskbar
+            for ms in (0, 150):   # WM only honours _NET_WM_STATE requests once the window is mapped
+                QTimer.singleShot(ms, lambda: self.isVisible() and set_skip_taskbar(self))
 
     # --- geometry
     @property

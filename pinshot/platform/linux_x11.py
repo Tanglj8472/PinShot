@@ -22,6 +22,12 @@ class LinuxX11Platform(BasePlatform):
         from ..hotkeys import install_global
         return install_global(bus, bindings)
 
+    def raise_on_top(self, widget, lower=()):
+        super().raise_on_top(widget, lower)
+        if not self._xcb(): return False
+        from ..x11raise import raise_on_top
+        return raise_on_top(widget, [w for w in lower if w.isVisible()])
+
     def set_clickthrough(self, widget, on):
         if not self._xcb(): return False
         from ..x11pass import set_input_passthrough

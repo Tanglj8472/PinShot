@@ -112,7 +112,24 @@ class Translations(unittest.TestCase):
         pm = QPixmap(40, 40); pm.fill(Qt.red); pin = PinWindow(pm); pin.show()
         w.show(); app.processEvents()
         w.raise_above_pins()   # must not raise
-        pin.close(); w.close()
+        self.assertIn(pin, w.windows_to_lower())
+        # a pin restored from the saved session must be covered too
+        from pinshot import session as SES
+        from PySide6.QtCore import QPoint
+        p2 = PinWindow(pm); p2.show(); p2.close_recoverable()
+        restored = SES.restore_last_closed()
+        self.assertIsNotNone(restored)
+        self.assertIn(restored, w.windows_to_lower()); restored.destroy_pin()
+        from PySide6.QtWidgets import QWidget
+        other = QWidget(None, Qt.Tool | Qt.WindowStaysOnTopHint); other.show(); app.processEvents()
+        self.assertIn(other, w.windows_to_lower())
+        self.assertNotIn(w, w.windows_to_lower())
+        from pinshot.pin_window import pin_flags
+        f = pin_flags()
+        self.assertTrue(f & Qt.WindowStaysOnTopHint)
+        if app.platformName() == "xcb":   # Tool => transient-for-group => always above OCR window
+            self.assertNotEqual(f & Qt.WindowType_Mask, Qt.Tool)
+        other.close(); pin.close(); w.close()
         i18n.install(app, "en")
         self.assertEqual(ResultWindow().windowTitle(), "PinShot OCR")
 

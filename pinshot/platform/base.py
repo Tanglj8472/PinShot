@@ -35,6 +35,12 @@ class BasePlatform:
         return None, None
 
     # ---- click-through
+    def raise_on_top(self, widget, lower=()) -> bool:
+        """Put widget above all windows (incl. other always-on-top ones); lower `lower`."""
+        for w in lower: w.lower()
+        widget.raise_(); widget.activateWindow()
+        return True
+
     def set_clickthrough(self, widget, on) -> bool:
         """OS-level extra beyond Qt.WindowTransparentForInput. True if applied."""
         return False
