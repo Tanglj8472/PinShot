@@ -61,7 +61,7 @@ impl Overlay {
             .with_title("PinShot Snip")
             .with_decorations(false)
             .with_resizable(false)
-            .with_visible(true)
+            .with_visible(false)
             .with_position(PhysicalPosition::new(vx, vy))
             .with_inner_size(PhysicalSize::new(w, h))
             .with_window_level(winit::window::WindowLevel::AlwaysOnTop);
@@ -466,6 +466,9 @@ impl Overlay {
         if let Ok(mut buf) = self.surface.buffer_mut() {
             present(&mut buf, &pm);
             let _ = buf.present();
+            // Show only after the captured frame is in the swapchain, so the
+            // first visible pixels are never an uninitialized black window.
+            self.window.set_visible(true);
         }
         self.dirty = false;
     }

@@ -31,9 +31,26 @@ impl Raster {
     }
 
     pub fn from_bgra(width: u32, height: u32, bgra: &[u8], stride: usize) -> Self {
+        Self::from_bgra_ex(width, height, bgra, stride, false)
+    }
+
+    /// Desktop capture: GDI `GetDIBits` / DIBSection leaves alpha = 0, which later
+    /// premultiplies to a solid black pixmap. Force opaque unless the source is RGBA.
+    pub fn from_bgra_opaque(width: u32, height: u32, bgra: &[u8], stride: usize) -> Self {
+        Self::from_bgra_ex(width, height, bgra, stride, true)
+    }
+
+    fn from_bgra_ex(width: u32, height: u32, bgra: &[u8], stride: usize, force_opaque: bool) -> Self {
         let mut out = Self::new(width, height);
+        if stride == 0 {
+            return out;
+        }
         for y in 0..height as usize {
-            let src = &bgra[y * stride..];
+            let row = y * stride;
+            if row >= bgra.len() {
+                break;
+            }
+            let src = &bgra[row..];
             for x in 0..width as usize {
                 let i = x * 4;
                 if i + 3 >= src.len() {
@@ -43,10 +60,38 @@ impl Raster {
                 out.pixels[dst] = src[i + 2];
                 out.pixels[dst + 1] = src[i + 1];
                 out.pixels[dst + 2] = src[i];
-                out.pixels[dst + 3] = src[i + 3];
+                let a = src[i + 3];
+                out.pixels[dst + 3] = if force_opaque || a == 0 { 255 } else { a };
             }
         }
         out
+    }
+
+    pub fn force_opaque(&mut self) {
+        for px in self.pixels.chunks_exact_mut(4) {
+            px[3] = 255;
+        }
+    }
+
+    /// Sample a 16×16 grid (same idea as Python `_is_blank`): true if every sample is near-black.
+    pub fn is_visually_blank(&self) -> bool {
+        if self.width == 0 || self.height == 0 {
+            return true;
+        }
+        let nx = 16u32.min(self.width);
+        let ny = 16u32.min(self.height);
+        for iy in 0..ny {
+            let y = iy * (self.height - 1) / (ny - 1).max(1);
+            for ix in 0..nx {
+                let x = ix * (self.width - 1) / (nx - 1).max(1);
+                if let Some(c) = self.get(x as i32, y as i32) {
+                    if c.r > 8 || c.g > 8 || c.b > 8 {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
     }
 
     pub fn fill(&mut self, c: Rgba) {
@@ -189,11 +234,17 @@ impl Raster {
     pub fn to_skia(&self) -> Option<tiny_skia::Pixmap> {
         let mut pm = tiny_skia::Pixmap::new(self.width, self.height)?;
         for (dst, src) in pm.pixels_mut().iter_mut().zip(self.pixels.chunks_exact(4)) {
+            // GDI 32-bit DIBs leave alpha 0 while RGB is valid — treat that as opaque.
+            let a = if src[3] == 0 && (src[0] | src[1] | src[2]) != 0 {
+                255
+            } else {
+                src[3]
+            };
             *dst = tiny_skia::PremultipliedColorU8::from_rgba(
-                ((src[0] as u16 * src[3] as u16) / 255) as u8,
-                ((src[1] as u16 * src[3] as u16) / 255) as u8,
-                ((src[2] as u16 * src[3] as u16) / 255) as u8,
-                src[3],
+                ((src[0] as u16 * a as u16) / 255) as u8,
+                ((src[1] as u16 * a as u16) / 255) as u8,
+                ((src[2] as u16 * a as u16) / 255) as u8,
+                a,
             )
             .unwrap_or(tiny_skia::PremultipliedColorU8::TRANSPARENT);
         }
@@ -232,5 +283,39 @@ mod tests {
         let bgra = [10u8, 20, 30, 255];
         let r = Raster::from_bgra(1, 1, &bgra, 4);
         assert_eq!(r.get(0, 0), Some(Rgba::rgba(30, 20, 10, 255)));
+    }
+
+    #[test]
+    fn gdi_zero_alpha_stays_visible() {
+        let bgra = [10u8, 20, 30, 0];
+        let r = Raster::from_bgra_opaque(1, 1, &bgra, 4);
+        assert_eq!(r.get(0, 0), Some(Rgba::rgba(30, 20, 10, 255)));
+        let pm = r.to_skia().unwrap();
+        let c = pm.pixel(0, 0).unwrap().demultiply();
+        assert_eq!((c.red(), c.green(), c.blue(), c.alpha()), (30, 20, 10, 255));
+    }
+
+    #[test]
+    fn blank_detection() {
+        let mut r = Raster::new(32, 32);
+        assert!(r.is_visually_blank());
+        r.set(16, 16, Rgba::BLUE);
+        assert!(!r.is_visually_blank());
+    }
+
+    #[test]
+    fn to_skia_zero_alpha_with_color_is_visible() {
+        let mut r = Raster::new(1, 1);
+        r.set(0, 0, Rgba::rgba(30, 20, 10, 0));
+        let pm = r.to_skia().unwrap();
+        let c = pm.pixel(0, 0).unwrap().demultiply();
+        assert_eq!((c.red(), c.green(), c.blue(), c.alpha()), (30, 20, 10, 255));
+    }
+
+    #[test]
+    fn short_bgra_buffer_does_not_panic() {
+        let r = Raster::from_bgra_opaque(4, 2, &[], 16);
+        assert_eq!(r.width, 4);
+        assert!(r.is_visually_blank());
     }
 }

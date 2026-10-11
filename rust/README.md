@@ -41,6 +41,8 @@ cargo build --release
 .\target\release\pinshot.exe --version   # PinShot 0.1.0 (windows-rust)
 .\target\release\pinshot.exe --snip      # 启动后立刻截图
 .\target\release\pinshot.exe --pin       # 启动后立刻贴剪贴板
+.\target\release\pinshot.exe --dump-capture --snip
+# 把合成后的捕获帧写成 %TEMP%\pinshot-capture.png（也可用环境变量 PINSHOT_DUMP_CAPTURE）
 ```
 
 Linux 上可以跑纯逻辑测试（窗口层被 `cfg(windows)` 裁掉）：
@@ -121,7 +123,7 @@ rust/
 **已实现（P1）**
 
 - 托盘菜单 + `RegisterHotKey`（F1 / F3 / Shift+F3）
-- DXGI 整屏捕获 + GDI BitBlt 兜底；多显示器拼成虚拟桌面
+- DXGI 整屏捕获（按适配器建 D3D 设备、拒绝全黑首帧）+ GDI `CreateDIBSection`/`BitBlt(CAPTUREBLT)` 兜底 + 每监视器 `CreateDC` + `PrintWindow`；多显示器拼成虚拟桌面；GDI 32 位 DIB 的 alpha=0 按不透明处理，避免预乘变黑
 - Per-Monitor DPI Aware v2
 - 遮罩：变暗挖洞、拖拽、移动/缩放手柄、`EnumWindows` + DWM 边框高亮、尺寸标签、放大镜 RGB/HEX
 - 自绘工具栏（原版图标）+ 20 色盘 + 线宽

@@ -27,6 +27,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     set_lang(cfg.lang());
     let start_snip = args.iter().any(|a| a == "--snip" || a == "snip");
     let start_pin = args.iter().any(|a| a == "--pin" || a == "pin");
+    let dump_capture = args.iter().any(|a| a == "--dump-capture");
 
     let event_loop = EventLoop::<AppEvent>::with_user_event()
         .build()
@@ -43,6 +44,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         settings: SettingsUiStub::default(),
         start_snip,
         start_pin,
+        dump_capture,
         mods: ModifiersState::empty(),
         last_click: None,
         pins_hidden: false,
@@ -61,6 +63,7 @@ struct App {
     settings: SettingsUiStub,
     start_snip: bool,
     start_pin: bool,
+    dump_capture: bool,
     mods: ModifiersState,
     last_click: Option<(WindowId, Instant)>,
     pins_hidden: bool,
@@ -71,7 +74,7 @@ impl App {
         if self.overlay.is_some() {
             return;
         }
-        match Capture::grab() {
+        match Capture::grab(self.dump_capture) {
             Ok(cap) => match Overlay::start(event_loop, cap) {
                 Ok(ov) => self.overlay = Some(ov),
                 Err(e) => eprintln!("PinShot overlay: {e}"),
