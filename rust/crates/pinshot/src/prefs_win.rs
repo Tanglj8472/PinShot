@@ -15,7 +15,7 @@ use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
 
-use crate::draw::{fill_rect, present, stroke_rect};
+use crate::draw::{fill_rect, present, stroke_rect, UiTheme};
 use crate::event::AppEvent;
 use pinshot_core::color::Rgba;
 
@@ -41,6 +41,7 @@ enum Field {
     Ok,
     Cancel,
     Hk(u8),
+    Tab(u8),
 }
 
 struct Hit {
@@ -182,6 +183,7 @@ impl PrefsWin {
                     "en".into()
                 };
                 i18n::set_lang(self.draft.lang());
+                self.window.set_title(&tr("PinShot Preferences"));
             }
             Field::Theme => {
                 self.draft.theme = match self.draft.theme.as_str() {
@@ -226,6 +228,7 @@ impl PrefsWin {
             }
             Field::Cancel => self.close(),
             Field::Hk(i) => self.armed = Some(i),
+            Field::Tab(_) => {}
         }
         // tab buttons encoded as Hk 20/21/22? use dedicated — see relayout
     }
@@ -268,8 +271,9 @@ impl PrefsWin {
             return;
         }
         i18n::set_lang(self.draft.lang());
+        self.window.set_title(&tr("PinShot Preferences"));
         let _ = self.proxy.send_event(AppEvent::PrefsApplied(self.draft.clone()));
-        self.status = tr("Apply");
+        self.status = tr("Settings applied.");
         crate::logutil::log("prefs: applied");
     }
 
@@ -279,44 +283,32 @@ impl PrefsWin {
         let h = size.height.max(8) as f32;
         self.hits.clear();
         let mut y = 52.0;
-        // tabs
-        for (i, _name) in [0, 1, 2].iter().enumerate() {
-            self.hits.push(Hit {
-                rect: Rect::new(16.0 + i as f32 * 110.0, 12.0, 100.0, 28.0),
-                field: match i {
-                    0 => Field::Lang, // overwritten below — use Hk 20+
-                    1 => Field::Theme,
-                    _ => Field::Login,
-                },
-            });
-        }
-        // replace tab hits
-        self.hits.clear();
         self.hits.push(Hit {
             rect: Rect::new(16.0, 12.0, 100.0, 28.0),
-            field: Field::Hk(20),
+            field: Field::Tab(0),
         });
         self.hits.push(Hit {
             rect: Rect::new(126.0, 12.0, 100.0, 28.0),
-            field: Field::Hk(21),
+            field: Field::Tab(1),
         });
         self.hits.push(Hit {
             rect: Rect::new(236.0, 12.0, 100.0, 28.0),
-            field: Field::Hk(22),
+            field: Field::Tab(2),
         });
+        let row_w = (w - 32.0).max(200.0);
         match self.tab {
             0 => {
-                push(self, 16.0, y, 220.0, Field::Lang);
+                push(self, 16.0, y, row_w, Field::Lang);
                 y += 36.0;
-                push(self, 16.0, y, 220.0, Field::Theme);
+                push(self, 16.0, y, row_w, Field::Theme);
                 y += 36.0;
-                push(self, 16.0, y, 220.0, Field::Login);
+                push(self, 16.0, y, row_w, Field::Login);
                 y += 36.0;
-                push(self, 16.0, y, 220.0, Field::Delay);
+                push(self, 16.0, y, row_w, Field::Delay);
                 y += 36.0;
-                push(self, 16.0, y, 280.0, Field::Confirm);
+                push(self, 16.0, y, row_w, Field::Confirm);
                 y += 36.0;
-                push(self, 16.0, y, 280.0, Field::Dbl);
+                push(self, 16.0, y, row_w, Field::Dbl);
                 y += 40.0;
                 push(self, 180.0, y, 36.0, Field::HistMinus);
                 push(self, 260.0, y, 36.0, Field::HistPlus);
@@ -361,19 +353,11 @@ impl PrefsWin {
         let Some(mut pm) = tiny_skia::Pixmap::new(w, h) else {
             return;
         };
+        let thm = UiTheme::resolve(&self.draft.theme);
         fill_rect(
             &mut pm,
             Rect::new(0.0, 0.0, w as f32, h as f32),
-            Rgba::rgb(247, 247, 247),
-        );
-        crate::text::blit_into_pm(
-            &mut pm,
-            &tr("PinShot Preferences"),
-            16.0,
-            44.0,
-            11,
-            Rgba::rgb(80, 80, 80),
-            false,
+            thm.bg,
         );
         for (i, name) in [tr("General"), tr("Hotkeys"), tr("Output")].iter().enumerate() {
             let r = Rect::new(16.0 + i as f32 * 110.0, 12.0, 100.0, 28.0);
@@ -381,59 +365,63 @@ impl PrefsWin {
                 &mut pm,
                 r,
                 if self.tab == i {
-                    Rgba::rgb(196, 217, 242)
+                    thm.accent
                 } else {
-                    Rgba::rgb(235, 235, 235)
+                    thm.panel
                 },
             );
-            stroke_rect(&mut pm, r, Rgba::rgb(154, 154, 154), 1.0);
-            crate::text::blit_into_pm(&mut pm, name, r.x + 10.0, r.y + 6.0, 12, Rgba::rgb(20, 20, 20), true);
+            stroke_rect(&mut pm, r, thm.border, 1.0);
+            crate::text::blit_into_pm(&mut pm, name, r.x + 10.0, r.y + 6.0, 12, thm.text, true);
         }
         let mut y = 52.0;
         match self.tab {
             0 => {
-                y = row_val(&mut pm, y, &tr("Language:"), self.draft.lang().display_name());
-                let th = match self.draft.theme.as_str() {
+                y = row_val(&mut pm, y, &tr("Language:"), self.draft.lang().display_name(), thm);
+                let tname = match self.draft.theme.as_str() {
                     "light" => tr("Light"),
                     "dark" => tr("Dark"),
                     _ => tr("System"),
                 };
-                y = row_val(&mut pm, y, &tr("Theme:"), &th);
+                y = row_val(&mut pm, y, &tr("Theme:"), &tname, thm);
                 y = row_val(
                     &mut pm,
                     y,
                     &tr("Run at login"),
                     if self.draft.run_at_login { "ON" } else { "OFF" },
+                    thm,
                 );
                 let delay = if self.draft.snip_delay == 0 {
                     tr("None (0 s)")
                 } else {
                     tr(&format!("{} s", self.draft.snip_delay))
                 };
-                y = row_val(&mut pm, y, &tr("Snip delay:"), &delay);
+                y = row_val(&mut pm, y, &tr("Snip delay:"), &delay, thm);
                 y = row_val(
                     &mut pm,
                     y,
                     &tr("Confirm before abort (Esc)"),
                     if self.draft.skip_abort_confirm { "OFF" } else { "ON" },
+                    thm,
                 );
                 let dbl = match self.draft.dblclick_pin_action.as_str() {
                     "hide" => tr("Hide pin"),
                     "none" => tr("Do nothing"),
                     _ => tr("Close pin"),
                 };
-                y = row_val(&mut pm, y, &tr("Double-click pin:"), &dbl);
+                y = row_val(&mut pm, y, &tr("Double-click pin:"), &dbl, thm);
                 y = row_step(
                     &mut pm,
                     y,
                     &tr("Snip history:"),
                     &format!("{}", self.draft.history_max),
+                    thm,
                 );
                 y = row_step(
                     &mut pm,
                     y,
                     &tr("Closed pins:"),
                     &format!("{}", self.draft.closed_pins_max),
+                    thm,
                 );
             }
             1 => {
@@ -448,7 +436,7 @@ impl PrefsWin {
                 ];
                 for (i, (lab, val)) in hks.iter().enumerate() {
                     let armed = self.armed == Some(i as u8);
-                    y = row_hk(&mut pm, y, lab, val, armed);
+                    y = row_hk(&mut pm, y, lab, val, armed, thm);
                 }
             }
             _ => {
@@ -457,44 +445,37 @@ impl PrefsWin {
                 } else {
                     self.draft.quick_save_folder.clone()
                 };
-                y = row_val(&mut pm, y, &tr("Save folder:"), &folder);
+                y = row_val(&mut pm, y, &tr("Save folder:"), &folder, thm);
                 y = row_step(
                     &mut pm,
                     y,
                     &tr("Quality:"),
                     &format!("{}", self.draft.image_quality),
+                    thm,
                 );
             }
         }
         let _ = y;
         let by = h as f32 - 48.0;
-        for (lab, x, field) in [
+        for (lab, x, _field) in [
             (tr("Apply"), 16.0, Field::Apply),
             (tr("OK"), 106.0, Field::Ok),
             (tr("Cancel"), 196.0, Field::Cancel),
         ] {
             let r = Rect::new(x, by, 80.0, 32.0);
-            let hover = r.contains(self.cursor) || matches!(field, Field::Ok);
-            fill_rect(
-                &mut pm,
-                r,
-                if hover {
-                    Rgba::rgb(196, 217, 242)
-                } else {
-                    Rgba::rgb(235, 235, 235)
-                },
-            );
-            stroke_rect(&mut pm, r, Rgba::rgb(154, 154, 154), 1.0);
-            crate::text::blit_into_pm(&mut pm, &lab, r.x + 12.0, r.y + 7.0, 13, Rgba::rgb(20, 20, 20), true);
+            let hover = r.contains(self.cursor);
+            fill_rect(&mut pm, r, if hover { thm.hover } else { thm.panel });
+            stroke_rect(&mut pm, r, thm.border, 1.0);
+            crate::text::blit_into_pm(&mut pm, &lab, r.x + 12.0, r.y + 7.0, 13, thm.text, true);
         }
         if !self.status.is_empty() {
             crate::text::blit_into_pm(
                 &mut pm,
                 &self.status,
-                290.0,
-                by + 8.0,
+                16.0,
+                by - 22.0,
                 11,
-                Rgba::rgb(180, 80, 40),
+                thm.muted,
                 false,
             );
         }
@@ -513,45 +494,37 @@ fn push(w: &mut PrefsWin, x: f32, y: f32, ww: f32, field: Field) {
     });
 }
 
-fn row_val(pm: &mut tiny_skia::Pixmap, y: f32, lab: &str, val: &str) -> f32 {
-    crate::text::blit_into_pm(pm, lab, 16.0, y + 6.0, 13, Rgba::rgb(20, 20, 20), true);
+fn row_val(pm: &mut tiny_skia::Pixmap, y: f32, lab: &str, val: &str, thm: UiTheme) -> f32 {
+    crate::text::blit_into_pm(pm, lab, 16.0, y + 6.0, 13, thm.text, true);
     let r = Rect::new(200.0, y, 280.0, 30.0);
-    fill_rect(pm, r, Rgba::rgb(235, 235, 235));
-    stroke_rect(pm, r, Rgba::rgb(154, 154, 154), 1.0);
-    crate::text::blit_into_pm(pm, val, r.x + 8.0, r.y + 6.0, 13, Rgba::rgb(20, 20, 20), false);
+    fill_rect(pm, r, thm.panel);
+    stroke_rect(pm, r, thm.border, 1.0);
+    crate::text::blit_into_pm(pm, val, r.x + 8.0, r.y + 6.0, 13, thm.text, false);
     y + 36.0
 }
 
-fn row_step(pm: &mut tiny_skia::Pixmap, y: f32, lab: &str, val: &str) -> f32 {
-    crate::text::blit_into_pm(pm, lab, 16.0, y + 6.0, 13, Rgba::rgb(20, 20, 20), true);
-    btn(pm, Rect::new(180.0, y, 36.0, 30.0), "−");
-    crate::text::blit_into_pm(pm, val, 226.0, y + 6.0, 13, Rgba::rgb(20, 20, 20), true);
-    btn(pm, Rect::new(260.0, y, 36.0, 30.0), "+");
+fn row_step(pm: &mut tiny_skia::Pixmap, y: f32, lab: &str, val: &str, thm: UiTheme) -> f32 {
+    crate::text::blit_into_pm(pm, lab, 16.0, y + 6.0, 13, thm.text, true);
+    btn(pm, Rect::new(180.0, y, 36.0, 30.0), "−", thm);
+    crate::text::blit_into_pm(pm, val, 226.0, y + 6.0, 13, thm.text, true);
+    btn(pm, Rect::new(260.0, y, 36.0, 30.0), "+", thm);
     y + 36.0
 }
 
-fn row_hk(pm: &mut tiny_skia::Pixmap, y: f32, lab: &str, val: &str, armed: bool) -> f32 {
-    crate::text::blit_into_pm(pm, lab, 16.0, y + 6.0, 13, Rgba::rgb(20, 20, 20), true);
+fn row_hk(pm: &mut tiny_skia::Pixmap, y: f32, lab: &str, val: &str, armed: bool, thm: UiTheme) -> f32 {
+    crate::text::blit_into_pm(pm, lab, 16.0, y + 6.0, 13, thm.text, true);
     let r = Rect::new(200.0, y, 280.0, 30.0);
-    fill_rect(
-        pm,
-        r,
-        if armed {
-            Rgba::rgb(255, 236, 179)
-        } else {
-            Rgba::rgb(235, 235, 235)
-        },
-    );
-    stroke_rect(pm, r, Rgba::rgb(154, 154, 154), 1.0);
+    fill_rect(pm, r, if armed { Rgba::rgb(255, 236, 179) } else { thm.panel });
+    stroke_rect(pm, r, thm.border, 1.0);
     let shown = if val.is_empty() { "—" } else { val };
-    crate::text::blit_into_pm(pm, shown, r.x + 8.0, r.y + 6.0, 13, Rgba::rgb(20, 20, 20), false);
+    crate::text::blit_into_pm(pm, shown, r.x + 8.0, r.y + 6.0, 13, thm.text, false);
     y + 36.0
 }
 
-fn btn(pm: &mut tiny_skia::Pixmap, r: Rect, t: &str) {
-    fill_rect(pm, r, Rgba::rgb(235, 235, 235));
-    stroke_rect(pm, r, Rgba::rgb(154, 154, 154), 1.0);
-    crate::text::blit_into_pm(pm, t, r.x + 10.0, r.y + 5.0, 14, Rgba::rgb(20, 20, 20), true);
+fn btn(pm: &mut tiny_skia::Pixmap, r: Rect, t: &str, thm: UiTheme) {
+    fill_rect(pm, r, thm.panel);
+    stroke_rect(pm, r, thm.border, 1.0);
+    crate::text::blit_into_pm(pm, t, r.x + 10.0, r.y + 5.0, 14, thm.text, true);
 }
 
 fn key_to_seq(key: &Key, mods: ModifiersState) -> Option<String> {
@@ -624,9 +597,7 @@ impl PrefsWin {
 impl PrefsWin {
     fn dispatch_tab_or_click(&mut self, f: Field) {
         match f {
-            Field::Hk(20) => self.click_tab(0),
-            Field::Hk(21) => self.click_tab(1),
-            Field::Hk(22) => self.click_tab(2),
+            Field::Tab(i) => self.click_tab(i as usize),
             other => self.click(other),
         }
     }

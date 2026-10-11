@@ -2,6 +2,7 @@
 
 use std::num::NonZeroU32;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use pinshot_core::annotation::{Annotator, Tool};
 use pinshot_core::geom::{Point, Rect};
@@ -62,6 +63,7 @@ pub struct PinWin {
     toolbar: Option<Toolbar>,
     arrow_on: bool,
     toast: Option<String>,
+    toast_until: Option<Instant>,
     pub persist_needed: bool,
     pub destroy: bool,
     pub pending_menu: bool,
@@ -107,6 +109,7 @@ impl PinWin {
             toolbar: None,
             arrow_on: true,
             toast: None,
+            toast_until: None,
             persist_needed: false,
             destroy: false,
             pending_menu: false,
@@ -152,24 +155,62 @@ impl PinWin {
     }
 
     pub fn set_scale(&mut self, s: f32) {
+        self.set_scale_at(s, None);
+    }
+
+    /// Zoom around `anchor` (window coords) so the pointer stays on the pin.
+    pub fn set_scale_at(&mut self, s: f32, anchor: Option<Point>) {
+        let old = self.scale.max(0.01);
+        let new = pinshot_core::geom::clamp_f32(s, 0.05, 8.0);
         let tl = self.window.outer_position().ok();
-        self.scale = pinshot_core::geom::clamp_f32(s, 0.05, 8.0);
+        self.scale = new;
         let w = ((self.img.width as f32) * self.scale).round().max(8.0) as u32;
         let h = ((self.img.height as f32) * self.scale).round().max(8.0) as u32;
         let _ = self.window.request_inner_size(PhysicalSize::new(w, h));
         if let Some(p) = tl {
-            self.window.set_outer_position(p);
+            if let Some(a) = anchor {
+                let nx = p.x + (a.x * (1.0 - new / old)).round() as i32;
+                let ny = p.y + (a.y * (1.0 - new / old)).round() as i32;
+                self.window.set_outer_position(PhysicalPosition::new(nx, ny));
+            } else {
+                self.window.set_outer_position(p);
+            }
         }
         self.persist_needed = true;
         self.dirty = true;
     }
 
     pub fn set_opacity(&mut self, o: f32) {
+        self.set_opacity_ex(o, true);
+    }
+
+    pub fn set_opacity_ex(&mut self, o: f32, toast: bool) {
         self.opacity = pinshot_core::geom::clamp_f32(o, 0.1, 1.0);
         native::set_opacity(&self.window, self.opacity);
-        self.toast = Some(tr(&format!("Opacity: {}%", (self.opacity * 100.0).round() as i32)));
+        if toast {
+            self.show_toast(tr(&format!(
+                "Opacity: {}%",
+                (self.opacity * 100.0).round() as i32
+            )));
+        }
         self.persist_needed = true;
         self.dirty = true;
+    }
+
+    fn show_toast(&mut self, text: String) {
+        self.toast = Some(text);
+        self.toast_until = Some(Instant::now() + Duration::from_millis(1200));
+        self.dirty = true;
+    }
+
+    fn expire_toast(&mut self) {
+        if let Some(t) = self.toast_until {
+            if Instant::now() >= t {
+                self.toast = None;
+                self.toast_until = None;
+                self.dirty = true;
+            }
+        }
     }
 
     pub fn set_click_through(&mut self, on: bool) {
@@ -362,15 +403,16 @@ impl PinWin {
                 if self.annotating
                     && (self.annot.tool.is_some()
                         || self.annot.selected.is_some()
-                        || self.annot.option_target().is_some())
+                        || self.annot.option_target().is_some()
+                        || self.annot.hit_test(self.img_pt(self.last_cursor)).is_some())
                 {
-                    if self.annot.wheel(angle) {
+                    if self.annot.wheel_at(self.img_pt(self.last_cursor), angle) {
                         self.dirty = true;
                     }
                 } else if angle > 0 {
-                    self.set_scale(self.scale * 1.1);
+                    self.set_scale_at(self.scale * 1.1, Some(self.last_cursor));
                 } else if angle < 0 {
-                    self.set_scale(self.scale / 1.1);
+                    self.set_scale_at(self.scale / 1.1, Some(self.last_cursor));
                 }
             }
             WindowEvent::Ime(winit::event::Ime::Commit(s)) => {
@@ -696,7 +738,7 @@ impl PinWin {
             } else {
                 tr("Tip: double-click closes a pin.")
             };
-            self.toast = Some(format!("{} {}", tip, tr("Double-click again to confirm.")));
+            self.show_toast(format!("{} {}", tip, tr("Double-click again to confirm.")));
             self.dirty = true;
             return;
         }
@@ -708,6 +750,7 @@ impl PinWin {
     }
 
     pub fn redraw(&mut self) {
+        self.expire_toast();
         let (w, h) = self.img_px();
         let (ww, hh) = if self.annotating {
             (w.max(420), h + 90)
@@ -796,9 +839,14 @@ impl PinWin {
     }
 
     pub fn pump_redraw(&mut self) {
+        self.expire_toast();
         if self.dirty {
             self.window.request_redraw();
         }
+    }
+
+    pub fn next_wake(&self) -> Option<Instant> {
+        self.toast_until
     }
 }
 

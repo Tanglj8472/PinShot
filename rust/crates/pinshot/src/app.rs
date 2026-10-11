@@ -162,7 +162,11 @@ impl App {
         };
         if need && self.fallback.is_none() {
             match FallbackWin::create(event_loop) {
-                Ok(f) => self.fallback = Some(f),
+                Ok(mut f) => {
+                    f.apply_theme(&self.cfg.theme);
+                    f.retranslate();
+                    self.fallback = Some(f);
+                }
                 Err(e) => crate::logutil::log(&format!("fallback window: {e}")),
             }
         }
@@ -178,6 +182,10 @@ impl App {
         self.cfg = cfg;
         self.hotkeys = None;
         self.rebuild_tray();
+        if let Some(fb) = &mut self.fallback {
+            fb.retranslate();
+            fb.apply_theme(&self.cfg.theme);
+        }
     }
 
     fn request_snip(&mut self, event_loop: &ActiveEventLoop, translate: bool) {
@@ -235,7 +243,14 @@ impl App {
         let translate = self.translate_next;
         self.translate_next = false;
         match Capture::grab(self.dump_capture) {
-            Ok(cap) => match Overlay::start(event_loop, cap, self.history.clone(), translate, self.proxy.clone()) {
+            Ok(cap) => match Overlay::start(
+                event_loop,
+                cap,
+                self.history.clone(),
+                self.cfg.history_max,
+                translate,
+                self.proxy.clone(),
+            ) {
                 Ok(ov) => self.overlay = Some(ov),
                 Err(e) => eprintln!("PinShot overlay: {e}"),
             },
@@ -462,7 +477,7 @@ impl App {
             self.spawn_pin_ex(event_loop, img, Some((snap.x, snap.y)), Some(snap.group), false);
             if let Some(p) = self.pins.last_mut() {
                 p.set_scale(snap.scale);
-                p.set_opacity(snap.opacity);
+                p.set_opacity_ex(snap.opacity, false);
                 if !snap.shapes.is_empty() {
                     p.restore_shapes(snap.shapes);
                 }
@@ -848,6 +863,22 @@ impl ApplicationHandler<AppEvent> for App {
         }
         if let Some(ov) = &mut self.overlay {
             ov.pump_redraw();
+        }
+        let mut wake = self.snip_at;
+        if let Some(ov) = &self.overlay {
+            if let Some(t) = ov.next_wake() {
+                wake = Some(wake.map(|w| w.min(t)).unwrap_or(t));
+            }
+        }
+        for p in &self.pins {
+            if let Some(t) = p.next_wake() {
+                wake = Some(wake.map(|w| w.min(t)).unwrap_or(t));
+            }
+        }
+        if let Some(at) = wake {
+            if Instant::now() < at {
+                event_loop.set_control_flow(ControlFlow::WaitUntil(at));
+            }
         }
         let mut persist = false;
         for p in &mut self.pins {

@@ -30,6 +30,54 @@ use crate::native::NativeWin;
 use crate::text::blit_text;
 use crate::toolbar::Toolbar;
 
+/// Fallback / prefs / pin-menu chrome colours (Python `theme.py` light/dark).
+#[derive(Clone, Copy, Debug)]
+pub struct UiTheme {
+    pub bg: Rgba,
+    pub panel: Rgba,
+    pub hover: Rgba,
+    pub text: Rgba,
+    pub muted: Rgba,
+    pub border: Rgba,
+    pub accent: Rgba,
+}
+
+impl UiTheme {
+    pub fn resolve(name: &str) -> Self {
+        let dark = match name {
+            "dark" => true,
+            "light" => false,
+            _ => std::env::var("GTK_THEME")
+                .map(|t| t.to_ascii_lowercase().contains("dark"))
+                .unwrap_or(false)
+                || std::env::var("GTK_APPLICATION_PREFER_DARK_THEME")
+                    .map(|v| v == "1")
+                    .unwrap_or(false),
+        };
+        if dark {
+            Self {
+                bg: Rgba::rgb(36, 36, 40),
+                panel: Rgba::rgb(52, 52, 58),
+                hover: Rgba::rgb(70, 90, 120),
+                text: Rgba::rgb(235, 235, 235),
+                muted: Rgba::rgb(170, 170, 175),
+                border: Rgba::rgb(90, 90, 96),
+                accent: Rgba::rgb(90, 140, 200),
+            }
+        } else {
+            Self {
+                bg: Rgba::rgb(247, 247, 247),
+                panel: Rgba::rgb(235, 235, 235),
+                hover: Rgba::rgb(196, 217, 242),
+                text: Rgba::rgb(20, 20, 20),
+                muted: Rgba::rgb(80, 80, 80),
+                border: Rgba::rgb(154, 154, 154),
+                accent: Rgba::rgb(196, 217, 242),
+            }
+        }
+    }
+}
+
 fn paint(c: Rgba) -> Paint<'static> {
     let mut p = Paint::default();
     p.set_color(c.to_skia());

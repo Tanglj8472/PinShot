@@ -86,6 +86,16 @@ pub fn grab_overlay_keys(
     crate::x11util::xid_of(window).map(|xid| crate::x11util::OverlayKeyGrab::start(xid, proxy))
 }
 
+#[cfg(unix)]
+pub fn pointer_in_window(window: &Window) -> Option<(i32, i32, bool)> {
+    crate::x11util::xid_of(window).and_then(crate::x11util::pointer_in_window)
+}
+
+#[cfg(not(unix))]
+pub fn pointer_in_window(_window: &Window) -> Option<(i32, i32, bool)> {
+    None
+}
+
 #[cfg(not(unix))]
 pub fn grab_overlay_keys(
     _window: &Window,

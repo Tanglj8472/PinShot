@@ -13,9 +13,8 @@ use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
 
-use crate::draw::{fill_rect, present, stroke_rect};
+use crate::draw::{fill_rect, present, stroke_rect, UiTheme};
 use crate::event::TrayCmd;
-use pinshot_core::color::Rgba;
 
 struct Btn {
     rect: Rect,
@@ -29,6 +28,7 @@ pub struct FallbackWin {
     buttons: Vec<Btn>,
     cursor: Point,
     dirty: bool,
+    theme: UiTheme,
 }
 
 impl FallbackWin {
@@ -44,29 +44,46 @@ impl FallbackWin {
         }
         let context = Context::new(window.clone()).map_err(|e| format!("{e:?}"))?;
         let surface = Surface::new(&context, window.clone()).map_err(|e| format!("{e:?}"))?;
+        let mut w = Self {
+            window,
+            surface,
+            buttons: Vec::new(),
+            cursor: Point::ZERO,
+            dirty: true,
+            theme: UiTheme::resolve("system"),
+        };
+        w.rebuild_buttons();
+        w.redraw();
+        Ok(w)
+    }
+
+    fn rebuild_buttons(&mut self) {
         let labels = [
             (tr("Snip"), TrayCmd::Snip),
             (tr("Pin clipboard"), TrayCmd::Pin),
             (tr("Preferences…"), TrayCmd::Settings),
             (tr("Quit"), TrayCmd::Quit),
         ];
-        let mut buttons = Vec::new();
+        self.buttons.clear();
         for (i, (label, cmd)) in labels.into_iter().enumerate() {
-            buttons.push(Btn {
+            self.buttons.push(Btn {
                 rect: Rect::new(16.0, 16.0 + i as f32 * 42.0, 208.0, 36.0),
                 label,
                 cmd,
             });
         }
-        let mut w = Self {
-            window,
-            surface,
-            buttons,
-            cursor: Point::ZERO,
-            dirty: true,
-        };
-        w.redraw();
-        Ok(w)
+    }
+
+    pub fn retranslate(&mut self) {
+        self.rebuild_buttons();
+        self.dirty = true;
+        self.window.request_redraw();
+    }
+
+    pub fn apply_theme(&mut self, name: &str) {
+        self.theme = UiTheme::resolve(name);
+        self.dirty = true;
+        self.window.request_redraw();
     }
 
     pub fn window_id(&self) -> WindowId {
@@ -137,20 +154,28 @@ impl FallbackWin {
         let Some(mut pm) = tiny_skia::Pixmap::new(w, h) else {
             return;
         };
-        fill_rect(&mut pm, Rect::new(0.0, 0.0, w as f32, h as f32), Rgba::rgb(247, 247, 247));
+        fill_rect(&mut pm, Rect::new(0.0, 0.0, w as f32, h as f32), self.theme.bg);
         for b in &self.buttons {
             let hover = b.rect.contains(self.cursor);
             fill_rect(
                 &mut pm,
                 b.rect,
                 if hover {
-                    Rgba::rgb(196, 217, 242)
+                    self.theme.hover
                 } else {
-                    Rgba::rgb(235, 235, 235)
+                    self.theme.panel
                 },
             );
-            stroke_rect(&mut pm, b.rect, Rgba::rgb(154, 154, 154), 1.0);
-            crate::text::blit_into_pm(&mut pm, &b.label, b.rect.x + 12.0, b.rect.y + 8.0, 14, Rgba::rgb(20, 20, 20), true);
+            stroke_rect(&mut pm, b.rect, self.theme.border, 1.0);
+            crate::text::blit_into_pm(
+                &mut pm,
+                &b.label,
+                b.rect.x + 12.0,
+                b.rect.y + 8.0,
+                14,
+                self.theme.text,
+                true,
+            );
         }
         if let Ok(mut buf) = self.surface.buffer_mut() {
             present(&mut buf, &pm);

@@ -141,17 +141,81 @@ fn parse_windows(bytes: &[u8]) -> Vec<u32> {
         .collect()
 }
 
+fn client_ids(c: &x11rb::rust_connection::RustConnection, root: u32) -> Vec<u32> {
+    let stacking = c
+        .intern_atom(false, b"_NET_CLIENT_LIST_STACKING")
+        .ok()
+        .and_then(|c| c.reply().ok())
+        .map(|a| a.atom);
+    let list = c
+        .intern_atom(false, b"_NET_CLIENT_LIST")
+        .ok()
+        .and_then(|c| c.reply().ok())
+        .map(|a| a.atom);
+    for atom in [stacking, list].into_iter().flatten() {
+        if let Ok(p) = c.get_property(false, root, atom, AtomEnum::WINDOW, 0, 4096) {
+            if let Ok(r) = p.reply() {
+                if !r.value.is_empty() {
+                    return parse_windows(&r.value);
+                }
+            }
+        }
+    }
+    Vec::new()
+}
+
 fn child_rects() -> Vec<(Rect, String)> {
     let Ok((c, screen)) = x11rb::connect(None) else {
         return Vec::new();
     };
     let root = c.setup().roots[screen].root;
+    let hidden = c
+        .intern_atom(false, b"_NET_WM_STATE_HIDDEN")
+        .ok()
+        .and_then(|c| c.reply().ok())
+        .map(|a| a.atom);
+    let state_atom = c
+        .intern_atom(false, b"_NET_WM_STATE")
+        .ok()
+        .and_then(|c| c.reply().ok())
+        .map(|a| a.atom);
+    let pid_atom = c
+        .intern_atom(false, b"_NET_WM_PID")
+        .ok()
+        .and_then(|c| c.reply().ok())
+        .map(|a| a.atom);
+    let self_pid = std::process::id();
     let mut out = Vec::new();
-    walk_children(&c, root, root, 0, 4, &mut out);
+    for wid in client_ids(&c, root).into_iter().rev() {
+        if let Some(pid_atom) = pid_atom {
+            if let Ok(p) = c.get_property(false, wid, pid_atom, AtomEnum::CARDINAL, 0, 1) {
+                if let Ok(r) = p.reply() {
+                    if r.value32().and_then(|mut it| it.next()) == Some(self_pid) {
+                        continue;
+                    }
+                }
+            }
+        }
+        if let (Some(st), Some(hid)) = (state_atom, hidden) {
+            if let Ok(p) = c.get_property(false, wid, st, AtomEnum::ATOM, 0, 32) {
+                if let Ok(r) = p.reply() {
+                    if r.value32().into_iter().flatten().any(|a| a == hid) {
+                        continue;
+                    }
+                }
+            }
+        }
+        walk_viewable(&c, root, wid, 0, 6, &mut out);
+    }
+    out.sort_by(|a, b| {
+        a.0.area()
+            .partial_cmp(&b.0.area())
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     out
 }
 
-fn walk_children(
+fn walk_viewable(
     c: &x11rb::rust_connection::RustConnection,
     root: u32,
     wid: u32,
@@ -162,6 +226,25 @@ fn walk_children(
     if depth > max {
         return;
     }
+    let Ok(attrs) = c.get_window_attributes(wid) else {
+        return;
+    };
+    let Ok(attrs) = attrs.reply() else {
+        return;
+    };
+    if attrs.map_state != x11rb::protocol::xproto::MapState::VIEWABLE {
+        return;
+    }
+    if let (Ok(g), Ok(t)) = (c.get_geometry(wid), c.translate_coordinates(wid, root, 0, 0)) {
+        if let (Ok(g), Ok(t)) = (g.reply(), t.reply()) {
+            if g.width >= 8 && g.height >= 8 && g.width < 20000 && g.height < 20000 {
+                out.push((
+                    Rect::from_i32(t.dst_x as i32, t.dst_y as i32, g.width as i32, g.height as i32),
+                    format!("x11:{wid:#x}"),
+                ));
+            }
+        }
+    }
     let Ok(tree) = c.query_tree(wid) else {
         return;
     };
@@ -169,27 +252,80 @@ fn walk_children(
         return;
     };
     for child in children.into_iter().rev() {
-        if let (Ok(g), Ok(t)) = (c.get_geometry(child), c.translate_coordinates(child, root, 0, 0)) {
-            if let (Ok(g), Ok(t)) = (g.reply(), t.reply()) {
-                if g.width >= 8 && g.height >= 8 {
-                    out.push((
-                        Rect::from_i32(t.dst_x as i32, t.dst_y as i32, g.width as i32, g.height as i32),
-                        String::new(),
-                    ));
-                }
-            }
-        }
-        walk_children(c, root, child, depth + 1, max, out);
+        walk_viewable(c, root, child, depth + 1, max, out);
     }
 }
 
-pub fn collect_elements() -> Vec<(Rect, String)> {
-    if atspi_available() {
-        LAST_SOURCE.store(1, Ordering::Relaxed);
-    } else {
-        LAST_SOURCE.store(2, Ordering::Relaxed);
+fn atspi_rects() -> Vec<(Rect, String)> {
+    const PY: &str = r#"
+import time
+try:
+    import gi
+    gi.require_version('Atspi','2.0')
+    from gi.repository import Atspi
+    Atspi.init()
+except Exception:
+    raise SystemExit(0)
+SKIP = {'application','redundant object','unknown','invalid'}
+SHOWING = Atspi.StateType.SHOWING
+t_end = time.monotonic() + 0.6
+out = []
+def walk(acc, depth):
+    if acc is None or depth > 12 or time.monotonic() > t_end: return
+    try:
+        role = acc.get_role_name()
+        if depth > 0 and not acc.get_state_set().contains(SHOWING): return
+        if role not in SKIP:
+            comp = acc.get_component_iface()
+            if comp:
+                e = comp.get_extents(Atspi.CoordType.SCREEN)
+                if e.width > 3 and e.height > 3 and e.width < 20000:
+                    print(f"{e.x},{e.y},{e.width},{e.height}")
+        for i in range(min(acc.get_child_count(), 400)):
+            walk(acc.get_child_at_index(i), depth+1)
+    except Exception:
+        return
+d = Atspi.get_desktop(0)
+for i in range(max(0, d.get_child_count())):
+    walk(d.get_child_at_index(i), 0)
+"#;
+    let Ok(out) = std::process::Command::new("python3")
+        .args(["-c", PY])
+        .output()
+    else {
+        return Vec::new();
+    };
+    let mut rects = Vec::new();
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let parts: Vec<&str> = line.split(',').collect();
+        if parts.len() != 4 {
+            continue;
+        }
+        let Ok(xs) = parts
+            .iter()
+            .map(|s| s.trim().parse::<i32>())
+            .collect::<Result<Vec<_>, _>>()
+        else {
+            continue;
+        };
+        rects.push((Rect::from_i32(xs[0], xs[1], xs[2], xs[3]), "atspi".into()));
     }
-    child_rects()
+    rects
+}
+
+pub fn collect_elements() -> Vec<(Rect, String)> {
+    let x11 = child_rects();
+    if atspi_available() {
+        let acc = atspi_rects();
+        if !acc.is_empty() {
+            LAST_SOURCE.store(1, Ordering::Relaxed);
+            let mut all = acc;
+            all.extend(x11);
+            return all;
+        }
+    }
+    LAST_SOURCE.store(2, Ordering::Relaxed);
+    x11
 }
 
 pub fn translated_windows(origin: (i32, i32)) -> Vec<Rect> {

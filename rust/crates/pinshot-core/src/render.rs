@@ -198,24 +198,7 @@ fn draw_shape(pm: &mut Pixmap, sh: &Shape) {
                 pm.stroke_path(&path, &paint(sh.style.color), &stroke_for(sh), t, None);
             }
             if sh.style.arrow && sh.pts.len() > 1 {
-                let a = sh.pts[sh.pts.len() - 2];
-                let bpt = sh.pts[sh.pts.len() - 1];
-                let ang = (bpt.y - a.y).atan2(bpt.x - a.x);
-                let l = 10.0 + sh.style.width as f32 * 2.0;
-                let mut pb = PathBuilder::new();
-                pb.move_to(bpt.x, bpt.y);
-                pb.line_to(
-                    bpt.x - l * (ang - 0.4).cos(),
-                    bpt.y - l * (ang - 0.4).sin(),
-                );
-                pb.line_to(
-                    bpt.x - l * (ang + 0.4).cos(),
-                    bpt.y - l * (ang + 0.4).sin(),
-                );
-                pb.close();
-                if let Some(path) = pb.finish() {
-                    pm.fill_path(&path, &paint(sh.style.color), FillRule::Winding, t, None);
-                }
+                draw_arrow_head(pm, sh, t);
             }
         }
         Tool::Pen | Tool::Marker => {
@@ -309,6 +292,48 @@ fn draw_shape(pm: &mut Pixmap, sh: &Shape) {
     }
 }
 
+fn draw_arrow_head(pm: &mut Pixmap, sh: &Shape, t: Transform) {
+    let a = sh.pts[sh.pts.len() - 2];
+    let bpt = sh.pts[sh.pts.len() - 1];
+    let dx = bpt.x - a.x;
+    let dy = bpt.y - a.y;
+    if dx.abs() + dy.abs() < 0.5 {
+        return;
+    }
+    let ang = dy.atan2(dx);
+    let w = sh.style.width.max(2) as f32;
+    let l = (16.0 + w * 3.0).max(18.0);
+    let spread = 0.55;
+    let mut pb = PathBuilder::new();
+    pb.move_to(bpt.x, bpt.y);
+    pb.line_to(
+        bpt.x - l * (ang - spread).cos(),
+        bpt.y - l * (ang - spread).sin(),
+    );
+    pb.line_to(
+        bpt.x - l * 0.55 * ang.cos(),
+        bpt.y - l * 0.55 * ang.sin(),
+    );
+    pb.line_to(
+        bpt.x - l * (ang + spread).cos(),
+        bpt.y - l * (ang + spread).sin(),
+    );
+    pb.close();
+    if let Some(path) = pb.finish() {
+        pm.fill_path(&path, &paint(sh.style.color), FillRule::Winding, t, None);
+        pm.stroke_path(
+            &path,
+            &paint(sh.style.color),
+            &Stroke {
+                width: (w * 0.6).max(1.0),
+                ..Stroke::default()
+            },
+            t,
+            None,
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -372,5 +397,35 @@ mod tests {
         );
         let out = compose(&base, &[sh]);
         assert_ne!(out.get(1, 1), base.get(1, 1));
+    }
+
+    #[test]
+    fn arrow_head_paints_beyond_plain_line() {
+        let mut base = Raster::new(80, 40);
+        base.fill(Rgba::WHITE);
+        let mut st = Style::for_tool(Tool::Line);
+        st.arrow = true;
+        st.color = Rgba::RED;
+        st.width = 3;
+        let sh = Shape::new(
+            Tool::Line,
+            vec![Point::new(8.0, 20.0), Point::new(50.0, 20.0)],
+            st,
+        );
+        let out = compose(&base, &[sh]);
+        let mut found = 0u32;
+        for y in 10..30 {
+            for x in 38..62 {
+                if out.get(x, y) == Some(Rgba::RED) {
+                    found += 1;
+                }
+            }
+        }
+        assert!(found > 20, "arrowhead pixels={found}");
+    }
+
+    #[test]
+    fn line_tool_default_has_no_arrow() {
+        assert!(!Style::for_tool(Tool::Line).arrow);
     }
 }

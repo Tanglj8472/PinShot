@@ -258,18 +258,36 @@ pub fn focus_window(window: &Window) {
 /// Active keyboard grab on the overlay (same idea as Qt `grabKeyboard`).
 /// Events are forwarded through `proxy` because a second X client cannot
 /// deliver KeyPress to winit's connection.
+///
+/// `owner_events=false` so the previously-focused client (Chrome) does not
+/// also receive keys. Pointer grab uses `owner_events=true` so winit still
+/// sees mouse events on the overlay window.
 pub struct OverlayKeyGrab {
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pause_keys: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl OverlayKeyGrab {
     pub fn start(xid: u32, proxy: winit::event_loop::EventLoopProxy<crate::event::AppEvent>) -> Self {
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let pause_keys = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let flag = stop.clone();
+        let pause = pause_keys.clone();
         let _ = std::thread::Builder::new()
             .name("pinshot-overlay-grab".into())
-            .spawn(move || overlay_grab_loop(xid, proxy, flag));
-        Self { stop }
+            .spawn(move || overlay_grab_loop(xid, proxy, flag, pause));
+        Self { stop, pause_keys }
+    }
+
+    /// Ungrab the keyboard while a text editor is open so XIM / winit IME can work.
+    pub fn set_pause_keys(&self, pause: bool) {
+        self.pause_keys
+            .store(pause, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn kick(&self) {
+        self.pause_keys
+            .store(false, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -283,43 +301,68 @@ fn overlay_grab_loop(
     xid: u32,
     proxy: winit::event_loop::EventLoopProxy<crate::event::AppEvent>,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pause_keys: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) {
     let Ok((c, _)) = conn() else {
         return;
     };
-    let mut grabbed = false;
-    for i in 0..25 {
-        let _ = c.map_window(xid);
-        let _ = c.set_input_focus(InputFocus::PARENT, xid, x11rb::CURRENT_TIME);
-        match c.grab_keyboard(true, xid, x11rb::CURRENT_TIME, GrabMode::ASYNC, GrabMode::ASYNC) {
-            Ok(cookie) => match cookie.reply() {
-                Ok(r) if r.status == x11rb::protocol::xproto::GrabStatus::SUCCESS => {
-                    grabbed = true;
-                    crate::logutil::log("XGrabKeyboard ok");
-                    break;
+    let mut key_grabbed = false;
+    let mut ptr_grabbed = false;
+    let mut last_try = std::time::Instant::now() - std::time::Duration::from_secs(1);
+    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+        let want_keys = !pause_keys.load(std::sync::atomic::Ordering::Relaxed);
+        let now = std::time::Instant::now();
+        if now.duration_since(last_try) >= std::time::Duration::from_millis(80) {
+            last_try = now;
+            let _ = c.map_window(xid);
+            let _ = c.set_input_focus(InputFocus::PARENT, xid, x11rb::CURRENT_TIME);
+            if want_keys && !key_grabbed {
+                match c.grab_keyboard(false, xid, x11rb::CURRENT_TIME, GrabMode::ASYNC, GrabMode::ASYNC)
+                {
+                    Ok(cookie) => match cookie.reply() {
+                        Ok(r) if r.status == x11rb::protocol::xproto::GrabStatus::SUCCESS => {
+                            key_grabbed = true;
+                            crate::logutil::log("XGrabKeyboard ok");
+                        }
+                        Ok(r) => {
+                            crate::logutil::log(&format!("XGrabKeyboard status={:?}", r.status));
+                        }
+                        Err(e) => crate::logutil::log(&format!("XGrabKeyboard: {e}")),
+                    },
+                    Err(e) => crate::logutil::log(&format!("XGrabKeyboard: {e}")),
                 }
-                Ok(r) => {
-                    if i == 24 {
-                        crate::logutil::log(&format!("XGrabKeyboard status={:?}", r.status));
+            } else if !want_keys && key_grabbed {
+                let _ = c.ungrab_keyboard(x11rb::CURRENT_TIME);
+                key_grabbed = false;
+                crate::logutil::log("XUngrabKeyboard (text/IME)");
+            }
+            if !ptr_grabbed {
+                let mask = EventMask::BUTTON_PRESS
+                    | EventMask::BUTTON_RELEASE
+                    | EventMask::POINTER_MOTION;
+                match c.grab_pointer(
+                    true,
+                    xid,
+                    mask,
+                    GrabMode::ASYNC,
+                    GrabMode::ASYNC,
+                    x11rb::NONE,
+                    x11rb::NONE,
+                    x11rb::CURRENT_TIME,
+                ) {
+                    Ok(cookie) => {
+                        if let Ok(r) = cookie.reply() {
+                            if r.status == x11rb::protocol::xproto::GrabStatus::SUCCESS {
+                                ptr_grabbed = true;
+                                crate::logutil::log("XGrabPointer ok");
+                            }
+                        }
                     }
-                }
-                Err(e) => {
-                    if i == 24 {
-                        crate::logutil::log(&format!("XGrabKeyboard: {e}"));
-                    }
-                }
-            },
-            Err(e) => {
-                if i == 24 {
-                    crate::logutil::log(&format!("XGrabKeyboard: {e}"));
+                    Err(_) => {}
                 }
             }
+            let _ = c.flush();
         }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    let _ = grabbed;
-    let _ = c.flush();
-    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
         match c.poll_for_event() {
             Ok(Some(Event::KeyPress(ev))) => {
                 let keysym = keycode_to_keysym(&c, ev.detail, u16::from(ev.state));
@@ -343,7 +386,17 @@ fn overlay_grab_loop(
         }
     }
     let _ = c.ungrab_keyboard(x11rb::CURRENT_TIME);
+    let _ = c.ungrab_pointer(x11rb::CURRENT_TIME);
     let _ = c.flush();
+}
+
+/// Overlay-local pointer position and Button1 state (recover a drag whose
+/// ButtonPress landed on the window underneath before the overlay mapped).
+pub fn pointer_in_window(xid: u32) -> Option<(i32, i32, bool)> {
+    let (c, _) = conn().ok()?;
+    let q = c.query_pointer(xid).ok()?.reply().ok()?;
+    let btn1 = u16::from(q.mask) & 0x0100 != 0;
+    Some((i32::from(q.win_x), i32::from(q.win_y), btn1))
 }
 
 fn keycode_to_keysym(c: &x11rb::rust_connection::RustConnection, code: u8, state: u16) -> u32 {

@@ -127,6 +127,8 @@ const PAIRS: &[(&str, &str)] = &[
     ("Output", "输出"),
     ("Advanced", "高级"),
     ("Apply", "应用"),
+    ("Settings applied.", "已应用。"),
+    ("No snip history", "没有截图历史"),
     ("OK", "确定"),
     ("Run at login", "登录时启动"),
     ("Snip delay:", "截图延时："),

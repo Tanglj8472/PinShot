@@ -46,7 +46,7 @@ impl Default for Config {
             hotkey_snip: "F1".into(),
             hotkey_pin: "F3".into(),
             hotkey_hide_all: "Shift+F3".into(),
-            hotkey_clickthrough: String::new(),
+            hotkey_clickthrough: "F4".into(),
             hotkey_restore: "Ctrl+Shift+Z".into(),
             hotkey_selection_translate: "F5".into(),
             hotkey_capture_translate: "F6".into(),
@@ -93,6 +93,9 @@ impl Config {
         }
         if self.hotkey_capture_translate.trim().is_empty() {
             self.hotkey_capture_translate = "F6".into();
+        }
+        if self.hotkey_clickthrough.trim().is_empty() {
+            self.hotkey_clickthrough = "F4".into();
         }
         if self.schema_version == 0 {
             self.schema_version = SCHEMA_VERSION;
@@ -221,6 +224,7 @@ mod tests {
         assert_eq!(c.language, "zh_CN");
         assert_eq!(c.hotkey_snip, "F1");
         assert_eq!(c.hotkey_pin, "F3");
+        assert_eq!(c.hotkey_clickthrough, "F4");
         assert_eq!(c.schema_version, 1);
     }
 
@@ -286,6 +290,13 @@ mod tests {
         assert_eq!(c.language, "en");
         assert_eq!(c.hotkey_snip, "F2");
         assert_eq!(c.hotkey_selection_translate, "F5");
+        assert_eq!(c.hotkey_clickthrough, "F4");
         assert!(c.groups.iter().any(|g| g == "Default"));
+    }
+
+    #[test]
+    fn empty_clickthrough_becomes_f4() {
+        let c = Config::from_toml("hotkey_clickthrough = \"\"\n").unwrap();
+        assert_eq!(c.hotkey_clickthrough, "F4");
     }
 }

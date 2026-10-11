@@ -221,16 +221,10 @@ impl PinMenuWin {
                     }
                     let mut x = if *indent { 28.0 } else { 12.0 };
                     if *checked {
-                        crate::text::blit_into_pm(
-                            &mut pm,
-                            "✓",
-                            x,
-                            r.y + 3.0,
-                            12,
-                            Rgba::rgb(20, 20, 20),
-                            true,
-                        );
-                        x += 14.0;
+                        let boxr = Rect::new(x, r.y + 5.0, 12.0, 12.0);
+                        fill_rect(&mut pm, boxr, Rgba::rgb(40, 140, 80));
+                        stroke_rect(&mut pm, boxr, Rgba::rgb(20, 20, 20), 1.0);
+                        x += 16.0;
                     }
                     crate::text::blit_into_pm(
                         &mut pm,

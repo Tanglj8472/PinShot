@@ -1,6 +1,7 @@
 //! Full-screen snip overlay session (one winit window covering the virtual desktop).
 
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use pinshot_core::annotation::{Annotator, Tool};
 use pinshot_core::color::Rgba;
@@ -48,6 +49,7 @@ pub struct Overlay {
     mag_forced: bool,
     detect: DetectMode,
     toast: Option<String>,
+    toast_until: Option<Instant>,
     arrow_on: bool,
     dpr: f32,
     result: Option<OverlayResult>,
@@ -57,8 +59,9 @@ pub struct Overlay {
     translate_on_select: bool,
     show_cursor: bool,
     mods: ModifiersState,
+    history_max: u32,
     #[cfg(unix)]
-    _key_grab: Option<crate::x11util::OverlayKeyGrab>,
+    key_grab: Option<crate::x11util::OverlayKeyGrab>,
     #[cfg(not(windows))]
     surface: Option<softbuffer::Surface<Rc<Window>, Rc<Window>>>,
 }
@@ -68,6 +71,7 @@ impl Overlay {
         event_loop: &ActiveEventLoop,
         capture: Capture,
         history: SnipHistory,
+        history_max: u32,
         translate_on_select: bool,
         proxy: winit::event_loop::EventLoopProxy<crate::event::AppEvent>,
     ) -> Result<Self, String> {
@@ -118,6 +122,7 @@ impl Overlay {
             mag_forced: false,
             detect: DetectMode::Window,
             toast: None,
+            toast_until: None,
             arrow_on: true,
             dpr: 1.0,
             result: None,
@@ -127,8 +132,9 @@ impl Overlay {
             translate_on_select,
             show_cursor: false,
             mods: ModifiersState::empty(),
+            history_max: history_max.max(1),
             #[cfg(unix)]
-            _key_grab: None,
+            key_grab: None,
             #[cfg(not(windows))]
             surface,
         };
@@ -136,14 +142,43 @@ impl Overlay {
         native::focus_window(&s.window);
         #[cfg(unix)]
         {
-            s._key_grab = native::grab_overlay_keys(&s.window, proxy);
+            s.key_grab = native::grab_overlay_keys(&s.window, proxy);
         }
         #[cfg(not(unix))]
         {
             let _ = proxy;
         }
+        if let Some((x, y, down)) = native::pointer_in_window(&s.window) {
+            s.cursor = Point::new(x as f32, y as f32);
+            if down && s.sel.state == pinshot_core::selection::SelState::Idle {
+                let _ = s.sel.press(s.cursor, s.bounds(), false);
+            }
+        }
         s.redraw();
         Ok(s)
+    }
+
+    fn show_toast(&mut self, text: String) {
+        self.toast = Some(text);
+        self.toast_until = Some(Instant::now() + Duration::from_millis(1200));
+        self.dirty = true;
+    }
+
+    fn expire_toast(&mut self) {
+        if let Some(t) = self.toast_until {
+            if Instant::now() >= t {
+                self.toast = None;
+                self.toast_until = None;
+                self.dirty = true;
+            }
+        }
+    }
+
+    fn sync_ime_grab(&mut self) {
+        #[cfg(unix)]
+        if let Some(g) = &self.key_grab {
+            g.set_pause_keys(self.annot.text_edit.is_some());
+        }
     }
 
     pub fn window_id(&self) -> WindowId {
@@ -219,7 +254,7 @@ impl Overlay {
                 rect: self.sel.normalized(),
                 image: self.capture.composed.clone(),
             },
-            10,
+            self.history_max,
         );
     }
 
@@ -264,6 +299,9 @@ impl Overlay {
     }
 
     fn step_history(&mut self, dir: i32) {
+        if self.history.entries.is_empty() {
+            return;
+        }
         if self.live_shot.is_none() {
             self.live_shot = Some(self.capture.composed.clone());
         }
@@ -272,16 +310,15 @@ impl Overlay {
                 if let Some(live) = self.live_shot.clone() {
                     self.apply_replay(&live, None);
                 }
-                self.toast = Some(tr("Snip history"));
+                self.show_toast(tr("Snip history"));
             }
             HistoryView::Replay(e) => {
                 let img = e.image.clone();
                 let rect = e.rect;
                 self.apply_replay(&img, Some(rect));
-                self.toast = Some(tr("Snip history"));
+                self.show_toast(tr("Snip history"));
             }
         }
-        self.dirty = true;
     }
 
     fn reuse_last(&mut self) {
@@ -290,8 +327,7 @@ impl Overlay {
                 self.live_shot = Some(self.capture.composed.clone());
             }
             self.apply_replay(&e.image, Some(e.rect));
-            self.toast = Some(tr("Last snip area"));
-            self.dirty = true;
+            self.show_toast(tr("Last snip area"));
         }
     }
 
@@ -302,7 +338,11 @@ impl Overlay {
         if let Some(r) = rect {
             self.sel.set_rect(r, self.bounds());
             self.relayout_toolbar();
+        } else {
+            self.sel.reset();
+            self.toolbar = None;
         }
+        self.dirty = true;
     }
 
     fn load_elements(&mut self) {
@@ -416,6 +456,7 @@ impl Overlay {
                         }
                     }
                     if self.sel.has_sel() && self.annot.press(self.img_pt(pt), false) {
+                        self.sync_ime_grab();
                         self.dirty = true;
                         return;
                     }
@@ -453,15 +494,8 @@ impl Overlay {
                     MouseScrollDelta::LineDelta(_, y) => (*y * 120.0) as i32,
                     MouseScrollDelta::PixelDelta(p) => p.y as i32,
                 };
-                if self.annot.tool.is_some()
-                    || self.annot.selected.is_some()
-                    || self.annot.option_target().is_some()
-                    || self.annot.live.is_some()
-                    || self.annot.text_edit.is_some()
-                {
-                    if self.annot.wheel(angle) {
-                        self.dirty = true;
-                    }
+                if self.annot.wheel_at(self.img_pt(self.cursor), angle) {
+                    self.dirty = true;
                 }
             }
             WindowEvent::Ime(winit::event::Ime::Commit(s)) => {
@@ -474,8 +508,20 @@ impl Overlay {
                 native::focus_window(&self.window);
                 self.key(&event.logical_key, event.text.as_deref());
             }
-            WindowEvent::Focused(true) => {
-                native::focus_window(&self.window);
+            WindowEvent::Focused(focused) => {
+                if *focused {
+                    native::focus_window(&self.window);
+                    #[cfg(unix)]
+                    if let Some(g) = &self.key_grab {
+                        g.kick();
+                    }
+                } else if self.result.is_none() {
+                    native::focus_window(&self.window);
+                    #[cfg(unix)]
+                    if let Some(g) = &self.key_grab {
+                        g.kick();
+                    }
+                }
             }
             WindowEvent::ModifiersChanged(m) => {
                 self.mods = m.state();
@@ -503,10 +549,12 @@ impl Overlay {
 
     fn key(&mut self, key: &Key, text: Option<&str>) {
         if self.annot.text_edit.is_some() {
+            let ctrl = self.mods.control_key();
             match key {
                 Key::Named(NamedKey::Escape) => self.annot.commit_text(true),
                 Key::Named(NamedKey::Enter) => self.annot.commit_text(false),
                 Key::Named(NamedKey::Backspace) => self.annot.type_text('\u{8}'),
+                _ if ctrl => {}
                 _ => {
                     if let Some(t) = text {
                         for ch in t.chars() {
@@ -515,11 +563,12 @@ impl Overlay {
                     }
                 }
             }
+            self.sync_ime_grab();
             self.dirty = true;
             return;
         }
         let ctrl = self.mods.control_key();
-        let shift = self.mods.shift_key();
+        let _shift = self.mods.shift_key();
         match key {
             Key::Named(NamedKey::Escape) => self.request_abort(),
             Key::Named(NamedKey::Enter) => self.finish_copy(),
@@ -540,7 +589,7 @@ impl Overlay {
                 self.relayout_toolbar();
                 self.dirty = true;
             }
-            Key::Character(c) if c.eq_ignore_ascii_case("r") && shift => self.reuse_last(),
+            Key::Character(c) if c.eq_ignore_ascii_case("r") => self.reuse_last(),
             Key::Character(c) if c.eq_ignore_ascii_case("c") && !ctrl => self.copy_color(),
             Key::Named(NamedKey::Shift) => {
                 self.hex = !self.hex;
@@ -550,13 +599,13 @@ impl Overlay {
                 self.detect = self.detect.toggle();
                 if self.detect == DetectMode::Element {
                     self.load_elements();
-                    self.toast = Some(format!(
+                    self.show_toast(format!(
                         "{} ({})",
                         tr("Element detection"),
                         element_source()
                     ));
                 } else {
-                    self.toast = Some(tr("Window detection"));
+                    self.show_toast(tr("Window detection"));
                 }
                 self.update_hover();
                 self.dirty = true;
@@ -564,7 +613,7 @@ impl Overlay {
             Key::Character(c) if c == "`" || c == "~" => {
                 self.show_cursor = !self.show_cursor;
                 self.window.set_cursor_visible(!self.show_cursor);
-                self.toast = Some(tr(if self.show_cursor {
+                self.show_toast(tr(if self.show_cursor {
                     "Cursor shown"
                 } else {
                     "Cursor hidden"
@@ -647,7 +696,7 @@ impl Overlay {
         let (c, _) = pinshot_core::sample_color(&self.capture.composed, self.cursor, self.dpr);
         let txt = c.format(self.hex);
         let _ = crate::clipboard::write_text(&txt);
-        self.toast = Some(tr(&format!("Copied {txt}")));
+        self.show_toast(tr(&format!("Copied {txt}")));
         self.dirty = true;
         // Python exits shortly after colour copy.
         self.cancel();
@@ -674,9 +723,8 @@ impl Overlay {
     }
 
     pub fn redraw(&mut self) {
+        self.expire_toast();
         if !self.dirty {
-            self.front.present_full(hwnd_of(&self.window));
-            self.window.set_visible(true);
             return;
         }
         let over_tb = self
@@ -723,9 +771,14 @@ impl Overlay {
     }
 
     pub fn pump_redraw(&mut self) {
+        self.expire_toast();
         if self.dirty {
             self.window.request_redraw();
         }
+    }
+
+    pub fn next_wake(&self) -> Option<Instant> {
+        self.toast_until
     }
 }
 

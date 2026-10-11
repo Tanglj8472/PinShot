@@ -173,7 +173,10 @@ impl Style {
                 s.width = 14;
             }
             Tool::Pen => s.width = 3,
-            Tool::Line => s.width = 3,
+            Tool::Line => {
+                s.width = 3;
+                s.arrow = false;
+            }
             Tool::Eraser => {
                 s.mode = DrawMode::Brush;
                 s.width = 16;
@@ -313,6 +316,7 @@ pub struct TextEdit {
     pub img_pt: Point,
     pub text: String,
     pub existing: Option<usize>,
+    started: Instant,
 }
 
 #[derive(Clone, Debug)]
@@ -645,7 +649,7 @@ impl Annotator {
                 if sh.style.filled {
                     b.contains(p)
                 } else {
-                    near_rect_edge(p, b, (sh.style.width as f32 / 2.0).max(3.0))
+                    near_rect_edge(p, b, (sh.style.width as f32 / 2.0).max(6.0))
                 }
             }
             Tool::Ellipse => {
@@ -658,7 +662,7 @@ impl Annotator {
                 }
             }
             Tool::Line | Tool::Pen | Tool::Marker => {
-                dist_to_polyline(p, &sh.pts) <= (sh.style.width as f32 / 2.0).max(4.0)
+                dist_to_polyline(p, &sh.pts) <= (sh.style.width as f32 / 2.0).max(8.0)
             }
             Tool::Number => b.contains(p),
             Tool::Text => b.contains(p),
@@ -714,13 +718,14 @@ impl Annotator {
     pub fn press(&mut self, img_pt: Point, shift: bool) -> bool {
         let tool = self.tool;
 
-        // Draw tools start a new shape. Only Select (or no tool + handle) edits
-        // existing ones — otherwise the first drag after switching tools restyles
-        // or continues the previous shape.
-        if tool == Some(Tool::Select)
-            || (tool.is_none()
-                && (self.hit_test(img_pt).is_some() || self.hit_handle_of_selected(img_pt).is_some()))
-        {
+        // Python: Select, or any tool except eraser/mosaic, steals a hit on an
+        // existing shape (edge / handle) so the 8 handles appear.
+        let steal = tool == Some(Tool::Select)
+            || (tool != Some(Tool::Eraser)
+                && tool != Some(Tool::Mosaic)
+                && (self.hit_test(img_pt).is_some() || self.hit_handle_of_selected(img_pt).is_some()));
+        if steal {
+
             if let Some(h) = self.hit_handle_of_selected(img_pt) {
                 if self.selected.is_some() {
                     self.sel_mode = Some(SelMode::Handle(h));
@@ -755,7 +760,12 @@ impl Annotator {
         let st = self.style(tool).clone();
         match tool {
             Tool::Text => {
-                if self.text_edit.is_some() {
+                if let Some(ed) = &self.text_edit {
+                    if ed.text.trim().is_empty() || ed.started.elapsed() < Duration::from_millis(200)
+                    {
+                        self.start_text(img_pt, None);
+                        return true;
+                    }
                     self.commit_text(false);
                     return true;
                 }
@@ -802,7 +812,20 @@ impl Annotator {
             img_pt: pt,
             text,
             existing,
+            started: Instant::now(),
         });
+    }
+
+    /// Wheel over a shape selects it (so width/font follow the hit) then adjusts.
+    pub fn wheel_at(&mut self, img_pt: Point, angle_delta: i32) -> bool {
+        if self.live.is_none() && self.text_edit.is_none() && self.selected.is_none() {
+            if let Some(i) = self.hit_test(img_pt) {
+                self.selected = Some(i);
+                self.edit_target = Some(i);
+                self.width_target = Some(i);
+            }
+        }
+        self.wheel(angle_delta)
     }
 
     pub fn begin_edit_text(&mut self, idx: usize) {
@@ -837,7 +860,7 @@ impl Annotator {
         if let Some(ed) = &mut self.text_edit {
             if ch == '\u{8}' {
                 ed.text.pop();
-            } else if !ch.is_control() {
+            } else if !ch.is_control() && ch != '\u{2013}' && ch != '\u{2014}' {
                 ed.text.push(ch);
             }
         }
@@ -1002,15 +1025,27 @@ mod tests {
     }
 
     #[test]
-    fn drag_existing_with_drawing_tool_starts_new_shape() {
+    fn drag_existing_with_drawing_tool_selects_and_moves() {
         let mut a = Annotator::new();
         a.set_tool(Some(Tool::Rect));
         a.add(rect_shape());
         assert!(a.press(Point::new(40.0, 80.0), false));
+        assert_eq!(a.selected, Some(0));
         a.move_to(Point::new(70.0, 100.0), false);
         a.release(Point::new(70.0, 100.0));
+        assert_eq!(a.shapes.len(), 1);
+        assert_eq!(a.shapes[0].pts[0], Point::new(70.0, 60.0));
+    }
+
+    #[test]
+    fn drag_empty_with_drawing_tool_starts_new_shape() {
+        let mut a = Annotator::new();
+        a.set_tool(Some(Tool::Rect));
+        a.add(rect_shape());
+        assert!(a.press(Point::new(10.0, 10.0), false));
+        a.move_to(Point::new(25.0, 25.0), false);
+        a.release(Point::new(25.0, 25.0));
         assert_eq!(a.shapes.len(), 2);
-        assert_eq!(a.shapes[0].pts[0], Point::new(40.0, 40.0));
         assert_eq!(a.shapes[1].kind, Tool::Rect);
     }
 
@@ -1221,15 +1256,59 @@ mod tests {
     }
 
     #[test]
-    fn new_tool_draws_instead_of_selecting_previous() {
+    fn click_shape_edge_selects_even_with_draw_tool() {
+        let mut a = Annotator::new();
+        a.set_tool(Some(Tool::Line));
+        a.set_style_default(Tool::Line, |s| s.arrow = false);
+        a.press(Point::new(0.0, 0.0), false);
+        a.move_to(Point::new(40.0, 0.0), false);
+        a.release(Point::new(40.0, 0.0));
+        a.set_tool(Some(Tool::Text));
+        assert!(a.press(Point::new(20.0, 0.0), false));
+        assert_eq!(a.selected, Some(0));
+        assert!(a.text_edit.is_none());
+        assert!(a.live.is_none());
+    }
+
+    #[test]
+    fn new_tool_on_empty_starts_draw() {
         let mut a = Annotator::new();
         a.set_tool(Some(Tool::Line));
         a.press(Point::new(0.0, 0.0), false);
         a.move_to(Point::new(30.0, 0.0), false);
         a.release(Point::new(30.0, 0.0));
         a.set_tool(Some(Tool::Pen));
-        assert!(a.press(Point::new(15.0, 0.0), false));
+        assert!(a.press(Point::new(15.0, 20.0), false));
         assert!(a.live.as_ref().map(|s| s.kind) == Some(Tool::Pen));
         assert_eq!(a.shapes.len(), 1);
+    }
+
+    #[test]
+    fn text_first_click_opens_editor_second_empty_relocates() {
+        let mut a = Annotator::new();
+        a.set_tool(Some(Tool::Text));
+        assert!(a.press(Point::new(20.0, 30.0), false));
+        assert!(a.text_edit.is_some());
+        assert!(a.shapes.is_empty());
+        assert!(a.press(Point::new(40.0, 50.0), false));
+        let ed = a.text_edit.as_ref().expect("still editing");
+        assert!(ed.text.is_empty());
+        assert_eq!(ed.img_pt, Point::new(40.0, 50.0));
+        assert!(a.shapes.is_empty());
+    }
+
+    #[test]
+    fn wheel_at_selects_hit_shape() {
+        let mut a = Annotator::new();
+        a.set_tool(Some(Tool::Rect));
+        a.press(Point::new(10.0, 10.0), false);
+        a.move_to(Point::new(40.0, 40.0), false);
+        a.release(Point::new(40.0, 40.0));
+        a.set_tool(Some(Tool::Rect));
+        a.selected = None;
+        a.width_target = None;
+        assert!(a.wheel_at(Point::new(10.0, 10.0), 120));
+        assert_eq!(a.selected, Some(0));
+        assert_eq!(a.shapes[0].style.width, 4);
     }
 }
