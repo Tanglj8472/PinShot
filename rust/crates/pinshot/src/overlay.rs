@@ -62,8 +62,6 @@ pub struct Overlay {
     history_max: u32,
     #[cfg(unix)]
     key_grab: Option<crate::x11util::OverlayKeyGrab>,
-    #[cfg(unix)]
-    _ptr_grab: Option<crate::x11util::OverlayPointerGrab>,
     #[cfg(not(windows))]
     surface: Option<softbuffer::Surface<Rc<Window>, Rc<Window>>>,
 }
@@ -139,8 +137,6 @@ impl Overlay {
             history_max: history_max.max(1),
             #[cfg(unix)]
             key_grab: None,
-            #[cfg(unix)]
-            _ptr_grab: None,
             #[cfg(not(windows))]
             surface,
         };
@@ -149,18 +145,20 @@ impl Overlay {
         #[cfg(unix)]
         {
             s.key_grab = native::grab_overlay_keys(&s.window, proxy);
-            // Release the pre-capture InputHold first, then grab on winit's
-            // Display. A second-client pointer grab steals ButtonPress from
-            // winit (see OverlayPointerGrab).
+            // Drop the pre-capture InputHold only after the overlay is mapped.
+            // Never XGrabPointer from another client / Xlib Display: those
+            // events never reach winit's XCB loop. Button1 is recovered via
+            // QueryPointer (see recover_pointer_drag).
             drop(pre_hold);
-            s._ptr_grab = crate::x11util::OverlayPointerGrab::grab(&s.window);
+            crate::logutil::log("overlay mapped (pointer left on winit window)");
         }
         #[cfg(not(unix))]
         {
             let _ = proxy;
         }
         if let Some((x, y, down)) = native::pointer_in_window(&s.window) {
-            s.cursor = Point::new(x as f32, y as f32);
+            let (vx, vy) = s.capture.virtual_origin;
+            s.cursor = Point::new((x - vx) as f32, (y - vy) as f32);
             if down && s.sel.state == pinshot_core::selection::SelState::Idle {
                 let _ = s.sel.press(s.cursor, s.bounds(), false);
                 crate::logutil::log(&format!(
@@ -591,7 +589,13 @@ impl Overlay {
         let _shift = self.mods.shift_key();
         match key {
             Key::Named(NamedKey::Escape) => self.request_abort(),
-            Key::Named(NamedKey::Enter) => self.finish_copy(),
+            Key::Named(NamedKey::Enter) => {
+                if self.sel.has_sel() {
+                    self.finish_copy();
+                } else {
+                    crate::logutil::log("Enter with no selection");
+                }
+            }
             Key::Character(c) if c.eq_ignore_ascii_case("c") && ctrl => self.finish_copy(),
             Key::Named(NamedKey::F3) => self.finish_pin(),
             Key::Character(c) if c.eq_ignore_ascii_case("t") && ctrl => self.finish_pin(),
@@ -804,7 +808,9 @@ impl Overlay {
         let Some((x, y, down)) = native::pointer_in_window(&self.window) else {
             return;
         };
-        let pt = Point::new(x as f32, y as f32);
+        let vx = self.capture.virtual_origin.0;
+        let vy = self.capture.virtual_origin.1;
+        let pt = Point::new((x - vx) as f32, (y - vy) as f32);
         self.cursor = pt;
         if down && self.sel.state == SelState::Idle && !self.sel.has_sel() && self.annot.tool.is_none()
         {

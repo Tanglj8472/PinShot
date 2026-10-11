@@ -896,20 +896,21 @@ impl ApplicationHandler<AppEvent> for App {
         if let Some(ov) = &mut self.overlay {
             ov.pump_redraw();
         }
-        let mut wake = self.snip_at;
-        if let Some(ov) = &self.overlay {
-            if let Some(t) = ov.next_wake() {
-                wake = Some(wake.map(|w| w.min(t)).unwrap_or(t));
+        if self.overlay.is_some() {
+            // Poll while the overlay is up so QueryPointer can adopt a
+            // Button1 that XTEST / a pre-map drag never delivered to winit.
+            event_loop.set_control_flow(ControlFlow::Poll);
+        } else {
+            let mut wake = self.snip_at;
+            for p in &self.pins {
+                if let Some(t) = p.next_wake() {
+                    wake = Some(wake.map(|w| w.min(t)).unwrap_or(t));
+                }
             }
-        }
-        for p in &self.pins {
-            if let Some(t) = p.next_wake() {
-                wake = Some(wake.map(|w| w.min(t)).unwrap_or(t));
-            }
-        }
-        if let Some(at) = wake {
-            if Instant::now() < at {
-                event_loop.set_control_flow(ControlFlow::WaitUntil(at));
+            if let Some(at) = wake {
+                if Instant::now() < at {
+                    event_loop.set_control_flow(ControlFlow::WaitUntil(at));
+                }
             }
         }
         let mut persist = false;
