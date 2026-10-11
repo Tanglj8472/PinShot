@@ -17,40 +17,53 @@ pub fn is_open() -> bool {
     OPEN.load(Ordering::SeqCst)
 }
 
+pub fn mark_closed() {
+    OPEN.store(false, Ordering::SeqCst);
+}
+
 pub fn open(cfg: Config, proxy: EventLoopProxy<AppEvent>) {
-    if OPEN.swap(true, Ordering::SeqCst) {
-        let _ = proxy.send_event(AppEvent::RaisePrefs);
-        return;
+    crate::logutil::log("prefs: open requested");
+    #[cfg(unix)]
+    {
+        let _ = cfg;
+        let _ = proxy.send_event(AppEvent::OpenPrefs);
     }
-    let _ = std::thread::Builder::new()
-        .name("pinshot-prefs".into())
-        .spawn(move || {
-            i18n::set_lang(cfg.lang());
-            let opts = eframe::NativeOptions {
-                viewport: egui::ViewportBuilder::default()
-                    .with_title(tr("PinShot Preferences"))
-                    .with_inner_size([500.0, 580.0])
-                    .with_min_inner_size([440.0, 420.0]),
-                ..Default::default()
-            };
-            let _ = eframe::run_native(
-                "PinShot Preferences",
-                opts,
-                Box::new(move |cc| {
-                    apply_theme(cc, &cfg.theme);
-                    Ok(Box::new(PrefsApp {
-                        draft: cfg,
-                        proxy,
-                        tab: 0,
-                        advanced: false,
-                        group_sel: 0,
-                        group_edit: String::new(),
-                        status: String::new(),
-                    }))
-                }),
-            );
-            OPEN.store(false, Ordering::SeqCst);
-        });
+    #[cfg(not(unix))]
+    {
+        if OPEN.swap(true, Ordering::SeqCst) {
+            let _ = proxy.send_event(AppEvent::RaisePrefs);
+            return;
+        }
+        let _ = std::thread::Builder::new()
+            .name("pinshot-prefs".into())
+            .spawn(move || {
+                i18n::set_lang(cfg.lang());
+                let opts = eframe::NativeOptions {
+                    viewport: egui::ViewportBuilder::default()
+                        .with_title(tr("PinShot Preferences"))
+                        .with_inner_size([500.0, 580.0])
+                        .with_min_inner_size([440.0, 420.0]),
+                    ..Default::default()
+                };
+                let _ = eframe::run_native(
+                    "PinShot Preferences",
+                    opts,
+                    Box::new(move |cc| {
+                        apply_theme(cc, &cfg.theme);
+                        Ok(Box::new(PrefsApp {
+                            draft: cfg,
+                            proxy,
+                            tab: 0,
+                            advanced: false,
+                            group_sel: 0,
+                            group_edit: String::new(),
+                            status: String::new(),
+                        }))
+                    }),
+                );
+                OPEN.store(false, Ordering::SeqCst);
+            });
+    }
 }
 
 fn apply_theme(cc: &eframe::CreationContext<'_>, theme: &str) {

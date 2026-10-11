@@ -57,6 +57,8 @@ pub struct Overlay {
     translate_on_select: bool,
     show_cursor: bool,
     mods: ModifiersState,
+    #[cfg(unix)]
+    _key_grab: Option<crate::x11util::OverlayKeyGrab>,
     #[cfg(not(windows))]
     surface: Option<softbuffer::Surface<Rc<Window>, Rc<Window>>>,
 }
@@ -67,6 +69,7 @@ impl Overlay {
         capture: Capture,
         history: SnipHistory,
         translate_on_select: bool,
+        proxy: winit::event_loop::EventLoopProxy<crate::event::AppEvent>,
     ) -> Result<Self, String> {
         let (vx, vy) = capture.virtual_origin;
         let w = capture.composed.width;
@@ -124,9 +127,21 @@ impl Overlay {
             translate_on_select,
             show_cursor: false,
             mods: ModifiersState::empty(),
+            #[cfg(unix)]
+            _key_grab: None,
             #[cfg(not(windows))]
             surface,
         };
+        s.window.set_visible(true);
+        native::focus_window(&s.window);
+        #[cfg(unix)]
+        {
+            s._key_grab = native::grab_overlay_keys(&s.window, proxy);
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = proxy;
+        }
         s.redraw();
         Ok(s)
     }
@@ -166,12 +181,16 @@ impl Overlay {
 
     fn relayout_toolbar(&mut self) {
         if self.sel.has_sel() && self.sel.state == SelState::Selected {
-            self.toolbar = Some(Toolbar::layout(
+            let mut tb = Toolbar::layout(
                 self.sel.normalized(),
                 self.bounds(),
                 self.annot.tool,
                 self.arrow_on,
-            ));
+            );
+            if let Some(t) = self.annot.tool {
+                tb.set_width_value(self.annot.style(t).width);
+            }
+            self.toolbar = Some(tb);
         } else {
             self.toolbar = None;
         }
@@ -300,16 +319,17 @@ impl Overlay {
     fn apply_tb(&mut self, a: TbAction) {
         match a {
             TbAction::Tool(t) => {
-                self.arrow_on = t == Tool::Line && self.annot.style(Tool::Line).arrow;
+                self.annot.set_tool(Some(t));
                 if t == Tool::Line {
-                    self.annot.set_style_value(Tool::Line, |s| s.arrow = false);
+                    self.annot.set_style_default(Tool::Line, |s| s.arrow = false);
+                    self.arrow_on = false;
+                } else {
                     self.arrow_on = false;
                 }
-                self.annot.set_tool(Some(t));
             }
             TbAction::Arrow => {
-                self.annot.set_style_value(Tool::Line, |s| s.arrow = true);
                 self.annot.set_tool(Some(Tool::Line));
+                self.annot.set_style_default(Tool::Line, |s| s.arrow = true);
                 self.arrow_on = true;
             }
             TbAction::Undo => {
@@ -385,6 +405,9 @@ impl Overlay {
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 let pt = self.cursor;
+                if *state == ElementState::Pressed {
+                    native::focus_window(&self.window);
+                }
                 if *state == ElementState::Pressed && *button == MouseButton::Left {
                     if let Some(tb) = &self.toolbar {
                         if let Some(a) = tb.hit(pt) {
@@ -448,7 +471,11 @@ impl Overlay {
                 self.dirty = true;
             }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
+                native::focus_window(&self.window);
                 self.key(&event.logical_key, event.text.as_deref());
+            }
+            WindowEvent::Focused(true) => {
+                native::focus_window(&self.window);
             }
             WindowEvent::ModifiersChanged(m) => {
                 self.mods = m.state();
@@ -459,6 +486,19 @@ impl Overlay {
             WindowEvent::CloseRequested => self.cancel(),
             _ => {}
         }
+    }
+
+    pub fn handle_x11_key(&mut self, keysym: u32, mods: u16, pressed: bool) {
+        self.mods = x11_mods_to_winit(mods);
+        self.mag_forced = self.mods.contains(ModifiersState::ALT);
+        if !pressed {
+            self.dirty = true;
+            return;
+        }
+        let Some((key, text)) = keysym_to_winit(keysym) else {
+            return;
+        };
+        self.key(&key, text.as_deref());
     }
 
     fn key(&mut self, key: &Key, text: Option<&str>) {
@@ -572,8 +612,8 @@ impl Overlay {
     fn move_cursor(&mut self, dx: f32, dy: f32) {
         let b = self.bounds();
         self.cursor = Point::new(
-            (self.cursor.x + dx).clamp(0.0, (b.w - 1.0).max(0.0)),
-            (self.cursor.y + dy).clamp(0.0, (b.h - 1.0).max(0.0)),
+            pinshot_core::geom::clamp_f32(self.cursor.x + dx, 0.0, (b.w - 1.0).max(0.0)),
+            pinshot_core::geom::clamp_f32(self.cursor.y + dy, 0.0, (b.h - 1.0).max(0.0)),
         );
         let _ = self
             .window
@@ -687,4 +727,55 @@ impl Overlay {
             self.window.request_redraw();
         }
     }
+}
+
+fn x11_mods_to_winit(mods: u16) -> ModifiersState {
+    let mut m = ModifiersState::empty();
+    if mods & 1 != 0 {
+        m |= ModifiersState::SHIFT;
+    }
+    if mods & 4 != 0 {
+        m |= ModifiersState::CONTROL;
+    }
+    if mods & 8 != 0 {
+        m |= ModifiersState::ALT;
+    }
+    if mods & 64 != 0 {
+        m |= ModifiersState::SUPER;
+    }
+    m
+}
+
+fn keysym_to_winit(keysym: u32) -> Option<(Key, Option<String>)> {
+    let named = match keysym {
+        0xff1b => Some(NamedKey::Escape),
+        0xff0d | 0xff8d => Some(NamedKey::Enter),
+        0xff08 => Some(NamedKey::Backspace),
+        0xffff | 0xff9f => Some(NamedKey::Delete),
+        0xff09 => Some(NamedKey::Tab),
+        0xffe1 | 0xffe2 => Some(NamedKey::Shift),
+        0xff51 | 0xff96 => Some(NamedKey::ArrowLeft),
+        0xff52 | 0xff97 => Some(NamedKey::ArrowUp),
+        0xff53 | 0xff98 => Some(NamedKey::ArrowRight),
+        0xff54 | 0xff99 => Some(NamedKey::ArrowDown),
+        0xffbe => Some(NamedKey::F1),
+        0xffbf => Some(NamedKey::F2),
+        0xffc0 => Some(NamedKey::F3),
+        0xffc1 => Some(NamedKey::F4),
+        0xffc2 => Some(NamedKey::F5),
+        0xffc3 => Some(NamedKey::F6),
+        0x0020 => {
+            return Some((Key::Character(" ".into()), Some(" ".into())));
+        }
+        _ => None,
+    };
+    if let Some(n) = named {
+        return Some((Key::Named(n), None));
+    }
+    let ch = char::from_u32(keysym)?;
+    if ch.is_control() {
+        return None;
+    }
+    let s = ch.to_string();
+    Some((Key::Character(s.clone().into()), Some(s)))
 }

@@ -44,6 +44,34 @@ pub fn save_path(suggested: &str) -> Option<String> {
     }
 }
 
+pub fn open_image_path() -> Option<String> {
+    let mut file: Vec<u16> = wide("pinshot.png");
+    file.resize(MAX_PATH as usize, 0);
+    let filter = wide("Images\0*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.webp\0\0");
+    let title = wide(&tr("Replace from file"));
+    let mut ofn = OPENFILENAMEW {
+        lStructSize: std::mem::size_of::<OPENFILENAMEW>() as u32,
+        lpstrFilter: pcw(&filter),
+        lpstrFile: windows::core::PWSTR(file.as_mut_ptr()),
+        nMaxFile: file.len() as u32,
+        lpstrTitle: pcw(&title),
+        Flags: OFN_PATHMUSTEXIST,
+        ..Default::default()
+    };
+    unsafe {
+        if windows::Win32::UI::Controls::Dialogs::GetOpenFileNameW(&mut ofn).as_bool() {
+            let end = file.iter().position(|&c| c == 0).unwrap_or(file.len());
+            Some(String::from_utf16_lossy(&file[..end]))
+        } else {
+            None
+        }
+    }
+}
+
+pub fn open_folder() -> Option<String> {
+    None
+}
+
 pub fn save_raster(img: &pinshot_core::raster::Raster, path: &str, jpeg_q: u8) -> Result<(), String> {
     let rgba = image::RgbaImage::from_raw(img.width, img.height, img.pixels.clone())
         .ok_or("invalid raster")?;

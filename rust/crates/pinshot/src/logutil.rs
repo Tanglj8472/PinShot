@@ -30,6 +30,16 @@ pub fn init(args: &[String]) {
         "PinShot {} starting debug={debug} args={args:?}",
         pinshot_core::VERSION
     ));
+    install_panic_hook();
+}
+
+fn install_panic_hook() {
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let bt = std::backtrace::Backtrace::force_capture();
+        log(&format!("PANIC: {info}\n{bt}"));
+        prev(info);
+    }));
 }
 
 pub fn log(msg: &str) {

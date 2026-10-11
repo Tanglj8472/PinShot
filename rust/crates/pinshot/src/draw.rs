@@ -391,7 +391,7 @@ impl OverlayFront {
                 Rgba::BLUE,
                 1.0,
             );
-            if sel.has_sel() && annot.tool.is_none() {
+            if sel.has_sel() && annot.tool.is_none() && annot.selected.is_none() {
                 for (_, c) in handle_points(hole) {
                     let hr = Rect::new(
                         c.x - HANDLE_SIZE / 2.0,
@@ -412,6 +412,25 @@ impl OverlayFront {
                 fh,
             ));
             chrome.push(hole_pad);
+        }
+
+        if let Some(i) = annot.selected {
+            if let Some(sh) = annot.shapes.get(i) {
+                let hb = sh.bounds();
+                stroke_rect(&mut self.frame, hb, Rgba::BLUE, 1.0);
+                for (_, c) in handle_points(hb) {
+                    let hr = Rect::new(
+                        c.x - HANDLE_SIZE / 2.0,
+                        c.y - HANDLE_SIZE / 2.0,
+                        HANDLE_SIZE,
+                        HANDLE_SIZE,
+                    );
+                    fill_rect(&mut self.frame, hr, Rgba::BLUE);
+                    stroke_rect(&mut self.frame, hr, Rgba::WHITE, 1.0);
+                    chrome.push(hr.inflated(2.0));
+                }
+                chrome.push(hb.inflated(HANDLE_SIZE));
+            }
         }
 
         if mag_on {
@@ -504,6 +523,34 @@ fn ed_style_color(annot: &Annotator) -> Rgba {
     annot.style(Tool::Text).color
 }
 
+fn fill_px(pm: &mut Pixmap, x: i32, y: i32, w: i32, h: i32, c: Rgba) {
+    let pw = pm.width() as i32;
+    let ph = pm.height() as i32;
+    let x0 = x.max(0);
+    let y0 = y.max(0);
+    let x1 = (x + w).min(pw);
+    let y1 = (y + h).min(ph);
+    if x0 >= x1 || y0 >= y1 {
+        return;
+    }
+    let a = c.a as u16;
+    let px = PremultipliedColorU8::from_rgba(
+        ((c.r as u16 * a) / 255) as u8,
+        ((c.g as u16 * a) / 255) as u8,
+        ((c.b as u16 * a) / 255) as u8,
+        c.a,
+    )
+    .unwrap_or(PremultipliedColorU8::TRANSPARENT);
+    let stride = pw as usize;
+    let pixels = pm.pixels_mut();
+    for yy in y0..y1 {
+        let row = yy as usize * stride;
+        for xx in x0..x1 {
+            pixels[row + xx as usize] = px;
+        }
+    }
+}
+
 fn paint_size_label(pm: &mut Pixmap, hole: Rect, label: &str, ow: u32, oh: u32) -> Rect {
     let lw = (label.len() as f32) * 7.5 + 12.0;
     let ly = if hole.y >= 22.0 { hole.y - 22.0 } else { hole.y + 2.0 };
@@ -527,26 +574,29 @@ fn paint_magnifier(
     hex: bool,
     mag: Magnifier,
 ) -> Rect {
-    fill_rect(pm, mag.grid, Rgba::BLACK);
+    let gx = mag.grid.x.floor() as i32;
+    let gy = mag.grid.y.floor() as i32;
+    let n = MAG_N;
+    let z = MAG_ZOOM as i32;
+    fill_px(pm, gx, gy, n * z, n * z, Rgba::BLACK);
     let cx = (cursor.x * dpr).round() as i32;
     let cy = (cursor.y * dpr).round() as i32;
-    let n = MAG_N;
-    let z = MAG_ZOOM as f32;
     for j in 0..n {
         for i in 0..n {
             let c = shot.get_clamped(cx + i - n / 2, cy + j - n / 2);
-            fill_rect(
-                pm,
-                Rect::new(mag.grid.x + i as f32 * z, mag.grid.y + j as f32 * z, z, z),
-                c,
-            );
+            fill_px(pm, gx + i * z, gy + j * z, z, z, c);
         }
     }
-    stroke_rect(pm, mag.grid, Rgba::WHITE, 1.0);
-    let c0 = (n / 2) as f32 * z;
     stroke_rect(
         pm,
-        Rect::new(mag.grid.x + c0, mag.grid.y + c0, z, z),
+        Rect::new(gx as f32, gy as f32, (n * z) as f32, (n * z) as f32),
+        Rgba::WHITE,
+        1.0,
+    );
+    let c0 = (n / 2) as f32 * z as f32;
+    stroke_rect(
+        pm,
+        Rect::new(mag.grid.x + c0, mag.grid.y + c0, z as f32, z as f32),
         Rgba::rgba(30, 144, 255, 220),
         1.0,
     );
@@ -613,6 +663,19 @@ pub fn paint_toolbar(pm: &mut Pixmap, tb: &Toolbar) -> Rect {
             fill_rect(pm, *r, *c);
             stroke_rect(pm, *r, Rgba::rgb(136, 136, 136), 1.0);
         }
+        fill_rect(pm, tb.width_minus, Rgba::rgb(235, 235, 235));
+        stroke_rect(pm, tb.width_minus, Rgba::rgb(154, 154, 154), 1.0);
+        crate::text::blit_into_pm(pm, "−", tb.width_minus.x + 5.0, tb.width_minus.y + 2.0, 16, Rgba::rgb(20, 20, 20), true);
+        fill_rect(pm, tb.width_plus, Rgba::rgb(235, 235, 235));
+        stroke_rect(pm, tb.width_plus, Rgba::rgb(154, 154, 154), 1.0);
+        crate::text::blit_into_pm(pm, "+", tb.width_plus.x + 5.0, tb.width_plus.y + 2.0, 16, Rgba::rgb(20, 20, 20), true);
+        fill_rect(pm, tb.width_label, Rgba::rgb(247, 247, 247));
+        let wl = if tb.width_value > 0 {
+            format!("{}", tb.width_value)
+        } else {
+            "w".into()
+        };
+        crate::text::blit_into_pm(pm, &wl, tb.width_label.x + 4.0, tb.width_label.y + 3.0, 12, Rgba::rgb(20, 20, 20), true);
         dirty = dirty.union(pr);
     }
     let _ = IconKind::Rect;

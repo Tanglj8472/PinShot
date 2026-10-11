@@ -1,0 +1,340 @@
+//! In-process pin context menu (Python `PinWindow.build_menu`). Zenity is not required.
+
+use std::num::NonZeroU32;
+use std::rc::Rc;
+use std::time::Instant;
+
+use pinshot_core::geom::{clamp_f32, Point, Rect};
+use pinshot_core::groups;
+use pinshot_core::i18n::tr;
+use softbuffer::{Context, Surface};
+use winit::dpi::{PhysicalPosition, PhysicalSize};
+use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event_loop::ActiveEventLoop;
+use winit::keyboard::{Key, NamedKey};
+use winit::window::{Window, WindowId};
+
+use crate::draw::{fill_rect, present, stroke_rect};
+use crate::event::PinMenuAction;
+use pinshot_core::color::Rgba;
+
+const ROW_H: f32 = 22.0;
+const MENU_W: f32 = 268.0;
+const PAD: f32 = 6.0;
+
+#[derive(Clone)]
+enum Row {
+    Sep,
+    Head(String),
+    Item {
+        label: String,
+        action: PinMenuAction,
+        checked: bool,
+        indent: bool,
+    },
+}
+
+pub struct PinMenuState {
+    pub annotating: bool,
+    pub click_through: bool,
+    pub scale: f32,
+    pub opacity: f32,
+    pub group: String,
+    pub groups: Vec<String>,
+    pub img_w: u32,
+    pub img_h: u32,
+}
+
+pub struct PinMenuWin {
+    window: Rc<Window>,
+    surface: Surface<Rc<Window>, Rc<Window>>,
+    rows: Vec<(Rect, Row)>,
+    cursor: Point,
+    dirty: bool,
+    pub closed: bool,
+    born: Instant,
+}
+
+impl PinMenuWin {
+    pub fn create(
+        event_loop: &ActiveEventLoop,
+        pos: (i32, i32),
+        state: PinMenuState,
+    ) -> Result<Self, String> {
+        let rows_src = build_rows(&state);
+        let h = (PAD * 2.0 + rows_src.len() as f32 * ROW_H).ceil().max(40.0) as u32;
+        let w = MENU_W as u32;
+        let attrs = Window::default_attributes()
+            .with_title("PinShot")
+            .with_decorations(false)
+            .with_resizable(false)
+            .with_visible(true)
+            .with_position(PhysicalPosition::new(pos.0, pos.1))
+            .with_inner_size(PhysicalSize::new(w, h))
+            .with_window_level(winit::window::WindowLevel::AlwaysOnTop);
+        let window = Rc::new(event_loop.create_window(attrs).map_err(|e| e.to_string())?);
+        crate::native::raise_on_top(&window);
+        crate::native::focus_window(&window);
+        let context = Context::new(window.clone()).map_err(|e| format!("{e:?}"))?;
+        let surface = Surface::new(&context, window.clone()).map_err(|e| format!("{e:?}"))?;
+        let mut y = PAD;
+        let mut rows = Vec::new();
+        for row in rows_src {
+            let hh = match &row {
+                Row::Sep => 8.0,
+                _ => ROW_H,
+            };
+            rows.push((Rect::new(0.0, y, MENU_W, hh), row));
+            y += hh;
+        }
+        let mut m = Self {
+            window,
+            surface,
+            rows,
+            cursor: Point::ZERO,
+            dirty: true,
+            closed: false,
+            born: Instant::now(),
+        };
+        m.redraw();
+        Ok(m)
+    }
+
+    pub fn window_id(&self) -> WindowId {
+        self.window.id()
+    }
+
+    pub fn close(&mut self) {
+        self.closed = true;
+        self.window.set_visible(false);
+    }
+
+    pub fn handle(&mut self, event: &WindowEvent) -> Option<PinMenuAction> {
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor = Point::new(position.x as f32, position.y as f32);
+                self.dirty = true;
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                crate::native::focus_window(&self.window);
+                if let Some(a) = self.hit() {
+                    self.close();
+                    return Some(a);
+                }
+            }
+            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
+                match &event.logical_key {
+                    Key::Named(NamedKey::Escape) => {
+                        self.close();
+                    }
+                    Key::Named(NamedKey::Enter) => {
+                        if let Some(a) = self.hit() {
+                            self.close();
+                            return Some(a);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            WindowEvent::Focused(false) if self.born.elapsed().as_millis() > 250 => self.close(),
+            WindowEvent::CloseRequested => self.close(),
+            WindowEvent::RedrawRequested => self.redraw(),
+            _ => {}
+        }
+        if self.dirty {
+            self.window.request_redraw();
+        }
+        None
+    }
+
+    fn hit(&self) -> Option<PinMenuAction> {
+        for (r, row) in &self.rows {
+            if r.contains(self.cursor) {
+                if let Row::Item { action, .. } = row {
+                    return Some(action.clone());
+                }
+            }
+        }
+        None
+    }
+
+    fn redraw(&mut self) {
+        let size = self.window.inner_size();
+        let w = size.width.max(8);
+        let h = size.height.max(8);
+        let Some(nw) = NonZeroU32::new(w) else {
+            return;
+        };
+        let Some(nh) = NonZeroU32::new(h) else {
+            return;
+        };
+        if self.surface.resize(nw, nh).is_err() {
+            return;
+        }
+        let Some(mut pm) = tiny_skia::Pixmap::new(w, h) else {
+            return;
+        };
+        fill_rect(
+            &mut pm,
+            Rect::new(0.0, 0.0, w as f32, h as f32),
+            Rgba::rgb(247, 247, 247),
+        );
+        stroke_rect(
+            &mut pm,
+            Rect::new(0.5, 0.5, w as f32 - 1.0, h as f32 - 1.0),
+            Rgba::rgb(154, 154, 154),
+            1.0,
+        );
+        for (r, row) in &self.rows {
+            match row {
+                Row::Sep => {
+                    fill_rect(
+                        &mut pm,
+                        Rect::new(8.0, r.y + 3.0, MENU_W - 16.0, 1.0),
+                        Rgba::rgb(200, 200, 200),
+                    );
+                }
+                Row::Head(s) => {
+                    crate::text::blit_into_pm(
+                        &mut pm,
+                        s,
+                        r.x + 10.0,
+                        r.y + 4.0,
+                        11,
+                        Rgba::rgb(90, 90, 90),
+                        true,
+                    );
+                }
+                Row::Item {
+                    label,
+                    checked,
+                    indent,
+                    ..
+                } => {
+                    let hover = r.contains(self.cursor);
+                    if hover {
+                        fill_rect(&mut pm, *r, Rgba::rgb(196, 217, 242));
+                    }
+                    let mut x = if *indent { 28.0 } else { 12.0 };
+                    if *checked {
+                        crate::text::blit_into_pm(
+                            &mut pm,
+                            "✓",
+                            x,
+                            r.y + 3.0,
+                            12,
+                            Rgba::rgb(20, 20, 20),
+                            true,
+                        );
+                        x += 14.0;
+                    }
+                    crate::text::blit_into_pm(
+                        &mut pm,
+                        label,
+                        x,
+                        r.y + 3.0,
+                        12,
+                        Rgba::rgb(20, 20, 20),
+                        false,
+                    );
+                }
+            }
+        }
+        if let Ok(mut buf) = self.surface.buffer_mut() {
+            present(&mut buf, &pm);
+            let _ = buf.present();
+        }
+        self.dirty = false;
+    }
+}
+
+fn build_rows(state: &PinMenuState) -> Vec<Row> {
+    let mut rows = vec![
+        item(tr("Copy image"), PinMenuAction::Copy, false, false),
+        item(tr("Save image as…"), PinMenuAction::Save, false, false),
+        Row::Sep,
+        item(tr("Show toolbar"), PinMenuAction::ToggleToolbar, state.annotating, false),
+        item(
+            tr("Click-through"),
+            PinMenuAction::ToggleClickThrough,
+            state.click_through,
+            false,
+        ),
+        Row::Sep,
+        Row::Head(tr("Zoom")),
+    ];
+    for pct in [25, 50, 75, 100, 150, 200, 400] {
+        let on = (state.scale * 100.0 - pct as f32).abs() < 0.6;
+        rows.push(item(format!("{pct}%"), PinMenuAction::Zoom(pct), on, true));
+    }
+    rows.push(Row::Head(tr("Image")));
+    rows.push(item(tr("Rotate left"), PinMenuAction::Rotate(-1), false, true));
+    rows.push(item(tr("Rotate right"), PinMenuAction::Rotate(1), false, true));
+    rows.push(item(tr("Flip horizontal"), PinMenuAction::FlipH, false, true));
+    rows.push(item(tr("Flip vertical"), PinMenuAction::FlipV, false, true));
+    rows.push(Row::Sep);
+    rows.push(item(tr("Paste"), PinMenuAction::Paste, false, false));
+    rows.push(item(tr("Replace from file…"), PinMenuAction::ReplaceFile, false, false));
+    rows.push(Row::Sep);
+    rows.push(Row::Head(tr("Move to group")));
+    for g in &state.groups {
+        let on = g.eq_ignore_ascii_case(&state.group);
+        rows.push(item(
+            groups::label(g),
+            PinMenuAction::MoveGroup(g.clone()),
+            on,
+            true,
+        ));
+    }
+    rows.push(item(tr("New group…"), PinMenuAction::NewGroup, false, true));
+    rows.push(Row::Sep);
+    rows.push(item(tr("View in folder"), PinMenuAction::ViewInFolder, false, false));
+    rows.push(Row::Sep);
+    rows.push(item(tr("Close"), PinMenuAction::Close, false, false));
+    rows.push(item(tr("Destroy"), PinMenuAction::Destroy, false, false));
+    rows.push(Row::Sep);
+    rows.push(Row::Head(format!("{} × {}", state.img_w, state.img_h)));
+    rows.push(item(tr("Copy size"), PinMenuAction::CopySize, false, false));
+    rows.push(item(tr("Reset zoom"), PinMenuAction::ResetZoom, false, false));
+    let info = format!(
+        "Zoom {}%  ·  Opacity {}%",
+        (state.scale * 100.0).round() as i32,
+        (state.opacity * 100.0).round() as i32
+    );
+    rows.push(Row::Head(tr(&info)));
+    rows
+}
+
+fn item(label: impl Into<String>, action: PinMenuAction, checked: bool, indent: bool) -> Row {
+    Row::Item {
+        label: label.into(),
+        action,
+        checked,
+        indent,
+    }
+}
+
+/// Keep the menu on-screen when the pin is near the edge or tiny.
+pub fn clamp_menu_pos(x: i32, y: i32, mw: i32, mh: i32, sw: i32, sh: i32) -> (i32, i32) {
+    let max_x = (sw - mw).max(0) as f32;
+    let max_y = (sh - mh).max(0) as f32;
+    (
+        clamp_f32(x as f32, 0.0, max_x).round() as i32,
+        clamp_f32(y as f32, 0.0, max_y).round() as i32,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tiny_pin_menu_pos_does_not_panic() {
+        let (x, y) = clamp_menu_pos(10, 10, 268, 800, 40, 20);
+        assert_eq!((x, y), (0, 0));
+    }
+}

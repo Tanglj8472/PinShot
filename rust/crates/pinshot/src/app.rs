@@ -20,7 +20,7 @@ use winit::window::WindowId;
 use crate::autostart;
 use crate::capture::Capture;
 use crate::clipboard::{self, ClipContent};
-use crate::event::{AppEvent, TrayCmd};
+use crate::event::{AppEvent, PinMenuAction, TrayCmd};
 use crate::countdown::CountdownWin;
 use crate::fallback::FallbackWin;
 use crate::native::{self, HotkeyHost};
@@ -85,6 +85,9 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         countdown: None,
         countdown_left: 0,
         restore_fallback: false,
+        prefs: None,
+        pin_menu: None,
+        menu_pin: None,
     };
     event_loop.run_app(&mut app).map_err(|e| e.to_string())
 }
@@ -114,6 +117,9 @@ struct App {
     countdown: Option<CountdownWin>,
     countdown_left: u32,
     restore_fallback: bool,
+    prefs: Option<crate::prefs_win::PrefsWin>,
+    pin_menu: Option<crate::pin_menu::PinMenuWin>,
+    menu_pin: Option<WindowId>,
 }
 
 impl App {
@@ -229,7 +235,7 @@ impl App {
         let translate = self.translate_next;
         self.translate_next = false;
         match Capture::grab(self.dump_capture) {
-            Ok(cap) => match Overlay::start(event_loop, cap, self.history.clone(), translate) {
+            Ok(cap) => match Overlay::start(event_loop, cap, self.history.clone(), translate, self.proxy.clone()) {
                 Ok(ov) => self.overlay = Some(ov),
                 Err(e) => eprintln!("PinShot overlay: {e}"),
             },
@@ -257,6 +263,17 @@ impl App {
         pos: Option<(i32, i32)>,
         group: Option<String>,
     ) {
+        self.spawn_pin_ex(event_loop, img, pos, group, true);
+    }
+
+    fn spawn_pin_ex(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        img: Raster,
+        pos: Option<(i32, i32)>,
+        group: Option<String>,
+        persist: bool,
+    ) {
         let n = self.pins.len() as i32;
         let pos = pos.unwrap_or((40 + n * 24, 40 + n * 24));
         match PinWin::create(event_loop, img, pos) {
@@ -269,7 +286,9 @@ impl App {
                     p.hide();
                 }
                 self.pins.push(p);
-                self.persist_session();
+                if persist {
+                    self.persist_session();
+                }
             }
             Err(e) => eprintln!("PinShot pin: {e}"),
         }
@@ -394,7 +413,10 @@ impl App {
                 continue;
             }
             let file = next_pin_filename(&snaps);
-            let png = encode_png(&p.rendered());
+            // Persist the original pixels + annotation shapes (Python bakes
+            // composed() into the PNG; we keep them separate so restore still
+            // lets the user undo/edit after a restart).
+            let png = encode_png(&p.img);
             if png.is_empty() {
                 continue;
             }
@@ -413,6 +435,7 @@ impl App {
                 scale: p.scale,
                 opacity: p.opacity,
                 group: p.group.clone(),
+                shapes: p.annot.shapes.clone(),
             });
         }
         let sess = SessionFile {
@@ -436,10 +459,14 @@ impl App {
             let Some(img) = decode_png(&bytes) else {
                 continue;
             };
-            self.spawn_pin(event_loop, img, Some((snap.x, snap.y)), Some(snap.group));
+            self.spawn_pin_ex(event_loop, img, Some((snap.x, snap.y)), Some(snap.group), false);
             if let Some(p) = self.pins.last_mut() {
                 p.set_scale(snap.scale);
                 p.set_opacity(snap.opacity);
+                if !snap.shapes.is_empty() {
+                    p.restore_shapes(snap.shapes);
+                }
+                p.persist_needed = false;
             }
         }
     }
@@ -449,21 +476,109 @@ impl App {
         while i < self.pins.len() {
             if self.pins[i].closed {
                 let p = self.pins.remove(i);
-                self.closed.push(
-                    ClosedPin {
-                        png: encode_png(&p.rendered()),
-                        pos: p.pos(),
-                        scale: p.scale,
-                        opacity: p.opacity,
-                        group: p.group.clone(),
-                    },
-                    self.cfg.closed_pins_max,
-                );
+                if !p.destroy {
+                    self.closed.push(
+                        ClosedPin {
+                            png: encode_png(&p.rendered()),
+                            pos: p.pos(),
+                            scale: p.scale,
+                            opacity: p.opacity,
+                            group: p.group.clone(),
+                        },
+                        self.cfg.closed_pins_max,
+                    );
+                }
             } else {
                 i += 1;
             }
         }
     }
+
+    fn open_prefs_win(&mut self, event_loop: &ActiveEventLoop) {
+        if self.prefs.is_some() {
+            let _ = self.proxy.send_event(AppEvent::RaisePrefs);
+            return;
+        }
+        match crate::prefs_win::PrefsWin::create(event_loop, self.cfg.clone(), self.proxy.clone()) {
+            Ok(w) => self.prefs = Some(w),
+            Err(e) => crate::logutil::log(&format!("prefs window: {e}")),
+        }
+    }
+
+    fn open_pin_menu(&mut self, event_loop: &ActiveEventLoop, pid: WindowId) {
+        let Some(p) = self.pins.iter().find(|p| p.window_id() == pid) else {
+            return;
+        };
+        let (px, py) = p.pos();
+        let state = crate::pin_menu::PinMenuState {
+            annotating: p.annotating,
+            click_through: p.click_through,
+            scale: p.scale,
+            opacity: p.opacity,
+            group: p.group.clone(),
+            groups: self.cfg.groups.clone(),
+            img_w: p.img.width,
+            img_h: p.img.height,
+        };
+        let row_n = 36 + self.cfg.groups.len();
+        let mh = 16 + row_n as i32 * 22;
+        let (mx, my) = crate::pin_menu::clamp_menu_pos(
+            px + p.last_cursor_i32().0,
+            py + p.last_cursor_i32().1,
+            268,
+            mh,
+            1920,
+            1200,
+        );
+        match crate::pin_menu::PinMenuWin::create(event_loop, (mx, my), state) {
+            Ok(m) => {
+                self.menu_pin = Some(pid);
+                self.pin_menu = Some(m);
+            }
+            Err(e) => crate::logutil::log(&format!("pin menu: {e}")),
+        }
+    }
+
+    fn apply_pin_menu(&mut self, action: PinMenuAction) {
+        let Some(pid) = self.menu_pin else {
+            return;
+        };
+        if matches!(action, PinMenuAction::NewGroup) {
+            let name = next_group_name(&self.cfg.groups);
+            let name = pinshot_core::groups::ensure(&mut self.cfg.groups, &name);
+            self.group_vis.entry(name.clone()).or_insert(true);
+            if let Some(p) = self.pins.iter_mut().find(|p| p.window_id() == pid) {
+                p.group = name;
+                p.persist_needed = true;
+            }
+            let _ = pinshot_core::config::save(&self.cfg);
+            self.rebuild_tray();
+            return;
+        }
+        if let PinMenuAction::MoveGroup(ref g) = action {
+            let vis = *self.group_vis.get(g).unwrap_or(&true);
+            if let Some(p) = self.pins.iter_mut().find(|p| p.window_id() == pid) {
+                p.apply_menu(action.clone());
+                if !vis {
+                    p.hide();
+                }
+            }
+            return;
+        }
+        if let Some(p) = self.pins.iter_mut().find(|p| p.window_id() == pid) {
+            p.apply_menu(action);
+        }
+    }
+}
+
+fn next_group_name(groups: &[String]) -> String {
+    for i in 1..99 {
+        let n = format!("Group {i}");
+        if pinshot_core::groups::find(groups, &n).is_none() {
+            return n;
+        }
+    }
+    "Group".into()
 }
 
 fn encode_png(img: &Raster) -> Vec<u8> {
@@ -557,7 +672,25 @@ impl ApplicationHandler<AppEvent> for App {
             AppEvent::Tray(TrayCmd::Restore) => self.restore_closed(event_loop),
             AppEvent::Tray(TrayCmd::ToggleGroup(name)) => self.toggle_group(name),
             AppEvent::PrefsApplied(cfg) => self.apply_cfg(cfg),
-            AppEvent::RaisePrefs => {}
+            AppEvent::RaisePrefs => {
+                if let Some(w) = &self.prefs {
+                    w.raise();
+                } else {
+                    self.open_prefs_win(event_loop);
+                }
+            }
+            AppEvent::OpenPrefs => self.open_prefs_win(event_loop),
+            AppEvent::X11Key {
+                keysym,
+                mods,
+                pressed,
+            } => {
+                if let Some(ov) = self.overlay.as_mut() {
+                    ov.handle_x11_key(keysym, mods, pressed);
+                    self.finish_overlay(event_loop);
+                }
+            }
+            AppEvent::PinMenu(action) => self.apply_pin_menu(action),
             AppEvent::Ipc(cmd) if cmd == "raise" => {
                 if let Some(fb) = &self.fallback {
                     fb.show();
@@ -573,6 +706,26 @@ impl ApplicationHandler<AppEvent> for App {
             self.mods = m.state();
         }
 
+        if self.prefs.as_ref().map(|w| w.window_id() == id).unwrap_or(false) {
+            if let Some(pw) = self.prefs.as_mut() {
+                pw.handle(&event);
+            }
+            if self.prefs.as_ref().map(|w| w.closed).unwrap_or(false) {
+                self.prefs = None;
+            }
+            return;
+        }
+        if self.pin_menu.as_ref().map(|m| m.window_id() == id).unwrap_or(false) {
+            let action = self.pin_menu.as_mut().and_then(|m| m.handle(&event));
+            let closed = self.pin_menu.as_ref().map(|m| m.closed).unwrap_or(false);
+            if action.is_some() || closed {
+                self.pin_menu = None;
+            }
+            if let Some(action) = action {
+                let _ = self.proxy.send_event(AppEvent::PinMenu(action));
+            }
+            return;
+        }
         if let Some(cd) = self.countdown.as_mut() {
             if cd.window_id() == id {
                 cd.handle(&event);
@@ -612,6 +765,7 @@ impl ApplicationHandler<AppEvent> for App {
                 return;
             }
         }
+        let mut open_menu = None;
         for p in &mut self.pins {
             if p.window_id() == id {
                 if let WindowEvent::MouseInput {
@@ -643,8 +797,15 @@ impl ApplicationHandler<AppEvent> for App {
                     }
                 }
                 p.handle(&event);
-                return;
+                if p.pending_menu {
+                    p.pending_menu = false;
+                    open_menu = Some(id);
+                }
+                break;
             }
+        }
+        if let Some(pid) = open_menu {
+            self.open_pin_menu(event_loop, pid);
         }
     }
 
@@ -688,13 +849,24 @@ impl ApplicationHandler<AppEvent> for App {
         if let Some(ov) = &mut self.overlay {
             ov.pump_redraw();
         }
+        let mut persist = false;
         for p in &mut self.pins {
             p.tick_glow();
             p.pump_redraw();
+            if p.persist_needed {
+                p.persist_needed = false;
+                persist = true;
+            }
+        }
+        if self.pin_menu.as_ref().map(|m| m.closed).unwrap_or(false) {
+            self.pin_menu = None;
+        }
+        if self.prefs.as_ref().map(|w| w.closed).unwrap_or(false) {
+            self.prefs = None;
         }
         let before = self.pins.len();
         self.reap_pins();
-        if self.pins.len() != before {
+        if persist || self.pins.len() != before {
             self.persist_session();
         }
         crate::result_win::raise_above_pins();

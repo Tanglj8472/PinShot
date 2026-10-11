@@ -1,7 +1,7 @@
 //! Self-drawn annotation toolbar + colour/width sub-panel (hit-testing only).
 
 use pinshot_core::color::{palette_colors, Rgba};
-use pinshot_core::geom::{Point, Rect};
+use pinshot_core::geom::{clamp_f32, Point, Rect};
 use pinshot_core::icons::IconKind;
 use pinshot_core::annotation::Tool;
 
@@ -38,6 +38,10 @@ pub struct Toolbar {
     pub buttons: Vec<TbButton>,
     pub swatches: Vec<(Rect, Rgba, u8)>,
     pub visible: bool,
+    pub width_minus: Rect,
+    pub width_plus: Rect,
+    pub width_label: Rect,
+    pub width_value: i32,
 }
 
 const CELL: f32 = 26.0;
@@ -96,7 +100,7 @@ impl Toolbar {
         if y < overlay.y {
             y = (sel.bottom() - h - 8.0).max(overlay.y);
         }
-        x = x.clamp(overlay.x, overlay.right() - w);
+        x = clamp_f32(x, overlay.x, overlay.right() - w);
         let bar = Rect::new(x, y, w, h);
         let mut buttons = Vec::new();
         let mut cx = x + PAD;
@@ -129,33 +133,26 @@ impl Toolbar {
 
         let mut panel = None;
         let mut swatches = Vec::new();
+        let mut width_minus = Rect::EMPTY;
+        let mut width_plus = Rect::EMPTY;
+        let mut width_label = Rect::EMPTY;
         if active.is_some() {
-            let pw = 20.0 * 16.0 + 80.0;
+            let pw = (20.0_f32 * 16.0 + 96.0).min(overlay.w.max(96.0));
             let ph = 40.0;
             let mut py = bar.bottom() + 3.0;
             if py + ph > overlay.bottom() {
                 py = bar.y - ph - 3.0;
             }
-            let pr = Rect::new(bar.x, py, pw, ph);
+            let px = clamp_f32(bar.x, overlay.x, overlay.right() - pw);
+            let pr = Rect::new(px, py, pw, ph);
             panel = Some(pr);
-            buttons.push(TbButton {
-                rect: Rect::new(pr.x + 6.0, pr.y + 8.0, 22.0, 22.0),
-                icon: IconKind::Undo,
-                action: TbAction::Width(-1),
-                tip: "Width",
-                checked: false,
-            });
-            buttons.push(TbButton {
-                rect: Rect::new(pr.x + 30.0, pr.y + 8.0, 22.0, 22.0),
-                icon: IconKind::Redo,
-                action: TbAction::Width(1),
-                tip: "Width",
-                checked: false,
-            });
+            width_minus = Rect::new(pr.x + 6.0, pr.y + 8.0, 22.0, 22.0);
+            width_label = Rect::new(pr.x + 30.0, pr.y + 8.0, 28.0, 22.0);
+            width_plus = Rect::new(pr.x + 60.0, pr.y + 8.0, 22.0, 22.0);
             for (i, c) in palette_colors().iter().enumerate() {
                 let col = i % 10;
                 let row = i / 10;
-                let sr = Rect::new(pr.x + 60.0 + col as f32 * 16.0, pr.y + 6.0 + row as f32 * 16.0, 14.0, 14.0);
+                let sr = Rect::new(pr.x + 88.0 + col as f32 * 16.0, pr.y + 6.0 + row as f32 * 16.0, 14.0, 14.0);
                 swatches.push((sr, *c, i as u8));
             }
         }
@@ -165,14 +162,26 @@ impl Toolbar {
             buttons,
             swatches,
             visible: true,
+            width_minus,
+            width_plus,
+            width_label,
+            width_value: 0,
         }
+    }
+
+    pub fn set_width_value(&mut self, w: i32) {
+        self.width_value = w;
     }
 
     pub fn contains(&self, p: Point) -> bool {
         if !self.visible {
             return false;
         }
-        if self.bar.contains(p) {
+        if self.bar.contains(p)
+            || self.width_minus.contains(p)
+            || self.width_plus.contains(p)
+            || self.width_label.contains(p)
+        {
             return true;
         }
         if let Some(pr) = self.panel {
@@ -187,6 +196,12 @@ impl Toolbar {
         if !self.visible {
             return None;
         }
+        if self.width_minus.contains(p) {
+            return Some(TbAction::Width(-1));
+        }
+        if self.width_plus.contains(p) {
+            return Some(TbAction::Width(1));
+        }
         for (r, _, i) in &self.swatches {
             if r.contains(p) {
                 return Some(TbAction::Color(*i));
@@ -198,5 +213,20 @@ impl Toolbar {
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pinshot_core::geom::Rect;
+
+    #[test]
+    fn layout_on_tiny_pin_does_not_panic() {
+        let sel = Rect::new(0.0, 0.0, 20.0, 12.0);
+        let over = Rect::new(0.0, 0.0, 40.0, 20.0);
+        let tb = Toolbar::layout_pin(sel, over, Some(Tool::Pen), false);
+        assert!(tb.bar.w > 0.0);
+        assert_eq!(tb.hit(Point::new(tb.width_plus.x + 2.0, tb.width_plus.y + 2.0)), Some(TbAction::Width(1)));
     }
 }

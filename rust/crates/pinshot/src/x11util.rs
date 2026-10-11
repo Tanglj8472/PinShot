@@ -10,10 +10,9 @@ use winit::window::Window;
 use x11rb::connection::{Connection, RequestConnection};
 use x11rb::protocol::xproto::{
     AtomEnum, ChangeWindowAttributesAux, ClientMessageEvent, ConnectionExt, EventMask, GrabMode,
-    KeyPressEvent, ModMask,
+    InputFocus, KeyPressEvent, ModMask, PropMode,
 };
 use x11rb::protocol::Event;
-use x11rb::wrapper::ConnectionExt as _;
 use x11rb::COPY_DEPTH_FROM_PARENT;
 
 use crate::event::AppEvent;
@@ -66,7 +65,11 @@ pub fn apply_overlay_style(window: &Window) {
 }
 
 pub fn apply_pin_style(window: &Window) {
+    // Managed window (never override-redirect) so the WM can give keyboard
+    // focus on click. Stay above + skip the taskbar like Python.
     ewmh_state(window, true, &["_NET_WM_STATE_ABOVE", "_NET_WM_STATE_SKIP_TASKBAR", "_NET_WM_STATE_SKIP_PAGER"]);
+    set_window_type(window, b"_NET_WM_WINDOW_TYPE_NORMAL");
+    set_wm_input_hint(window, true);
 }
 
 pub fn raise_on_top(window: &Window) {
@@ -98,6 +101,70 @@ pub fn raise_on_top(window: &Window) {
             );
         }
     }
+    let _ = c.flush();
+}
+
+fn set_window_type(window: &Window, typ: &[u8]) {
+    let Some(xid) = xid_of(window) else {
+        return;
+    };
+    let Ok((c, _)) = conn() else {
+        return;
+    };
+    let Ok(ty) = c.intern_atom(false, b"_NET_WM_WINDOW_TYPE") else {
+        return;
+    };
+    let Ok(ty) = ty.reply() else {
+        return;
+    };
+    let Ok(val) = c.intern_atom(false, typ) else {
+        return;
+    };
+    let Ok(val) = val.reply() else {
+        return;
+    };
+    let bytes = val.atom.to_ne_bytes();
+    let _ = c.change_property(
+        PropMode::REPLACE,
+        xid,
+        ty.atom,
+        AtomEnum::ATOM,
+        32,
+        1,
+        &bytes,
+    );
+    let _ = c.flush();
+}
+
+fn set_wm_input_hint(window: &Window, input: bool) {
+    let Some(xid) = xid_of(window) else {
+        return;
+    };
+    let Ok((c, _)) = conn() else {
+        return;
+    };
+    let Ok(atom) = c.intern_atom(false, b"WM_HINTS") else {
+        return;
+    };
+    let Ok(atom) = atom.reply() else {
+        return;
+    };
+    // ICCCM XWMHints: flags (InputHint|StateHint), input, initial_state=Normal
+    let flags: u32 = 1 | 2;
+    let input_u: u32 = if input { 1 } else { 0 };
+    let mut bytes = Vec::with_capacity(36);
+    for v in [flags, input_u, 1, 0, 0, 0, 0, 0, 0] {
+        bytes.extend_from_slice(&v.to_ne_bytes());
+    }
+    let _ = c.change_property(
+        PropMode::REPLACE,
+        xid,
+        atom.atom,
+        atom.atom,
+        32,
+        9,
+        &bytes,
+    );
     let _ = c.flush();
 }
 
@@ -141,8 +208,165 @@ fn ewmh_state(window: &Window, add: bool, atoms: &[&str]) {
     let _ = c.flush();
 }
 
-pub fn set_opacity(_window: &Window, _opacity: f32) {
-    // winit/X11 has no portable per-window alpha; click-through uses XShape instead.
+pub fn set_opacity(window: &Window, opacity: f32) {
+    let Some(xid) = xid_of(window) else {
+        return;
+    };
+    let Ok((c, _)) = conn() else {
+        return;
+    };
+    let Ok(atom) = c.intern_atom(false, b"_NET_WM_WINDOW_OPACITY") else {
+        return;
+    };
+    let Ok(atom) = atom.reply() else {
+        return;
+    };
+    let v = ((opacity.clamp(0.1, 1.0) as f64) * 0xffff_ffff_u32 as f64).round() as u32;
+    let bytes = v.to_ne_bytes();
+    let _ = c.change_property(
+        PropMode::REPLACE,
+        xid,
+        atom.atom,
+        AtomEnum::CARDINAL,
+        32,
+        1,
+        &bytes,
+    );
+    let _ = c.flush();
+}
+
+pub fn focus_window(window: &Window) {
+    let Some(xid) = xid_of(window) else {
+        window.focus_window();
+        return;
+    };
+    let Ok((c, _)) = conn() else {
+        window.focus_window();
+        return;
+    };
+    let _ = c.map_window(xid);
+    let _ = c.set_input_focus(InputFocus::PARENT, xid, x11rb::CURRENT_TIME);
+    let _ = c.configure_window(
+        xid,
+        &x11rb::protocol::xproto::ConfigureWindowAux::new()
+            .stack_mode(x11rb::protocol::xproto::StackMode::ABOVE),
+    );
+    let _ = c.flush();
+    window.focus_window();
+}
+
+/// Active keyboard grab on the overlay (same idea as Qt `grabKeyboard`).
+/// Events are forwarded through `proxy` because a second X client cannot
+/// deliver KeyPress to winit's connection.
+pub struct OverlayKeyGrab {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl OverlayKeyGrab {
+    pub fn start(xid: u32, proxy: winit::event_loop::EventLoopProxy<crate::event::AppEvent>) -> Self {
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = stop.clone();
+        let _ = std::thread::Builder::new()
+            .name("pinshot-overlay-grab".into())
+            .spawn(move || overlay_grab_loop(xid, proxy, flag));
+        Self { stop }
+    }
+}
+
+impl Drop for OverlayKeyGrab {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+fn overlay_grab_loop(
+    xid: u32,
+    proxy: winit::event_loop::EventLoopProxy<crate::event::AppEvent>,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
+    let Ok((c, _)) = conn() else {
+        return;
+    };
+    let mut grabbed = false;
+    for i in 0..25 {
+        let _ = c.map_window(xid);
+        let _ = c.set_input_focus(InputFocus::PARENT, xid, x11rb::CURRENT_TIME);
+        match c.grab_keyboard(true, xid, x11rb::CURRENT_TIME, GrabMode::ASYNC, GrabMode::ASYNC) {
+            Ok(cookie) => match cookie.reply() {
+                Ok(r) if r.status == x11rb::protocol::xproto::GrabStatus::SUCCESS => {
+                    grabbed = true;
+                    crate::logutil::log("XGrabKeyboard ok");
+                    break;
+                }
+                Ok(r) => {
+                    if i == 24 {
+                        crate::logutil::log(&format!("XGrabKeyboard status={:?}", r.status));
+                    }
+                }
+                Err(e) => {
+                    if i == 24 {
+                        crate::logutil::log(&format!("XGrabKeyboard: {e}"));
+                    }
+                }
+            },
+            Err(e) => {
+                if i == 24 {
+                    crate::logutil::log(&format!("XGrabKeyboard: {e}"));
+                }
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let _ = grabbed;
+    let _ = c.flush();
+    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+        match c.poll_for_event() {
+            Ok(Some(Event::KeyPress(ev))) => {
+                let keysym = keycode_to_keysym(&c, ev.detail, u16::from(ev.state));
+                let _ = proxy.send_event(crate::event::AppEvent::X11Key {
+                    keysym,
+                    mods: u16::from(ev.state),
+                    pressed: true,
+                });
+            }
+            Ok(Some(Event::KeyRelease(ev))) => {
+                let keysym = keycode_to_keysym(&c, ev.detail, u16::from(ev.state));
+                let _ = proxy.send_event(crate::event::AppEvent::X11Key {
+                    keysym,
+                    mods: u16::from(ev.state),
+                    pressed: false,
+                });
+            }
+            Ok(Some(_)) => {}
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(8)),
+            Err(_) => break,
+        }
+    }
+    let _ = c.ungrab_keyboard(x11rb::CURRENT_TIME);
+    let _ = c.flush();
+}
+
+fn keycode_to_keysym(c: &x11rb::rust_connection::RustConnection, code: u8, state: u16) -> u32 {
+    let setup = c.setup();
+    let min = setup.min_keycode;
+    if code < min {
+        return 0;
+    }
+    let count = setup.max_keycode.saturating_sub(min).saturating_add(1);
+    let Ok(cookie) = c.get_keyboard_mapping(min, count) else {
+        return 0;
+    };
+    let Ok(map) = cookie.reply() else {
+        return 0;
+    };
+    let stride = map.keysyms_per_keycode as usize;
+    let idx = (code - min) as usize * stride;
+    if idx >= map.keysyms.len() {
+        return 0;
+    }
+    let shift = state & SHIFT != 0;
+    let slot = if shift && stride > 1 { idx + 1 } else { idx };
+    map.keysyms.get(slot).copied().filter(|k| *k != 0).unwrap_or(map.keysyms[idx])
 }
 
 pub fn set_click_through(window: &Window, on: bool, _opacity: f32) {

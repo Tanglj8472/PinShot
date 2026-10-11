@@ -9,6 +9,34 @@ pub enum AppEvent {
     RaisePrefs,
     Ipc(String),
     OcrDone(String, bool),
+    OpenPrefs,
+    X11Key {
+        keysym: u32,
+        mods: u16,
+        pressed: bool,
+    },
+    PinMenu(PinMenuAction),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum PinMenuAction {
+    Copy,
+    Save,
+    ToggleToolbar,
+    ToggleClickThrough,
+    Zoom(i32),
+    Rotate(i32),
+    FlipH,
+    FlipV,
+    Paste,
+    ReplaceFile,
+    MoveGroup(String),
+    NewGroup,
+    ViewInFolder,
+    Close,
+    Destroy,
+    CopySize,
+    ResetZoom,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

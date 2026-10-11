@@ -47,7 +47,7 @@ Counts at the bottom. Python sources are not modified.
 | `toggle_pins` / `toggle_clickthrough` / `restore_closed` | `app.rs` | done |
 | `open_prefs` / `quit` / `_notify` | prefs thread / exit / log | done |
 | `ipc.IpcServer` / `try_send` | named pipe / unix socket + flock | done |
-| `session.persist_session` | `session.rs` + PNG dir | done |
+| `session.persist_session` | `session.rs` + PNG dir + `PinSnapshot.shapes` | done | Original pixels + shapes (not baked PNG) |
 | CLI `--snip --pin-clipboard --prefs --translate --version` | `main.rs` + `parse_cli_cmd` | done |
 | `--debug` / file log | `logutil.rs` → `data_dir/pinshot.log` | done |
 | `windows_subsystem = windows` | `main.rs` cfg_attr | done |
@@ -87,7 +87,7 @@ Counts at the bottom. Python sources are not modified.
 | `adjust_width` + 0.5s undo merge | done |
 | `wheel` trunc(angle/120) | `Annotator::wheel` | done |
 | `start_text` / `commit_text` / `begin_edit_text` | done + painted dashed editor | done |
-| `key` Esc/Enter/IME | overlay + pin + `Ime::Commit` | done |
+| `key` Esc/Enter/IME | overlay + pin + `Ime::Commit` + Linux `XGrabKeyboard` | done | Overlay is override-redirect; grab forwards `AppEvent::X11Key` |
 | `press` select-on-click, mosaic no-steal | done |
 | `_resize_selected` number/polyline/rect | done |
 | `_push_edit` / undo 50 / redo | `UndoStack` | done |
@@ -116,14 +116,14 @@ Counts at the bottom. Python sources are not modified.
 | Python | Rust | Status |
 |---|---|---|
 | Frameless always-on-top + skip taskbar | winit + EWMH / WS_EX_TOOLWINDOW | done |
-| Drag move, wheel zoom (top-left), Ctrl+wheel opacity | done |
+| Drag move, wheel zoom (top-left), Ctrl+wheel opacity | done | Linux `_NET_WM_WINDOW_OPACITY` |
 | Annotating: wheel → `ann.wheel` not zoom | done |
-| Space / right-click Show toolbar | done |
+| Space / right-click Show toolbar | Space = toolbar; right-click = full menu | done | Never falls back to toolbar |
 | TOOL_KEYS R E P T N … | R E P T N + 1/2/3/4 | done |
 | Esc close / Ctrl+W | done |
 | Double-click close/hide/none + tip | `PinWin::on_double_click` | done | First hit tips; `dblclick_tip_shown` persisted |
-| Context menu full (`build_menu`) | Win32 popup / zenity list | partial | Groups/shadow/view-in-folder/destroy incomplete |
-| Rotate / flip / paste / replace file | rotate/flip/paste done; replace file missing | partial |
+| Context menu full (`build_menu`) | Win32 popup / in-process `PinMenuWin` | done | Shadow still missing; groups/destroy/replace/view-in-folder wired |
+| Rotate / flip / paste / replace file | done |
 | Shadow / thumb | missing | |
 | Click-through XShape / WS_EX_TRANSPARENT | done |
 | Groups move / new / rename | tray groups; pin menu partial | partial |
@@ -133,7 +133,7 @@ Counts at the bottom. Python sources are not modified.
 
 | Python | Rust | Status |
 |---|---|---|
-| `prefs.PrefsDialog` General/Hotkeys/Output + Advanced | `prefs.rs` egui | done |
+| `prefs.PrefsDialog` General/Hotkeys/Output + Advanced | `prefs.rs` egui (Win) / `prefs_win.rs` main-loop (Linux) | done |
 | zh/en only, light/dark/system | done | Linux system theme = light |
 | Hotkey conflict detection | `hotkey::find_conflicts` | done |
 | Groups add/rename/remove | done |

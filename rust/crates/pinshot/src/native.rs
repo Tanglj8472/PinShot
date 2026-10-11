@@ -71,6 +71,29 @@ pub fn raise_on_top(window: &Window) {
     let _ = window;
 }
 
+pub fn focus_window(window: &Window) {
+    #[cfg(unix)]
+    crate::x11util::focus_window(window);
+    #[cfg(not(unix))]
+    window.focus_window();
+}
+
+#[cfg(unix)]
+pub fn grab_overlay_keys(
+    window: &Window,
+    proxy: winit::event_loop::EventLoopProxy<crate::event::AppEvent>,
+) -> Option<crate::x11util::OverlayKeyGrab> {
+    crate::x11util::xid_of(window).map(|xid| crate::x11util::OverlayKeyGrab::start(xid, proxy))
+}
+
+#[cfg(not(unix))]
+pub fn grab_overlay_keys(
+    _window: &Window,
+    _proxy: winit::event_loop::EventLoopProxy<crate::event::AppEvent>,
+) -> Option<()> {
+    None
+}
+
 pub fn unmap_sync(window: &Window) {
     #[cfg(unix)]
     crate::x11util::unmap_sync(window);

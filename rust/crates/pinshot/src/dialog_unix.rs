@@ -14,6 +14,48 @@ pub fn confirm_abort(_parent: ()) -> bool {
     true
 }
 
+pub fn open_image_path() -> Option<String> {
+    if let Ok(out) = Command::new("zenity")
+        .args([
+            "--file-selection",
+            "--title",
+            &tr("Replace from file"),
+            "--file-filter=Images | *.png *.jpg *.jpeg *.bmp *.gif *.webp",
+        ])
+        .output()
+    {
+        if out.status.success() {
+            let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !s.is_empty() {
+                return Some(s);
+            }
+        }
+        return None;
+    }
+    None
+}
+
+pub fn open_folder() -> Option<String> {
+    if let Ok(out) = Command::new("zenity")
+        .args([
+            "--file-selection",
+            "--directory",
+            "--title",
+            &tr("Quick-save folder"),
+        ])
+        .output()
+    {
+        if out.status.success() {
+            let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !s.is_empty() {
+                return Some(s);
+            }
+        }
+        return None;
+    }
+    None
+}
+
 pub fn save_path(suggested: &str) -> Option<String> {
     if let Ok(out) = Command::new("zenity")
         .args([
