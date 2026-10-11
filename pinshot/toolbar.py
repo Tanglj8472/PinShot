@@ -124,6 +124,8 @@ class ToolDock(QWidget):
         self.bar = bar
         self.adjustSize(); self.setFixedSize(self.sizeHint())
         annotator.toolChanged.connect(self._sync)
+        self._context = None
+        annotator.changed.connect(self._refresh_context)
         self._sync(annotator.tool)
 
     def _tool_clicked(self, t):
@@ -131,7 +133,16 @@ class ToolDock(QWidget):
 
     def _sync(self, tool):
         for t, b in self.tool_buttons.items(): b.setChecked(t == tool)
-        self._build_panel(tool); self.place_panel()
+        self._context = None
+        self._refresh_context()
+
+    def _refresh_context(self):
+        tool = self.ann.option_tool()
+        target = self.ann.option_target()
+        context = (tool, id(target) if target else None)
+        if context != self._context:
+            self._context = context
+            self._build_panel(tool); self.place_panel()
 
     # --- sub-panels
     def _clear(self):
@@ -165,7 +176,7 @@ class ToolDock(QWidget):
             if self.isVisible(): self.panel.show(); self._fit_panel()
             else: self.panel.hide()
             return
-        st = self.ann.styles[tool]; S = lambda k: (lambda v: self.ann.set_style_value(tool, k, v))
+        st = self.ann.option_style(tool); S = lambda k: (lambda v: self.ann.set_style_value(tool, k, v))
         if tool in ("rect", "ellipse"):
             self._choice([(False, "Outline"), (True, "Filled")], lambda: st.filled, S("filled"), "fill")
             self._spin("Width", 1, 60, lambda: st.width, S("width"), "width")
@@ -213,7 +224,7 @@ class ToolDock(QWidget):
 
     def place_panel(self):
         """Panel goes under the toolbar, left-aligned with it; above it if there's no room below."""
-        if not self.ann.tool or not self.isVisible():
+        if not self.ann.option_tool() or not self.isVisible():
             self.panel.hide(); return
         self.panel.show(); self._fit_panel()
         x, y = self.x(), self.y() + self.height() + 3
@@ -239,8 +250,10 @@ class ToolDock(QWidget):
 
     def refresh_values(self):
         """Called after width change via wheel / 1 / 2."""
-        t = self.ann.tool
+        t = self.ann.option_tool()
         if not t: return
-        st = self.ann.styles[t]
+        if t == 'select': return
+        st = self.ann.option_style(t)
         if self.spin: self.spin.blockSignals(True); self.spin.setValue(st.font_size if t == "text" else st.width); self.spin.blockSignals(False)
-        if t == "mosaic" and getattr(self, "slider", None): self.slider.setValue(st.size)
+        if t == "mosaic" and getattr(self, "slider", None):
+            self.slider.blockSignals(True); self.slider.setValue(st.size); self.slider.blockSignals(False)

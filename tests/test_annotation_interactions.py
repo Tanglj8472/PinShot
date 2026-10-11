@@ -88,5 +88,33 @@ class AnnotationInteractions(unittest.TestCase):
         self.assertIsNone(self.ann.hit_test(QPointF(50, 140)))
         self.assertIs(self.ann.hit_test(QPointF(120, 100)), self.rect)
 
+    def test_wheel_accumulation_and_single_undo(self):
+        self.assertFalse(self.ann.wheel(60))
+        self.assertEqual(self.rect.style.width, 3)
+        self.ann.wheel(60)
+        self.ann.wheel(240)
+        self.assertEqual(self.rect.style.width, 6)
+        self.ann.undo()
+        self.assertEqual(self.ann.shapes[0].style.width, 3)
+        self.ann.redo()
+        self.assertEqual(self.ann.shapes[0].style.width, 6)
+
+    def test_old_shape_options_survive_leaving_canvas(self):
+        from pinshot.toolbar import ToolDock
+        self.ann.set_tool('ellipse')
+        dock = ToolDock(self.ann, parent=self.widget)
+        self.ann.hover(QPointF(40, 80))
+        self.assertEqual(self.ann.option_tool(), 'rect')
+        self.assertEqual(dock.spin.value(), 3)
+        self.ann.hover(QPointF(350, 200))
+        self.assertIsNone(self.ann.selected)
+        self.assertIs(self.ann.option_target(), self.rect)
+        dock.spin.setValue(8)
+        self.assertEqual(self.rect.style.width, 8)
+        self.assertEqual(self.ann.styles['ellipse'].width, 3)
+        self.ann.set_tool(None)
+        self.assertIsNone(self.ann.option_target())
+        self.assertIsNone(self.ann.option_tool())
+
 
 if __name__ == '__main__': unittest.main()

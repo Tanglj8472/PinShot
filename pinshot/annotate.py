@@ -1,5 +1,6 @@
 """Shared annotation engine: shapes, styles, rendering, input, select/edit."""
 import math
+import time
 from copy import copy, deepcopy
 from dataclasses import dataclass, field
 from PySide6.QtCore import Qt, QPointF, QRectF, QObject, Signal
@@ -203,6 +204,8 @@ class Annotator(QObject):
         self.editor = None; self.forwarding = False
         self.selected = None
         self.width_target = None
+        self.edit_target = None
+        self._wheel_target = None; self._wheel_time = 0; self._wheel_delta = 0
         self._sel_mode = None          # None | 'move' | handle name
         self._sel_origin = None
         self._sel_pts0 = None
@@ -216,6 +219,7 @@ class Annotator(QObject):
     def set_tool(self, tool):
         self.finish()
         self.width_target = None
+        self.edit_target = None; self._wheel_target = None; self._wheel_delta = 0
         if tool != "select": self.selected = None
         self.tool = tool
         self.toolChanged.emit(tool); self.changed.emit()
@@ -224,8 +228,20 @@ class Annotator(QObject):
         if self.tool == "select" or not self.tool: return None
         return self.styles.get(self.tool)
 
+    def option_target(self):
+        target = self.live or self.selected or self.edit_target or self.width_target
+        return target if target is not None and target in self.all_shapes() else None
+
+    def option_tool(self):
+        target = self.option_target()
+        return target.kind if target and self.tool not in ('eraser', 'mosaic') else self.tool
+
+    def option_style(self, kind):
+        target = self.option_target()
+        return target.style if target and target.kind == kind else self.styles[kind]
+
     def set_style_value(self, kind, attr, value):
-        target = self.live or self.selected or self.width_target
+        target = self.option_target()
         if target and target.kind == kind and target in self.all_shapes():
             if getattr(target.style, attr) != value:
                 if target is not self.live: self._push_edit()
@@ -239,12 +255,14 @@ class Annotator(QObject):
         self.width_target = shape
 
     def _push_edit(self):
+        self._wheel_target = None
         self._edit_undo.append(snapshot_shapes(self.shapes))
         if len(self._edit_undo) > 50: del self._edit_undo[:-50]
         self.redo_stack.clear()
 
     def undo(self):
         self.finish()
+        self.edit_target = None; self._wheel_target = None
         self.width_target = None
         if self._edit_undo:
             self.redo_stack.append(snapshot_shapes(self.shapes))
@@ -253,6 +271,7 @@ class Annotator(QObject):
             self.redo_stack.append(self.shapes.pop()); self.selected = None; self._renumber(); self.changed.emit()
 
     def redo(self):
+        self.edit_target = None; self._wheel_target = None
         self.width_target = None
         if self.redo_stack:
             item = self.redo_stack.pop()
@@ -263,6 +282,7 @@ class Annotator(QObject):
             self.selected = None; self._renumber(); self.changed.emit()
 
     def clear(self):
+        self.edit_target = None; self._wheel_target = None; self._wheel_delta = 0
         self.width_target = None; self._edit_undo.clear()
         self.shapes.clear(); self.redo_stack.clear(); self.live = None; self.selected = None
         self._next_number = 1; self.changed.emit()
@@ -283,12 +303,15 @@ class Annotator(QObject):
         img = self.base().copy(); p = QPainter(img); render(p, self.shapes, self.base(), self.cache); p.end(); return img
 
     def adjust_width(self, delta):
-        target = self.live or self.selected or self.width_target
+        target = self.option_target()
         if target is not None and target not in self.all_shapes(): target = None
         st = target.style if target else self.style()
         if not st: return False
         kind = target.kind if target else self.tool
-        if target and target is not self.live: self._push_edit()
+        now = time.monotonic()
+        if target and target is not self.live:
+            if target is not self._wheel_target or now - self._wheel_time > .5: self._push_edit()
+            self._wheel_target = target; self._wheel_time = now
         if kind == "text": st.font_size = max(8, min(120, st.font_size + 2 * delta))
         elif kind == "mosaic": st.size = max(1, min(30, st.size + delta))
         elif kind == "number":
@@ -300,6 +323,12 @@ class Annotator(QObject):
                 setattr(self.styles[kind], attr, getattr(st, attr))
         if self.editor: self._style_editor()
         self.changed.emit(); return True
+
+    def wheel(self, angle_delta):
+        self._wheel_delta += angle_delta
+        steps = math.trunc(self._wheel_delta / 120)
+        self._wheel_delta -= steps * 120
+        return self.adjust_width(steps) if steps else False
 
     BRUSH_KINDS = frozenset({"pen", "marker"})
 
@@ -358,7 +387,9 @@ class Annotator(QObject):
         pt = self.to_img(pos)
         hit = None if self.tool in ("eraser", "mosaic") else (self.selected if self.hit_handle(pt) else self.hit_test(pt))
         if hit is not self.selected:
-            self.selected = hit; self.changed.emit()
+            self.selected = hit
+            if hit: self.edit_target = hit
+            self.changed.emit()
 
     def hit_handle(self, img_pt: QPointF):
         if not self.selected: return None
@@ -395,7 +426,7 @@ class Annotator(QObject):
             self.changed.emit(); return True
 
         if not self.tool: return False
-        self.width_target = None
+        self.width_target = None; self.edit_target = None
 
         st = copy(self.style())
         if self.tool == "text":

@@ -382,7 +382,8 @@ class SnipOverlay(QWidget):
             self.state = "selected"; self._copy()
 
     def wheelEvent(self, e):
-        if self.ann.tool: self.ann.adjust_width(1 if e.angleDelta().y() > 0 else -1); self.dock.refresh_values()
+        if self.ann.tool or self.ann.selected:
+            self.ann.wheel(e.angleDelta().y()); self.dock.refresh_values(); e.accept()
 
     # --- keys
     def keyPressEvent(self, e):

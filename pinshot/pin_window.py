@@ -155,7 +155,9 @@ class PinWindow(QWidget):
     # --- mouse
     def mousePressEvent(self, e):
         if self.clickthrough: e.ignore(); return
-        if self.ann.tool and self.ann.press(e.position(), e.button(), e.modifiers()): return
+        if self.annotating() and self.ann.press(e.position(), e.button(), e.modifiers()):
+            if self.ann._sel_mode: self.setCursor(Qt.ClosedHandCursor)
+            return
         if e.button() == Qt.LeftButton:
             self.drag = e.globalPosition().toPoint() - self.frameGeometry().topLeft()
 
@@ -166,6 +168,9 @@ class PinWindow(QWidget):
         if not (e.buttons() & Qt.LeftButton) and (self.ann.live or self.ann._sel_mode or self.drag is not None): return
         if self.ann.live or self.ann._sel_mode: self.ann.move(e.position(), e.modifiers()); return
         if self.drag is not None: self.move(e.globalPosition().toPoint() - self.drag)
+        elif self.annotating():
+            self.ann.hover(e.position())
+            self.setCursor(Qt.OpenHandCursor if self.ann.selected else Qt.CrossCursor)
 
     def mouseReleaseEvent(self, e):
         if self.clickthrough: e.ignore(); return
@@ -198,8 +203,8 @@ class PinWindow(QWidget):
     def wheelEvent(self, e):
         if self.clickthrough: e.ignore(); return
         d = e.angleDelta().y()
-        if self.ann.tool and not (e.modifiers() & Qt.ControlModifier):
-            self.ann.adjust_width(1 if d > 0 else -1); self.dock and self.dock.refresh_values(); return
+        if self.annotating() and (self.ann.tool or self.ann.selected) and not (e.modifiers() & Qt.ControlModifier):
+            self.ann.wheel(d); self.dock and self.dock.refresh_values(); return
         if e.modifiers() & Qt.ControlModifier:
             self.setWindowOpacity(min(1.0, max(0.1, round(self.windowOpacity() + (0.1 if d > 0 else -0.1), 2))))
             _tip_show(QCursor.pos(), f"Opacity: {round(self.windowOpacity() * 100)}%", self)
