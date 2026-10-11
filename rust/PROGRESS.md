@@ -2,7 +2,7 @@
 
 对照源：`main` 上的 Python/PySide6 PinShot。Rust 在 `rust/`，分支 `rust`。Python 源码不改。
 
-最后更新：2026-10-11（A–L 已关；接 `aa86d9d` 进度报告之后）。
+最后更新：2026-10-11（A–L 已关；Xvfb+xfwm4+xdotool 15/15；HEAD `d01fe6c`）。
 
 ---
 
@@ -69,12 +69,15 @@
 |---|---|
 | `4d32471` | prefs 整行命中 + 标题/主题/fallback 即改；Tab 子窗+AT-SPI 矩形；R/`,` 历史回放；F1 首笔拖动（指针查询+GrabPointer）；箭头头；文字首击/Ctrl+Enter/IME 放抓；点边选中+滚轮改宽；剪贴板常驻+`xclip`；pin 光标锚缩放；默认 F4；恢复不弹 toast；toast 1.2s；键盘 `owner_events=false` |
 | `986dc67` | 本文件与 `PARITY.md` 将 A–L 标为已修 |
+| `b2e09b0` | 进度报告写入 A–L 修复 SHA |
+| `b2495fb` | F1 隐藏 fallback 起就 `InputHold`；剪贴板 `xclip` 不阻塞 + 日志 |
+| `d01fe6c` | **不要**在第二路 X 客户端或 winit 的 Xlib Display 上 `XGrabPointer`（事件进错连接）。overlay 期间 `ControlFlow::Poll` + 根窗口 `QueryPointer` 认领 Button1 |
 
 ---
 
 ## 已发现的全部问题（各轮测试）
 
-状态：`已修` / `未关`。52d5642 实机 A–L 本轮已关。
+状态：`已修` / `未关`。52d5642 实机 A–L 本轮已关。Xvfb `:10` + xfwm4 + xdotool 回归 **15/15 PASS**（`d01fe6c`）。
 
 ### Windows 早期轮次
 
@@ -109,7 +112,7 @@
 | A | 语言/主题/登录等值按钮只响应字段左半边 | 已修 | 命中区覆盖整行（含右侧值盒） |
 | B | 切英文不完整：标题仍「首选项」；「PinShot Preferences」字叠在语言行；fallback 要重启才换语言；Apply 在 Cancel 右侧多画 “Apply”；Light 主题无变化 | 已修 | 去掉叠字标题；`set_title`；Apply 后重绘 fallback；状态「已应用。」；`UiTheme` 浅/深 |
 | C | Tab 元素模式只高亮整窗（AT-SPI probe false）；R 不能回上次选区；逗号出 toast 但不回放历史；toast 不消失 | 已修 | 按 client 走 viewable 子窗 + AT-SPI 矩形；R 与 Shift+R；空历史不 toast；`replace_shot` 全幅刷新；toast 1.2s |
-| D | F1 后第一笔拖动有时丢失（第二次 F1） | 已修 | 映射后 `XQueryPointer`：若 Button1 已按下则合成 Creating；`XGrabPointer` |
+| D | F1 后第一笔拖动有时丢失（第二次 F1） | 已修 | 隐藏 fallback 即 `InputHold`；映射后 **禁止** 第二连接/`Xlib` `XGrabPointer`；`Poll` + `QueryPointer` 认领仍按下的 Button1 |
 | E | 箭头工具画出的是无箭头直线 | 已修 | Line 默认无箭头；Arrow 开箭头；更大箭头头 |
 | F | 文字：第一击无框（键入丢失）；第二击才有；Ctrl+Enter 提交带「–」；中文被丢（无 IME） | 已修 | 空编辑器重定位不提交；Ctrl 不插入；滤 en/em dash；文字时 ungrab 键盘给 IME |
 | G | 点图形边选不中（无 8 手柄）；文字工具点边上会新开文本；滚轮在图形上不改线宽 | 已修 | 与 Python 相同：非橡皮/马赛克点中即选；`wheel_at` |
@@ -119,7 +122,25 @@
 | K | 恢复的每张 pin 弹出「Opacity: 100%」且不消失 | 已修 | `set_opacity_ex(..., false)`；toast 1.2s 后清 |
 | L | overlay 打开时 Chrome 偶尔仍收到键；overlay 重绘有时慢 | 已修 | `XGrabKeyboard(owner_events=false)` + 丢焦点重抓；无 dirty 不 present |
 
-附：该轮「贴剪贴板按钮」和「8 手柄」随 G / 单元测试补验；Xvfb+xfwm4+xdotool 做焦点/历史/toast 回归。
+附：该轮「贴剪贴板按钮」和「8 手柄」随 G / 单元测试补验。
+
+### Xvfb + xfwm4 + xdotool（`:10` 1920×1200，`d01fe6c`）
+
+脚本 `/tmp/pinshot-al-verify.sh`，结果 `pass=15 fail=0`。
+
+| 检查 | 结果 |
+|---|---|
+| A/B 点语言行右侧值盒 → 标题 `PinShot Preferences`，Apply 后 `language = "en"` | PASS |
+| J 空 `hotkey_clickthrough` Apply 后写成 `F4`；pin 菜单绿块勾选 | PASS |
+| L Chrome 聚焦时 `XGrabKeyboard ok` | PASS |
+| D 首笔拖动 `recover Button1` → `overlay copy 360x280` | PASS |
+| H overlay 关闭后 `xclip TARGETS` 含 `image/png`（360×280 PNG） | PASS |
+| C `,` / `R` 打出 `toast: Snip history` / `Last snip area`，选区 360×280 回放 | PASS |
+| I pin 滚轮缩小 300×220 → 140×103，位置随光标移动 | PASS |
+| K 重启恢复 pin，无 `Opacity: 100%` toast | PASS |
+| E/F/G | `cargo test --workspace` 101 通过（箭头头、文字首击/滤 dash、点边选中+`wheel_at`） |
+
+工件：`/opt/cursor/artifacts/al-verify/`（截图 + `clipboard.png` + `report.txt`）。
 
 ---
 

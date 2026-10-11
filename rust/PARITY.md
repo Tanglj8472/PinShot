@@ -23,7 +23,7 @@ Counts at the bottom. Python sources are not modified.
 | `winlist.window_rects` | `detect_x11::window_rects` | done | `_NET_CLIENT_LIST_STACKING` + frame extents |
 | `winlist.element_rects` | `detect_x11::collect_elements` | partial | X11 viewable client children + AT-SPI extents via subprocess when the a11y bus is up |
 | `winlist.atspi_available` | `detect_x11::atspi_available` | done | Same subprocess safety rule |
-| `x11clip.read` | `arboard` + process-lifetime owner + `xclip` handoff | done | Overlay close no longer drops CLIPBOARD |
+| `x11clip.read` | `arboard` + process-lifetime owner + `xclip -t image/png` handoff | done | Overlay close leaves CLIPBOARD; Xvfb `xclip TARGETS` shows `image/png` |
 | `autostart.py` XDG desktop | `autostart_xdg.rs` | done | `~/.config/autostart/pinshot.desktop` |
 | Windows HKCU Run | `autostart.rs` | done | |
 | `settings.data_dir` `~/.local/share/PinShot` | `config::data_dir` | done | Split from `config_dir` (`~/.config/PinShot`) |
@@ -60,7 +60,7 @@ Counts at the bottom. Python sources are not modified.
 | Dim + hole + handles + size label | `draw::OverlayFront` | done |
 | Window hover / Tab element | `selection` + `detect` | done |
 | Magnifier 15×15 @ 8×, C / Shift | `magnifier.rs` + overlay keys | done |
-| Drag / move / 8 handles | `selection.rs` | done |
+| Drag / move / 8 handles | `selection.rs` | done | First F1 drag recovered via `QueryPointer` (no second-client `XGrabPointer`) |
 | Toolbar + OCR/Translate | `toolbar.rs` | done |
 | `,` `.` history / Shift+R last rect | `history.rs` + overlay | done | R and Shift+R both reuse last; toast 1.2s |
 | Esc confirm abort | MessageBox / zenity | done |
