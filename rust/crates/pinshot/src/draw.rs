@@ -258,12 +258,13 @@ impl OverlayFront {
         }
         self.shot = shot_pm;
         self.frame = self.shot.clone();
-        fill_rect(&mut self.frame, self.bounds(), Rgba::rgba(0, 0, 0, self.dim));
+        let bounds = Rect::new(0.0, 0.0, self.frame.width() as f32, self.frame.height() as f32);
+        fill_rect(&mut self.frame, bounds, Rgba::rgba(0, 0, 0, self.dim));
         self.last_hole = Rect::EMPTY;
         self.last_chrome.clear();
         self.primed = false;
-        self.gdi.write_rect(&self.frame, self.bounds());
-        self.gdi.blit_rect(hwnd, self.bounds());
+        self.gdi.write_rect(&self.frame, bounds);
+        self.gdi.blit_rect(hwnd, bounds);
         self.primed = true;
         Ok(())
     }

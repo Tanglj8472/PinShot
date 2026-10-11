@@ -34,7 +34,7 @@ const CB_SETCURSEL: u32 = 0x014E;
 const CB_GETCURSEL: u32 = 0x0147;
 
 struct WinState {
-    hwnd: HWND,
+    hwnd: isize,
 }
 
 static STATE: OnceLock<Mutex<Option<WinState>>> = OnceLock::new();
@@ -77,7 +77,7 @@ pub fn open(text: String, auto_translate: bool) {
         layout(hwnd);
         let _ = ShowWindow(hwnd, SW_SHOW);
         let _ = UpdateWindow(hwnd);
-        *cell().lock().expect("ocr win") = Some(WinState { hwnd });
+        *cell().lock().expect("ocr win") = Some(WinState { hwnd: hwnd.0 as isize });
         if auto_translate && !text.trim().is_empty() {
             do_translate(hwnd);
         }
@@ -270,9 +270,10 @@ fn do_translate(hwnd: HWND) {
         // Marshal back via WM_COMMAND custom — just SetWindowText from this thread is OK for EDIT.
         if let Ok(g) = cell().lock() {
             if let Some(st) = g.as_ref() {
+                let hwnd = HWND(st.hwnd as *mut _);
                 match result {
-                    Ok(t) => set_edit(st.hwnd, ID_TRANS, &t),
-                    Err(e) => set_edit(st.hwnd, ID_TRANS, &e),
+                    Ok(t) => set_edit(hwnd, ID_TRANS, &t),
+                    Err(e) => set_edit(hwnd, ID_TRANS, &e),
                 }
             }
         }
@@ -313,7 +314,7 @@ pub fn raise_above_pins() {
     if let Ok(g) = cell().lock() {
         if let Some(st) = g.as_ref() {
             unsafe {
-                let _ = SetWindowPos(st.hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+                let _ = SetWindowPos(HWND(st.hwnd as *mut _), HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
             }
         }
     }
@@ -373,7 +374,7 @@ pub fn close() {
     if let Ok(mut g) = cell().lock() {
         if let Some(st) = g.take() {
             unsafe {
-                let _ = DestroyWindow(st.hwnd);
+                let _ = DestroyWindow(HWND(st.hwnd as *mut _));
             }
         }
     }

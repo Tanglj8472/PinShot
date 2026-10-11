@@ -128,7 +128,7 @@ fn child_rects() -> Vec<(Rect, String)> {
             let _ = EnumChildWindows(hwnd, Some(enum_kids), LPARAM(&mut rects as *mut _ as isize));
         }
     }
-    rects.sort_by_key(|(r, _)| (r.area() as i64).max(0));
+    rects.sort_by_key(|(r, _): &(Rect, String)| (r.area() as i64).max(0));
     rects
 }
 

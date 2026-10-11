@@ -217,8 +217,12 @@ impl PinWin {
                 self.annot.set_tool(Some(Tool::Line));
                 self.arrow_on = true;
             }
-            TbAction::Undo => self.annot.undo(),
-            TbAction::Redo => self.annot.redo(),
+            TbAction::Undo => {
+                let _ = self.annot.undo();
+            }
+            TbAction::Redo => {
+                let _ = self.annot.redo();
+            }
             TbAction::Close => self.close(),
             TbAction::Save => self.save(),
             TbAction::Copy => {

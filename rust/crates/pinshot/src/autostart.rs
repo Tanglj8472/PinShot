@@ -1,7 +1,7 @@
 //! HKCU\\...\\Run "PinShot" → this exe.
 
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::MAX_PATH;
+use windows::Win32::Foundation::{ERROR_SUCCESS, MAX_PATH};
 use windows::Win32::System::LibraryLoader::GetModuleFileNameW;
 use windows::Win32::System::Registry::{
     RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
@@ -43,7 +43,7 @@ pub fn set_enabled(on: bool) -> Result<(), String> {
     unsafe {
         let sub = wide(RUN);
         let mut key = Default::default();
-        RegCreateKeyExW(
+        let st = RegCreateKeyExW(
             HKEY_CURRENT_USER,
             PCWSTR(sub.as_ptr()),
             0,
@@ -53,14 +53,20 @@ pub fn set_enabled(on: bool) -> Result<(), String> {
             None,
             &mut key,
             None,
-        )
-        .map_err(|e| e.to_string())?;
+        );
+        if st != ERROR_SUCCESS {
+            return Err(format!("RegCreateKeyExW: {st:?}"));
+        }
         let name = wide(VALUE);
         if on {
             let path = exe_path()?;
             let data = wide(&format!("\"{path}\""));
             let bytes = std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * 2);
-            RegSetValueExW(key, PCWSTR(name.as_ptr()), 0, REG_SZ, Some(bytes)).map_err(|e| e.to_string())?;
+            let st = RegSetValueExW(key, PCWSTR(name.as_ptr()), 0, REG_SZ, Some(bytes));
+            if st != ERROR_SUCCESS {
+                let _ = RegCloseKey(key);
+                return Err(format!("RegSetValueExW: {st:?}"));
+            }
         } else {
             let _ = RegDeleteValueW(key, PCWSTR(name.as_ptr()));
         }
