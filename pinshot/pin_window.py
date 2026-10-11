@@ -286,9 +286,10 @@ class PinWindow(QWidget):
         m.addSeparator()
         m.addAction("Paste", self.paste); m.addAction("Replace from file…", self.replace_by_file)
         from . import session as SES
+        from .i18n import group_label
         g = m.addMenu("Move to group"); ag = QActionGroup(g)
         for name in SES.group_names():
-            act = g.addAction(name, lambda n=name: self.move_to_group(n)); act.setCheckable(True); act.setChecked(self.group == name); ag.addAction(act)
+            act = g.addAction(group_label(name), lambda n=name: self.move_to_group(n)); act.setCheckable(True); act.setChecked(self.group == name); ag.addAction(act)
         g.addSeparator()
         g.addAction("New group…", self._new_group)
         g.addAction("Rename group…", self._rename_group)
@@ -343,8 +344,10 @@ class PinWindow(QWidget):
     def _rename_group(self):
         from PySide6.QtWidgets import QInputDialog
         from . import session as SES
-        name, ok = QInputDialog.getText(self, "Rename group", "Name:", text=self.group)
-        if ok and name.strip() and self.group != "Default":
+        from .i18n import group_label
+        shown = group_label(self.group)
+        name, ok = QInputDialog.getText(self, "Rename group", "Name:", text=shown)
+        if ok and name.strip() and name.strip() != shown and self.group != "Default":
             SES.rename_group(self.group, name.strip())
 
     def set_clickthrough(self, on: bool):

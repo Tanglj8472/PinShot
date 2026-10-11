@@ -254,7 +254,7 @@ class SnipOverlay(QWidget):
         t = self.ann.tool
         key = t if t in ("text", "select", "number") else ("_annot" if t or self.has_sel() else None)
         from .i18n import tr
-        rows = [(k, tr(t)) for k, t in HINTS[key]]
+        rows = [(tr(k), tr(t)) for k, t in HINTS[key]]
         f = QFont(); f.setPixelSize(11); p.setFont(f); fm = p.fontMetrics()
         kw = max(fm.horizontalAdvance(k) for k, _ in rows) + 12
         tw = max(fm.horizontalAdvance(t) for _, t in rows)

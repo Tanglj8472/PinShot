@@ -13,6 +13,40 @@ from .hotkeys import HotkeyBus
 from .prefs import PrefsDialog
 
 
+def set_app_identity():
+    """Must run before any QStandardPaths/QSettings use; otherwise Qt derives the app name
+    from argv[0] (``__main__.py`` under ``python -m pinshot``)."""
+    from PySide6.QtCore import QCoreApplication
+    QCoreApplication.setApplicationName(S.APP)
+    QCoreApplication.setOrganizationName(S.ORG)
+
+
+def migrate_legacy_data(old_dir, new_dir):
+    """Move files (OCR models) from the old mis-named data dir into the real one. Best effort."""
+    import shutil
+    from pathlib import Path
+    old_dir, new_dir = Path(old_dir), Path(new_dir)
+    if not old_dir.is_dir() or old_dir.resolve() == new_dir.resolve():
+        return
+    for src in old_dir.rglob("*"):
+        if not src.is_file(): continue
+        dst = new_dir / src.relative_to(old_dir)
+        if dst.exists(): continue
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True); shutil.move(str(src), str(dst))
+        except OSError as e:
+            print("[pinshot] migrate", src, e, flush=True)
+
+
+def _migrate_default():
+    from pathlib import Path
+    from PySide6.QtCore import QStandardPaths
+    new = Path(QStandardPaths.writableLocation(QStandardPaths.AppLocalDataLocation))
+    for base in {new.parent, new.parent.parent}:
+        for legacy in ("__main__.py", "__main__", "pinshot_launcher.py", "pinshot_launcher"):
+            migrate_legacy_data(base / legacy, new)
+
+
 def _icon():
     from .icons import app_image
     ic = QIcon()
@@ -130,6 +164,7 @@ class App:
         for text, fn in (("Snip", self.snip), ("Pin clipboard", self.pin_clipboard),
                          ("Preferences…", self.open_prefs), ("Quit", self.quit)):
             b = QPushButton(text); b.clicked.connect(fn); lay.addWidget(b)
+        self.win.setMinimumWidth(220)   # WM must have room for the full "PinShot" title
         self.win.show()
 
     def _rebuild_groups(self):
@@ -137,7 +172,7 @@ class App:
 
     def _rebuild_tray(self):
         if not self.tray: return
-        from .i18n import translate_widget
+        from .i18n import translate_widget, group_label
         m = QMenu()
         m.addAction("Snip", self.snip)
         m.addAction("Pin clipboard", self.pin_clipboard)
@@ -147,7 +182,7 @@ class App:
         gm = m.addMenu("Groups")
         for name in SES.group_names():
             vis = SES.group_visible(name)
-            gm.addAction(("Hide " if vis else "Show ") + name,
+            gm.addAction(("Hide " if vis else "Show ") + group_label(name),
                          lambda n=name, v=vis: (SES.set_group_visible(n, not v), self._rebuild_groups()))
         m.addAction("Preferences…", self.open_prefs)
         m.addSeparator(); m.addAction("Quit", self.quit)
@@ -187,13 +222,18 @@ class App:
         hold = _plat().input_hold()
         hid = self._fallback and self.win.isVisible()
         if hid: self.win.hide()
+        def restore():
+            if self._fallback:
+                self.win.show(); self.win.raise_()
         def go():
             try:
                 shot, vg = _plat().capture_virtual()
                 ov = SnipOverlay(shot, vg)
             except Exception:
                 if hold: hold.release()
-                self._snip_pending = False; raise
+                self._snip_pending = False
+                if hid: restore()
+                raise
             self.overlay = ov; ov.pre_grab = hold; self._snip_pending = False
             ov.copied.connect(lambda pm: (copy_pixmap(pm), self._notify("Copied to clipboard")))
             ov.color_copied.connect(lambda t: self._notify(f"Color copied: {t}"))
@@ -202,7 +242,10 @@ class App:
             ov.text_requested.connect(self.translation.image)
             ov.destroyed.connect(lambda *_: setattr(self, 'overlay', None))
             ov.setAttribute(Qt.WA_DeleteOnClose)
-            if hid: ov.destroyed.connect(lambda *_: self.win.show())
+            if hid:
+                ov.destroyed.connect(lambda *_: QTimer.singleShot(0, restore))
+                for sig in (ov.cancelled, ov.text_requested, ov.pinned, ov.copied, ov.saved):
+                    sig.connect(lambda *_: QTimer.singleShot(0, restore))
             ov.start()
             if then: then(ov)
         QTimer.singleShot(150 if hid else 0, go)
@@ -294,6 +337,8 @@ class App:
         self._rebuild_tray()
 
     def open_prefs(self):
+        if self._fallback and not self.win.isVisible() and not self.overlay:
+            self.win.show()
         d = PrefsDialog(self.win)
         d.applied.connect(lambda: (self.apply_appearance(), self.reinstall_hotkeys(), self._rebuild_groups(), self._sync_delay_box()))
         d.exec()
@@ -355,10 +400,13 @@ def main(argv=None):
     from .platform import current as _plat
     _plat().init_process()                      # per-monitor DPI v2 on Windows (before QApplication)
     QApplication.setAttribute(Qt.AA_CompressHighFrequencyEvents, False)
+    set_app_identity()
     qapp = QApplication(sys.argv[:1]); qapp.setQuitOnLastWindowClosed(False)
+    try: _migrate_default()
+    except Exception as e: print("[pinshot] migrate:", e, flush=True)
     app = App(qapp)
 
-    if app._fallback and cmd in ("snip", "prefs"):
+    if app._fallback and cmd == "snip":
         app.win.hide()
     try: SES.restore_session()
     except Exception as e: print("[pinshot] session restore:", e, flush=True)

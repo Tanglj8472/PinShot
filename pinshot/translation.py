@@ -65,7 +65,8 @@ def translate(text, target='zh-Hans'):
 class ResultWindow(QWidget):
     def __init__(self):
         super().__init__(None, Qt.Window | Qt.WindowStaysOnTopHint)
-        self.setWindowTitle('PinShot OCR')
+        from .i18n import tr
+        self.setWindowTitle(tr('PinShot OCR'))
         self.resize(480, 460)
         self.closed = False; self.request = 0; self.busy = False
         layout = QVBoxLayout(self)
@@ -96,6 +97,10 @@ class ResultWindow(QWidget):
         self.move(QPoint(max(area.left(), min(QCursor.pos().x(), area.right()-self.width())),
                          max(area.top(), min(QCursor.pos().y(), area.bottom()-self.height()))))
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.raise_(); self.activateWindow()   # stay above existing (always-on-top) pins
+
     def closeEvent(self, event):
         self.closed = True; self.request += 1
         super().closeEvent(event)
@@ -115,6 +120,8 @@ class TranslationController(QObject):
         window = ResultWindow(); self.windows.append(window)
         window.translate_button.clicked.connect(lambda: self.start_translation(window))
         window.show(); window.raise_(); window.activateWindow()
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(50, lambda: (not window.closed) and (window.raise_(), window.activateWindow()))
         return window
 
     def image(self, image, auto_translate=False):
