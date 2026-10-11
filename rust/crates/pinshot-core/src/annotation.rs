@@ -487,7 +487,8 @@ impl Annotator {
                         self.shapes[idx].text = ed.text;
                     }
                 } else {
-                    let mut sh = Shape::new(Tool::Text, vec![ed.img_pt], self.style(Tool::Text).clone());
+                    let mut sh =
+                        Shape::new(Tool::Text, vec![ed.img_pt], self.style(Tool::Text).clone());
                     sh.text = ed.text;
                     self.add(sh);
                 }
@@ -737,9 +738,9 @@ impl Annotator {
         let steal = tool == Some(Tool::Select)
             || (tool != Some(Tool::Eraser)
                 && tool != Some(Tool::Mosaic)
-                && (self.hit_test(img_pt).is_some() || self.hit_handle_of_selected(img_pt).is_some()));
+                && (self.hit_test(img_pt).is_some()
+                    || self.hit_handle_of_selected(img_pt).is_some()));
         if steal {
-
             if let Some(h) = self.hit_handle_of_selected(img_pt) {
                 if self.selected.is_some() {
                     self.sel_mode = Some(SelMode::Handle(h));
@@ -775,7 +776,8 @@ impl Annotator {
         match tool {
             Tool::Text => {
                 if let Some(ed) = &self.text_edit {
-                    if ed.text.trim().is_empty() || ed.started.elapsed() < Duration::from_millis(200)
+                    if ed.text.trim().is_empty()
+                        || ed.started.elapsed() < Duration::from_millis(200)
                     {
                         self.start_text(img_pt, None);
                         return true;
@@ -860,7 +862,10 @@ impl Annotator {
     pub fn text_edit_rect(&self) -> Option<Rect> {
         let ed = self.text_edit.as_ref()?;
         let st = if let Some(i) = ed.existing {
-            self.shapes.get(i).map(|s| s.style.clone()).unwrap_or_else(|| self.style(Tool::Text).clone())
+            self.shapes
+                .get(i)
+                .map(|s| s.style.clone())
+                .unwrap_or_else(|| self.style(Tool::Text).clone())
         } else {
             self.style(Tool::Text).clone()
         };
@@ -874,11 +879,7 @@ impl Annotator {
         if let Some(ed) = &mut self.text_edit {
             if ch == '\u{8}' {
                 ed.text.pop();
-            } else if !ch.is_control()
-                && ch != '\u{2013}'
-                && ch != '\u{2014}'
-                && ch != '\u{ffe3}'
-            {
+            } else if !ch.is_control() && ch != '\u{2013}' && ch != '\u{2014}' && ch != '\u{ffe3}' {
                 ed.text.push(ch);
             }
         }
@@ -914,7 +915,12 @@ impl Annotator {
             return false;
         };
         if sh.kind.is_brush(&sh.style) {
-            if sh.pts.last().map(|p| p.manhattan(img_pt) >= 0.5).unwrap_or(true) {
+            if sh
+                .pts
+                .last()
+                .map(|p| p.manhattan(img_pt) >= 0.5)
+                .unwrap_or(true)
+            {
                 sh.pts.push(img_pt);
             }
             return true;
@@ -1344,5 +1350,48 @@ mod tests {
         assert!(a.wheel_at(Point::new(10.0, 10.0), 120));
         assert_eq!(a.selected, Some(0));
         assert_eq!(a.shapes[0].style.width, 4);
+    }
+
+    /// Overlay `handle` MouseInput / CursorMoved / MouseInput — not QueryPointer recover.
+    #[test]
+    fn event_path_draws_rect_ellipse_arrow() {
+        for (tool, arrow) in [
+            (Tool::Rect, false),
+            (Tool::Ellipse, false),
+            (Tool::Line, true),
+        ] {
+            let mut a = Annotator::new();
+            a.set_tool(Some(tool));
+            if arrow {
+                a.set_style_default(Tool::Line, |s| s.arrow = true);
+            }
+            assert!(a.press(Point::new(20.0, 20.0), false), "{tool:?} press");
+            assert!(a.live.is_some(), "{tool:?} live after press");
+            assert!(a.move_to(Point::new(90.0, 70.0), false), "{tool:?} move");
+            assert!(a.release(Point::new(90.0, 70.0)), "{tool:?} release");
+            assert_eq!(a.shapes.len(), 1, "{tool:?}");
+            assert_eq!(a.shapes[0].kind, tool);
+            if arrow {
+                assert!(a.shapes[0].style.arrow, "arrow flag");
+            }
+            let b = a.shapes[0].bounds();
+            assert!(b.w >= 60.0 && b.h >= 40.0, "{tool:?} bounds {b:?}");
+        }
+    }
+
+    #[test]
+    fn empty_recover_release_does_not_block_event_path_stroke() {
+        let mut a = Annotator::new();
+        a.set_tool(Some(Tool::Rect));
+        a.press(Point::new(10.0, 10.0), false);
+        a.release(Point::new(10.0, 10.0));
+        assert!(a.shapes.is_empty());
+        assert!(a.live.is_none());
+        a.press(Point::new(10.0, 10.0), false);
+        a.move_to(Point::new(50.0, 40.0), false);
+        a.release(Point::new(50.0, 40.0));
+        assert_eq!(a.shapes.len(), 1);
+        let b = a.shapes[0].bounds();
+        assert!(b.w >= 30.0 && b.h >= 20.0);
     }
 }

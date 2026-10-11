@@ -2,7 +2,7 @@
 
 对照源：`main` 上的 Python/PySide6 PinShot。Rust 在 `rust/`，分支 `rust`。Python 源码不改。
 
-最后更新：2026-10-11（0098973 实机 11 项已关；键盘缓存抓取、历史落盘、滚轮锚光标、toast 实测宽）。
+最后更新：2026-10-12（b791ea3 实机回归：recover annot.press 导致矩形/椭圆/箭头画不出；本轮改回事件路径 press）。
 
 ---
 
@@ -81,22 +81,37 @@
 | ID | 问题 | 状态 | 修法 |
 |---|---|---|---|
 | 1 | 文字快打 “hello”+Ctrl+Enter 只留下 “hel” | 已修 | 缓存 keymap；拉丁文保持抓键；`0xff00+` 不当成 Unicode（Control_L≠￣）；晚到的字母仍插入 |
-| 2 | pin 滚轮缩在中心，指针离开后多余格切工作区 | 已修 | 每格 `QueryPointer` 窗口坐标为锚；`_NET_MOVERESIZE_WINDOW` + ConfigureWindow 一次写 x,y,w,h |
+| 2 | pin 滚轮缩在中心，指针离开后多余格切工作区 | 已修 | 每格 `QueryPointer` 为锚；跟踪 `geom_pos` + winit `set_outer_position`（第二路 x11rb ConfigureRequest 会被 xfwm4 丢掉） |
 | 3 | `,` `.` 打出 toast 但画面不变；`.` 清选区 | 已修 | 按键立刻 `request_redraw`；回放 `replace_shot` 保持 `primed=false`；回到 live 时保留选区（Python 同） |
-| 4 | 新进程 R 无上次选区 | 已修 | `data_dir/history/` 落盘 PNG+rect；启动加载；R 用最后一条 |
+| 4 | 新进程 R 无上次选区 | 已修 | `data_dir/history/` 落盘；R 只套最后一条 **rect** 到当前截图（不再 `replace_shot` 旧图） |
 | 5 | toast 淡出后中心残留残字 | 已修 | 用 `text::measure` 算盒宽，恢复矩形再胀 12px |
 | 6 | 按键后要鼠标动才重绘 | 已修 | 每个 X11Key / handle 脏时 `window.request_redraw()` |
 | 7 | Esc 后立刻 F1 无日志 | 已修 | `OverlayKeyGrab::release` join 后立刻 ungrab；overlay 内 F1 → `Resnip`；关闭时队列里的 F1 转 `Hotkey::Snip` |
-| 8 | 点矩形后第一笔快拖仍是箭头，第二笔空 | 已修 | 按下前 `QueryPointer`；`recover` 在 Button1 上升沿补 `annot.press`（工具栏点击不补） |
+| 8 | 点矩形后第一笔快拖仍是箭头，第二笔空 | 已修→回归 | 曾用 recover 上升沿 `annot.press`；b791ea3 实机因此矩形/椭圆/箭头画不出。现改为 **仅 MouseInput press**，recover 只 move/release 已有 extent 的 stroke |
 | 9 | 滚轮改选中图形线宽后面板仍显示 3 | 已修 | 面板用 `option_width()`（选中/live），滚轮后 `relayout` |
 | 10 | 穿透项无勾；页脚 Zoom/Opacity 中文未译 | 已修 | 可勾项始终画勾槽；`match_pattern` 只拿 `{0}` 后到下一占位的分隔符 |
-| 11 | overlay 开着 Chrome 仍收到 Tab | 已修 | 先放 `InputHold` 再立刻 `XGrabKeyboard(owner_events=false)`；失败 8ms 重试（不再等 80ms） |
+| 11 | overlay 开着 Chrome 仍收到 Tab | 已修 | 先放 `InputHold` 再 `XGrabKeyboard`；根窗口被动抓 Tab/ISO_Left_Tab；默认关 IME；失败 1ms 重试 |
+
+### b791ea3 实机（Xfce/xfwm4，2026-10-12）
+
+PASS：文字快打+Ctrl+Enter；`,` `.` 历史 + 重启后 R；toast 淡出；按键即重绘；Esc 后 F1；pin 菜单勾选+中文页脚；Ctrl+C；pin 按钮；prefs。
+
+| ID | 问题 | 状态 | 修法 |
+|---|---|---|---|
+| 1 | **回归**：矩形/椭圆/箭头画不出；日志只有 `recover annot press`，无 drag/release | 已修 | recover **禁止** `annot.press`；只在已有 extent 时 move/release。事件路径 `press→move_to→release` 单测 Rect/Ellipse/Arrow |
+| 2 | pin 滚轮缩小锚在左上：算出 nx,ny 但窗停在 148,100；多出的格滚到 Chrome | 已修 | 跟踪 `geom_pos`（不重读过期 `outer_position`）；始终 `set_outer_position` + `request_inner_size` + EWMH；滚轮时 raise/focus |
+| 3 | overlay 里 Tab 漏到 Chrome（Jump to content） | 已修 | 根窗口 `XGrabKey` Tab/ISO_Left_Tab（`owner_events=false`）；默认 `set_ime_allowed(false)`；抓键 1ms 重试 |
+| 4 | R 后背景是旧截图（应为当前屏幕 + 上次选区） | 已修 | `reuse_last` 只 `set_rect`，不 `replace_shot` |
+| 5 | Esc 关 pin 菜单也关掉 pin，其它已恢复的 pin 消失 | 已修 | 菜单开着或刚关 450ms 内 pin 不处理 Esc；菜单 Esc 只关菜单 |
+| 6 | pin 右键菜单很高，末项下大块空白 | 已修 | 高度按行真实高度求和（Sep=8，其它=22），不再 `len*ROW_H` |
+
+未测：选中图形滚轮改线宽（被 #1 挡住；#1 修后事件路径单测覆盖绘制）。
 
 ---
 
 ## 已发现的全部问题（各轮测试）
 
-状态：`已修` / `未关`。52d5642 实机 A–L 与 0098973 实机 11 项本轮已关。
+状态：`已修` / `未关`。52d5642 实机 A–L、0098973 实机 11 项、b791ea3 实机 6 项本轮已关。
 
 ### Windows 早期轮次
 
@@ -136,7 +151,7 @@
 | F | 文字：第一击无框（键入丢失）；第二击才有；Ctrl+Enter 提交带「–」；中文被丢（无 IME） | 已修 | 空编辑器重定位不提交；Ctrl 不插入；滤 en/em dash；文字时 ungrab 键盘给 IME |
 | G | 点图形边选不中（无 8 手柄）；文字工具点边上会新开文本；滚轮在图形上不改线宽 | 已修 | 与 Python 相同：非橡皮/马赛克点中即选；`wheel_at` |
 | H | Ctrl+C 日志已复制，overlay 关掉后剪贴板空 | 已修 | 进程内常驻 `Clipboard` + `xclip -t image/png` 移交 |
-| I | pin 滚轮缩小锚在左上，指针离开窗口，多余滚轮被桌面吃掉切工作区 | 已修 | `set_scale_at` 以光标为锚 |
+| I | pin 滚轮缩小锚在左上，指针离开窗口，多余滚轮被桌面吃掉切工作区 | 已修 | `set_scale_at` 以光标为锚；`geom_pos` + winit 移窗 |
 | J | 配置里 `hotkey_clickthrough=""`；热键页显示「—」；菜单穿透无勾 | 已修 | 默认/空值填 F4；菜单勾选改画色块（字体无 ✓） |
 | K | 恢复的每张 pin 弹出「Opacity: 100%」且不消失 | 已修 | `set_opacity_ex(..., false)`；toast 1.2s 后清 |
 | L | overlay 打开时 Chrome 偶尔仍收到键；overlay 重绘有时慢 | 已修 | `XGrabKeyboard(owner_events=false)` + 丢焦点重抓；无 dirty 不 present |
@@ -198,6 +213,10 @@
 3. **P3 — 体积与 OCR**：默认 exe 保持无模型；`--features ocr` / `pinshot-ocr` 文档化。
 
 验证约定：Linux 改动必须在 **Xvfb + xfwm4 + xdotool**（以及有桌面时的 `:1` Xfce）上做焦点/按键/菜单回归。本轮用 `type --delay 20`、两步快拖、连续滚轮格。
+
+### Xvfb b791ea3 六项（实机节拍，`:21` 1920×1200 + xfwm4）
+
+见本轮提交后的 `/tmp/pinshot-b791-verify.sh` 结果（绘制走事件路径、pin 缩放位移、Tab 不漏、R 活截图、Esc 只关菜单、菜单高度）。
 
 ### Xvfb 0098973 十一项（`:20` 1920×1200 + xfwm4）
 

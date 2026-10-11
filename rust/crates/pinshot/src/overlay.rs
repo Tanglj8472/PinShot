@@ -6,11 +6,11 @@ use std::time::{Duration, Instant};
 use pinshot_core::annotation::{Annotator, Tool};
 use pinshot_core::color::Rgba;
 use pinshot_core::geom::{hover_rect, Point, Rect};
+use pinshot_core::history::{HistoryEntry, HistoryView, SnipHistory};
 use pinshot_core::i18n::tr;
 use pinshot_core::magnifier::magnifier_visible;
 use pinshot_core::raster::Raster;
 use pinshot_core::render::compose;
-use pinshot_core::history::{HistoryEntry, HistoryView, SnipHistory};
 use pinshot_core::selection::{DetectMode, Nudge, PressKind, SelState, Selection};
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
@@ -77,8 +77,7 @@ impl Overlay {
         history_max: u32,
         translate_on_select: bool,
         proxy: winit::event_loop::EventLoopProxy<crate::event::AppEvent>,
-        #[cfg(unix)]
-        pre_hold: Option<crate::x11util::InputHold>,
+        #[cfg(unix)] pre_hold: Option<crate::x11util::InputHold>,
     ) -> Result<Self, String> {
         let (vx, vy) = capture.virtual_origin;
         let w = capture.composed.width;
@@ -96,14 +95,12 @@ impl Overlay {
             use winit::platform::x11::WindowAttributesExtX11;
             attrs = attrs.with_override_redirect(true);
         }
-        let window = Rc::new(
-            event_loop
-                .create_window(attrs)
-                .map_err(|e| e.to_string())?,
-        );
+        let window = Rc::new(event_loop.create_window(attrs).map_err(|e| e.to_string())?);
         native::apply_overlay_style(&window);
         window.set_cursor(CursorIcon::Crosshair);
-        window.set_ime_allowed(true);
+        // IME only while a text editor is open; a standing IME grab lets Tab
+        // leak to Chrome before XGrabKeyboard wins.
+        window.set_ime_allowed(false);
         #[cfg(not(windows))]
         let surface = {
             let ctx = softbuffer::Context::new(window.clone()).map_err(|e| format!("{e:?}"))?;
@@ -212,6 +209,23 @@ impl Overlay {
         let _ = pause;
     }
 
+    fn sync_ime(&mut self) {
+        self.window.set_ime_allowed(self.annot.text_edit.is_some());
+    }
+
+    fn commit_annot_release(&mut self, pt: Point) {
+        let before = self.annot.shapes.len();
+        self.annot.release(self.img_pt(pt));
+        self.sync_ime();
+        if self.annot.shapes.len() > before {
+            if let Some(sh) = self.annot.shapes.last() {
+                let b = sh.bounds();
+                crate::logutil::log(&format!("annot {:?} {:.0}x{:.0}", sh.kind, b.w, b.h));
+            }
+        }
+        self.relayout_toolbar();
+    }
+
     pub fn window_id(&self) -> WindowId {
         self.window.id()
     }
@@ -290,10 +304,7 @@ impl Overlay {
     fn finish_copy(&mut self) {
         if let Some(img) = self.crop() {
             self.remember();
-            crate::logutil::log(&format!(
-                "overlay copy {}x{}",
-                img.width, img.height
-            ));
+            crate::logutil::log(&format!("overlay copy {}x{}", img.width, img.height));
             self.release_grab();
             self.result = Some(OverlayResult::Copy(img, self.sel.normalized()));
             self.window.set_visible(false);
@@ -360,11 +371,17 @@ impl Overlay {
 
     fn reuse_last(&mut self) {
         if let Some(e) = self.history.last().cloned() {
-            if self.live_shot.is_none() {
-                self.live_shot = Some(self.capture.composed.clone());
-            }
-            self.apply_replay(&e.image, Some(e.rect));
+            // R reapplies the last selection rect on the *current* capture.
+            // `,` / `.` still replace the shot via apply_replay.
+            self.annot.clear();
+            self.sel.set_rect(e.rect, self.bounds());
+            self.relayout_toolbar();
+            crate::logutil::log(&format!(
+                "R last rect {:.0}x{:.0} on live capture {}x{}",
+                e.rect.w, e.rect.h, self.capture.composed.width, self.capture.composed.height
+            ));
             self.show_toast(tr("Last snip area"));
+            self.mark_dirty();
         }
     }
 
@@ -404,7 +421,8 @@ impl Overlay {
             TbAction::Tool(t) => {
                 self.annot.set_tool(Some(t));
                 if t == Tool::Line {
-                    self.annot.set_style_default(Tool::Line, |s| s.arrow = false);
+                    self.annot
+                        .set_style_default(Tool::Line, |s| s.arrow = false);
                     self.arrow_on = false;
                 } else {
                     self.arrow_on = false;
@@ -471,7 +489,9 @@ impl Overlay {
                 let same_px = next.x.round() == self.cursor.x.round()
                     && next.y.round() == self.cursor.y.round();
                 self.cursor = next;
-                if self.annot.is_brush_live() || self.annot.is_selecting() || self.annot.live.is_some()
+                if self.annot.is_brush_live()
+                    || self.annot.is_selecting()
+                    || self.annot.live.is_some()
                 {
                     self.annot.move_to(self.img_pt(self.cursor), false);
                     self.dirty = true;
@@ -484,7 +504,9 @@ impl Overlay {
                 } else {
                     let prev_hover = self.hover;
                     self.update_hover();
-                    if self.sel.has_sel() && self.sel.normalized().contains(self.cursor) && self.annot.tool.is_none()
+                    if self.sel.has_sel()
+                        && self.sel.normalized().contains(self.cursor)
+                        && self.annot.tool.is_none()
                     {
                         self.window.set_cursor(CursorIcon::Move);
                     } else {
@@ -502,6 +524,7 @@ impl Overlay {
                     native::focus_window(&self.window);
                 }
                 if *state == ElementState::Pressed && *button == MouseButton::Left {
+                    self.held_btn1 = true;
                     if let Some(tb) = &self.toolbar {
                         if let Some(a) = tb.hit(pt) {
                             self.apply_tb(a);
@@ -509,6 +532,7 @@ impl Overlay {
                         }
                     }
                     if self.sel.has_sel() && self.annot.press(self.img_pt(pt), false) {
+                        self.sync_ime();
                         self.mark_dirty();
                         return;
                     }
@@ -529,8 +553,9 @@ impl Overlay {
                     }
                     self.dirty = true;
                 } else if *state == ElementState::Released && *button == MouseButton::Left {
+                    self.held_btn1 = false;
                     if self.annot.live.is_some() || self.annot.is_selecting() {
-                        self.annot.release(self.img_pt(pt));
+                        self.commit_annot_release(pt);
                     } else {
                         self.sel.release(pt, self.hover, self.bounds());
                         self.relayout_toolbar();
@@ -558,6 +583,7 @@ impl Overlay {
                         self.annot.type_text(ch);
                     }
                     self.set_ime_pause(false);
+                    self.sync_ime();
                     self.mark_dirty();
                 }
                 winit::event::Ime::Enabled | winit::event::Ime::Preedit(_, _) => {
@@ -611,6 +637,7 @@ impl Overlay {
             return;
         };
         self.key(&key, text.as_deref());
+        self.sync_ime();
         self.window.request_redraw();
     }
 
@@ -642,6 +669,7 @@ impl Overlay {
                     }
                 }
             }
+            self.sync_ime();
             self.mark_dirty();
             return;
         }
@@ -681,6 +709,7 @@ impl Overlay {
                 self.dirty = true;
             }
             Key::Named(NamedKey::Tab) => {
+                crate::logutil::log("overlay Tab swallowed");
                 self.detect = self.detect.toggle();
                 if self.detect == DetectMode::Element {
                     self.load_elements();
@@ -729,9 +758,13 @@ impl Overlay {
                 self.annot.adjust_width(1);
                 self.dirty = true;
             }
-            Key::Character(c) if c.eq_ignore_ascii_case("a") && !ctrl => self.move_cursor(-1.0, 0.0),
+            Key::Character(c) if c.eq_ignore_ascii_case("a") && !ctrl => {
+                self.move_cursor(-1.0, 0.0)
+            }
             Key::Character(c) if c.eq_ignore_ascii_case("d") && !ctrl => self.move_cursor(1.0, 0.0),
-            Key::Character(c) if c.eq_ignore_ascii_case("w") && !ctrl => self.move_cursor(0.0, -1.0),
+            Key::Character(c) if c.eq_ignore_ascii_case("w") && !ctrl => {
+                self.move_cursor(0.0, -1.0)
+            }
             Key::Character(c) if c.eq_ignore_ascii_case("s") && !ctrl => self.move_cursor(0.0, 1.0),
             Key::Named(NamedKey::ArrowLeft) => self.nudge_key(-1.0, 0.0),
             Key::Named(NamedKey::ArrowRight) => self.nudge_key(1.0, 0.0),
@@ -749,9 +782,10 @@ impl Overlay {
             pinshot_core::geom::clamp_f32(self.cursor.x + dx, 0.0, (b.w - 1.0).max(0.0)),
             pinshot_core::geom::clamp_f32(self.cursor.y + dy, 0.0, (b.h - 1.0).max(0.0)),
         );
-        let _ = self
-            .window
-            .set_cursor_position(PhysicalPosition::new(self.cursor.x as f64, self.cursor.y as f64));
+        let _ = self.window.set_cursor_position(PhysicalPosition::new(
+            self.cursor.x as f64,
+            self.cursor.y as f64,
+        ));
         if self.sel.state == SelState::Creating {
             self.sel.motion(self.cursor, b);
         } else {
@@ -833,7 +867,7 @@ impl Overlay {
             self.dpr,
             self.hex,
             mag,
-            &            self.annot,
+            &self.annot,
             self.toolbar.as_ref(),
             self.toast.as_deref(),
             self.show_cursor,
@@ -842,7 +876,10 @@ impl Overlay {
         #[cfg(not(windows))]
         if let Some(surface) = &mut self.surface {
             let pm = self.front.pixmap();
-            if let (Some(nw), Some(nh)) = (std::num::NonZeroU32::new(pm.width()), std::num::NonZeroU32::new(pm.height())) {
+            if let (Some(nw), Some(nh)) = (
+                std::num::NonZeroU32::new(pm.width()),
+                std::num::NonZeroU32::new(pm.height()),
+            ) {
                 if surface.resize(nw, nh).is_ok() {
                     if let Ok(mut buf) = surface.buffer_mut() {
                         present(&mut buf, pm);
@@ -865,6 +902,12 @@ impl Overlay {
 
     /// If ButtonPress landed on the window underneath before the overlay
     /// mapped, adopt the still-held Button1 as a selection drag.
+    ///
+    /// Recover must **not** start `annot.press`. A QueryPointer rising edge
+    /// plus the real winit press (or a same-point recover release) `finish()`es
+    /// an empty live shape, after which the physical drag has `held_btn1` and
+    /// no live — rect/ellipse/arrow draw nothing. MouseInput owns press;
+    /// recover only continues or commits a stroke that already has extent.
     fn recover_pointer_drag(&mut self) {
         let Some((x, y, down)) = native::pointer_in_window(&self.window) else {
             return;
@@ -882,23 +925,21 @@ impl Overlay {
             let drawing = self.annot.live.is_some()
                 || self.annot.is_selecting()
                 || self.annot.is_brush_live();
-            if down && !self.held_btn1 && !drawing && self.sel.normalized().contains(pt) {
-                if self.annot.press(self.img_pt(pt), false) {
-                    crate::logutil::log(&format!(
-                        "recover annot press ({:.0},{:.0})",
-                        pt.x, pt.y
-                    ));
+            match recover_stroke_action(down, drawing, annot_stroke_extent(&self.annot)) {
+                RecoverStroke::Move => {
+                    self.annot.move_to(self.img_pt(pt), false);
                     self.dirty = true;
                 }
-            } else if down && drawing {
-                self.annot.move_to(self.img_pt(pt), false);
-                self.dirty = true;
-            } else if !down && drawing {
-                self.annot.release(self.img_pt(pt));
-                self.relayout_toolbar();
-                self.dirty = true;
+                RecoverStroke::Release => {
+                    self.commit_annot_release(pt);
+                    self.dirty = true;
+                }
+                RecoverStroke::Idle => {}
             }
-        } else if down && self.sel.state == SelState::Idle && !self.sel.has_sel() && self.annot.tool.is_none()
+        } else if down
+            && self.sel.state == SelState::Idle
+            && !self.sel.has_sel()
+            && self.annot.tool.is_none()
         {
             let _ = self.sel.press(pt, self.bounds(), false);
             crate::logutil::log(&format!("recover Button1 drag ({:.0},{:.0})", pt.x, pt.y));
@@ -911,10 +952,7 @@ impl Overlay {
             self.relayout_toolbar();
             if self.sel.has_sel() {
                 let r = self.sel.normalized();
-                crate::logutil::log(&format!(
-                    "recover release sel {:.0}x{:.0}",
-                    r.w, r.h
-                ));
+                crate::logutil::log(&format!("recover release sel {:.0}x{:.0}", r.w, r.h));
             }
             self.dirty = true;
         }
@@ -928,6 +966,40 @@ impl Overlay {
             None => Some(poll),
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RecoverStroke {
+    Idle,
+    Move,
+    Release,
+}
+
+/// Recover continues a live stroke; it never starts one (see `recover_pointer_drag`).
+fn recover_stroke_action(down: bool, drawing: bool, live_has_extent: bool) -> RecoverStroke {
+    if !drawing {
+        return RecoverStroke::Idle;
+    }
+    if down {
+        RecoverStroke::Move
+    } else if live_has_extent {
+        RecoverStroke::Release
+    } else {
+        RecoverStroke::Idle
+    }
+}
+
+fn annot_stroke_extent(annot: &Annotator) -> bool {
+    if annot.is_selecting() {
+        return true;
+    }
+    let Some(sh) = annot.live.as_ref() else {
+        return false;
+    };
+    if sh.kind.is_brush(&sh.style) {
+        return sh.pts.len() > 1;
+    }
+    sh.pts.len() > 1 && sh.pts[0].manhattan(*sh.pts.last().unwrap()) > 2.0
 }
 
 fn x11_mods_to_winit(mods: u16) -> ModifiersState {
@@ -992,6 +1064,9 @@ fn keysym_to_winit(keysym: u32) -> Option<(Key, Option<String>)> {
 #[cfg(test)]
 mod keysym_tests {
     use super::keysym_to_winit;
+    use super::{annot_stroke_extent, recover_stroke_action, RecoverStroke};
+    use pinshot_core::annotation::{Annotator, Tool};
+    use pinshot_core::geom::Point;
     use winit::keyboard::{Key, NamedKey};
 
     #[test]
@@ -1008,5 +1083,35 @@ mod keysym_tests {
         let (k, t) = keysym_to_winit(b'h' as u32).unwrap();
         assert!(matches!(k, Key::Character(c) if c.as_str() == "h"));
         assert_eq!(t.as_deref(), Some("h"));
+    }
+
+    #[test]
+    fn recover_never_starts_a_press() {
+        assert_eq!(
+            recover_stroke_action(true, false, false),
+            RecoverStroke::Idle
+        );
+        assert_eq!(
+            recover_stroke_action(true, true, false),
+            RecoverStroke::Move
+        );
+        assert_eq!(
+            recover_stroke_action(false, true, false),
+            RecoverStroke::Idle
+        );
+        assert_eq!(
+            recover_stroke_action(false, true, true),
+            RecoverStroke::Release
+        );
+    }
+
+    #[test]
+    fn same_point_live_has_no_extent() {
+        let mut a = Annotator::new();
+        a.set_tool(Some(Tool::Rect));
+        a.press(Point::new(10.0, 10.0), false);
+        assert!(!annot_stroke_extent(&a));
+        a.move_to(Point::new(40.0, 30.0), false);
+        assert!(annot_stroke_extent(&a));
     }
 }

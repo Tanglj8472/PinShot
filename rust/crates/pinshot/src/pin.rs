@@ -4,7 +4,12 @@ use std::num::NonZeroU32;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use crate::draw::{fill_rect, paint_pin, paint_toolbar, present, stroke_rect};
+use crate::native;
+use crate::toolbar::{TbAction, Toolbar};
 use pinshot_core::annotation::{Annotator, Tool};
+use pinshot_core::color::Rgba;
+use pinshot_core::geom::{handle_points, HANDLE_SIZE};
 use pinshot_core::geom::{Point, Rect};
 use pinshot_core::groups;
 use pinshot_core::i18n::tr;
@@ -16,11 +21,6 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
-use crate::draw::{fill_rect, paint_pin, paint_toolbar, present, stroke_rect};
-use crate::native;
-use crate::toolbar::{TbAction, Toolbar};
-use pinshot_core::color::Rgba;
-use pinshot_core::geom::{handle_points, HANDLE_SIZE};
 
 #[cfg(windows)]
 use crate::win32::{hwnd_of, wide};
@@ -54,8 +54,11 @@ pub struct PinWin {
     pub opacity: f32,
     pub click_through: bool,
     glow: f32,
-    drag: Option<Point>,
+    drag: Option<(Point, (i32, i32))>,
     last_cursor: Point,
+    /// Last applied outer origin. winit `outer_position` stays stale on xfwm4
+    /// after `request_inner_size`, so consecutive wheel notches must not reread it.
+    geom_pos: Option<(i32, i32)>,
     pub closed: bool,
     dirty: bool,
     pub group: String,
@@ -102,6 +105,7 @@ impl PinWin {
             glow: 1.0,
             drag: None,
             last_cursor: Point::ZERO,
+            geom_pos: Some(pos),
             closed: false,
             dirty: true,
             group: groups::DEFAULT.into(),
@@ -136,10 +140,23 @@ impl PinWin {
     }
 
     pub fn pos(&self) -> (i32, i32) {
-        self.window
-            .outer_position()
-            .map(|p| (p.x, p.y))
+        self.current_tl()
+    }
+
+    fn current_tl(&self) -> (i32, i32) {
+        self.geom_pos
+            .or_else(|| self.window.outer_position().ok().map(|p| (p.x, p.y)))
             .unwrap_or((40, 40))
+    }
+
+    fn apply_geom(&mut self, x: i32, y: i32, w: u32, h: u32) {
+        self.geom_pos = Some((x, y));
+        // Size through winit, then move on the window's own Xlib connection.
+        // x11rb ConfigureRequest from a second client is ignored by xfwm4, so
+        // `configure_window_geom` alone left the pin at its old origin.
+        let _ = self.window.request_inner_size(PhysicalSize::new(w, h));
+        self.window.set_outer_position(PhysicalPosition::new(x, y));
+        let _ = native::configure_window_geom(&self.window, x, y, w, h);
     }
 
     pub fn hide(&self) {
@@ -165,34 +182,26 @@ impl PinWin {
         if (new - old).abs() < f32::EPSILON {
             return;
         }
-        let tl = self.window.outer_position().ok();
+        let tl = self.current_tl();
         self.scale = new;
         let w = ((self.img.width as f32) * self.scale).round().max(8.0) as u32;
         let h = ((self.img.height as f32) * self.scale).round().max(8.0) as u32;
-        if let Some(p) = tl {
-            let (nx, ny) = match anchor {
-                Some(a) => zoom_pos((p.x, p.y), a, old, new),
-                None => (p.x, p.y),
-            };
-            if native::configure_window_geom(&self.window, nx, ny, w, h) {
-                // Keep winit's cached size in sync; the WM already has x,y,w,h.
-                let _ = self.window.request_inner_size(PhysicalSize::new(w, h));
-            } else {
-                let _ = self.window.request_inner_size(PhysicalSize::new(w, h));
-                self.window.set_outer_position(PhysicalPosition::new(nx, ny));
-            }
-            crate::logutil::log(&format!(
-                "pin zoom {old:.3}->{new:.3} {}x{} @ {},{} anchor {:.0},{:.0}",
-                w,
-                h,
-                nx,
-                ny,
-                anchor.map(|a| a.x).unwrap_or(0.0),
-                anchor.map(|a| a.y).unwrap_or(0.0)
-            ));
-        } else {
-            let _ = self.window.request_inner_size(PhysicalSize::new(w, h));
-        }
+        let (nx, ny) = match anchor {
+            Some(a) => zoom_pos(tl, a, old, new),
+            None => tl,
+        };
+        self.apply_geom(nx, ny, w, h);
+        crate::logutil::log(&format!(
+            "pin zoom {old:.3}->{new:.3} {}x{} @ {},{} (was {},{}) anchor {:.0},{:.0}",
+            w,
+            h,
+            nx,
+            ny,
+            tl.0,
+            tl.1,
+            anchor.map(|a| a.x).unwrap_or(0.0),
+            anchor.map(|a| a.y).unwrap_or(0.0)
+        ));
         self.persist_needed = true;
         self.dirty = true;
         self.window.request_redraw();
@@ -291,15 +300,8 @@ impl PinWin {
         } else {
             (w, h)
         };
-        let tl = self.window.outer_position().ok();
-        if let Some(p) = tl {
-            if !native::configure_window_geom(&self.window, p.x, p.y, ww, hh) {
-                let _ = self.window.request_inner_size(PhysicalSize::new(ww, hh));
-                self.window.set_outer_position(p);
-            }
-        } else {
-            let _ = self.window.request_inner_size(PhysicalSize::new(ww, hh));
-        }
+        let (x, y) = self.current_tl();
+        self.apply_geom(x, y, ww, hh);
     }
 
     fn img_pt(&self, p: Point) -> Point {
@@ -311,7 +313,8 @@ impl PinWin {
             TbAction::Tool(t) => {
                 self.annot.set_tool(Some(t));
                 if t == Tool::Line {
-                    self.annot.set_style_default(Tool::Line, |s| s.arrow = false);
+                    self.annot
+                        .set_style_default(Tool::Line, |s| s.arrow = false);
                     self.arrow_on = false;
                 } else {
                     self.arrow_on = false;
@@ -361,24 +364,21 @@ impl PinWin {
                 let p = Point::new(position.x as f32, position.y as f32);
                 self.last_cursor = p;
                 if self.annotating
-                    && (self.annot.is_brush_live() || self.annot.is_selecting() || self.annot.live.is_some())
+                    && (self.annot.is_brush_live()
+                        || self.annot.is_selecting()
+                        || self.annot.live.is_some())
                 {
                     self.annot.move_to(self.img_pt(p), false);
                     self.dirty = true;
-                } else if let Some(off) = self.drag {
-                    if let Ok(pos) = self.window.outer_position() {
-                        let nx = pos.x + (p.x - off.x) as i32;
-                        let ny = pos.y + (p.y - off.y) as i32;
-                        self.window
-                            .set_outer_position(PhysicalPosition::new(nx, ny));
-                    }
+                } else if let Some((off, tl)) = self.drag {
+                    let nx = tl.0 + (p.x - off.x) as i32;
+                    let ny = tl.1 + (p.y - off.y) as i32;
+                    self.window
+                        .set_outer_position(PhysicalPosition::new(nx, ny));
+                    self.geom_pos = Some((nx, ny));
                 }
             }
-            WindowEvent::MouseInput {
-                state,
-                button,
-                ..
-            } => {
+            WindowEvent::MouseInput { state, button, .. } => {
                 if *state == ElementState::Pressed {
                     native::focus_window(&self.window);
                     native::raise_on_top(&self.window);
@@ -399,13 +399,13 @@ impl PinWin {
                                 return;
                             }
                         }
-                        let ( _w, ih) = self.img_px();
+                        let (_w, ih) = self.img_px();
                         if p.y <= ih as f32 && self.annot.press(self.img_pt(p), false) {
                             self.dirty = true;
                             return;
                         }
                     }
-                    self.drag = Some(p);
+                    self.drag = Some((p, self.current_tl()));
                 } else {
                     if self.annotating && (self.annot.live.is_some() || self.annot.is_selecting()) {
                         self.annot.release(self.img_pt(p));
@@ -416,6 +416,8 @@ impl PinWin {
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
+                native::focus_window(&self.window);
+                native::raise_on_top(&self.window);
                 if let Some((x, y, _)) = native::pointer_in_client(&self.window) {
                     self.last_cursor = Point::new(x as f32, y as f32);
                 }
@@ -667,7 +669,10 @@ impl PinWin {
             PinMenuAction::Close => self.close(),
             PinMenuAction::Destroy => self.destroy_pin(),
             PinMenuAction::CopySize => {
-                let _ = crate::clipboard::write_text(&format!("{}x{}", self.img.width, self.img.height));
+                let _ = crate::clipboard::write_text(&format!(
+                    "{}x{}",
+                    self.img.width, self.img.height
+                ));
             }
             PinMenuAction::ResetZoom => self.set_scale(1.0),
         }
@@ -788,8 +793,15 @@ impl PinWin {
         {
             return;
         }
-        let img_pm = paint_pin(&self.img, &self.annot, self.scale, self.click_through, self.glow);
-        let mut pm = tiny_skia::Pixmap::new(ww, hh).unwrap_or_else(|| tiny_skia::Pixmap::new(8, 8).unwrap());
+        let img_pm = paint_pin(
+            &self.img,
+            &self.annot,
+            self.scale,
+            self.click_through,
+            self.glow,
+        );
+        let mut pm =
+            tiny_skia::Pixmap::new(ww, hh).unwrap_or_else(|| tiny_skia::Pixmap::new(8, 8).unwrap());
         pm.data_mut().fill(0xF7);
         let img_w = img_pm.width().min(ww);
         let img_h = img_pm.height().min(hh);
@@ -815,8 +827,17 @@ impl PinWin {
             }
             if let Some(ed) = &self.annot.text_edit {
                 if let Some(r) = self.annot.text_edit_rect() {
-                    let rr = Rect::new(r.x * self.scale, r.y * self.scale, r.w * self.scale, r.h * self.scale);
-                    crate::draw::fill_rect(&mut pm, rr, pinshot_core::color::Rgba::rgba(255, 255, 255, 90));
+                    let rr = Rect::new(
+                        r.x * self.scale,
+                        r.y * self.scale,
+                        r.w * self.scale,
+                        r.h * self.scale,
+                    );
+                    crate::draw::fill_rect(
+                        &mut pm,
+                        rr,
+                        pinshot_core::color::Rgba::rgba(255, 255, 255, 90),
+                    );
                     crate::draw::stroke_rect(&mut pm, rr, self.annot.style(Tool::Text).color, 1.0);
                     crate::text::blit_into_pm(
                         &mut pm,
@@ -892,6 +913,22 @@ mod tests {
         // the window by +25 so the same image pixel stays under the pointer.
         let (x, y) = zoom_pos((100, 100), Point::new(50.0, 40.0), 1.0, 0.5);
         assert_eq!((x, y), (125, 120));
+    }
+
+    #[test]
+    fn consecutive_zoom_out_accumulates_from_last_pos() {
+        let mut tl = (148, 100);
+        let anchor = Point::new(662.0, 137.0);
+        let mut s = 1.0_f32;
+        for _ in 0..3 {
+            let n = s / 1.1;
+            tl = zoom_pos(tl, anchor, s, n);
+            s = n;
+        }
+        assert!(
+            tl.0 > 200 && tl.1 > 110,
+            "tracked origin must walk, got {tl:?}"
+        );
     }
 }
 

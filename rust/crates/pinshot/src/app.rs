@@ -11,17 +11,17 @@ use pinshot_core::raster::Raster;
 use pinshot_core::session::{
     next_pin_filename, pin_png_path, ClosedPin, ClosedStack, PinSnapshot, SessionFile,
 };
+use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-use winit::keyboard::ModifiersState;
-use winit::application::ApplicationHandler;
+use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::WindowId;
 
 use crate::autostart;
 use crate::capture::Capture;
 use crate::clipboard::{self, ClipContent};
-use crate::event::{AppEvent, PinMenuAction, TrayCmd};
 use crate::countdown::CountdownWin;
+use crate::event::{AppEvent, PinMenuAction, TrayCmd};
 use crate::fallback::FallbackWin;
 use crate::native::{self, HotkeyHost};
 use crate::overlay::{Overlay, OverlayResult};
@@ -44,7 +44,9 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     }
 
     let start_snip = args.iter().any(|a| a == "--snip" || a == "snip");
-    let start_pin = args.iter().any(|a| a == "--pin" || a == "--pin-clipboard" || a == "pin");
+    let start_pin = args
+        .iter()
+        .any(|a| a == "--pin" || a == "--pin-clipboard" || a == "pin");
     let start_prefs = args.iter().any(|a| a == "--prefs" || a == "prefs");
     let start_translate = args.iter().any(|a| a == "--translate" || a == "translate");
     let dump_capture = args.iter().any(|a| a == "--dump-capture");
@@ -88,6 +90,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         prefs: None,
         pin_menu: None,
         menu_pin: None,
+        menu_esc_until: None,
         #[cfg(unix)]
         input_hold: None,
     };
@@ -122,6 +125,9 @@ struct App {
     prefs: Option<crate::prefs_win::PrefsWin>,
     pin_menu: Option<crate::pin_menu::PinMenuWin>,
     menu_pin: Option<WindowId>,
+    /// Swallow Escape on pins after the menu closes so the still-held Esc
+    /// does not close the pin (and persist/reap must not drop the others).
+    menu_esc_until: Option<Instant>,
     #[cfg(unix)]
     input_hold: Option<crate::x11util::InputHold>,
 }
@@ -438,24 +444,24 @@ impl App {
         }
         #[cfg(windows)]
         {
-        let proxy = self.proxy.clone();
-        std::thread::spawn(move || {
-            let backup = clipboard::read_best();
-            if crate::result_win::send_ctrl_c().is_err() {
-                let _ = proxy.send_event(AppEvent::OcrDone(String::new(), true));
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(80));
-            let text = match clipboard::read_best() {
-                ClipContent::Text(t) => t,
-                _ => String::new(),
-            };
-            // restore image if we stole it
-            if let ClipContent::Image(img) = backup {
-                let _ = clipboard::write_image(&img);
-            }
-            let _ = proxy.send_event(AppEvent::OcrDone(text, true));
-        });
+            let proxy = self.proxy.clone();
+            std::thread::spawn(move || {
+                let backup = clipboard::read_best();
+                if crate::result_win::send_ctrl_c().is_err() {
+                    let _ = proxy.send_event(AppEvent::OcrDone(String::new(), true));
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(80));
+                let text = match clipboard::read_best() {
+                    ClipContent::Text(t) => t,
+                    _ => String::new(),
+                };
+                // restore image if we stole it
+                if let ClipContent::Image(img) = backup {
+                    let _ = clipboard::write_image(&img);
+                }
+                let _ = proxy.send_event(AppEvent::OcrDone(text, true));
+            });
         }
     }
 
@@ -513,7 +519,13 @@ impl App {
             let Some(img) = decode_png(&bytes) else {
                 continue;
             };
-            self.spawn_pin_ex(event_loop, img, Some((snap.x, snap.y)), Some(snap.group), false);
+            self.spawn_pin_ex(
+                event_loop,
+                img,
+                Some((snap.x, snap.y)),
+                Some(snap.group),
+                false,
+            );
             if let Some(p) = self.pins.last_mut() {
                 p.set_scale(snap.scale);
                 p.set_opacity_ex(snap.opacity, false);
@@ -634,13 +646,12 @@ impl App {
             img_w: p.img.width,
             img_h: p.img.height,
         };
-        let row_n = 36 + self.cfg.groups.len();
-        let mh = 16 + row_n as i32 * 22;
+        let (mw, mh) = crate::pin_menu::menu_pixel_size(&state);
         let (mx, my) = crate::pin_menu::clamp_menu_pos(
             px + p.last_cursor_i32().0,
             py + p.last_cursor_i32().1,
-            268,
-            mh,
+            mw as i32,
+            mh as i32,
             1920,
             1200,
         );
@@ -648,9 +659,26 @@ impl App {
             Ok(m) => {
                 self.menu_pin = Some(pid);
                 self.pin_menu = Some(m);
+                self.menu_esc_until = None;
             }
             Err(e) => crate::logutil::log(&format!("pin menu: {e}")),
         }
+    }
+
+    fn dismiss_pin_menu(&mut self) {
+        if let Some(m) = self.pin_menu.as_mut() {
+            m.close();
+        }
+        self.pin_menu = None;
+        self.menu_esc_until = Some(Instant::now() + Duration::from_millis(450));
+    }
+
+    fn pin_esc_guarded(&self) -> bool {
+        self.pin_menu.is_some()
+            || self
+                .menu_esc_until
+                .map(|t| Instant::now() < t)
+                .unwrap_or(false)
     }
 
     fn apply_pin_menu(&mut self, action: PinMenuAction) {
@@ -821,7 +849,12 @@ impl ApplicationHandler<AppEvent> for App {
             self.mods = m.state();
         }
 
-        if self.prefs.as_ref().map(|w| w.window_id() == id).unwrap_or(false) {
+        if self
+            .prefs
+            .as_ref()
+            .map(|w| w.window_id() == id)
+            .unwrap_or(false)
+        {
             if let Some(pw) = self.prefs.as_mut() {
                 pw.handle(&event);
             }
@@ -830,11 +863,16 @@ impl ApplicationHandler<AppEvent> for App {
             }
             return;
         }
-        if self.pin_menu.as_ref().map(|m| m.window_id() == id).unwrap_or(false) {
+        if self
+            .pin_menu
+            .as_ref()
+            .map(|m| m.window_id() == id)
+            .unwrap_or(false)
+        {
             let action = self.pin_menu.as_mut().and_then(|m| m.handle(&event));
             let closed = self.pin_menu.as_ref().map(|m| m.closed).unwrap_or(false);
             if action.is_some() || closed {
-                self.pin_menu = None;
+                self.dismiss_pin_menu();
             }
             if let Some(action) = action {
                 let _ = self.proxy.send_event(AppEvent::PinMenu(action));
@@ -881,6 +919,9 @@ impl ApplicationHandler<AppEvent> for App {
             }
         }
         let mut open_menu = None;
+        let mut close_menu = false;
+        let swallow_keys = self.pin_esc_guarded();
+        let menu_open = self.pin_menu.is_some();
         for p in &mut self.pins {
             if p.window_id() == id {
                 if let WindowEvent::MouseInput {
@@ -911,13 +952,27 @@ impl ApplicationHandler<AppEvent> for App {
                         return;
                     }
                 }
-                p.handle(&event);
+                if swallow_keys && matches!(&event, WindowEvent::KeyboardInput { .. }) {
+                    if let WindowEvent::KeyboardInput { event: kev, .. } = &event {
+                        if kev.state == ElementState::Pressed
+                            && matches!(kev.logical_key, Key::Named(NamedKey::Escape))
+                            && menu_open
+                        {
+                            close_menu = true;
+                        }
+                    }
+                } else {
+                    p.handle(&event);
+                }
                 if p.pending_menu {
                     p.pending_menu = false;
                     open_menu = Some(id);
                 }
                 break;
             }
+        }
+        if close_menu {
+            self.dismiss_pin_menu();
         }
         if let Some(pid) = open_menu {
             self.open_pin_menu(event_loop, pid);
@@ -943,7 +998,8 @@ impl ApplicationHandler<AppEvent> for App {
                     } else {
                         self.countdown = None;
                         self.prepare_capture_hide();
-                        self.snip_at = Some(Instant::now() + Duration::from_millis(self.hide_wait_ms()));
+                        self.snip_at =
+                            Some(Instant::now() + Duration::from_millis(self.hide_wait_ms()));
                     }
                 } else {
                     self.snip_at = None;
@@ -991,7 +1047,7 @@ impl ApplicationHandler<AppEvent> for App {
             }
         }
         if self.pin_menu.as_ref().map(|m| m.closed).unwrap_or(false) {
-            self.pin_menu = None;
+            self.dismiss_pin_menu();
         }
         if self.prefs.as_ref().map(|w| w.closed).unwrap_or(false) {
             self.prefs = None;

@@ -63,7 +63,7 @@ impl PinMenuWin {
         state: PinMenuState,
     ) -> Result<Self, String> {
         let rows_src = build_rows(&state);
-        let h = (PAD * 2.0 + rows_src.len() as f32 * ROW_H).ceil().max(40.0) as u32;
+        let (_, h) = menu_pixel_size(&state);
         let w = MENU_W as u32;
         let attrs = Window::default_attributes()
             .with_title("PinShot")
@@ -261,7 +261,12 @@ fn build_rows(state: &PinMenuState) -> Vec<Row> {
         item(tr("Copy image"), PinMenuAction::Copy, false, false),
         item(tr("Save image as…"), PinMenuAction::Save, false, false),
         Row::Sep,
-        check_item(tr("Show toolbar"), PinMenuAction::ToggleToolbar, state.annotating, false),
+        check_item(
+            tr("Show toolbar"),
+            PinMenuAction::ToggleToolbar,
+            state.annotating,
+            false,
+        ),
         check_item(
             tr("Click-through"),
             PinMenuAction::ToggleClickThrough,
@@ -273,16 +278,41 @@ fn build_rows(state: &PinMenuState) -> Vec<Row> {
     ];
     for pct in [25, 50, 75, 100, 150, 200, 400] {
         let on = (state.scale * 100.0 - pct as f32).abs() < 0.6;
-        rows.push(check_item(format!("{pct}%"), PinMenuAction::Zoom(pct), on, true));
+        rows.push(check_item(
+            format!("{pct}%"),
+            PinMenuAction::Zoom(pct),
+            on,
+            true,
+        ));
     }
     rows.push(Row::Head(tr("Image")));
-    rows.push(item(tr("Rotate left"), PinMenuAction::Rotate(-1), false, true));
-    rows.push(item(tr("Rotate right"), PinMenuAction::Rotate(1), false, true));
-    rows.push(item(tr("Flip horizontal"), PinMenuAction::FlipH, false, true));
+    rows.push(item(
+        tr("Rotate left"),
+        PinMenuAction::Rotate(-1),
+        false,
+        true,
+    ));
+    rows.push(item(
+        tr("Rotate right"),
+        PinMenuAction::Rotate(1),
+        false,
+        true,
+    ));
+    rows.push(item(
+        tr("Flip horizontal"),
+        PinMenuAction::FlipH,
+        false,
+        true,
+    ));
     rows.push(item(tr("Flip vertical"), PinMenuAction::FlipV, false, true));
     rows.push(Row::Sep);
     rows.push(item(tr("Paste"), PinMenuAction::Paste, false, false));
-    rows.push(item(tr("Replace from file…"), PinMenuAction::ReplaceFile, false, false));
+    rows.push(item(
+        tr("Replace from file…"),
+        PinMenuAction::ReplaceFile,
+        false,
+        false,
+    ));
     rows.push(Row::Sep);
     rows.push(Row::Head(tr("Move to group")));
     for g in &state.groups {
@@ -296,14 +326,24 @@ fn build_rows(state: &PinMenuState) -> Vec<Row> {
     }
     rows.push(item(tr("New group…"), PinMenuAction::NewGroup, false, true));
     rows.push(Row::Sep);
-    rows.push(item(tr("View in folder"), PinMenuAction::ViewInFolder, false, false));
+    rows.push(item(
+        tr("View in folder"),
+        PinMenuAction::ViewInFolder,
+        false,
+        false,
+    ));
     rows.push(Row::Sep);
     rows.push(item(tr("Close"), PinMenuAction::Close, false, false));
     rows.push(item(tr("Destroy"), PinMenuAction::Destroy, false, false));
     rows.push(Row::Sep);
     rows.push(Row::Head(format!("{} × {}", state.img_w, state.img_h)));
     rows.push(item(tr("Copy size"), PinMenuAction::CopySize, false, false));
-    rows.push(item(tr("Reset zoom"), PinMenuAction::ResetZoom, false, false));
+    rows.push(item(
+        tr("Reset zoom"),
+        PinMenuAction::ResetZoom,
+        false,
+        false,
+    ));
     let info = format!(
         "Zoom {}%  ·  Opacity {}%",
         (state.scale * 100.0).round() as i32,
@@ -335,6 +375,22 @@ fn item_ex(
         checkable,
         indent,
     }
+}
+
+fn row_h(row: &Row) -> f32 {
+    match row {
+        Row::Sep => 8.0,
+        _ => ROW_H,
+    }
+}
+
+/// Pixel size of the in-process pin menu (separators are 8px, not `ROW_H`).
+pub fn menu_pixel_size(state: &PinMenuState) -> (u32, u32) {
+    let rows = build_rows(state);
+    let h = (PAD * 2.0 + rows.iter().map(row_h).sum::<f32>())
+        .ceil()
+        .max(40.0) as u32;
+    (MENU_W as u32, h)
 }
 
 /// Keep the menu on-screen when the pin is near the edge or tiny.
@@ -385,5 +441,32 @@ mod tests {
             _ => None,
         });
         assert!(footer.is_some());
+    }
+
+    #[test]
+    fn menu_height_uses_sep_row_size() {
+        let state = PinMenuState {
+            annotating: false,
+            click_through: false,
+            scale: 1.0,
+            opacity: 1.0,
+            group: "Default".into(),
+            groups: vec!["Default".into()],
+            img_w: 100,
+            img_h: 80,
+        };
+        let rows = build_rows(&state);
+        let seps = rows.iter().filter(|r| matches!(r, Row::Sep)).count();
+        assert!(seps >= 6, "expected several separators, got {seps}");
+        let (_, h) = menu_pixel_size(&state);
+        let naive = (PAD * 2.0 + rows.len() as f32 * ROW_H).ceil() as u32;
+        assert!(
+            h < naive,
+            "content height {h} should be shorter than len*ROW_H {naive}"
+        );
+        let expected = (PAD * 2.0 + rows.iter().map(row_h).sum::<f32>())
+            .ceil()
+            .max(40.0) as u32;
+        assert_eq!(h, expected);
     }
 }

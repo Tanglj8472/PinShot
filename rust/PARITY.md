@@ -60,9 +60,9 @@ Counts at the bottom. Python sources are not modified.
 | Dim + hole + handles + size label | `draw::OverlayFront` | done |
 | Window hover / Tab element | `selection` + `detect` | done |
 | Magnifier 15×15 @ 8×, C / Shift | `magnifier.rs` + overlay keys | done |
-| Drag / move / 8 handles | `selection.rs` | done | First F1 drag recovered via `QueryPointer` (no second-client `XGrabPointer`) |
+| Drag / move / 8 handles | `selection.rs` | done | First F1 *selection* drag recovered via `QueryPointer`. Annotation press is winit-only — recover must not `annot.press` (that emptied the live shape) |
 | Toolbar + OCR/Translate | `toolbar.rs` | done |
-| `,` `.` history / Shift+R last rect | `history.rs` + overlay + `data_dir/history` | done | Live keeps the selection; R works after restart; keys `request_redraw` |
+| `,` `.` history / Shift+R last rect | `history.rs` + overlay + `data_dir/history` | done | `,`/`.` replay image+rect; **R applies last rect on the live capture** (not the old PNG); persist so R works after restart |
 | Esc confirm abort | MessageBox / zenity | done |
 | Ctrl+C / Enter copy, Ctrl+S save, Ctrl+T / F3 pin | overlay keys | done |
 | Ctrl+A full screen | done |
@@ -116,13 +116,13 @@ Counts at the bottom. Python sources are not modified.
 | Python | Rust | Status |
 |---|---|---|
 | Frameless always-on-top + skip taskbar | winit + EWMH / WS_EX_TOOLWINDOW | done |
-| Drag move, wheel zoom (cursor-anchored), Ctrl+wheel opacity | done | Each notch `QueryPointer` + atomic `ConfigureWindow` x,y,w,h so xfwm4 cannot center-resize |
+| Drag move, wheel zoom (cursor-anchored), Ctrl+wheel opacity | done | Each notch `QueryPointer` + tracked `geom_pos` + winit `set_outer_position` (x11rb ConfigureRequest alone is ignored by xfwm4) |
 | Annotating: wheel → `ann.wheel` not zoom | done |
 | Space / right-click Show toolbar | Space = toolbar; right-click = full menu | done | Never falls back to toolbar |
 | TOOL_KEYS R E P T N … | R E P T N + 1/2/3/4 | done |
 | Esc close / Ctrl+W | done |
 | Double-click close/hide/none + tip | `PinWin::on_double_click` | done | First hit tips; `dblclick_tip_shown` persisted |
-| Context menu full (`build_menu`) | Win32 popup / in-process `PinMenuWin` | done | Shadow still missing; groups/destroy/replace/view-in-folder wired |
+| Context menu full (`build_menu`) | Win32 popup / in-process `PinMenuWin` | done | Height sums real row sizes (Sep=8); Esc closes menu only (pin ignores Esc ~450ms) |
 | Rotate / flip / paste / replace file | done |
 | Shadow / thumb | missing | |
 | Click-through XShape / WS_EX_TRANSPARENT | done |
@@ -173,7 +173,7 @@ Counts at the bottom. Python sources are not modified.
 |---|---|---|
 | `icons.py` app + toolbar | `icons.rs` | done |
 | `session.py` groups + persist | `session.rs` + `groups.rs` | done |
-| Overlay `HISTORY` | `history.rs` + PNG sidecar under `data_dir/history` | done | Process-global in Python; Rust also persists last N so R works on a fresh launch |
+| Overlay `HISTORY` | `history.rs` + PNG sidecar under `data_dir/history` | done | Process-global in Python; Rust persists last N. R = last rect on current shot; `,`/`.` replay stored image |
 
 ## Defaults / shortcuts / menu strings
 

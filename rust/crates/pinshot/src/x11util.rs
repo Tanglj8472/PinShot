@@ -67,7 +67,15 @@ pub fn apply_overlay_style(window: &Window) {
 pub fn apply_pin_style(window: &Window) {
     // Managed window (never override-redirect) so the WM can give keyboard
     // focus on click. Stay above + skip the taskbar like Python.
-    ewmh_state(window, true, &["_NET_WM_STATE_ABOVE", "_NET_WM_STATE_SKIP_TASKBAR", "_NET_WM_STATE_SKIP_PAGER"]);
+    ewmh_state(
+        window,
+        true,
+        &[
+            "_NET_WM_STATE_ABOVE",
+            "_NET_WM_STATE_SKIP_TASKBAR",
+            "_NET_WM_STATE_SKIP_PAGER",
+        ],
+    );
     set_window_type(window, b"_NET_WM_WINDOW_TYPE_NORMAL");
     set_wm_input_hint(window, true);
 }
@@ -83,16 +91,13 @@ pub fn raise_on_top(window: &Window) {
     let root = c.setup().roots[screen].root;
     let _ = c.configure_window(
         xid,
-        &x11rb::protocol::xproto::ConfigureWindowAux::new().stack_mode(x11rb::protocol::xproto::StackMode::ABOVE),
+        &x11rb::protocol::xproto::ConfigureWindowAux::new()
+            .stack_mode(x11rb::protocol::xproto::StackMode::ABOVE),
     );
     if let Ok(active) = c.intern_atom(false, b"_NET_ACTIVE_WINDOW") {
         if let Ok(reply) = active.reply() {
-            let ev = ClientMessageEvent::new(
-                32,
-                xid,
-                reply.atom,
-                [2, x11rb::CURRENT_TIME, 0, 0, 0],
-            );
+            let ev =
+                ClientMessageEvent::new(32, xid, reply.atom, [2, x11rb::CURRENT_TIME, 0, 0, 0]);
             let _ = c.send_event(
                 false,
                 root,
@@ -156,15 +161,7 @@ fn set_wm_input_hint(window: &Window, input: bool) {
     for v in [flags, input_u, 1, 0, 0, 0, 0, 0, 0] {
         bytes.extend_from_slice(&v.to_ne_bytes());
     }
-    let _ = c.change_property(
-        PropMode::REPLACE,
-        xid,
-        atom.atom,
-        atom.atom,
-        32,
-        9,
-        &bytes,
-    );
+    let _ = c.change_property(PropMode::REPLACE, xid, atom.atom, atom.atom, 32, 9, &bytes);
     let _ = c.flush();
 }
 
@@ -269,7 +266,10 @@ pub struct OverlayKeyGrab {
 }
 
 impl OverlayKeyGrab {
-    pub fn start(xid: u32, proxy: winit::event_loop::EventLoopProxy<crate::event::AppEvent>) -> Self {
+    pub fn start(
+        xid: u32,
+        proxy: winit::event_loop::EventLoopProxy<crate::event::AppEvent>,
+    ) -> Self {
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let pause_keys = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let flag = stop.clone();
@@ -338,7 +338,11 @@ fn keysym_from_map(map: &KeyMap, code: u8, state: u16) -> u32 {
         return 0;
     }
     let shift = state & SHIFT != 0;
-    let slot = if shift && map.stride > 1 { idx + 1 } else { idx };
+    let slot = if shift && map.stride > 1 {
+        idx + 1
+    } else {
+        idx
+    };
     map.keysyms
         .get(slot)
         .copied()
@@ -358,17 +362,24 @@ fn overlay_grab_loop(
     let mut map = load_keymap(&c);
     let mut key_grabbed = false;
     let mut last_try = std::time::Instant::now() - std::time::Duration::from_secs(1);
+    let root = c.setup().roots.first().map(|s| s.root).unwrap_or(xid);
+    grab_swallow_keys(&c, root);
     loop {
         let stopping = stop.load(std::sync::atomic::Ordering::Relaxed);
         let want_keys = !stopping && !pause_keys.load(std::sync::atomic::Ordering::Relaxed);
         if want_keys && !key_grabbed {
             let now = std::time::Instant::now();
-            if now.duration_since(last_try) >= std::time::Duration::from_millis(8) {
+            if now.duration_since(last_try) >= std::time::Duration::from_millis(1) {
                 last_try = now;
                 let _ = c.map_window(xid);
                 let _ = c.set_input_focus(InputFocus::PARENT, xid, x11rb::CURRENT_TIME);
-                match c.grab_keyboard(false, xid, x11rb::CURRENT_TIME, GrabMode::ASYNC, GrabMode::ASYNC)
-                {
+                match c.grab_keyboard(
+                    false,
+                    xid,
+                    x11rb::CURRENT_TIME,
+                    GrabMode::ASYNC,
+                    GrabMode::ASYNC,
+                ) {
                     Ok(cookie) => match cookie.reply() {
                         Ok(r) if r.status == x11rb::protocol::xproto::GrabStatus::SUCCESS => {
                             key_grabbed = true;
@@ -457,7 +468,40 @@ fn overlay_grab_loop(
     if key_grabbed {
         let _ = c.ungrab_keyboard(x11rb::CURRENT_TIME);
     }
+    ungrab_swallow_keys(&c, root);
     let _ = c.flush();
+}
+
+/// Passive grab for Tab / ISO_Left_Tab so Chrome cannot see them even when
+/// `XGrabKeyboard` is still racing InputHold ungrab.
+fn grab_swallow_keys(c: &x11rb::rust_connection::RustConnection, root: u32) {
+    for ks in [0xff09u32, 0xfe20] {
+        let Some(code) = keysym_to_keycode(c, ks) else {
+            continue;
+        };
+        for ig in IGNORE {
+            let _ = c.grab_key(
+                false,
+                root,
+                ModMask::from(ig),
+                code,
+                GrabMode::ASYNC,
+                GrabMode::ASYNC,
+            );
+        }
+    }
+    let _ = c.flush();
+}
+
+fn ungrab_swallow_keys(c: &x11rb::rust_connection::RustConnection, root: u32) {
+    for ks in [0xff09u32, 0xfe20] {
+        let Some(code) = keysym_to_keycode(c, ks) else {
+            continue;
+        };
+        for ig in IGNORE {
+            let _ = c.ungrab_key(code, root, ModMask::from(ig));
+        }
+    }
 }
 
 /// Root + window-relative pointer and Button1.
@@ -513,12 +557,7 @@ pub fn configure_geom(xid: u32, x: i32, y: i32, w: u32, h: u32) {
         if let Ok(atom) = atom.reply() {
             // StaticGravity | x,y,w,h present | source=pager
             let info: u32 = 10 | (1 << 8) | (1 << 9) | (1 << 10) | (1 << 11) | (2 << 12);
-            let ev = ClientMessageEvent::new(
-                32,
-                xid,
-                atom.atom,
-                [info, x as u32, y as u32, w, h],
-            );
+            let ev = ClientMessageEvent::new(32, xid, atom.atom, [info, x as u32, y as u32, w, h]);
             let _ = c.send_event(
                 false,
                 root,
@@ -622,7 +661,13 @@ impl InputHold {
             x11rb::NONE,
             x11rb::CURRENT_TIME,
         );
-        let _ = c.grab_keyboard(false, root, x11rb::CURRENT_TIME, GrabMode::ASYNC, GrabMode::ASYNC);
+        let _ = c.grab_keyboard(
+            false,
+            root,
+            x11rb::CURRENT_TIME,
+            GrabMode::ASYNC,
+            GrabMode::ASYNC,
+        );
         let _ = c.flush();
         Self { conn: Some(c) }
     }
@@ -707,8 +752,14 @@ impl HotkeyHost {
             (cfg.hotkey_pin.clone(), Command::PinClipboard),
             (cfg.hotkey_hide_all.clone(), Command::HideAllPins),
             (cfg.hotkey_restore.clone(), Command::RestoreClosed),
-            (cfg.hotkey_selection_translate.clone(), Command::SelectionTranslate),
-            (cfg.hotkey_capture_translate.clone(), Command::CaptureTranslate),
+            (
+                cfg.hotkey_selection_translate.clone(),
+                Command::SelectionTranslate,
+            ),
+            (
+                cfg.hotkey_capture_translate.clone(),
+                Command::CaptureTranslate,
+            ),
         ]
         .into_iter()
         .chain(
@@ -729,7 +780,10 @@ impl HotkeyHost {
     }
 }
 
-fn hotkey_loop(proxy: EventLoopProxy<AppEvent>, specs: Vec<(String, Command)>) -> Result<(), String> {
+fn hotkey_loop(
+    proxy: EventLoopProxy<AppEvent>,
+    specs: Vec<(String, Command)>,
+) -> Result<(), String> {
     let (c, screen) = conn()?;
     let root = c.setup().roots[screen].root;
     let mut binds: Vec<(u16, u8, Command)> = Vec::new();
@@ -763,7 +817,10 @@ fn hotkey_loop(proxy: EventLoopProxy<AppEvent>, specs: Vec<(String, Command)>) -
         if let Event::KeyPress(KeyPressEvent { detail, state, .. }) = ev {
             let mods = state & !(LOCK | MOD2);
             let mods_u = u16::from(mods);
-            if let Some((_, _, cmd)) = binds.iter().find(|(m, code, _)| *m == mods_u && *code == detail) {
+            if let Some((_, _, cmd)) = binds
+                .iter()
+                .find(|(m, code, _)| *m == mods_u && *code == detail)
+            {
                 let _ = proxy.send_event(AppEvent::Hotkey(*cmd));
             }
         }
