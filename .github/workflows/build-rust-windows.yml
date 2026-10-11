@@ -1,0 +1,35 @@
+name: build-rust-windows
+
+on:
+  push:
+    branches: [rust]
+  pull_request:
+    paths:
+      - "rust/**"
+      - ".github/workflows/build-rust-windows.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: cargo test
+        run: cargo test --workspace
+      - name: cargo build --release
+        run: cargo build --release --bin pinshot
+      - name: version smoke
+        shell: pwsh
+        run: |
+          $out = & .\target\release\pinshot.exe --version
+          Write-Host $out
+          if ($out -notmatch "PinShot .*windows-rust") { exit 1 }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pinshot.exe
+          path: rust/target/release/pinshot.exe
+          if-no-files-found: error

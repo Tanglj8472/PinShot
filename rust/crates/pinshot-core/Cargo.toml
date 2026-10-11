@@ -1,0 +1,13 @@
+[package]
+name = "pinshot-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "PinShot domain logic: geometry, annotation, undo, i18n, config"
+rust-version.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+toml = { workspace = true }
+thiserror = { workspace = true }
+tiny-skia = { workspace = true }

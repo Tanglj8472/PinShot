@@ -1,0 +1,73 @@
+use pinshot_core::i18n::tr;
+use pinshot_core::icons::app_icon_rgba;
+use tray_icon::menu::{Menu, MenuEvent, MenuItem};
+use tray_icon::{Icon, TrayIcon, TrayIconBuilder, TrayIconEvent};
+
+use crate::event::TrayCmd;
+
+pub struct Tray {
+    _icon: TrayIcon,
+    snip: MenuItem,
+    pin: MenuItem,
+    hide: MenuItem,
+    prefs: MenuItem,
+    quit: MenuItem,
+}
+
+impl Tray {
+    pub fn new() -> Result<Self, String> {
+        let (w, h, rgba) = app_icon_rgba(32);
+        let icon = Icon::from_rgba(rgba, w, h).map_err(|e| e.to_string())?;
+        let menu = Menu::new();
+        let snip = MenuItem::new(tr("Snip (F1)"), true, None);
+        let pin = MenuItem::new(tr("Pin clipboard (F3)"), true, None);
+        let hide = MenuItem::new(tr("Hide/Show pins (Shift+F3)"), true, None);
+        let prefs = MenuItem::new(tr("Settings (later)"), true, None);
+        let quit = MenuItem::new(tr("Quit"), true, None);
+        menu.append(&snip).map_err(|e| e.to_string())?;
+        menu.append(&pin).map_err(|e| e.to_string())?;
+        menu.append(&hide).map_err(|e| e.to_string())?;
+        menu.append(&prefs).map_err(|e| e.to_string())?;
+        menu.append(&quit).map_err(|e| e.to_string())?;
+        let tray = TrayIconBuilder::new()
+            .with_menu(Box::new(menu))
+            .with_tooltip("PinShot")
+            .with_icon(icon)
+            .build()
+            .map_err(|e| e.to_string())?;
+        Ok(Self {
+            _icon: tray,
+            snip,
+            pin,
+            hide,
+            prefs,
+            quit,
+        })
+    }
+
+    pub fn poll(&self) -> Option<TrayCmd> {
+        if let Ok(ev) = TrayIconEvent::receiver().try_recv() {
+            if matches!(ev, TrayIconEvent::Click { .. } | TrayIconEvent::DoubleClick { .. }) {
+                return Some(TrayCmd::Snip);
+            }
+        }
+        if let Ok(ev) = MenuEvent::receiver().try_recv() {
+            if ev.id == self.snip.id() {
+                return Some(TrayCmd::Snip);
+            }
+            if ev.id == self.pin.id() {
+                return Some(TrayCmd::Pin);
+            }
+            if ev.id == self.hide.id() {
+                return Some(TrayCmd::HideAll);
+            }
+            if ev.id == self.prefs.id() {
+                return Some(TrayCmd::Settings);
+            }
+            if ev.id == self.quit.id() {
+                return Some(TrayCmd::Quit);
+            }
+        }
+        None
+    }
+}
