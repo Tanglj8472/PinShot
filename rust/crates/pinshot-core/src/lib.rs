@@ -5,6 +5,7 @@
 pub mod annotation;
 pub mod color;
 pub mod config;
+pub mod font;
 pub mod geom;
 pub mod groups;
 pub mod history;

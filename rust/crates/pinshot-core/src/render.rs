@@ -264,13 +264,45 @@ fn draw_shape(pm: &mut Pixmap, sh: &Shape) {
                         None,
                     );
                 }
+                let label = if sh.number > 0 {
+                    sh.number.to_string()
+                } else {
+                    String::new()
+                };
+                if !label.is_empty() {
+                    let fs = sh.style.font_size.max(8) as f32;
+                    let (tw, th) = crate::font::measure(&label, fs);
+                    crate::font::blit_pixmap(
+                        pm,
+                        &label,
+                        c.x - tw / 2.0,
+                        c.y - th / 2.0,
+                        fs,
+                        if sh.style.filled {
+                            Rgba::WHITE
+                        } else {
+                            sh.style.color
+                        },
+                        false,
+                    );
+                }
             }
         }
         Tool::Text => {
-            // Text glyphs are drawn by the Windows GDI host; here we keep a coloured underline
-            // so compose() still produces a visible mark in unit tests.
-            if let Some(r) = tiny_skia::Rect::from_xywh(b.x, b.y + b.h - 2.0, b.w.max(4.0), 2.0) {
-                pm.fill_rect(r, &paint(sh.style.color), t, None);
+            if sh.text.is_empty() {
+                if let Some(r) = tiny_skia::Rect::from_xywh(b.x, b.y + b.h - 2.0, b.w.max(4.0), 2.0) {
+                    pm.fill_rect(r, &paint(sh.style.color), t, None);
+                }
+            } else {
+                crate::font::blit_pixmap(
+                    pm,
+                    &sh.text,
+                    sh.pts[0].x,
+                    sh.pts[0].y,
+                    sh.style.font_size.max(8) as f32,
+                    sh.style.color,
+                    sh.style.outline,
+                );
             }
         }
         _ => {}

@@ -160,9 +160,37 @@ pub fn config_path() -> PathBuf {
     config_dir().join("config.toml")
 }
 
-/// Same as [`config_dir`]: `%APPDATA%\PinShot` (OCR models, session).
+/// `%APPDATA%\PinShot` on Windows; `$XDG_DATA_HOME/PinShot` or `~/.local/share/PinShot` elsewhere.
+/// Session PNGs, OCR models, and the debug log live here. Config stays in [`config_dir`].
 pub fn data_dir() -> PathBuf {
-    config_dir()
+    if let Ok(p) = std::env::var("PINSHOT_DATA_DIR") {
+        return PathBuf::from(p);
+    }
+    #[cfg(windows)]
+    {
+        return config_dir();
+    }
+    #[cfg(not(windows))]
+    {
+        if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
+            return PathBuf::from(xdg).join("PinShot");
+        }
+        if let Ok(home) = std::env::var("HOME") {
+            return PathBuf::from(home).join(".local").join("share").join("PinShot");
+        }
+        PathBuf::from("PinShot")
+    }
+}
+
+/// `~/.config/autostart` on Linux; unused on Windows (HKCU Run).
+pub fn xdg_autostart_dir() -> PathBuf {
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+        return PathBuf::from(xdg).join("autostart");
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        return PathBuf::from(home).join(".config").join("autostart");
+    }
+    PathBuf::from("autostart")
 }
 
 pub fn load() -> Result<Config, ConfigError> {
@@ -240,6 +268,15 @@ mod tests {
     #[test]
     fn bad_toml_errors() {
         assert!(Config::from_toml("language = [").is_err());
+    }
+
+    #[test]
+    #[test]
+    fn data_dir_honors_env() {
+        let p = std::env::temp_dir().join("pinshot-core-data-test");
+        std::env::set_var("PINSHOT_DATA_DIR", &p);
+        assert_eq!(data_dir(), p);
+        std::env::remove_var("PINSHOT_DATA_DIR");
     }
 
     #[test]

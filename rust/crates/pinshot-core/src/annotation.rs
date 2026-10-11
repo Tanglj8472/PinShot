@@ -1,4 +1,8 @@
 //! Annotation document, tools, hit-testing, and undo/redo (snapshot stack).
+//!
+//! Mirrors `pinshot/annotate.py`: `option_target` is live | selected | edit_target |
+//! width_target; `wheel()` accumulates Qt-style `angleDelta/120` and merges undo
+//! for 0.5s on the same committed shape.
 
 use crate::color::{palette_colors, Rgba};
 use crate::geom::{
@@ -6,6 +10,7 @@ use crate::geom::{
     Rect, HANDLE_SIZE,
 };
 use serde::{Deserialize, Serialize};
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -319,11 +324,18 @@ pub struct Annotator {
     pub selected: Option<usize>,
     pub next_number: i32,
     pub text_edit: Option<TextEdit>,
+    /// Last committed shape the user clicked (Python `edit_target`).
+    pub edit_target: Option<usize>,
+    /// Last added shape (Python `width_target`); wheel/style hit this when nothing is selected.
+    pub width_target: Option<usize>,
     undo: UndoStack,
     sel_mode: Option<SelMode>,
     sel_origin: Point,
     sel_pts0: Vec<Point>,
     sel_dirty: bool,
+    wheel_target: Option<usize>,
+    wheel_time: Instant,
+    wheel_delta: i32,
 }
 
 impl Default for Annotator {
@@ -336,11 +348,16 @@ impl Default for Annotator {
             selected: None,
             next_number: 1,
             text_edit: None,
+            edit_target: None,
+            width_target: None,
             undo: UndoStack::default(),
             sel_mode: None,
             sel_origin: Point::ZERO,
             sel_pts0: Vec::new(),
             sel_dirty: false,
+            wheel_target: None,
+            wheel_time: Instant::now(),
+            wheel_delta: 0,
         }
     }
 }
@@ -366,6 +383,10 @@ impl Annotator {
 
     pub fn set_tool(&mut self, tool: Option<Tool>) {
         self.finish();
+        self.width_target = None;
+        self.edit_target = None;
+        self.wheel_target = None;
+        self.wheel_delta = 0;
         if tool != Some(Tool::Select) {
             self.selected = None;
         }
@@ -378,18 +399,23 @@ impl Annotator {
     }
 
     fn push_edit(&mut self) {
+        self.wheel_target = None;
         self.undo.push(self.shapes.clone());
     }
 
     pub fn add(&mut self, shape: Shape) {
         self.push_edit();
         self.shapes.push(shape);
+        self.width_target = Some(self.shapes.len() - 1);
         self.renumber();
     }
 
     pub fn undo(&mut self) -> bool {
         self.finish();
         self.selected = None;
+        self.edit_target = None;
+        self.wheel_target = None;
+        self.width_target = None;
         if let Some(prev) = self.undo.undo(self.shapes.clone()) {
             self.shapes = prev;
             self.renumber();
@@ -400,6 +426,9 @@ impl Annotator {
 
     pub fn redo(&mut self) -> bool {
         self.selected = None;
+        self.edit_target = None;
+        self.wheel_target = None;
+        self.width_target = None;
         if let Some(next) = self.undo.redo(self.shapes.clone()) {
             self.shapes = next;
             self.renumber();
@@ -416,6 +445,10 @@ impl Annotator {
         self.undo.can_redo()
     }
 
+    pub fn undo_len(&self) -> usize {
+        self.undo.undo_len()
+    }
+
     pub fn clear(&mut self) {
         self.shapes.clear();
         self.live = None;
@@ -424,6 +457,10 @@ impl Annotator {
         self.undo.clear();
         self.text_edit = None;
         self.sel_mode = None;
+        self.edit_target = None;
+        self.width_target = None;
+        self.wheel_target = None;
+        self.wheel_delta = 0;
     }
 
     pub fn renumber(&mut self) {
@@ -463,6 +500,13 @@ impl Annotator {
     }
 
     pub fn set_style_value(&mut self, kind: Tool, setter: impl Fn(&mut Style)) {
+        if let Some(live) = self.live.as_mut() {
+            if live.kind == kind {
+                setter(&mut live.style);
+                setter(self.style_mut(kind));
+                return;
+            }
+        }
         if let Some(idx) = self.option_target() {
             if self.shapes[idx].kind == kind {
                 self.push_edit();
@@ -472,16 +516,47 @@ impl Annotator {
         setter(self.style_mut(kind));
     }
 
+    /// Index of the committed shape that style/width edits apply to.
+    /// Python: `live or selected or edit_target or width_target` — live is handled
+    /// separately because it is not in `shapes`.
     pub fn option_target(&self) -> Option<usize> {
-        if let Some(i) = self.selected {
-            if i < self.shapes.len() {
-                return Some(i);
+        if self.live.is_some() {
+            return None;
+        }
+        for cand in [self.selected, self.edit_target, self.width_target] {
+            if let Some(i) = cand {
+                if i < self.shapes.len() {
+                    return Some(i);
+                }
             }
         }
         None
     }
 
+    pub fn option_tool(&self) -> Option<Tool> {
+        if matches!(self.tool, Some(Tool::Eraser | Tool::Mosaic)) {
+            return self.tool;
+        }
+        if let Some(live) = &self.live {
+            return Some(live.kind);
+        }
+        if let Some(i) = self.option_target() {
+            return Some(self.shapes[i].kind);
+        }
+        self.tool
+    }
+
     pub fn adjust_width(&mut self, delta: i32) -> bool {
+        if delta == 0 {
+            return false;
+        }
+        if let Some(live) = self.live.as_mut() {
+            let kind = live.kind;
+            Self::nudge_style(&mut live.style, kind, delta);
+            let st = live.style.clone();
+            *self.style_mut(kind) = st;
+            return true;
+        }
         let target = self.option_target();
         let kind = target
             .map(|i| self.shapes[i].kind)
@@ -490,7 +565,14 @@ impl Annotator {
             return false;
         };
         if let Some(i) = target {
-            self.push_edit();
+            let now = Instant::now();
+            if self.wheel_target != Some(i)
+                || now.duration_since(self.wheel_time) > Duration::from_millis(500)
+            {
+                self.push_edit();
+            }
+            self.wheel_target = Some(i);
+            self.wheel_time = now;
             Self::nudge_style(&mut self.shapes[i].style, kind, delta);
             let st = self.shapes[i].style.clone();
             *self.style_mut(kind) = st;
@@ -498,6 +580,18 @@ impl Annotator {
             Self::nudge_style(self.style_mut(kind), kind, delta);
         }
         true
+    }
+
+    /// Qt `QWheelEvent.angleDelta().y()` — 120 units per notch. Truncates toward 0.
+    pub fn wheel(&mut self, angle_delta: i32) -> bool {
+        self.wheel_delta += angle_delta;
+        let steps = self.wheel_delta / 120;
+        self.wheel_delta -= steps * 120;
+        if steps != 0 {
+            self.adjust_width(steps)
+        } else {
+            false
+        }
     }
 
     fn nudge_style(st: &mut Style, kind: Tool, delta: i32) {
@@ -630,6 +724,7 @@ impl Annotator {
             }
             let hit = self.hit_test(img_pt);
             self.selected = hit;
+            self.edit_target = hit;
             if let Some(i) = hit {
                 self.sel_mode = Some(SelMode::Move);
                 self.sel_origin = img_pt;
@@ -639,19 +734,24 @@ impl Annotator {
             return true;
         }
 
-        self.selected = None;
+        if self.selected.is_some() || self.edit_target.is_some() {
+            self.selected = None;
+            self.edit_target = None;
+        }
         let Some(tool) = tool else {
             return false;
         };
+        self.width_target = None;
+        self.edit_target = None;
 
         let st = self.style(tool).clone();
         match tool {
             Tool::Text => {
-                self.text_edit = Some(TextEdit {
-                    img_pt,
-                    text: String::new(),
-                    existing: None,
-                });
+                if self.text_edit.is_some() {
+                    self.commit_text(false);
+                    return true;
+                }
+                self.start_text(img_pt, None);
                 true
             }
             Tool::Number => {
@@ -681,6 +781,22 @@ impl Annotator {
         }
     }
 
+    pub fn start_text(&mut self, pt: Point, existing: Option<usize>) {
+        let (text, existing) = if let Some(idx) = existing {
+            match self.shapes.get(idx) {
+                Some(sh) if sh.kind == Tool::Text => (sh.text.clone(), Some(idx)),
+                _ => (String::new(), None),
+            }
+        } else {
+            (String::new(), None)
+        };
+        self.text_edit = Some(TextEdit {
+            img_pt: pt,
+            text,
+            existing,
+        });
+    }
+
     pub fn begin_edit_text(&mut self, idx: usize) {
         let Some(sh) = self.shapes.get(idx) else {
             return;
@@ -689,14 +805,24 @@ impl Annotator {
             return;
         }
         let pt = sh.pts.first().copied().unwrap_or(Point::ZERO);
-        let text = sh.text.clone();
         self.set_tool(Some(Tool::Select));
         self.selected = Some(idx);
-        self.text_edit = Some(TextEdit {
-            img_pt: pt,
-            text,
-            existing: Some(idx),
-        });
+        self.edit_target = Some(idx);
+        self.start_text(pt, Some(idx));
+    }
+
+    /// Dashed editor box in image coordinates (Python QLineEdit size).
+    pub fn text_edit_rect(&self) -> Option<Rect> {
+        let ed = self.text_edit.as_ref()?;
+        let st = if let Some(i) = ed.existing {
+            self.shapes.get(i).map(|s| s.style.clone()).unwrap_or_else(|| self.style(Tool::Text).clone())
+        } else {
+            self.style(Tool::Text).clone()
+        };
+        let fs = st.font_size.max(8) as f32;
+        let w = (approx_text_width(&(ed.text.clone() + "MM"), st.font_size)).max(80.0);
+        let h = fs * 1.25 + 4.0;
+        Some(Rect::new(ed.img_pt.x, ed.img_pt.y, w, h))
     }
 
     pub fn type_text(&mut self, ch: char) {
@@ -999,5 +1125,77 @@ mod tests {
         a.commit_text(false);
         assert_eq!(a.shapes.len(), 1);
         assert_eq!(a.shapes[0].text, "Hi");
+        assert!(a.text_edit.is_none());
+        assert_eq!(a.width_target, Some(0));
+    }
+
+    #[test]
+    fn option_target_prefers_selected_then_edit_then_width() {
+        let mut a = Annotator::new();
+        a.set_tool(Some(Tool::Rect));
+        a.add(rect_shape());
+        a.add(Shape::new(
+            Tool::Ellipse,
+            vec![Point::new(10.0, 10.0), Point::new(30.0, 30.0)],
+            Style::default(),
+        ));
+        a.selected = None;
+        a.edit_target = None;
+        assert_eq!(a.option_target(), Some(1)); // last add → width_target
+        a.edit_target = Some(0);
+        assert_eq!(a.option_target(), Some(0));
+        a.selected = Some(1);
+        assert_eq!(a.option_target(), Some(1));
+        a.live = Some(Shape::new(
+            Tool::Pen,
+            vec![Point::new(1.0, 1.0)],
+            Style::default(),
+        ));
+        assert!(a.option_target().is_none());
+        a.adjust_width(2);
+        assert_eq!(a.live.as_ref().unwrap().style.width, 5);
+    }
+
+    #[test]
+    fn wheel_accumulates_120_and_merges_undo() {
+        let mut a = Annotator::new();
+        a.set_tool(Some(Tool::Rect));
+        a.add(rect_shape());
+        a.selected = Some(0);
+        assert!(!a.wheel(60));
+        assert_eq!(a.shapes[0].style.width, 3);
+        assert!(a.wheel(60));
+        assert_eq!(a.shapes[0].style.width, 4);
+        assert!(a.wheel(120));
+        assert_eq!(a.shapes[0].style.width, 5);
+        // same target within 0.5s → one undo snapshot
+        assert_eq!(a.undo_len(), 2); // add + first merged wheel
+        a.undo();
+        assert_eq!(a.shapes[0].style.width, 3);
+    }
+
+    #[test]
+    fn wheel_without_selection_uses_width_target() {
+        let mut a = Annotator::new();
+        a.set_tool(Some(Tool::Rect));
+        a.add(rect_shape());
+        a.selected = None;
+        a.edit_target = None;
+        assert_eq!(a.width_target, Some(0));
+        assert!(a.wheel(120));
+        assert_eq!(a.shapes[0].style.width, 4);
+    }
+
+    #[test]
+    fn text_editor_rect_and_cancel() {
+        let mut a = Annotator::new();
+        a.set_tool(Some(Tool::Text));
+        a.press(Point::new(20.0, 30.0), false);
+        a.type_text('A');
+        let r = a.text_edit_rect().expect("editor");
+        assert!(r.w >= 80.0);
+        a.commit_text(true);
+        assert!(a.shapes.is_empty());
+        assert!(a.text_edit.is_none());
     }
 }
