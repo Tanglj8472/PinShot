@@ -112,11 +112,8 @@ rust/
 
 | 阶段 | 内容 | 状态 |
 |---|---|---|
-| **P1** | 托盘 + F1/F3、全屏遮罩（变暗/框选/手柄/窗口高亮/尺寸/放大镜）、标注工具栏、复制/保存/贴图、贴图拖动缩放透明度穿透、中英 i18n、TOML 配置、Windows CI | **本目录** |
-| P2 | egui 设置窗、完整子面板（填充/虚线/字体）、贴图上再标注、延时截图、历史选区 | hook：`SettingsUi` |
-| P3 | UI Automation 控件检测（Tab 切窗口/元素）、混合 DPI 每屏独立 overlay | hook：`ElementDetector` |
-| P4 | `ort` + PP-OCRv5 本地 OCR | hook：`OcrEngine` |
-| P5 | 翻译、分组/会话恢复、开机自启、安装包 | hook：`Translator` |
+| **P1** | 托盘 + F1/F3、全屏遮罩（变暗/框选/手柄/窗口高亮/尺寸/放大镜）、标注工具栏、复制/保存/贴图、贴图拖动缩放透明度穿透、中英 i18n、TOML 配置、Windows CI | **完成** |
+| **P2** | egui 设置窗、贴图再标注、`,` `.` 历史、开机自启 / 单实例 / CLI、Tab 控件检测、OCR+翻译（feature）、分组与会话 | **本目录** |
 
 ## 已实现 vs 占位
 
@@ -132,14 +129,17 @@ rust/
 - 中英 `tr()`，默认中文
 - `%APPDATA%\PinShot\config.toml`
 
-**占位 / 未做（有 trait/模块，不在 P1 验收）**
+**P2 已接上**
 
-- `SettingsUi`：egui 首选项窗口
-- `ElementDetector`：UI Automation 元素级检测（Tab 目前只切换模式提示）
-- `OcrEngine`：`ort` + PP-OCRv5
-- `Translator`：划词/截图翻译
-- 选择工具 / 橡皮擦完整编辑（核心模型已有，工具栏未放）
-- 截图历史 `,` `.`、贴图分组、会话备份、开机自启、自定义颜色对话框
+- 托盘「首选项…」打开 egui 设置窗（常规 / 热键 / 输出 + 高级折叠），仅 zh/en，浅色/深色/跟随系统，热键冲突检测，写入 `%APPDATA%\PinShot\config.toml`
+- 贴图上 Space / 右键「显示工具栏」再标注（与截图工具相同）
+- `,` / `.` 回放截图历史，`R` 上次选区
+- 登录自启（HKCU Run）、单实例命名管道、`--snip` / `--pin-clipboard` / `--prefs`
+- Tab 切窗口 / 控件：UI Automation，失败则 EnumChildWindows
+- `--features ocr`：`ort` + PP-OCRv5，模型首次下载到 `%APPDATA%\PinShot\ocr-models`（或 `PINSHOT_OCR_MODELS` 捆绑目录）；Edge 翻译；结果窗置顶可贴图之上
+- 贴图分组 + `session.toml` 会话恢复
+
+CI 产物：`pinshot.exe`（无 OCR）与 `pinshot-ocr.exe`（`--features ocr`）。
 
 ## 许可证
 

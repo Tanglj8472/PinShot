@@ -20,7 +20,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: cargo test
         run: cargo test --workspace
-      - name: cargo build --release
+      - name: cargo build --release (no OCR)
         run: cargo build --release --bin pinshot
       - name: version smoke
         shell: pwsh
@@ -32,4 +32,18 @@ jobs:
         with:
           name: pinshot.exe
           path: rust/target/release/pinshot.exe
+          if-no-files-found: error
+      - name: cargo build --release --features ocr
+        run: cargo build --release --bin pinshot --features ocr
+      - name: stage pinshot-ocr.exe
+        shell: pwsh
+        run: |
+          Copy-Item -Force .\target\release\pinshot.exe .\target\release\pinshot-ocr.exe
+          $out = & .\target\release\pinshot-ocr.exe --version
+          Write-Host $out
+          if ($out -notmatch "PinShot .*windows-rust") { exit 1 }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pinshot-ocr.exe
+          path: rust/target/release/pinshot-ocr.exe
           if-no-files-found: error
