@@ -348,12 +348,12 @@ class SnipOverlay(QWidget):
             if h.startswith("b") or h == "b": r.setBottom(c.y() - 1)
             self.sel = r
         else:
-            self.ann.hover(QPointF(self.cur))
+            hover_shape = self.ann.hover(QPointF(self.cur))
             self._update_hover()
             h = self._hit_handle(self.cur)
             cur = {"tl": Qt.SizeFDiagCursor, "br": Qt.SizeFDiagCursor, "tr": Qt.SizeBDiagCursor, "bl": Qt.SizeBDiagCursor,
                    "l": Qt.SizeHorCursor, "r": Qt.SizeHorCursor, "t": Qt.SizeVerCursor, "b": Qt.SizeVerCursor}.get(h)
-            if self.ann.selected: self.setCursor(Qt.OpenHandCursor)
+            if hover_shape: self.setCursor(Qt.OpenHandCursor)
             elif cur and not self.ann.tool: self.setCursor(cur)
             elif self.has_sel() and self.sel.normalized().contains(self.cur) and not self.ann.tool: self.setCursor(Qt.SizeAllCursor)
             else: self.setCursor(Qt.CrossCursor)

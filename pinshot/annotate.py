@@ -385,11 +385,7 @@ class Annotator(QObject):
     def hover(self, pos):
         if self.live or self._sel_mode or self.editor: return
         pt = self.to_img(pos)
-        hit = None if self.tool in ("eraser", "mosaic") else (self.selected if self.hit_handle(pt) else self.hit_test(pt))
-        if hit is not self.selected:
-            self.selected = hit
-            if hit: self.edit_target = hit
-            self.changed.emit()
+        return None if self.tool in ("eraser", "mosaic") else (self.selected if self.hit_handle(pt) else self.hit_test(pt))
 
     def hit_handle(self, img_pt: QPointF):
         if not self.selected: return None
@@ -420,11 +416,14 @@ class Annotator(QObject):
                 self._sel_pts0 = [QPointF(p) for p in self.selected.pts]; return True
             hit = self.hit_test(pt)
             self.selected = hit
+            self.edit_target = hit
             if hit:
                 self._sel_mode = "move"; self._sel_origin = pt; self._sel_dirty = False
                 self._sel_pts0 = [QPointF(p) for p in hit.pts]
             self.changed.emit(); return True
 
+        if self.selected or self.edit_target:
+            self.selected = None; self.edit_target = None; self.changed.emit()
         if not self.tool: return False
         self.width_target = None; self.edit_target = None
 

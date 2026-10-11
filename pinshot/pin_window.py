@@ -169,8 +169,8 @@ class PinWindow(QWidget):
         if self.ann.live or self.ann._sel_mode: self.ann.move(e.position(), e.modifiers()); return
         if self.drag is not None: self.move(e.globalPosition().toPoint() - self.drag)
         elif self.annotating():
-            self.ann.hover(e.position())
-            self.setCursor(Qt.OpenHandCursor if self.ann.selected else Qt.CrossCursor)
+            hover_shape = self.ann.hover(e.position())
+            self.setCursor(Qt.OpenHandCursor if hover_shape else Qt.CrossCursor)
 
     def mouseReleaseEvent(self, e):
         if self.clickthrough: e.ignore(); return
