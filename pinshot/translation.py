@@ -47,12 +47,12 @@ def recognize(image):
 def read_translation(body):
     data = json.loads(body)
     parts = [t['text'] for item in data for t in item.get('translations', []) if isinstance(t.get('text'), str)]
-    if not parts: raise ValueError('翻译服务没有返回译文')
+    if not parts: raise ValueError('No translation returned')
     return '\n'.join(parts)
 
 
 def translate(text, target='zh-Hans'):
-    if not text.strip(): raise ValueError('没有可翻译的文字')
+    if not text.strip(): raise ValueError('No text to translate')
     query = urllib.parse.urlencode({'from': '', 'to': target, 'isEnterpriseClient': 'false'})
     req = urllib.request.Request('https://edge.microsoft.com/translate/translatetext?' + query,
         data=json.dumps([text], ensure_ascii=False).encode('utf-8'),
@@ -65,24 +65,26 @@ def translate(text, target='zh-Hans'):
 class ResultWindow(QWidget):
     def __init__(self):
         super().__init__(None, Qt.Window | Qt.WindowStaysOnTopHint)
-        self.setWindowTitle('PinShot · 文字识别与翻译')
+        self.setWindowTitle('PinShot OCR')
         self.resize(480, 460)
         self.closed = False; self.request = 0; self.busy = False
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel('原文（可编辑）'))
+        layout.addWidget(QLabel('Original (editable)'))
         self.original = QTextEdit(); self.original.setAcceptRichText(False); layout.addWidget(self.original)
         row = QHBoxLayout()
         self.language = QComboBox()
+        self.language.setObjectName('target_language')
+        self.language.setProperty('i18n', False)
         for name, code in [('简体中文', 'zh-Hans'), ('English', 'en'), ('日本語', 'ja'), ('繁體中文', 'zh-Hant')]:
             self.language.addItem(name, code)
         row.addWidget(self.language)
-        self.translate_button = QPushButton('翻译'); row.addWidget(self.translate_button)
-        self.copy_original = QPushButton('复制原文'); row.addWidget(self.copy_original)
+        self.translate_button = QPushButton('Translate'); row.addWidget(self.translate_button)
+        self.copy_original = QPushButton('Copy original'); row.addWidget(self.copy_original)
         layout.addLayout(row)
-        layout.addWidget(QLabel('译文'))
+        layout.addWidget(QLabel('Translation'))
         self.translated = QTextEdit(); self.translated.setReadOnly(True); layout.addWidget(self.translated)
-        self.copy_translated = QPushButton('复制译文'); layout.addWidget(self.copy_translated)
-        self.status = QLabel('OCR 在本机运行；翻译会将原文发送给 Edge 在线服务。')
+        self.copy_translated = QPushButton('Copy translation'); layout.addWidget(self.copy_translated)
+        self.status = QLabel('OCR runs on this device. Translation sends text online.')
         self.status.setWordWrap(True); layout.addWidget(self.status)
         self.copy_original.clicked.connect(lambda: QGuiApplication.clipboard().setText(self.original.toPlainText()))
         self.copy_translated.clicked.connect(lambda: QGuiApplication.clipboard().setText(self.translated.toPlainText()))
@@ -129,12 +131,12 @@ class TranslationController(QObject):
     def text(self, text):
         window = self.new_window(); window.original.setPlainText(text)
         if text.strip(): self.start_translation(window)
-        else: window.status.setText('未获取到选中文字。请先选择文字，再按划词翻译热键。')
+        else: window.status.setText('No selected text. Select text, then press the hotkey.')
         return window
 
     def start_translation(self, window):
         text = window.original.toPlainText().strip()
-        if not text: window.status.setText('没有可翻译的文字'); return
+        if not text: window.status.setText('No text to translate'); return
         target = window.language.currentData()
         window.translated.clear(); window.copy_translated.setEnabled(False)
         self._run(window, 'translate', lambda: translate(text, target))
@@ -142,7 +144,7 @@ class TranslationController(QObject):
     def _run(self, window, kind, function, auto_translate=False):
         window.request += 1; request = window.request; window.busy = True
         window.translate_button.setEnabled(False)
-        window.status.setText('正在识别文字…' if kind == 'ocr' else '正在翻译…')
+        window.status.setText('Recognizing…' if kind == 'ocr' else 'Translating…')
         def work():
             result = error = ''
             try: result = function()
@@ -158,12 +160,12 @@ class TranslationController(QObject):
         window.translate_button.setEnabled(True)
         if kind == 'ocr': window.original.setReadOnly(False)
         if error:
-            window.status.setText(('识别失败：' if kind == 'ocr' else '翻译失败：') + error)
+            window.status.setText(('OCR failed: ' if kind == 'ocr' else 'Translation failed: ') + error)
             return
         if kind == 'ocr':
             window.original.setPlainText(result)
-            window.status.setText('识别完成，可编辑、复制原文或翻译。' if result.strip() else '未识别到文字，请重新选择清晰的文字区域。')
+            window.status.setText('OCR done. Edit, copy, or translate.' if result.strip() else 'No text found. Select a clearer area.')
             if auto_translate and result.strip(): self.start_translation(window)
         else:
             window.translated.setPlainText(result); window.copy_translated.setEnabled(True)
-            window.status.setText('翻译完成 · Edge')
+            window.status.setText('Translation done')

@@ -24,16 +24,16 @@ def _span(a: QPoint, b: QPoint) -> QRect:
 
 
 HINTS = {
-    None: [("W A S D", "Move the cursor by 1 pixel"), ("↑ ↓ ← →", "Move the selection by 1 pixel"),
-           ("Ctrl ↑↓←→", "Enlarge selection / Shift: shrink"), ("Tab", "Toggle window / element detection"),
-           ("Ctrl A", "Select full screen"), ("Shift R", "Reuse the last snip area"),
-           (", .", "Replay snip history (image+area)"), ("`", "Show/hide captured mouse cursor"), ("C / Shift", "Copy color / RGB↔HEX"),
-           ("N", "Numbered marker"), ("V", "Select / edit shapes")],
-    "_annot": [("1 2 / wheel", "Decrease / increase width"), ("Right-click", "Finish current shape"),
-               ("Shift", "Square shape / continue polyline"), ("Ctrl Z / Y", "Undo / redo"),
+    None: [("W A S D", "Move cursor 1 px"), ("↑ ↓ ← →", "Move selection 1 px"),
+           ("Ctrl ↑↓←→", "Grow / Shift: shrink"), ("Tab", "Window / element"),
+           ("Ctrl A", "Full screen"), ("Shift R", "Last snip area"),
+           (", .", "Snip history"), ("`", "Show cursor"), ("C / Shift", "Copy color / RGB↔HEX"),
+           ("N", "Numbered marker"), ("V", "Select / edit")],
+    "_annot": [("1 2 / wheel", "Width"), ("Right-click", "Finish shape"),
+               ("Shift", "Square / polyline"), ("Ctrl Z / Y", "Undo / redo"),
                ("Enter / Ctrl C", "Copy"), ("Ctrl T", "Pin"), ("Ctrl S", "Save"), ("Esc", "Cancel"),
                ("N", "Numbered marker"), ("V", "Select"), ("Del", "Delete selected")],
-    "text": [("Click", "Place a text box"), ("Enter", "Commit text"), ("Esc", "Discard text"),
+    "text": [("Click", "Place text"), ("Enter", "Commit text"), ("Esc", "Discard text"),
              ("1 2 / wheel", "Font size"), ("Right-click", "Finish")],
     "select": [("Click", "Select shape"), ("Drag", "Move"), ("Handles", "Resize"), ("Del", "Delete"),
                ("Double-click text", "Re-edit"), ("Ctrl Z", "Undo edit")],
@@ -298,7 +298,7 @@ class SnipOverlay(QWidget):
         p.drawText(QRect(x + 22, y + size + 16, size - 24, 16), Qt.AlignVCenter, self.color_text(c))
         p.setPen(QColor(210, 210, 210))
         p.drawText(QRect(x, y + size + 34, size, 14), Qt.AlignCenter, tr("Press C to copy color"))
-        p.drawText(QRect(x, y + size + 48, size, 14), Qt.AlignCenter, tr("Shift: switch RGB/HEX"))
+        p.drawText(QRect(x, y + size + 48, size, 14), Qt.AlignCenter, tr("Shift: RGB / HEX"))
 
     # --- mouse
     def mousePressEvent(self, e):
@@ -419,13 +419,13 @@ class SnipOverlay(QWidget):
         elif k == Qt.Key_Alt: self.mag_forced = True; self.update()
         elif k == Qt.Key_Tab:
             self.detect_mode = "element" if self.detect_mode == "window" else "window"
-            tip = self.detect_mode
             if self.detect_mode == "element":
                 self.load_elements()
-                from .platform import current as _plat
-                tip += f" ({_plat().element_source()})"
-            self.show_toast(f"Detection: {tip}"); self._update_hover(); self.update()
-        elif k in (Qt.Key_QuoteLeft, Qt.Key_AsciiTilde): self.show_cursor = not self.show_cursor; self.show_toast("Captured cursor: " + ("shown" if self.show_cursor else "hidden") + " (stub)")
+            self.show_toast("Element detection" if self.detect_mode == "element" else "Window detection")
+            self._update_hover(); self.update()
+        elif k in (Qt.Key_QuoteLeft, Qt.Key_AsciiTilde):
+            self.show_cursor = not self.show_cursor
+            self.show_toast("Cursor shown" if self.show_cursor else "Cursor hidden")
         elif self.ann.tool == "select" and k in (Qt.Key_Delete, Qt.Key_Backspace): self.ann.delete_selected()
         elif k == Qt.Key_V and self.has_sel(): self.ann.set_tool("select")
         elif k == Qt.Key_N and self.has_sel() and not ctrl: self.ann.set_tool("number")

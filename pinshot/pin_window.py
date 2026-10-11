@@ -249,7 +249,7 @@ class PinWindow(QWidget):
         if pm: self.replace_image(pm.toImage())
 
     def replace_by_file(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Replace by file", "", "Images (*.png *.jpg *.jpeg *.bmp *.gif *.webp)")
+        path, _ = QFileDialog.getOpenFileName(self, "Replace from file", "", "Images (*.png *.jpg *.jpeg *.bmp *.gif *.webp)")
         if path: self.replace_image(QImage(path))
 
     def save(self, path=None):
@@ -280,18 +280,18 @@ class PinWindow(QWidget):
         for pct in (25, 50, 75, 100, 150, 200, 400):
             act = z.addAction(f"{pct}%", lambda pct=pct: self.set_scale(pct / 100, tip=False)); act.setCheckable(True)
             act.setChecked(abs(self.scale * 100 - pct) < 0.5)
-        ip = m.addMenu("Image processing")
+        ip = m.addMenu("Image")
         ip.addAction("Rotate left", lambda: self.rotate(-90), "1"); ip.addAction("Rotate right", lambda: self.rotate(90), "2")
-        ip.addAction("Horizontal flip", lambda: self.flip(True), "3"); ip.addAction("Vertical flip", lambda: self.flip(False), "4")
+        ip.addAction("Flip horizontal", lambda: self.flip(True), "3"); ip.addAction("Flip vertical", lambda: self.flip(False), "4")
         m.addSeparator()
-        m.addAction("Paste", self.paste); m.addAction("Replace by file…", self.replace_by_file)
+        m.addAction("Paste", self.paste); m.addAction("Replace from file…", self.replace_by_file)
         from . import session as SES
         g = m.addMenu("Move to group"); ag = QActionGroup(g)
         for name in SES.group_names():
             act = g.addAction(name, lambda n=name: self.move_to_group(n)); act.setCheckable(True); act.setChecked(self.group == name); ag.addAction(act)
         g.addSeparator()
         g.addAction("New group…", self._new_group)
-        g.addAction("Rename this group…", self._rename_group)
+        g.addAction("Rename group…", self._rename_group)
         a = m.addAction("View in folder", self.view_in_folder); a.setEnabled(bool(self.saved_path))
         m.addSeparator()
         m.addAction("Close", self.close_recoverable, "Esc")
@@ -299,7 +299,7 @@ class PinWindow(QWidget):
         m.addSeparator()
         sz = m.addMenu(f"{self.img.width()} × {self.img.height()}")
         sz.addAction("Copy size", lambda: QGuiApplication.clipboard().setText(f"{self.img.width()}x{self.img.height()}"))
-        sz.addAction("Reset zoom to 100%", lambda: self.set_scale(1.0, tip=False))
+        sz.addAction("Reset zoom", lambda: self.set_scale(1.0, tip=False))
         sz.addAction(f"Zoom {round(self.scale * 100)}%  ·  Opacity {round(self.windowOpacity() * 100)}%").setEnabled(False)
         return m
 

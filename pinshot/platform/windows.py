@@ -385,7 +385,7 @@ class WindowsPlatform(BasePlatform):
 
     # ---- autostart (HKCU Run)
     def autostart_description(self):
-        return r"Run at login (HKCU\...\CurrentVersion\Run)"
+        return "Run at login"
 
     def autostart_is_enabled(self):
         import winreg

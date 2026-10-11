@@ -54,7 +54,7 @@ class LinuxX11Platform(BasePlatform):
         return x11clip.read(log=_log, prefer=prefer) if prefer else x11clip.read(log=_log)
 
     def autostart_description(self):
-        return "Run at login (writes ~/.config/autostart/pinshot.desktop)"
+        return "Run at login"
 
     def autostart_is_enabled(self):
         from .. import autostart

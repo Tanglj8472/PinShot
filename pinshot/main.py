@@ -1,16 +1,15 @@
-"""PinShot entry: tray + control window, preferences, groups, global hotkeys, session."""
+"""PinShot entry: tray (or a tiny fallback), preferences, groups, global hotkeys, session."""
 import argparse, os, sys, atexit
 from PySide6.QtCore import Qt, QTimer, QPoint, QRect
-from PySide6.QtGui import QIcon, QPixmap, QPainter, QColor, QKeySequence, QShortcut, QGuiApplication, QAction
-from PySide6.QtWidgets import (QApplication, QSystemTrayIcon, QMenu, QWidget, QVBoxLayout, QHBoxLayout,
-                               QPushButton, QLabel, QListWidget, QListWidgetItem, QComboBox)
-from .capture import grab_primary, grab_virtual
+from PySide6.QtGui import QIcon, QPixmap, QKeySequence, QShortcut, QGuiApplication
+from PySide6.QtWidgets import (QApplication, QSystemTrayIcon, QMenu, QWidget, QVBoxLayout,
+                               QPushButton)
 from .clipboard import copy_pixmap, clipboard_pixmap
 from .overlay import SnipOverlay
 from .pin_window import PinWindow, ALL_PINS
 from . import session as SES
 from . import settings as S
-from .hotkeys import HotkeyBus, install_global
+from .hotkeys import HotkeyBus
 from .prefs import PrefsDialog
 
 
@@ -34,37 +33,18 @@ class App:
         self.hk_backend = None; self._hk_helper = None
         self.bus = HotkeyBus(); self.bus.fired.connect(self._on_hotkey)
         self.win = QWidget(); self.win.setWindowTitle("PinShot"); self.win.setWindowIcon(_icon())
-        lay = QVBoxLayout(self.win)
-        self.status = QLabel(); self.status.setWordWrap(True); lay.addWidget(self.status)
-        drow = QHBoxLayout(); drow.addWidget(QLabel("Snip delay:"))
-        self.delay_box = QComboBox()
-        for sec in (0, 1, 2, 3, 5): self.delay_box.addItem(f"{sec}s" if sec else "0s", sec)
-        di = self.delay_box.findData(S.get("snip_delay", int)); self.delay_box.setCurrentIndex(max(0, di))
-        self.delay_box.currentIndexChanged.connect(lambda: S.set_("snip_delay", int(self.delay_box.currentData())))
-        drow.addWidget(self.delay_box); lay.addLayout(drow)
-        for text, fn in [("Snip (F1)", self.snip), ("Pin clipboard (F3)", self.pin_clipboard),
-                         ("截图翻译 (F6)", self.capture_translate),
-                         ("Hide/Show pins (Shift+F3)", self.toggle_pins),
-                         ("Restore last closed pin", self.restore_closed),
-                         ("Preferences…", self.open_prefs)]:
-            b = QPushButton(text); b.clicked.connect(fn); lay.addWidget(b)
-        # Groups list
-        lay.addWidget(QLabel("Pin groups (double-click hide/show):"))
-        self.group_list = QListWidget(); self.group_list.itemDoubleClicked.connect(self._toggle_group_item)
-        lay.addWidget(self.group_list)
-        grow = QHBoxLayout()
-        for t, fn in [("Add", self._add_group), ("Rename", self._ren_group), ("Remove", self._rm_group)]:
-            b = QPushButton(t); b.clicked.connect(fn); grow.addWidget(b)
-        lay.addLayout(grow)
-        qb = QPushButton("Quit"); qb.clicked.connect(self.quit); lay.addWidget(qb)
         self.tray = None
+        self._fallback = False
         SES.BUS.groups_changed.connect(self._rebuild_groups)
         self._bind_local_shortcuts()
-        self._rebuild_groups()
         if QSystemTrayIcon.isSystemTrayAvailable():
             self.tray = QSystemTrayIcon(_icon()); self._rebuild_tray()
             self.tray.activated.connect(lambda r: self.snip() if r == QSystemTrayIcon.Trigger else None)
             self.tray.setToolTip("PinShot"); self.tray.show()
+            self.win.hide()
+        else:
+            self._fallback = True
+            self._build_fallback()
         self.reinstall_hotkeys()
         self.ipc = None
         try:
@@ -85,6 +65,8 @@ class App:
         QShortcut(QKeySequence(S.get("hotkey_pin") or "F3"), self.win, self.pin_clipboard)
         QShortcut(QKeySequence(S.get("hotkey_hide_all") or "Shift+F3"), self.win, self.toggle_pins)
         QShortcut(QKeySequence("Ctrl+Shift+P"), self.win, self.open_prefs)
+        QShortcut(QKeySequence(S.get("hotkey_selection_translate") or "F5"), self.win, self.selection_translate)
+        QShortcut(QKeySequence(S.get("hotkey_capture_translate") or "F6"), self.win, self.capture_translate)
         rs = S.get("hotkey_restore") or ""
         if rs: QShortcut(QKeySequence(rs), self.win, self.restore_closed)
         ct = S.get("hotkey_clickthrough") or ""
@@ -110,14 +92,11 @@ class App:
         from .platform import current as _plat
         name, helper = _plat().install_hotkeys(self.bus, bindings)
         self.hk_backend = name; self._hk_helper = helper if name else None
-        self.status.setText(
-            f"PinShot — {bindings['snip']} snip, {bindings['pin']} pin, {bindings['hide_all']} hide/show\n"
-            f"Global hotkeys: {name or 'unavailable (X11 GrabKey / pynput; not on pure Wayland)'}\n"
-            f"{bindings['selection_translate']} 划词翻译 · {bindings['capture_translate']} 截图翻译\n"
-            f"Preferences: Ctrl+Shift+P · Restore closed pin: {rs or 'unbound'}"
-        )
+        if self.tray:
+            self.tray.setToolTip(f"PinShot — {bindings['snip']} · {bindings['pin']}")
         failed = getattr(helper, 'failed', []) if helper else []
-        if failed: self.status.setText(self.status.text() + '\n未注册的热键：' + ', '.join(failed))
+        if failed:
+            self._notify("Unbound hotkeys: " + ", ".join(failed))
         self._bind_local_shortcuts()
 
     def _on_hotkey(self, cmd):
@@ -134,57 +113,45 @@ class App:
         elif c == "pins": self.toggle_pins()
         elif c == "prefs": self.open_prefs()
         elif c == "quit": self.quit()
-        else: self.win.show(); self.win.raise_(); self.win.activateWindow()
+        else:
+            self._raise_ui()
 
-    # --- groups UI
+    def _raise_ui(self):
+        if self._fallback:
+            self.win.show(); self.win.raise_(); self.win.activateWindow()
+        elif self.tray:
+            from .i18n import tr
+            self.tray.showMessage("PinShot", tr("PinShot is running"), QSystemTrayIcon.Information, 1500)
+
+    def _build_fallback(self):
+        lay = QVBoxLayout(self.win)
+        lay.setContentsMargins(12, 12, 12, 12)
+        lay.setSpacing(8)
+        for text, fn in (("Snip", self.snip), ("Pin clipboard", self.pin_clipboard),
+                         ("Preferences…", self.open_prefs), ("Quit", self.quit)):
+            b = QPushButton(text); b.clicked.connect(fn); lay.addWidget(b)
+        self.win.show()
+
     def _rebuild_groups(self):
-        self.group_list.clear()
-        for name in SES.group_names():
-            it = QListWidgetItem(name + ("" if SES.group_visible(name) else "  (hidden)"))
-            it.setData(Qt.UserRole, name); self.group_list.addItem(it)
         self._rebuild_tray()
-
-    def _toggle_group_item(self, item):
-        name = item.data(Qt.UserRole)
-        SES.set_group_visible(name, not SES.group_visible(name)); self._rebuild_groups()
-
-    def _add_group(self):
-        from PySide6.QtWidgets import QInputDialog
-        name, ok = QInputDialog.getText(self.win, "Add group", "Name:")
-        if ok and name.strip():
-            if SES.find_group(name): return self._notify(f"Group '{name.strip()}' already exists")
-            SES.ensure_group(name.strip()); self._rebuild_groups()
-
-    def _ren_group(self):
-        from PySide6.QtWidgets import QInputDialog
-        it = self.group_list.currentItem()
-        if not it: return
-        old = it.data(Qt.UserRole)
-        name, ok = QInputDialog.getText(self.win, "Rename group", "Name:", text=old)
-        if ok and name.strip():
-            if not SES.rename_group(old, name.strip()): self._notify("Rename rejected (duplicate or Default)")
-            self._rebuild_groups()
-
-    def _rm_group(self):
-        it = self.group_list.currentItem()
-        if not it: return
-        SES.remove_group(it.data(Qt.UserRole)); self._rebuild_groups()
 
     def _rebuild_tray(self):
         if not self.tray: return
+        from .i18n import translate_widget
         m = QMenu()
-        m.addAction("Snip", self.snip); m.addAction("Pin clipboard", self.pin_clipboard)
-        m.addAction("截图翻译 (F6)", self.capture_translate)
+        m.addAction("Snip", self.snip)
+        m.addAction("Pin clipboard", self.pin_clipboard)
+        m.addAction("Snip and translate", self.capture_translate)
         m.addAction("Hide/Show all pins", self.toggle_pins)
         m.addAction("Restore last closed pin", self.restore_closed)
         gm = m.addMenu("Groups")
         for name in SES.group_names():
             vis = SES.group_visible(name)
-            a = gm.addAction(("Hide " if vis else "Show ") + name,
-                             lambda n=name, v=vis: (SES.set_group_visible(n, not v), self._rebuild_groups()))
-        m.addAction("Control window", self.win.show)
+            gm.addAction(("Hide " if vis else "Show ") + name,
+                         lambda n=name, v=vis: (SES.set_group_visible(n, not v), self._rebuild_groups()))
         m.addAction("Preferences…", self.open_prefs)
         m.addSeparator(); m.addAction("Quit", self.quit)
+        translate_widget(m)
         self.tray.setContextMenu(m)
 
     # --- core actions
@@ -218,7 +185,7 @@ class App:
         from .platform import current as _plat
         self._snip_pending = True
         hold = _plat().input_hold()
-        hid = self.win.isVisible()
+        hid = self._fallback and self.win.isVisible()
         if hid: self.win.hide()
         def go():
             try:
@@ -243,7 +210,7 @@ class App:
     def capture_translate(self):
         def configure(ov):
             ov.translate_on_select = True
-            ov.show_toast('框选文字区域，松开鼠标后识别并翻译')
+            ov.show_toast('Select text, then release')
         self.snip(then=configure)
 
     def selection_translate(self):
@@ -273,7 +240,7 @@ class App:
         pos = base + QPoint(28 * (k % 8), 28 * (k % 8))
         if centered:
             w.is_card = True
-            cw = self.win.frameGeometry() if self.win.isVisible() else None
+            cw = self.win.frameGeometry() if self._fallback and self.win.isVisible() else None
             if cw is not None and QRect(pos, w.size()).intersects(cw):
                 below = cw.bottom() + 12; above = cw.top() - 12 - w.height()
                 pos.setY(below if below + w.height() <= g.bottom() else max(g.top(), above))
@@ -302,7 +269,7 @@ class App:
                     hit = p; break
         if hit is not None:
             hit.set_clickthrough(not hit.clickthrough)
-            self._notify("Click-through " + ("ON" if hit.clickthrough else "OFF"))
+            self._notify("Click-through on" if hit.clickthrough else "Click-through off")
         else:
             n = 0
             for p in ALL_PINS:
@@ -315,10 +282,7 @@ class App:
         return w
 
     def _sync_delay_box(self):
-        di = self.delay_box.findData(S.get("snip_delay", int))
-        self.delay_box.blockSignals(True)
-        self.delay_box.setCurrentIndex(max(0, di))
-        self.delay_box.blockSignals(False)
+        return
 
     def apply_appearance(self, language=None, theme_mode=None):
         """Live: language + theme from settings (or explicit args, which are also persisted)."""
@@ -335,7 +299,7 @@ class App:
         d.exec()
 
     def quit(self):
-        if self.selection_reader.active: self.selection_reader._finish('', '已取消')
+        if self.selection_reader.active: self.selection_reader._finish('', '')
         SES.persist_session()
         if self._hk_helper:
             try: self._hk_helper.stop()
@@ -351,7 +315,7 @@ class App:
 
 def main(argv=None):
     """CLI:
-      python -m pinshot                  # start / raise control window
+      python -m pinshot                  # start in the tray (or a tiny fallback)
       python -m pinshot snip [--delay N]
       python -m pinshot pin
       python -m pinshot pins             # hide/show all pins
@@ -394,10 +358,8 @@ def main(argv=None):
     qapp = QApplication(sys.argv[:1]); qapp.setQuitOnLastWindowClosed(False)
     app = App(qapp)
 
-    if S.get("start_minimized", bool) and not a.selftest and cmd not in ("snip", "prefs"):
+    if app._fallback and cmd in ("snip", "prefs"):
         app.win.hide()
-    else:
-        app.win.show()
     try: SES.restore_session()
     except Exception as e: print("[pinshot] session restore:", e, flush=True)
 

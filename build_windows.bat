@@ -9,6 +9,10 @@ set "VPY=.venv-win\Scripts\python.exe"
 %VPY% -m pip install -r requirements-windows.txt || goto :err
 %VPY% tools\make_icon.py || goto :err
 %VPY% tests\test_platform.py || goto :err
+%VPY% tests\test_annotation_interactions.py || goto :err
+%VPY% tests\test_translation.py || goto :err
+%VPY% tests\test_i18n.py || goto :err
+%VPY% tools\prepare_ocr_models.py || goto :err
 %VPY% -m PyInstaller --noconfirm --clean pinshot.spec || goto :err
 set "PINSHOT_VERSION_OUT=%CD%\ver.txt"
 start /wait "" dist\PinShot\PinShot.exe --version

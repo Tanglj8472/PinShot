@@ -62,7 +62,7 @@ class BasePlatform:
 
     # ---- autostart
     def autostart_description(self) -> str:
-        return "Run at login"
+        return "Run at login"  # i18n: keep this exact English key
 
     def autostart_is_enabled(self) -> bool:
         return False

@@ -11,6 +11,10 @@ $vpy = Join-Path ".venv-win" "Scripts\python.exe"
 & $vpy -m py_compile pinshot_launcher.py
 & $vpy tools\make_icon.py
 & $vpy tests\test_platform.py
+& $vpy tests\test_annotation_interactions.py
+& $vpy tests\test_translation.py
+& $vpy tests\test_i18n.py
+& $vpy tools\prepare_ocr_models.py
 & $vpy -m PyInstaller --noconfirm --clean pinshot.spec
 $env:PINSHOT_VERSION_OUT = "$PSScriptRoot\ver.txt"
 Start-Process -FilePath "dist\PinShot\PinShot.exe" -ArgumentList "--version" -Wait
