@@ -72,6 +72,9 @@ class PrefsDialog(QDialog):
         f.addRow("Hide / show all pins:", self.hk_hide)
         f.addRow("Toggle click-through:", self.hk_ct)
         f.addRow("Restore last closed pin:", self.hk_restore)
+        self.hk_selection = QLineEdit(); self.hk_translate = QLineEdit()
+        f.addRow('划词翻译:', self.hk_selection)
+        f.addRow('截图翻译:', self.hk_translate)
         import sys as _sys
         note = QLabel("Global hotkeys use Win32 RegisterHotKey; a combination already taken by another app "
                       "cannot be bound. Apply to re-bind." if _sys.platform == "win32" else
@@ -138,6 +141,8 @@ class PrefsDialog(QDialog):
         self.hk_snip.setText(S.get("hotkey_snip")); self.hk_pin.setText(S.get("hotkey_pin"))
         self.hk_hide.setText(S.get("hotkey_hide_all")); self.hk_ct.setText(S.get("hotkey_clickthrough") or "")
         self.hk_restore.setText(S.get("hotkey_restore") or "")
+        self.hk_selection.setText(S.get('hotkey_selection_translate'))
+        self.hk_translate.setText(S.get('hotkey_capture_translate'))
         self.language.setCurrentIndex(max(0, self.language.findData(S.get("language"))))
         self.theme.setCurrentIndex(max(0, self.theme.findData(S.get("theme"))))
         self.save_folder.setText(S.get("quick_save_folder")); self.quality.setValue(S.get("image_quality", int))
@@ -160,6 +165,8 @@ class PrefsDialog(QDialog):
         S.set_("hotkey_hide_all", self.hk_hide.text().strip() or "Shift+F3")
         S.set_("hotkey_clickthrough", self.hk_ct.text().strip())
         S.set_("hotkey_restore", self.hk_restore.text().strip())
+        S.set_('hotkey_selection_translate', self.hk_selection.text().strip() or 'F5')
+        S.set_('hotkey_capture_translate', self.hk_translate.text().strip() or 'F6')
         S.set_("quick_save_folder", self.save_folder.text().strip())
         S.set_("image_quality", self.quality.value())
         S.set_("language", self.language.currentData()); S.set_("theme", self.theme.currentData())

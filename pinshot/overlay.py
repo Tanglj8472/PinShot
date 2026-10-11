@@ -59,6 +59,7 @@ class SnipOverlay(QWidget):
     saved = Signal(str)
     cancelled = Signal()
     color_copied = Signal(str)
+    text_requested = Signal(QImage, bool)
 
     def __init__(self, shot: QPixmap, geometry: QRect):
         super().__init__(None, Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
@@ -91,6 +92,7 @@ class SnipOverlay(QWidget):
         self.dock.action.connect(self._action)
         self.confirm = None
         self.pre_grab = None    # X pointer/keyboard hold taken before capture (see main.App.snip)
+        self.translate_on_select = False
 
     # --- lifecycle
     def start(self):
@@ -361,7 +363,10 @@ class SnipOverlay(QWidget):
 
     def mouseReleaseEvent(self, e):
         if self.ann.live or self.ann._sel_mode: self.ann.release(QPointF(e.position())); return
+        translate_selection = self.translate_on_select and self.state == 'creating' and e.button() == Qt.LeftButton
         if self.state == "creating":
+            self.cur = e.position().toPoint()
+            self.sel = _span(self.press_pt or self.cur, self.cur)
             if not self.has_sel():
                 self.sel = QRect(self.hover if not self.hover.isEmpty() else self.rect())   # click: hovered window
             self.sel = self.sel.normalized()
@@ -369,6 +374,8 @@ class SnipOverlay(QWidget):
             self.sel = self.sel.normalized().intersected(self.rect())
             self.state = "selected"; self._ungrab_mouse(); self._place_dock()
         self.update()
+
+        if translate_selection and self.has_sel(): self._action('translate')
 
     def mouseDoubleClickEvent(self, e):
         e.accept()
@@ -432,6 +439,13 @@ class SnipOverlay(QWidget):
         if e.key() == Qt.Key_Alt: self.mag_forced = False; self.update()
 
     def _action(self, a):
+        if a in ('ocr', 'translate'):
+            if self.has_sel():
+                # Recognize the frozen source, without annotation paint or selection handles.
+                image = self.img.copy(self._phys(self.sel.normalized()))
+                self.close()
+                self.text_requested.emit(image, a == 'translate')
+            return
         {"undo": self.ann.undo, "redo": self.ann.redo, "close": self._cancel, "pin": self._pin,
          "save": self._save, "copy": self._copy}[a]()
 

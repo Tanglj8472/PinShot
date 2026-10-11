@@ -11,6 +11,8 @@ DEFAULTS = {
     "dblclick_tip_shown": False,
     "hotkey_snip": "F1",
     "hotkey_pin": "F3",
+    "hotkey_selection_translate": "F5",
+    "hotkey_capture_translate": "F6",
     "hotkey_hide_all": "Shift+F3",
     "hotkey_clickthrough": "",
     "hotkey_restore": "Ctrl+Shift+Z",       # unbound by default

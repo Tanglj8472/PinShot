@@ -112,6 +112,12 @@ class ToolDock(QWidget):
         for a in ["undo", "redo"]:
             b = _tb(a); b.clicked.connect(lambda _=False, a=a: self.action.emit(a)); row.addWidget(b); self.action_buttons[a] = b
         row.addWidget(_sep())
+        if not for_pin:
+            for name, label in [('ocr', 'OCR'), ('translate', '译')]:
+                b = QToolButton(); b.setText(label); b.setFocusPolicy(Qt.NoFocus)
+                b.setToolTip('识别选区文字（本地）' if name == 'ocr' else '识别并翻译选区文字（Edge）')
+                b.clicked.connect(lambda _=False, name=name: self.action.emit(name))
+                row.addWidget(b); self.action_buttons[name] = b
         for a in (["close", "save", "copy", "check"] if for_pin else ["close", "pin", "save", "copy"]):
             b = _tb(a); b.clicked.connect(lambda _=False, a=a: self.action.emit(a)); row.addWidget(b); self.action_buttons[a] = b
         outer.addWidget(bar)

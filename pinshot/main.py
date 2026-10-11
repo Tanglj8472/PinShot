@@ -27,11 +27,15 @@ class App:
         theme.apply(S.get("theme") or "system"); theme.watch_system()
         i18n.install(qapp, S.get("language") or "en")
         self.qapp = qapp; self.overlay = None; self._snip_pending = False
+        from .translation import TranslationController
+        from .selection_text import SelectionReader
+        self.translation = TranslationController(qapp)
+        self.selection_reader = SelectionReader(qapp)
         self.hk_backend = None; self._hk_helper = None
         self.bus = HotkeyBus(); self.bus.fired.connect(self._on_hotkey)
         self.win = QWidget(); self.win.setWindowTitle("PinShot"); self.win.setWindowIcon(_icon())
         lay = QVBoxLayout(self.win)
-        self.status = QLabel(); lay.addWidget(self.status)
+        self.status = QLabel(); self.status.setWordWrap(True); lay.addWidget(self.status)
         drow = QHBoxLayout(); drow.addWidget(QLabel("Snip delay:"))
         self.delay_box = QComboBox()
         for sec in (0, 1, 2, 3, 5): self.delay_box.addItem(f"{sec}s" if sec else "0s", sec)
@@ -39,6 +43,7 @@ class App:
         self.delay_box.currentIndexChanged.connect(lambda: S.set_("snip_delay", int(self.delay_box.currentData())))
         drow.addWidget(self.delay_box); lay.addLayout(drow)
         for text, fn in [("Snip (F1)", self.snip), ("Pin clipboard (F3)", self.pin_clipboard),
+                         ("截图翻译 (F6)", self.capture_translate),
                          ("Hide/Show pins (Shift+F3)", self.toggle_pins),
                          ("Restore last closed pin", self.restore_closed),
                          ("Preferences…", self.open_prefs)]:
@@ -93,6 +98,8 @@ class App:
         bindings = {
             "snip": S.get("hotkey_snip") or "F1",
             "pin": S.get("hotkey_pin") or "F3",
+            "selection_translate": S.get("hotkey_selection_translate") or "F5",
+            "capture_translate": S.get("hotkey_capture_translate") or "F6",
             "hide_all": S.get("hotkey_hide_all") or "Shift+F3",
         }
         ct = S.get("hotkey_clickthrough") or ""
@@ -106,17 +113,23 @@ class App:
         self.status.setText(
             f"PinShot — {bindings['snip']} snip, {bindings['pin']} pin, {bindings['hide_all']} hide/show\n"
             f"Global hotkeys: {name or 'unavailable (X11 GrabKey / pynput; not on pure Wayland)'}\n"
+            f"{bindings['selection_translate']} 划词翻译 · {bindings['capture_translate']} 截图翻译\n"
             f"Preferences: Ctrl+Shift+P · Restore closed pin: {rs or 'unbound'}"
         )
+        failed = getattr(helper, 'failed', []) if helper else []
+        if failed: self.status.setText(self.status.text() + '\n未注册的热键：' + ', '.join(failed))
         self._bind_local_shortcuts()
 
     def _on_hotkey(self, cmd):
         {"snip": self.snip, "pin": self.pin_clipboard, "hide_all": self.toggle_pins,
+         "selection_translate": self.selection_translate, "capture_translate": self.capture_translate,
          "clickthrough": self.toggle_clickthrough, "restore": self.restore_closed}.get(cmd, lambda: None)()
 
     def _on_ipc(self, m):
         c = m.get("cmd") if isinstance(m, dict) else None
         if c == "snip": self.snip(delay=m.get("delay"))
+        elif c == "translate": self.capture_translate()
+        elif c == "selection": self.selection_translate()
         elif c == "pin": self.pin_clipboard()
         elif c == "pins": self.toggle_pins()
         elif c == "prefs": self.open_prefs()
@@ -161,6 +174,7 @@ class App:
         if not self.tray: return
         m = QMenu()
         m.addAction("Snip", self.snip); m.addAction("Pin clipboard", self.pin_clipboard)
+        m.addAction("截图翻译 (F6)", self.capture_translate)
         m.addAction("Hide/Show all pins", self.toggle_pins)
         m.addAction("Restore last closed pin", self.restore_closed)
         gm = m.addMenu("Groups")
@@ -218,12 +232,26 @@ class App:
             ov.color_copied.connect(lambda t: self._notify(f"Color copied: {t}"))
             ov.pinned.connect(lambda pm, pos: PinWindow(pm, pos).show())
             ov.saved.connect(lambda path: self._notify(f"Saved {path}"))
+            ov.text_requested.connect(self.translation.image)
             ov.destroyed.connect(lambda *_: setattr(self, 'overlay', None))
             ov.setAttribute(Qt.WA_DeleteOnClose)
             if hid: ov.destroyed.connect(lambda *_: self.win.show())
             ov.start()
             if then: then(ov)
         QTimer.singleShot(150 if hid else 0, go)
+
+    def capture_translate(self):
+        def configure(ov):
+            ov.translate_on_select = True
+            ov.show_toast('框选文字区域，松开鼠标后识别并翻译')
+        self.snip(then=configure)
+
+    def selection_translate(self):
+        if self.overlay: return
+        def ready(text, error):
+            if error: self._notify(error)
+            else: self.translation.text(text)
+        self.selection_reader.read(ready)
 
     def pin_clipboard(self):
         from PySide6.QtGui import QCursor
@@ -307,6 +335,7 @@ class App:
         d.exec()
 
     def quit(self):
+        if self.selection_reader.active: self.selection_reader._finish('', '已取消')
         SES.persist_session()
         if self._hk_helper:
             try: self._hk_helper.stop()
@@ -333,7 +362,7 @@ def main(argv=None):
     """
     argv = list(sys.argv[1:] if argv is None else argv)
     ap = argparse.ArgumentParser(prog="pinshot")
-    ap.add_argument("command", nargs="?", choices=["snip", "pin", "pins", "prefs", "quit"], help="IPC command")
+    ap.add_argument("command", nargs="?", choices=["snip", "pin", "pins", "prefs", "quit", "translate", "selection"], help="IPC command")
     ap.add_argument("--snip", action="store_true", help="same as command snip")
     ap.add_argument("--delay", type=int, default=None, help="snip delay seconds")
     ap.add_argument("--selftest", action="store_true")
@@ -376,6 +405,10 @@ def main(argv=None):
         QTimer.singleShot(300, lambda: _selftest(app))
     elif cmd == "snip":
         app.snip(delay=a.delay)
+    elif cmd == "translate":
+        app.capture_translate()
+    elif cmd == "selection":
+        QTimer.singleShot(100, app.selection_translate)
     elif cmd == "pin":
         app.pin_clipboard()
     elif cmd == "pins":
