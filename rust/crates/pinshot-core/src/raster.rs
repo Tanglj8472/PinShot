@@ -250,6 +250,55 @@ impl Raster {
         }
         Some(pm)
     }
+
+    /// 90° steps. `turns > 0` is clockwise (Python `QTransform().rotate(+90)`).
+    pub fn rotate90(&self, turns: i32) -> Self {
+        let t = ((turns % 4) + 4) % 4;
+        if t == 0 {
+            return self.clone();
+        }
+        if t == 2 {
+            let mut out = Self::new(self.width, self.height);
+            for y in 0..self.height {
+                for x in 0..self.width {
+                    if let Some(c) = self.get(x as i32, y as i32) {
+                        out.set((self.width - 1 - x) as i32, (self.height - 1 - y) as i32, c);
+                    }
+                }
+            }
+            return out;
+        }
+        let (nw, nh) = (self.height, self.width);
+        let mut out = Self::new(nw, nh);
+        for y in 0..self.height {
+            for x in 0..self.width {
+                if let Some(c) = self.get(x as i32, y as i32) {
+                    if t == 1 {
+                        out.set((self.height - 1 - y) as i32, x as i32, c);
+                    } else {
+                        out.set(y as i32, (self.width - 1 - x) as i32, c);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    pub fn flip(&self, horizontal: bool) -> Self {
+        let mut out = Self::new(self.width, self.height);
+        for y in 0..self.height {
+            for x in 0..self.width {
+                if let Some(c) = self.get(x as i32, y as i32) {
+                    if horizontal {
+                        out.set((self.width - 1 - x) as i32, y as i32, c);
+                    } else {
+                        out.set(x as i32, (self.height - 1 - y) as i32, c);
+                    }
+                }
+            }
+        }
+        out
+    }
 }
 
 #[cfg(test)]
@@ -310,6 +359,22 @@ mod tests {
         let pm = r.to_skia().unwrap();
         let c = pm.pixel(0, 0).unwrap().demultiply();
         assert_eq!((c.red(), c.green(), c.blue(), c.alpha()), (30, 20, 10, 255));
+    }
+
+    #[test]
+    #[test]
+    fn rotate_and_flip() {
+        let mut r = Raster::new(2, 1);
+        r.set(0, 0, Rgba::RED);
+        r.set(1, 0, Rgba::BLUE);
+        let cw = r.rotate90(1);
+        assert_eq!(cw.width, 1);
+        assert_eq!(cw.height, 2);
+        assert_eq!(cw.get(0, 0), Some(Rgba::RED));
+        assert_eq!(cw.get(0, 1), Some(Rgba::BLUE));
+        let h = r.flip(true);
+        assert_eq!(h.get(0, 0), Some(Rgba::BLUE));
+        assert_eq!(h.get(1, 0), Some(Rgba::RED));
     }
 
     #[test]

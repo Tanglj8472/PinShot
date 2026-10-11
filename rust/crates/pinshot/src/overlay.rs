@@ -19,9 +19,11 @@ use winit::window::{CursorIcon, Window, WindowId};
 
 use crate::capture::Capture;
 use crate::detect::{element_source, translated_elements, translated_windows};
+#[cfg(not(windows))]
+use crate::draw::present;
 use crate::draw::OverlayFront;
+use crate::native::{self, hwnd_of};
 use crate::toolbar::{TbAction, Toolbar};
-use crate::win32::{apply_overlay_style, hwnd_of};
 
 pub enum OverlayResult {
     Copy(Raster, Rect),
@@ -53,6 +55,10 @@ pub struct Overlay {
     pub history: SnipHistory,
     live_shot: Option<Raster>,
     translate_on_select: bool,
+    show_cursor: bool,
+    mods: ModifiersState,
+    #[cfg(not(windows))]
+    surface: Option<softbuffer::Surface<Rc<Window>, Rc<Window>>>,
 }
 
 impl Overlay {
@@ -65,7 +71,7 @@ impl Overlay {
         let (vx, vy) = capture.virtual_origin;
         let w = capture.composed.width;
         let h = capture.composed.height;
-        let attrs = Window::default_attributes()
+        let mut attrs = Window::default_attributes()
             .with_title("PinShot Snip")
             .with_decorations(false)
             .with_resizable(false)
@@ -73,13 +79,24 @@ impl Overlay {
             .with_position(PhysicalPosition::new(vx, vy))
             .with_inner_size(PhysicalSize::new(w, h))
             .with_window_level(winit::window::WindowLevel::AlwaysOnTop);
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            use winit::platform::x11::WindowAttributesExtX11;
+            attrs = attrs.with_override_redirect(true);
+        }
         let window = Rc::new(
             event_loop
                 .create_window(attrs)
                 .map_err(|e| e.to_string())?,
         );
-        apply_overlay_style(hwnd_of(&window));
+        native::apply_overlay_style(&window);
         window.set_cursor(CursorIcon::Crosshair);
+        window.set_ime_allowed(true);
+        #[cfg(not(windows))]
+        let surface = {
+            let ctx = softbuffer::Context::new(window.clone()).map_err(|e| format!("{e:?}"))?;
+            Some(softbuffer::Surface::new(&ctx, window.clone()).map_err(|e| format!("{e:?}"))?)
+        };
         let front = OverlayFront::new(&capture.composed, 110)?;
         let windows = translated_windows(capture.virtual_origin);
         let overlay = Rect::new(0.0, 0.0, w as f32, h as f32);
@@ -105,6 +122,10 @@ impl Overlay {
             history,
             live_shot: None,
             translate_on_select,
+            show_cursor: false,
+            mods: ModifiersState::empty(),
+            #[cfg(not(windows))]
+            surface,
         };
         s.redraw();
         Ok(s)
@@ -161,7 +182,15 @@ impl Overlay {
             return None;
         }
         self.annot.finish();
-        let composed = compose(&self.capture.composed, &self.annot.shapes);
+        let mut composed = compose(&self.capture.composed, &self.annot.shapes);
+        if self.show_cursor {
+            if let Some(mut pm) = composed.to_skia() {
+                crate::draw::paint_pointer(&mut pm, self.img_pt(self.cursor));
+                if let Some(img) = crate::draw::pixmap_to_raster(&pm) {
+                    composed = img;
+                }
+            }
+        }
         Some(composed.crop(self.sel.normalized()))
     }
 
@@ -397,21 +426,33 @@ impl Overlay {
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => *y,
-                    MouseScrollDelta::PixelDelta(p) => p.y as f32 / 120.0,
+                let angle = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => (*y * 120.0) as i32,
+                    MouseScrollDelta::PixelDelta(p) => p.y as i32,
                 };
-                if self.annot.tool.is_some() || self.annot.selected.is_some() {
-                    self.annot.adjust_width(if dy > 0.0 { 1 } else { -1 });
-                    self.dirty = true;
+                if self.annot.tool.is_some()
+                    || self.annot.selected.is_some()
+                    || self.annot.option_target().is_some()
+                    || self.annot.live.is_some()
+                    || self.annot.text_edit.is_some()
+                {
+                    if self.annot.wheel(angle) {
+                        self.dirty = true;
+                    }
                 }
+            }
+            WindowEvent::Ime(winit::event::Ime::Commit(s)) => {
+                for ch in s.chars() {
+                    self.annot.type_text(ch);
+                }
+                self.dirty = true;
             }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
                 self.key(&event.logical_key, event.text.as_deref());
             }
             WindowEvent::ModifiersChanged(m) => {
-                let mods = m.state();
-                self.mag_forced = mods.contains(ModifiersState::ALT);
+                self.mods = m.state();
+                self.mag_forced = self.mods.contains(ModifiersState::ALT);
                 self.dirty = true;
             }
             WindowEvent::RedrawRequested => self.redraw(),
@@ -437,43 +478,30 @@ impl Overlay {
             self.dirty = true;
             return;
         }
-        let mods = /* not stored; use named combos via logical key */ ModifiersState::empty();
-        let _ = mods;
+        let ctrl = self.mods.control_key();
+        let shift = self.mods.shift_key();
         match key {
             Key::Named(NamedKey::Escape) => self.request_abort(),
             Key::Named(NamedKey::Enter) => self.finish_copy(),
-            Key::Character(c) if c.eq_ignore_ascii_case("c") => {
-                // Ctrl+C is delivered as Character("c") with modifiers on some backends;
-                // also handle colour copy when no modifiers by checking selection.
-                if self.sel.has_sel() && self.annot.tool.is_none() {
-                    self.finish_copy();
-                } else {
-                    self.copy_color();
-                }
-            }
-            Key::Character(c) if c.eq_ignore_ascii_case("s") => self.finish_save(),
-            Key::Character(c) if c.eq_ignore_ascii_case("t") => self.finish_pin(),
+            Key::Character(c) if c.eq_ignore_ascii_case("c") && ctrl => self.finish_copy(),
             Key::Named(NamedKey::F3) => self.finish_pin(),
-            Key::Character(c) if c.eq_ignore_ascii_case("z") => {
+            Key::Character(c) if c.eq_ignore_ascii_case("t") && ctrl => self.finish_pin(),
+            Key::Character(c) if c.eq_ignore_ascii_case("s") && ctrl => self.finish_save(),
+            Key::Character(c) if c.eq_ignore_ascii_case("z") && ctrl => {
                 self.annot.undo();
                 self.dirty = true;
             }
-            Key::Character(c) if c.eq_ignore_ascii_case("y") => {
+            Key::Character(c) if c.eq_ignore_ascii_case("y") && ctrl => {
                 self.annot.redo();
                 self.dirty = true;
             }
-            Key::Character(c) if c.eq_ignore_ascii_case("a") => {
+            Key::Character(c) if c.eq_ignore_ascii_case("a") && ctrl => {
                 self.sel.set_rect(self.bounds(), self.bounds());
                 self.relayout_toolbar();
                 self.dirty = true;
             }
-            Key::Character(c) if c == "n" || c == "N" => {
-                if self.sel.has_sel() {
-                    self.annot.set_tool(Some(Tool::Number));
-                    self.relayout_toolbar();
-                    self.dirty = true;
-                }
-            }
+            Key::Character(c) if c.eq_ignore_ascii_case("r") && shift => self.reuse_last(),
+            Key::Character(c) if c.eq_ignore_ascii_case("c") && !ctrl => self.copy_color(),
             Key::Named(NamedKey::Shift) => {
                 self.hex = !self.hex;
                 self.dirty = true;
@@ -493,25 +521,86 @@ impl Overlay {
                 self.update_hover();
                 self.dirty = true;
             }
+            Key::Character(c) if c == "`" || c == "~" => {
+                self.show_cursor = !self.show_cursor;
+                self.window.set_cursor_visible(!self.show_cursor);
+                self.toast = Some(tr(if self.show_cursor {
+                    "Cursor shown"
+                } else {
+                    "Cursor hidden"
+                }));
+                self.dirty = true;
+            }
+            Key::Named(NamedKey::Delete) | Key::Named(NamedKey::Backspace)
+                if self.annot.tool == Some(Tool::Select) =>
+            {
+                self.annot.delete_selected();
+                self.dirty = true;
+            }
+            Key::Character(c) if c.eq_ignore_ascii_case("v") && self.sel.has_sel() => {
+                self.annot.set_tool(Some(Tool::Select));
+                self.relayout_toolbar();
+                self.dirty = true;
+            }
+            Key::Character(c) if (c == "n" || c == "N") && self.sel.has_sel() && !ctrl => {
+                self.annot.set_tool(Some(Tool::Number));
+                self.relayout_toolbar();
+                self.dirty = true;
+            }
+            Key::Character(c) if c == "1" && self.annot.tool.is_some() => {
+                self.annot.adjust_width(-1);
+                self.dirty = true;
+            }
+            Key::Character(c) if c == "2" && self.annot.tool.is_some() => {
+                self.annot.adjust_width(1);
+                self.dirty = true;
+            }
+            Key::Character(c) if c.eq_ignore_ascii_case("a") && !ctrl => self.move_cursor(-1.0, 0.0),
+            Key::Character(c) if c.eq_ignore_ascii_case("d") && !ctrl => self.move_cursor(1.0, 0.0),
+            Key::Character(c) if c.eq_ignore_ascii_case("w") && !ctrl => self.move_cursor(0.0, -1.0),
+            Key::Character(c) if c.eq_ignore_ascii_case("s") && !ctrl => self.move_cursor(0.0, 1.0),
+            Key::Named(NamedKey::ArrowLeft) => self.nudge_key(-1.0, 0.0),
+            Key::Named(NamedKey::ArrowRight) => self.nudge_key(1.0, 0.0),
+            Key::Named(NamedKey::ArrowUp) => self.nudge_key(0.0, -1.0),
+            Key::Named(NamedKey::ArrowDown) => self.nudge_key(0.0, 1.0),
             Key::Character(c) if c == "," => self.step_history(-1),
             Key::Character(c) if c == "." => self.step_history(1),
-            Key::Character(c) if c.eq_ignore_ascii_case("r") => self.reuse_last(),
-            Key::Named(NamedKey::ArrowLeft) => self.sel.nudge(-1.0, 0.0, Nudge::Move, self.bounds()),
-            Key::Named(NamedKey::ArrowRight) => self.sel.nudge(1.0, 0.0, Nudge::Move, self.bounds()),
-            Key::Named(NamedKey::ArrowUp) => self.sel.nudge(0.0, -1.0, Nudge::Move, self.bounds()),
-            Key::Named(NamedKey::ArrowDown) => self.sel.nudge(0.0, 1.0, Nudge::Move, self.bounds()),
             _ => {}
         }
-        if matches!(
-            key,
-            Key::Named(NamedKey::ArrowLeft)
-                | Key::Named(NamedKey::ArrowRight)
-                | Key::Named(NamedKey::ArrowUp)
-                | Key::Named(NamedKey::ArrowDown)
-        ) {
-            self.relayout_toolbar();
-            self.dirty = true;
+    }
+
+    fn move_cursor(&mut self, dx: f32, dy: f32) {
+        let b = self.bounds();
+        self.cursor = Point::new(
+            (self.cursor.x + dx).clamp(0.0, (b.w - 1.0).max(0.0)),
+            (self.cursor.y + dy).clamp(0.0, (b.h - 1.0).max(0.0)),
+        );
+        let _ = self
+            .window
+            .set_cursor_position(PhysicalPosition::new(self.cursor.x as f64, self.cursor.y as f64));
+        if self.sel.state == SelState::Creating {
+            self.sel.motion(self.cursor, b);
+        } else {
+            self.update_hover();
         }
+        self.dirty = true;
+    }
+
+    fn nudge_key(&mut self, dx: f32, dy: f32) {
+        if !self.sel.has_sel() {
+            self.move_cursor(dx, dy);
+            return;
+        }
+        let mode = if self.mods.control_key() {
+            Nudge::Grow
+        } else if self.mods.shift_key() {
+            Nudge::Shrink
+        } else {
+            Nudge::Move
+        };
+        self.sel.nudge(dx, dy, mode, self.bounds());
+        self.relayout_toolbar();
+        self.dirty = true;
     }
 
     fn copy_color(&mut self) {
@@ -526,6 +615,16 @@ impl Overlay {
     }
 
     pub fn on_double_click(&mut self) {
+        if self.sel.has_sel() {
+            let hit = self.annot.hit_test(self.img_pt(self.cursor));
+            if let Some(i) = hit {
+                if self.annot.shapes.get(i).map(|s| s.kind) == Some(Tool::Text) {
+                    self.annot.begin_edit_text(i);
+                    self.dirty = true;
+                    return;
+                }
+            }
+        }
         if self.annot.tool.is_some() {
             return;
         }
@@ -561,11 +660,24 @@ impl Overlay {
             self.dpr,
             self.hex,
             mag,
-            &self.annot,
+            &            self.annot,
             self.toolbar.as_ref(),
             self.toast.as_deref(),
+            self.show_cursor,
             &self.capture.composed,
         );
+        #[cfg(not(windows))]
+        if let Some(surface) = &mut self.surface {
+            let pm = self.front.pixmap();
+            if let (Some(nw), Some(nh)) = (std::num::NonZeroU32::new(pm.width()), std::num::NonZeroU32::new(pm.height())) {
+                if surface.resize(nw, nh).is_ok() {
+                    if let Ok(mut buf) = surface.buffer_mut() {
+                        present(&mut buf, pm);
+                        let _ = buf.present();
+                    }
+                }
+            }
+        }
         self.window.set_visible(true);
         self.dirty = false;
     }

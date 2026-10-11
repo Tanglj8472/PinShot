@@ -2452,7 +2452,9 @@ version = "0.1.0"
 dependencies = [
  "arboard",
  "eframe",
+ "gtk",
  "image",
+ "libc",
  "ort",
  "pinshot-core",
  "raw-window-handle",
@@ -2465,6 +2467,7 @@ dependencies = [
  "ureq 2.12.1",
  "windows 0.58.0",
  "winit",
+ "x11rb",
 ]
 
 [[package]]
@@ -4196,6 +4199,7 @@ dependencies = [
  "atomic-waker",
  "bitflags 2.13.2",
  "block2 0.5.1",
+ "bytemuck",
  "calloop 0.13.0",
  "cfg_aliases",
  "concurrent-queue",
@@ -4211,6 +4215,7 @@ dependencies = [
  "objc2-foundation 0.2.2",
  "objc2-ui-kit",
  "orbclient",
+ "percent-encoding",
  "pin-project",
  "raw-window-handle",
  "redox_syscall 0.4.1",
@@ -4223,6 +4228,8 @@ dependencies = [
  "web-sys",
  "web-time",
  "windows-sys 0.52.0",
+ "x11-dl",
+ "x11rb",
  "xkbcommon-dl",
 ]
 
@@ -4257,6 +4264,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "502da5464ccd04011667b11c435cb992822c2c0dbde1770c988480d312a0db2e"
 dependencies = [
  "libc",
+ "pkg-config",
+]
+
+[[package]]
+name = "x11-dl"
+version = "2.21.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38735924fedd5314a6e548792904ed8c6de6636285cb9fec04d5b1db85c1516f"
+dependencies = [
+ "libc",
+ "once_cell",
  "pkg-config",
 ]
 

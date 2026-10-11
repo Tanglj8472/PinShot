@@ -71,12 +71,10 @@ impl Tray {
     }
 
     pub fn poll(&self) -> Option<TrayCmd> {
-        if let Ok(ev) = TrayIconEvent::receiver().try_recv() {
-            if matches!(ev, TrayIconEvent::Click { .. } | TrayIconEvent::DoubleClick { .. }) {
-                return Some(TrayCmd::Snip);
-            }
-        }
-        if let Ok(ev) = MenuEvent::receiver().try_recv() {
+        // Menu ids first and drain the queue. Windows emits a tray Click when a
+        // context item is chosen; treating any-button Click as Snip made every
+        // item start a capture (Python only snips on Trigger = left click).
+        while let Ok(ev) = MenuEvent::receiver().try_recv() {
             if ev.id == self.snip.id() {
                 return Some(TrayCmd::Snip);
             }
@@ -102,6 +100,21 @@ impl Tray {
                 if ev.id == it.id() {
                     return Some(TrayCmd::ToggleGroup(name.clone()));
                 }
+            }
+        }
+        while let Ok(ev) = TrayIconEvent::receiver().try_recv() {
+            match ev {
+                TrayIconEvent::Click {
+                    button: tray_icon::MouseButton::Left,
+                    ..
+                }
+                | TrayIconEvent::DoubleClick {
+                    button: tray_icon::MouseButton::Left,
+                    ..
+                } => {
+                    return Some(TrayCmd::Snip);
+                }
+                _ => {}
             }
         }
         None

@@ -48,15 +48,10 @@ pub fn read_best() -> ClipContent {
     ClipContent::Empty
 }
 
-pub fn color_card(c: Rgba, w: u32, h: u32) -> Raster {
-    let mut img = Raster::new(w, h);
-    img.fill(c);
-    img
+pub fn color_card(c: Rgba, _w: u32, _h: u32) -> Raster {
+    pinshot_core::font::color_card(c)
 }
 
-pub fn text_card(text: &str, w: u32, h: u32) -> Raster {
-    let mut img = Raster::new(w, h);
-    img.fill(Rgba::rgb(250, 250, 245));
-    let _ = text;
-    img
+pub fn text_card(text: &str, _w: u32, _h: u32) -> Raster {
+    pinshot_core::font::text_card(text, 640)
 }

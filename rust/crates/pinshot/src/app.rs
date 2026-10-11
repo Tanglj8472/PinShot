@@ -21,14 +21,17 @@ use crate::autostart;
 use crate::capture::Capture;
 use crate::clipboard::{self, ClipContent};
 use crate::event::{AppEvent, TrayCmd};
+use crate::countdown::CountdownWin;
+use crate::fallback::FallbackWin;
+use crate::native::{self, HotkeyHost};
 use crate::overlay::{Overlay, OverlayResult};
 use crate::pin::PinWin;
 use crate::prefs;
 use crate::tray::Tray;
-use crate::win32::{self, HotkeyHost};
 
 pub fn run(args: Vec<String>) -> Result<(), String> {
-    win32::init_dpi();
+    crate::logutil::init(&args);
+    native::init_process();
     let cfg = config::load().unwrap_or_default();
     set_lang(cfg.lang());
 
@@ -62,6 +65,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         proxy,
         hotkeys: None,
         tray: None,
+        fallback: None,
         overlay: None,
         pins: Vec::new(),
         closed: ClosedStack::default(),
@@ -78,6 +82,9 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         snip_at: None,
         translate_next: false,
         session_restored: false,
+        countdown: None,
+        countdown_left: 0,
+        restore_fallback: false,
     };
     event_loop.run_app(&mut app).map_err(|e| e.to_string())
 }
@@ -87,6 +94,7 @@ struct App {
     proxy: winit::event_loop::EventLoopProxy<AppEvent>,
     hotkeys: Option<HotkeyHost>,
     tray: Option<Tray>,
+    fallback: Option<FallbackWin>,
     overlay: Option<Overlay>,
     pins: Vec<PinWin>,
     closed: ClosedStack,
@@ -103,6 +111,9 @@ struct App {
     snip_at: Option<Instant>,
     translate_next: bool,
     session_restored: bool,
+    countdown: Option<CountdownWin>,
+    countdown_left: u32,
+    restore_fallback: bool,
 }
 
 impl App {
@@ -115,9 +126,39 @@ impl App {
     }
 
     fn rebuild_tray(&mut self) {
-        match Tray::new(&self.group_list()) {
-            Ok(t) => self.tray = Some(t),
-            Err(e) => eprintln!("PinShot tray: {e}"),
+        // tray-icon/GTK can panic when the desktop has no indicator (Xfce without a
+        // notification plugin). Never take the process down — fallback window exists.
+        let groups = self.group_list();
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Tray::new(&groups))) {
+            Ok(Ok(t)) => self.tray = Some(t),
+            Ok(Err(e)) => {
+                crate::logutil::log(&format!("tray: {e}"));
+                self.tray = None;
+            }
+            Err(_) => {
+                crate::logutil::log("tray: panic (GTK/indicator missing); using fallback window");
+                self.tray = None;
+            }
+        }
+    }
+
+    fn ensure_fallback(&mut self, event_loop: &ActiveEventLoop) {
+        let need = {
+            #[cfg(unix)]
+            {
+                let _ = event_loop;
+                true
+            }
+            #[cfg(not(unix))]
+            {
+                self.tray.is_none()
+            }
+        };
+        if need && self.fallback.is_none() {
+            match FallbackWin::create(event_loop) {
+                Ok(f) => self.fallback = Some(f),
+                Err(e) => crate::logutil::log(&format!("fallback window: {e}")),
+            }
         }
     }
 
@@ -133,16 +174,51 @@ impl App {
         self.rebuild_tray();
     }
 
-    fn request_snip(&mut self, translate: bool) {
-        if self.overlay.is_some() {
+    fn request_snip(&mut self, event_loop: &ActiveEventLoop, translate: bool) {
+        if self.overlay.is_some() || self.snip_at.is_some() || self.countdown.is_some() {
             return;
         }
         self.translate_next = translate;
         let delay = self.cfg.snip_delay;
-        if delay == 0 {
-            self.snip_at = Some(Instant::now());
+        if delay > 0 {
+            self.countdown_left = delay;
+            match CountdownWin::create(event_loop, delay) {
+                Ok(c) => self.countdown = Some(c),
+                Err(e) => crate::logutil::log(&format!("countdown: {e}")),
+            }
+            self.snip_at = Some(Instant::now() + Duration::from_secs(1));
         } else {
-            self.snip_at = Some(Instant::now() + Duration::from_secs(delay as u64));
+            self.prepare_capture_hide();
+            self.snip_at = Some(Instant::now() + Duration::from_millis(self.hide_wait_ms()));
+        }
+    }
+
+    fn hide_wait_ms(&self) -> u64 {
+        if !self.restore_fallback {
+            0
+        } else if cfg!(unix) {
+            300
+        } else {
+            150
+        }
+    }
+
+    fn prepare_capture_hide(&mut self) {
+        if let Some(fb) = &self.fallback {
+            if fb.is_visible() {
+                fb.hide();
+                self.restore_fallback = true;
+            }
+        }
+        self.countdown = None;
+    }
+
+    fn restore_fallback_if_needed(&mut self) {
+        if self.restore_fallback {
+            if let Some(fb) = &self.fallback {
+                fb.show();
+            }
+            self.restore_fallback = false;
         }
     }
 
@@ -221,7 +297,10 @@ impl App {
                 let suggested = if folder.is_empty() {
                     "pinshot.png".into()
                 } else {
-                    format!("{folder}\\pinshot.png")
+                    {
+                        let sep = if cfg!(windows) { "\\" } else { "/" };
+                        format!("{folder}{sep}pinshot.png")
+                    }
                 };
                 if let Some(path) = crate::dialog::save_path(&suggested) {
                     if crate::dialog::save_raster(&img, &path, self.cfg.image_quality).is_ok() {
@@ -232,6 +311,7 @@ impl App {
             OverlayResult::Ocr(img, translate) => self.spawn_ocr(img, translate),
             OverlayResult::Cancel => {}
         }
+        self.restore_fallback_if_needed();
     }
 
     fn spawn_ocr(&self, img: Raster, translate: bool) {
@@ -277,6 +357,14 @@ impl App {
     }
 
     fn selection_translate(&self) {
+        #[cfg(not(windows))]
+        {
+            let msg = tr("Select-text translate is only available here.");
+            crate::result_win::open(msg, false);
+            return;
+        }
+        #[cfg(windows)]
+        {
         let proxy = self.proxy.clone();
         std::thread::spawn(move || {
             let backup = clipboard::read_best();
@@ -295,6 +383,7 @@ impl App {
             }
             let _ = proxy.send_event(AppEvent::OcrDone(text, true));
         });
+        }
     }
 
     fn persist_session(&self) {
@@ -396,13 +485,18 @@ fn decode_png(bytes: &[u8]) -> Option<Raster> {
 impl ApplicationHandler<AppEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.hotkeys.is_none() {
-            match HotkeyHost::install(self.proxy.clone(), &self.cfg) {
+            match native::install_hotkeys(self.proxy.clone(), &self.cfg) {
                 Ok(h) => self.hotkeys = Some(h),
-                Err(e) => eprintln!("PinShot hotkeys: {e}"),
+                Err(e) => crate::logutil::log(&format!("hotkeys: {e}")),
             }
         }
         if self.tray.is_none() {
             self.rebuild_tray();
+        }
+        self.ensure_fallback(event_loop);
+        #[cfg(unix)]
+        {
+            std::thread::spawn(crate::detect::warm_element_backend);
         }
         if !self.session_restored {
             self.session_restored = true;
@@ -414,11 +508,11 @@ impl ApplicationHandler<AppEvent> for App {
         }
         if self.start_snip {
             self.start_snip = false;
-            self.request_snip(false);
+            self.request_snip(event_loop, false);
         }
         if self.start_translate {
             self.start_translate = false;
-            self.request_snip(true);
+            self.request_snip(event_loop, true);
         }
         if self.start_pin {
             self.start_pin = false;
@@ -428,7 +522,7 @@ impl ApplicationHandler<AppEvent> for App {
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
         match event {
-            AppEvent::Hotkey(Command::Snip) => self.request_snip(false),
+            AppEvent::Hotkey(Command::Snip) => self.request_snip(event_loop, false),
             AppEvent::Hotkey(Command::PinClipboard) => {
                 if self.overlay.is_none() {
                     self.pin_clipboard(event_loop);
@@ -449,9 +543,9 @@ impl ApplicationHandler<AppEvent> for App {
             AppEvent::Hotkey(Command::OpenSettings) => {
                 prefs::open(self.cfg.clone(), self.proxy.clone());
             }
-            AppEvent::Hotkey(Command::CaptureTranslate) => self.request_snip(true),
+            AppEvent::Hotkey(Command::CaptureTranslate) => self.request_snip(event_loop, true),
             AppEvent::Hotkey(Command::SelectionTranslate) => self.selection_translate(),
-            AppEvent::Tray(TrayCmd::Snip) => self.request_snip(false),
+            AppEvent::Tray(TrayCmd::Snip) => self.request_snip(event_loop, false),
             AppEvent::Tray(TrayCmd::Pin) => self.pin_clipboard(event_loop),
             AppEvent::Tray(TrayCmd::HideAll) => self.toggle_pins(),
             AppEvent::Tray(TrayCmd::Settings) => prefs::open(self.cfg.clone(), self.proxy.clone()),
@@ -459,11 +553,16 @@ impl ApplicationHandler<AppEvent> for App {
                 self.persist_session();
                 event_loop.exit();
             }
-            AppEvent::Tray(TrayCmd::Translate) => self.request_snip(true),
+            AppEvent::Tray(TrayCmd::Translate) => self.request_snip(event_loop, true),
             AppEvent::Tray(TrayCmd::Restore) => self.restore_closed(event_loop),
             AppEvent::Tray(TrayCmd::ToggleGroup(name)) => self.toggle_group(name),
             AppEvent::PrefsApplied(cfg) => self.apply_cfg(cfg),
             AppEvent::RaisePrefs => {}
+            AppEvent::Ipc(cmd) if cmd == "raise" => {
+                if let Some(fb) = &self.fallback {
+                    fb.show();
+                }
+            }
             AppEvent::Ipc(_) => {}
             AppEvent::OcrDone(text, translate) => crate::result_win::open(text, translate),
         }
@@ -474,6 +573,20 @@ impl ApplicationHandler<AppEvent> for App {
             self.mods = m.state();
         }
 
+        if let Some(cd) = self.countdown.as_mut() {
+            if cd.window_id() == id {
+                cd.handle(&event);
+                return;
+            }
+        }
+        if let Some(fb) = self.fallback.as_mut() {
+            if fb.window_id() == id {
+                if let Some(cmd) = fb.handle(&event) {
+                    let _ = self.proxy.send_event(AppEvent::Tray(cmd));
+                }
+                return;
+            }
+        }
         if let Some(ov) = self.overlay.as_mut() {
             if ov.window_id() == id {
                 if let WindowEvent::MouseInput {
@@ -501,6 +614,24 @@ impl ApplicationHandler<AppEvent> for App {
         }
         for p in &mut self.pins {
             if p.window_id() == id {
+                if let WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                    ..
+                } = &event
+                {
+                    let now = Instant::now();
+                    if let Some((wid, t)) = self.last_click {
+                        if wid == id && now.duration_since(t).as_millis() < 350 {
+                            p.on_double_click(&mut self.cfg);
+                            self.last_click = None;
+                        } else {
+                            self.last_click = Some((id, now));
+                        }
+                    } else {
+                        self.last_click = Some((id, now));
+                    }
+                }
                 if let WindowEvent::MouseWheel { delta, .. } = &event {
                     if self.mods.control_key() {
                         let dy = match delta {
@@ -519,10 +650,32 @@ impl ApplicationHandler<AppEvent> for App {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         event_loop.set_control_flow(ControlFlow::Wait);
+        if self.hotkeys.is_none() {
+            if let Ok(h) = native::install_hotkeys(self.proxy.clone(), &self.cfg) {
+                self.hotkeys = Some(h);
+            }
+        }
         if let Some(at) = self.snip_at {
             if Instant::now() >= at {
-                self.snip_at = None;
-                self.begin_snip(event_loop);
+                if self.countdown.is_some() {
+                    if self.countdown_left > 1 {
+                        self.countdown_left -= 1;
+                        if let Some(cd) = &mut self.countdown {
+                            cd.set_left(self.countdown_left);
+                        }
+                        self.snip_at = Some(Instant::now() + Duration::from_secs(1));
+                    } else {
+                        self.countdown = None;
+                        self.prepare_capture_hide();
+                        self.snip_at = Some(Instant::now() + Duration::from_millis(self.hide_wait_ms()));
+                    }
+                } else {
+                    self.snip_at = None;
+                    self.begin_snip(event_loop);
+                    if self.overlay.is_none() {
+                        self.restore_fallback_if_needed();
+                    }
+                }
             } else {
                 event_loop.set_control_flow(ControlFlow::WaitUntil(at));
             }

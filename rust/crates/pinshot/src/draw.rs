@@ -4,6 +4,7 @@
 //! *not* rebuilt on every mouse move. Only the hole ring + chrome (magnifier,
 //! size label, toolbar) are copied, then BitBlt'd to the HWND.
 
+#[cfg(windows)]
 use std::ffi::c_void;
 
 use pinshot_core::annotation::{Annotator, Tool};
@@ -16,13 +17,16 @@ use pinshot_core::raster::Raster;
 use pinshot_core::render::{compose, paint_shapes};
 use pinshot_core::selection::{SelState, Selection};
 use tiny_skia::{FillRule, Paint, PathBuilder, Pixmap, PremultipliedColorU8, Stroke, Transform};
+#[cfg(windows)]
 use windows::Win32::Foundation::HWND;
+#[cfg(windows)]
 use windows::Win32::Graphics::Gdi::{
     BitBlt, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC,
     SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ,
     RGBQUAD, SRCCOPY,
 };
 
+use crate::native::NativeWin;
 use crate::text::blit_text;
 use crate::toolbar::Toolbar;
 
@@ -33,7 +37,7 @@ fn paint(c: Rgba) -> Paint<'static> {
     p
 }
 
-fn fill_rect(pm: &mut Pixmap, r: Rect, c: Rgba) {
+pub fn fill_rect(pm: &mut Pixmap, r: Rect, c: Rgba) {
     if r.is_empty() {
         return;
     }
@@ -42,7 +46,7 @@ fn fill_rect(pm: &mut Pixmap, r: Rect, c: Rgba) {
     }
 }
 
-fn stroke_rect(pm: &mut Pixmap, r: Rect, c: Rgba, width: f32) {
+pub fn stroke_rect(pm: &mut Pixmap, r: Rect, c: Rgba, width: f32) {
     if r.is_empty() {
         return;
     }
@@ -104,6 +108,7 @@ pub fn blit_raster(pm: &mut Pixmap, img: &Raster, dest: Rect) {
 pub struct OverlayFront {
     shot: Pixmap,
     frame: Pixmap,
+    #[cfg(windows)]
     gdi: GdiBits,
     dim: u8,
     last_hole: Rect,
@@ -111,6 +116,7 @@ pub struct OverlayFront {
     primed: bool,
 }
 
+#[cfg(windows)]
 struct GdiBits {
     hdc: HDC,
     hbmp: HBITMAP,
@@ -121,6 +127,7 @@ struct GdiBits {
     stride: i32,
 }
 
+#[cfg(windows)]
 impl GdiBits {
     fn new(w: u32, h: u32) -> Result<Self, String> {
         unsafe {
@@ -217,6 +224,7 @@ impl GdiBits {
     }
 }
 
+#[cfg(windows)]
 impl Drop for GdiBits {
     fn drop(&mut self) {
         unsafe {
@@ -233,10 +241,12 @@ impl OverlayFront {
         let mut frame = shot_pm.clone();
         let bounds = Rect::new(0.0, 0.0, frame.width() as f32, frame.height() as f32);
         fill_rect(&mut frame, bounds, Rgba::rgba(0, 0, 0, dim));
+        #[cfg(windows)]
         let gdi = GdiBits::new(frame.width(), frame.height())?;
         Ok(Self {
             shot: shot_pm,
             frame,
+            #[cfg(windows)]
             gdi,
             dim,
             last_hole: Rect::EMPTY,
@@ -245,12 +255,17 @@ impl OverlayFront {
         })
     }
 
+    pub fn pixmap(&self) -> &Pixmap {
+        &self.frame
+    }
+
     fn bounds(&self) -> Rect {
         Rect::new(0.0, 0.0, self.frame.width() as f32, self.frame.height() as f32)
     }
 
     /// Swap the frozen desktop (history replay). Same virtual size expected.
-    pub fn replace_shot(&mut self, shot: &Raster, hwnd: HWND) -> Result<(), String> {
+    pub fn replace_shot(&mut self, shot: &Raster, hwnd: NativeWin) -> Result<(), String> {
+        let _hwnd = hwnd;
         let shot_pm = shot.to_skia().ok_or("capture pixmap")?;
         if shot_pm.width() != self.frame.width() || shot_pm.height() != self.frame.height() {
             *self = Self::new(shot, self.dim)?;
@@ -263,8 +278,11 @@ impl OverlayFront {
         self.last_hole = Rect::EMPTY;
         self.last_chrome.clear();
         self.primed = false;
-        self.gdi.write_rect(&self.frame, bounds);
-        self.gdi.blit_rect(hwnd, bounds);
+        #[cfg(windows)]
+        {
+            self.gdi.write_rect(&self.frame, bounds);
+            self.gdi.blit_rect(hwnd, bounds);
+        }
         self.primed = true;
         Ok(())
     }
@@ -283,7 +301,7 @@ impl OverlayFront {
 
     pub fn paint(
         &mut self,
-        hwnd: HWND,
+        hwnd: NativeWin,
         sel: &Selection,
         hover: Rect,
         cursor: Point,
@@ -293,6 +311,7 @@ impl OverlayFront {
         annot: &Annotator,
         toolbar: Option<&Toolbar>,
         toast: Option<&str>,
+        show_cursor: bool,
         shot: &Raster,
     ) {
         let bounds = self.bounds();
@@ -411,6 +430,34 @@ impl OverlayFront {
             chrome.push(paint_toast(&mut self.frame, t, fw, fh));
         }
 
+        if show_cursor {
+            chrome.push(paint_pointer(&mut self.frame, cursor));
+        }
+
+        if let Some(ed) = &annot.text_edit {
+            if let Some(r) = annot.text_edit_rect() {
+                fill_rect(&mut self.frame, r, Rgba::rgba(255, 255, 255, 90));
+                stroke_rect(&mut self.frame, r, ed_style_color(annot), 1.0);
+                crate::text::blit_into_pm(
+                    &mut self.frame,
+                    &ed.text,
+                    r.x + 2.0,
+                    r.y + 2.0,
+                    annot.style(Tool::Text).font_size.max(8),
+                    annot.style(Tool::Text).color,
+                    annot.style(Tool::Text).bold,
+                );
+                let caret_x = r.x + 2.0 + pinshot_core::font::measure(&ed.text, annot.style(Tool::Text).font_size.max(8) as f32).0;
+                stroke_rect(
+                    &mut self.frame,
+                    Rect::new(caret_x, r.y + 2.0, 1.0, r.h - 4.0),
+                    annot.style(Tool::Text).color,
+                    1.0,
+                );
+                chrome.push(r.inflated(2.0));
+            }
+        }
+
         for r in &chrome {
             if !r.is_empty() {
                 present.push(*r);
@@ -420,8 +467,11 @@ impl OverlayFront {
         self.last_chrome = chrome;
 
         if !self.primed {
-            self.gdi.write_rect(&self.frame, bounds);
-            self.gdi.blit_rect(hwnd, bounds);
+            #[cfg(windows)]
+            {
+                self.gdi.write_rect(&self.frame, bounds);
+                self.gdi.blit_rect(hwnd, bounds);
+            }
             self.primed = true;
         } else {
             for r in present {
@@ -429,19 +479,29 @@ impl OverlayFront {
                 if r.is_empty() {
                     continue;
                 }
-                self.gdi.write_rect(&self.frame, r);
-                self.gdi.blit_rect(hwnd, r);
+                #[cfg(windows)]
+                {
+                    self.gdi.write_rect(&self.frame, r);
+                    self.gdi.blit_rect(hwnd, r);
+                }
             }
         }
         let _ = FillRule::Winding;
+        let _ = hwnd;
     }
 
     /// Replay the already-composited DIB (WM_PAINT / uncover). No software rebuild.
-    pub fn present_full(&self, hwnd: HWND) {
+    pub fn present_full(&self, hwnd: NativeWin) {
+        #[cfg(windows)]
         if self.primed {
             self.gdi.blit_rect(hwnd, self.bounds());
         }
+        let _ = hwnd;
     }
+}
+
+fn ed_style_color(annot: &Annotator) -> Rgba {
+    annot.style(Tool::Text).color
 }
 
 fn paint_size_label(pm: &mut Pixmap, hole: Rect, label: &str, ow: u32, oh: u32) -> Rect {
@@ -559,7 +619,7 @@ pub fn paint_toolbar(pm: &mut Pixmap, tb: &Toolbar) -> Rect {
     dirty.inflated(1.0)
 }
 
-fn paint_toast(pm: &mut Pixmap, text: &str, w: u32, h: u32) -> Rect {
+pub fn paint_toast(pm: &mut Pixmap, text: &str, w: u32, h: u32) -> Rect {
     let tw = text.chars().count() as f32 * 9.0 + 28.0;
     let boxr = Rect::new((w as f32 - tw) / 2.0, h as f32 / 2.0 - 22.0, tw, 44.0);
     fill_rect(pm, boxr, Rgba::rgba(20, 20, 20, 220));
@@ -598,6 +658,53 @@ fn blit_into(pm: &mut Pixmap, text: &str, x: i32, y: i32, px: i32, color: Rgba, 
         Transform::identity(),
         None,
     );
+}
+
+/// Arrow pointer baked into the freeze when `` ` `` toggles `show_cursor`.
+pub fn paint_pointer(pm: &mut Pixmap, at: Point) -> Rect {
+    let mut pb = PathBuilder::new();
+    pb.move_to(at.x, at.y);
+    pb.line_to(at.x, at.y + 16.0);
+    pb.line_to(at.x + 4.5, at.y + 12.5);
+    pb.line_to(at.x + 10.0, at.y + 18.0);
+    pb.line_to(at.x + 12.0, at.y + 16.0);
+    pb.line_to(at.x + 6.5, at.y + 11.0);
+    pb.line_to(at.x + 11.0, at.y + 11.0);
+    pb.close();
+    if let Some(path) = pb.finish() {
+        let mut fill = paint(Rgba::WHITE);
+        fill.anti_alias = true;
+        pm.fill_path(&path, &fill, FillRule::Winding, Transform::identity(), None);
+        pm.stroke_path(
+            &path,
+            &paint(Rgba::rgb(20, 20, 20)),
+            &Stroke {
+                width: 1.2,
+                ..Stroke::default()
+            },
+            Transform::identity(),
+            None,
+        );
+    }
+    Rect::new(at.x - 2.0, at.y - 2.0, 18.0, 24.0)
+}
+
+pub fn pixmap_to_raster(pm: &Pixmap) -> Option<Raster> {
+    let w = pm.width();
+    let h = pm.height();
+    let mut rgba = vec![0u8; (w * h * 4) as usize];
+    for (i, px) in pm.pixels().iter().enumerate() {
+        let a = px.alpha();
+        if a == 0 {
+            continue;
+        }
+        let o = i * 4;
+        rgba[o] = px.red();
+        rgba[o + 1] = px.green();
+        rgba[o + 2] = px.blue();
+        rgba[o + 3] = a;
+    }
+    Raster::from_rgba(w, h, rgba)
 }
 
 pub fn paint_pin(img: &Raster, annot: &Annotator, scale: f32, click_through: bool, glow: f32) -> Pixmap {

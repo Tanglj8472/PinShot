@@ -15,6 +15,7 @@ pub struct Config {
     pub start_minimized: bool,
     pub skip_abort_confirm: bool,
     pub dblclick_pin_action: String,
+    pub dblclick_tip_shown: bool,
     pub hotkey_snip: String,
     pub hotkey_pin: String,
     pub hotkey_hide_all: String,
@@ -41,6 +42,7 @@ impl Default for Config {
             start_minimized: true,
             skip_abort_confirm: false,
             dblclick_pin_action: "close".into(),
+            dblclick_tip_shown: false,
             hotkey_snip: "F1".into(),
             hotkey_pin: "F3".into(),
             hotkey_hide_all: "Shift+F3".into(),
@@ -270,7 +272,6 @@ mod tests {
         assert!(Config::from_toml("language = [").is_err());
     }
 
-    #[test]
     #[test]
     fn data_dir_honors_env() {
         let p = std::env::temp_dir().join("pinshot-core-data-test");

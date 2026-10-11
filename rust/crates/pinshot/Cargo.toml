@@ -3,7 +3,7 @@ name = "pinshot"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "PinShot Windows app: tray, overlay, pins (winit + tiny-skia + Win32)"
+description = "PinShot app: tray/fallback, overlay, pins (winit + tiny-skia)"
 rust-version.workspace = true
 
 [[bin]]
@@ -17,20 +17,21 @@ ocr = ["dep:ort"]
 [dependencies]
 pinshot-core = { workspace = true }
 serde_json = { workspace = true }
-
-[target.'cfg(windows)'.dependencies]
-winit = { version = "0.30", default-features = false, features = ["rwh_06"] }
+winit = { version = "0.30", default-features = false, features = ["rwh_06", "x11"] }
 softbuffer = "0.4"
 tiny-skia = { workspace = true }
-tray-icon = "0.19"
-arboard = { version = "3.4", default-features = false, features = ["image-data", "windows-sys"] }
+arboard = { version = "3.4", default-features = false, features = ["image-data"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 raw-window-handle = "0.6"
 thiserror = { workspace = true }
 ureq = { version = "2.12", default-features = false, features = ["tls"] }
 eframe = { version = "0.31", default-features = false, features = ["default_fonts", "glow"] }
-uiautomation = "0.22"
+tray-icon = "0.19"
 ort = { version = "=2.0.0-rc.10", optional = true, default-features = false, features = ["download-binaries", "std"] }
+
+[target.'cfg(windows)'.dependencies]
+arboard = { version = "3.4", default-features = false, features = ["image-data", "windows-sys"] }
+uiautomation = "0.22"
 windows = { version = "0.58", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
@@ -49,12 +50,17 @@ windows = { version = "0.58", features = [
     "Win32_System_DataExchange",
     "Win32_System_Memory",
     "Win32_System_Com",
-    "Win32_System_LibraryLoader",
     "Win32_System_Pipes",
     "Win32_System_IO",
     "Win32_System_Registry",
+    "Win32_System_Console",
     "Win32_Storage_FileSystem",
     "Win32_Security",
     "Win32_Storage_Xps",
     "Win32_UI_Accessibility",
 ] }
+
+[target.'cfg(unix)'.dependencies]
+x11rb = { version = "0.13", default-features = true, features = ["allow-unsafe-code"] }
+libc = "0.2"
+gtk = "0.18"

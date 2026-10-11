@@ -1,46 +1,69 @@
-//! Windows host for PinShot. Modules are `cfg(windows)` so `cargo test` works on Linux.
+//! PinShot host. Windowing is behind a platform facade (`native`): Win32 on Windows,
+//! X11 on Linux. `pinshot-core` stays portable.
 
-#[cfg(windows)]
 mod app;
-#[cfg(windows)]
-mod autostart;
-#[cfg(windows)]
 mod event;
-#[cfg(windows)]
-mod capture;
-#[cfg(windows)]
 mod clipboard;
-#[cfg(windows)]
-mod detect;
-#[cfg(windows)]
-mod dialog;
-#[cfg(windows)]
 mod draw;
-#[cfg(windows)]
-mod ipc;
-#[cfg(windows)]
 mod ocr_run;
-#[cfg(windows)]
 mod overlay;
-#[cfg(windows)]
 mod pin;
-#[cfg(windows)]
 mod prefs;
-#[cfg(windows)]
-mod result_win;
-#[cfg(windows)]
 mod text;
-#[cfg(windows)]
 mod toolbar;
-#[cfg(windows)]
 mod tray;
+mod fallback;
+mod countdown;
+mod logutil;
+mod native;
+
 #[cfg(windows)]
 mod win32;
+#[cfg(unix)]
+mod x11util;
 
 #[cfg(windows)]
+mod autostart;
+#[cfg(unix)]
+#[path = "autostart_xdg.rs"]
+mod autostart;
+
+#[cfg(windows)]
+mod capture;
+#[cfg(unix)]
+#[path = "capture_x11.rs"]
+mod capture;
+
+#[cfg(windows)]
+mod detect;
+#[cfg(unix)]
+#[path = "detect_x11.rs"]
+mod detect;
+
+#[cfg(windows)]
+mod dialog;
+#[cfg(unix)]
+#[path = "dialog_unix.rs"]
+mod dialog;
+
+#[cfg(windows)]
+mod ipc;
+#[cfg(unix)]
+#[path = "ipc_unix.rs"]
+mod ipc;
+
+#[cfg(windows)]
+mod result_win;
+#[cfg(unix)]
+#[path = "result_win_unix.rs"]
+mod result_win;
+
 pub use app::run;
 
-#[cfg(not(windows))]
-pub fn run(_args: Vec<String>) -> Result<(), String> {
-    Err("windows only".into())
+pub fn logutil_ensure() {
+    crate::logutil::ensure_stdio();
+}
+
+pub fn platform_tag() -> &'static str {
+    crate::native::platform_name()
 }

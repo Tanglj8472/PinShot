@@ -15,15 +15,19 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
+use crate::draw::{paint_pin, paint_toolbar, present};
+use crate::native;
+use crate::toolbar::{TbAction, Toolbar};
+
+#[cfg(windows)]
+use crate::win32::{hwnd_of, wide};
+#[cfg(windows)]
 use windows::Win32::Foundation::HWND;
+#[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, DestroyMenu, TrackPopupMenu, HMENU, MF_CHECKED, MF_SEPARATOR,
     MF_STRING, TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON,
 };
-
-use crate::draw::{paint_pin, paint_toolbar, present};
-use crate::toolbar::{TbAction, Toolbar};
-use crate::win32::{apply_pin_style, hwnd_of, set_click_through, set_opacity, wide};
 
 const ID_COPY: usize = 1;
 const ID_SAVE: usize = 2;
@@ -55,6 +59,7 @@ pub struct PinWin {
     pub annotating: bool,
     toolbar: Option<Toolbar>,
     arrow_on: bool,
+    toast: Option<String>,
 }
 
 impl PinWin {
@@ -74,7 +79,8 @@ impl PinWin {
             .with_inner_size(PhysicalSize::new(w, h))
             .with_window_level(winit::window::WindowLevel::AlwaysOnTop);
         let window = Rc::new(event_loop.create_window(attrs).map_err(|e| e.to_string())?);
-        apply_pin_style(hwnd_of(&window));
+        native::apply_pin_style(&window);
+        window.set_ime_allowed(true);
         let context = Context::new(window.clone()).map_err(|e| e.to_string())?;
         let surface = Surface::new(&context, window.clone()).map_err(|e| e.to_string())?;
         let mut pin = Self {
@@ -94,6 +100,7 @@ impl PinWin {
             annotating: false,
             toolbar: None,
             arrow_on: true,
+            toast: None,
         };
         pin.redraw();
         Ok(pin)
@@ -103,6 +110,7 @@ impl PinWin {
         self.window.id()
     }
 
+    #[cfg(windows)]
     pub fn hwnd(&self) -> HWND {
         hwnd_of(&self.window)
     }
@@ -140,12 +148,12 @@ impl PinWin {
 
     pub fn set_opacity(&mut self, o: f32) {
         self.opacity = o.clamp(0.1, 1.0);
-        set_opacity(self.hwnd(), self.opacity);
+        native::set_opacity(&self.window, self.opacity);
     }
 
     pub fn set_click_through(&mut self, on: bool) {
         self.click_through = on;
-        set_click_through(self.hwnd(), on, self.opacity);
+        native::set_click_through(&self.window, on, self.opacity);
         self.dirty = true;
     }
 
@@ -305,20 +313,47 @@ impl PinWin {
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => *y,
-                    MouseScrollDelta::PixelDelta(p) => p.y as f32 / 120.0,
+                let angle = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => (*y * 120.0) as i32,
+                    MouseScrollDelta::PixelDelta(p) => p.y as i32,
                 };
-                if self.annotating && self.annot.tool.is_some() {
-                    self.annot.adjust_width(if dy > 0.0 { 1 } else { -1 });
-                    self.dirty = true;
-                } else if dy > 0.0 {
+                if self.annotating
+                    && (self.annot.tool.is_some()
+                        || self.annot.selected.is_some()
+                        || self.annot.option_target().is_some())
+                {
+                    if self.annot.wheel(angle) {
+                        self.dirty = true;
+                    }
+                } else if angle > 0 {
                     self.set_scale(self.scale * 1.1);
-                } else {
+                } else if angle < 0 {
                     self.set_scale(self.scale / 1.1);
                 }
             }
+            WindowEvent::Ime(winit::event::Ime::Commit(s)) => {
+                for ch in s.chars() {
+                    self.annot.type_text(ch);
+                }
+                self.dirty = true;
+            }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
+                if self.annot.text_edit.is_some() {
+                    match &event.logical_key {
+                        Key::Named(NamedKey::Escape) => self.annot.commit_text(true),
+                        Key::Named(NamedKey::Enter) => self.annot.commit_text(false),
+                        Key::Named(NamedKey::Backspace) => self.annot.type_text('\u{8}'),
+                        _ => {
+                            if let Some(t) = event.text.as_deref() {
+                                for ch in t.chars() {
+                                    self.annot.type_text(ch);
+                                }
+                            }
+                        }
+                    }
+                    self.dirty = true;
+                    return;
+                }
                 match &event.logical_key {
                     Key::Named(NamedKey::Escape) => {
                         if self.annotating {
@@ -366,6 +401,36 @@ impl PinWin {
                         self.annot.set_tool(Some(Tool::Number));
                         self.relayout_tb();
                     }
+                    Key::Character(c) if c == "1" => {
+                        if self.annotating && self.annot.tool.is_some() {
+                            self.annot.adjust_width(-1);
+                        } else {
+                            self.rotate(-1);
+                        }
+                        self.dirty = true;
+                    }
+                    Key::Character(c) if c == "2" => {
+                        if self.annotating && self.annot.tool.is_some() {
+                            self.annot.adjust_width(1);
+                        } else {
+                            self.rotate(1);
+                        }
+                        self.dirty = true;
+                    }
+                    Key::Character(c) if c == "3" => {
+                        self.flip(true);
+                        self.dirty = true;
+                    }
+                    Key::Character(c) if c == "4" => {
+                        self.flip(false);
+                        self.dirty = true;
+                    }
+                    Key::Named(NamedKey::Delete) | Key::Named(NamedKey::Backspace)
+                        if self.annot.tool == Some(Tool::Select) =>
+                    {
+                        self.annot.delete_selected();
+                        self.dirty = true;
+                    }
                     _ => {}
                 }
             }
@@ -379,7 +444,31 @@ impl PinWin {
         self.set_opacity(self.opacity + if dy > 0.0 { 0.1 } else { -0.1 });
     }
 
+    pub fn rotate(&mut self, turns: i32) {
+        self.img = self.rendered().rotate90(turns);
+        self.annot.clear();
+        self.apply_size();
+        self.dirty = true;
+    }
+
+    pub fn flip(&mut self, horizontal: bool) {
+        self.img = self.rendered().flip(horizontal);
+        self.annot.clear();
+        self.apply_size();
+        self.dirty = true;
+    }
+
+    pub fn paste(&mut self) {
+        if let crate::clipboard::ClipContent::Image(img) = crate::clipboard::read_best() {
+            self.img = img;
+            self.annot.clear();
+            self.apply_size();
+            self.dirty = true;
+        }
+    }
+
     fn popup_menu(&mut self) {
+        #[cfg(windows)]
         unsafe {
             let Ok(menu) = CreatePopupMenu() else {
                 return;
@@ -428,6 +517,77 @@ impl PinWin {
                 _ => {}
             }
         }
+        #[cfg(not(windows))]
+        {
+            self.run_pin_menu();
+        }
+    }
+
+    #[cfg(not(windows))]
+    fn run_pin_menu(&mut self) {
+        // Fallback: apply the most common items via a zenity list when available.
+        if let Ok(out) = std::process::Command::new("zenity")
+            .args([
+                "--list",
+                "--title=PinShot",
+                "--column=Action",
+                &tr("Copy image"),
+                &tr("Save image as…"),
+                &tr("Show toolbar"),
+                &tr("Click-through"),
+                "25%",
+                "50%",
+                "100%",
+                "200%",
+                "400%",
+                &tr("Rotate left"),
+                &tr("Rotate right"),
+                &tr("Flip horizontal"),
+                &tr("Flip vertical"),
+                &tr("Paste"),
+                &tr("Close"),
+            ])
+            .output()
+        {
+            if !out.status.success() {
+                return;
+            }
+            let s = String::from_utf8_lossy(&out.stdout);
+            let s = s.trim();
+            if s == tr("Copy image") {
+                let _ = crate::clipboard::write_image(&self.rendered());
+            } else if s == tr("Save image as…") {
+                self.save();
+            } else if s == tr("Show toolbar") {
+                self.show_toolbar(!self.annotating);
+            } else if s == tr("Click-through") {
+                self.set_click_through(!self.click_through);
+            } else if s == "25%" {
+                self.set_scale(0.25);
+            } else if s == "50%" {
+                self.set_scale(0.5);
+            } else if s == "100%" {
+                self.set_scale(1.0);
+            } else if s == "200%" {
+                self.set_scale(2.0);
+            } else if s == "400%" {
+                self.set_scale(4.0);
+            } else if s == tr("Rotate left") {
+                self.rotate(-1);
+            } else if s == tr("Rotate right") {
+                self.rotate(1);
+            } else if s == tr("Flip horizontal") {
+                self.flip(true);
+            } else if s == tr("Flip vertical") {
+                self.flip(false);
+            } else if s == tr("Paste") {
+                self.paste();
+            } else if s == tr("Close") {
+                self.close();
+            }
+        } else {
+            self.show_toolbar(!self.annotating);
+        }
     }
 
     fn save(&mut self) {
@@ -439,6 +599,50 @@ impl PinWin {
     pub fn close(&mut self) {
         self.closed = true;
         self.window.set_visible(false);
+    }
+
+    /// Python `mouseDoubleClickEvent`: first hit shows a tip, then close/hide/none.
+    pub fn on_double_click(&mut self, cfg: &mut pinshot_core::Config) {
+        if self.click_through {
+            return;
+        }
+        if self.annot.tool == Some(Tool::Select)
+            || (self.annot.tool.is_none() && self.annot.selected.is_some())
+        {
+            if let Some(i) = self.annot.hit_test(self.img_pt(self.last_cursor)) {
+                if self.annot.shapes.get(i).map(|s| s.kind) == Some(Tool::Text) {
+                    self.show_toolbar(true);
+                    self.annot.set_tool(Some(Tool::Select));
+                    self.annot.begin_edit_text(i);
+                    self.dirty = true;
+                    return;
+                }
+            }
+        }
+        if self.annot.tool.is_some() {
+            return;
+        }
+        match cfg.dblclick_pin_action.as_str() {
+            "none" => return,
+            _ => {}
+        }
+        if !cfg.dblclick_tip_shown {
+            cfg.dblclick_tip_shown = true;
+            let _ = pinshot_core::config::save(cfg);
+            let tip = if cfg.dblclick_pin_action == "hide" {
+                tr("Tip: double-click hides a pin.")
+            } else {
+                tr("Tip: double-click closes a pin.")
+            };
+            self.toast = Some(format!("{} {}", tip, tr("Double-click again to confirm.")));
+            self.dirty = true;
+            return;
+        }
+        if cfg.dblclick_pin_action == "hide" {
+            self.hide();
+        } else {
+            self.close();
+        }
     }
 
     pub fn redraw(&mut self) {
@@ -480,6 +684,25 @@ impl PinWin {
             if let Some(tb) = &self.toolbar {
                 paint_toolbar(&mut pm, tb);
             }
+            if let Some(ed) = &self.annot.text_edit {
+                if let Some(r) = self.annot.text_edit_rect() {
+                    let rr = Rect::new(r.x * self.scale, r.y * self.scale, r.w * self.scale, r.h * self.scale);
+                    crate::draw::fill_rect(&mut pm, rr, pinshot_core::color::Rgba::rgba(255, 255, 255, 90));
+                    crate::draw::stroke_rect(&mut pm, rr, self.annot.style(Tool::Text).color, 1.0);
+                    crate::text::blit_into_pm(
+                        &mut pm,
+                        &ed.text,
+                        rr.x + 2.0,
+                        rr.y + 2.0,
+                        ((self.annot.style(Tool::Text).font_size as f32) * self.scale) as i32,
+                        self.annot.style(Tool::Text).color,
+                        true,
+                    );
+                }
+            }
+        }
+        if let Some(t) = &self.toast {
+            crate::draw::paint_toast(&mut pm, t, ww, hh);
         }
         if let Ok(mut buf) = self.surface.buffer_mut() {
             present(&mut buf, &pm);
@@ -495,6 +718,7 @@ impl PinWin {
     }
 }
 
+#[cfg(windows)]
 unsafe fn append(menu: HMENU, id: usize, text: &str, checked: bool) {
     if id == 0 {
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, windows::core::PCWSTR::null());

@@ -390,6 +390,8 @@ mod tests {
     use super::*;
 
     fn with_lang<R>(l: Lang, f: impl FnOnce() -> R) -> R {
+        static TEST: Mutex<()> = Mutex::new(());
+        let _g = TEST.lock().expect("i18n test");
         let prev = lang();
         set_lang(l);
         let r = f();
