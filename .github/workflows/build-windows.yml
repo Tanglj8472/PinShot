@@ -1,0 +1,46 @@
+name: build-windows
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-windows.txt
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-windows.txt
+      - name: Compile check
+        run: python -m compileall -q pinshot pinshot_launcher.py tools tests\test_platform.py tests\win_smoke.py
+      - name: Unit tests (platform helpers, real ctypes)
+        run: python tests\test_platform.py
+      - name: Win32 smoke test (window enum, hotkeys, click-through, autostart, DPI)
+        continue-on-error: true      # needs an interactive desktop session; informative only
+        run: python tests\win_smoke.py
+      - name: Generate icon
+        run: python tools\make_icon.py
+      - name: PyInstaller (--onedir --windowed)
+        run: python -m PyInstaller --noconfirm --clean pinshot.spec
+      - name: Smoke-run exe
+        shell: pwsh
+        run: |
+          $env:PINSHOT_VERSION_OUT = "$PWD\ver.txt"
+          $p = Start-Process -FilePath dist\PinShot\PinShot.exe -ArgumentList "--version" -PassThru -Wait
+          if ($p.ExitCode -ne 0) { exit $p.ExitCode }
+          Get-Content ver.txt
+          if (-not (Select-String -Path ver.txt -Pattern "PinShot .*\(windows\)")) { exit 1 }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PinShot-windows
+          path: dist/PinShot/
+          if-no-files-found: error

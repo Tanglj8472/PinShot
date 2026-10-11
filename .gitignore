@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+.venv-win/
+.syslibs/
+build/
+dist/
+ver.txt
+parity_*.png
+hands_on_*.png
+batch4_hands/

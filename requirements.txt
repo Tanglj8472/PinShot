@@ -1,0 +1,5 @@
+PySide6>=6.5
+mss>=9
+# optional global hotkeys on X11:
+# pynput
+python-xlib>=0.33 ; sys_platform == 'linux'
