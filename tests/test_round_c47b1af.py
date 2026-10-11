@@ -27,17 +27,37 @@ class AppIdentity(unittest.TestCase):
         self.assertEqual(QCoreApplication.organizationName(), "PinShot")
 
     def test_data_dir(self):
-        d = QStandardPaths.writableLocation(QStandardPaths.AppLocalDataLocation)
-        self.assertIn("PinShot", d)
-        self.assertNotIn("__main__", d)
+        from pinshot.settings import data_dir
+        d = data_dir()
+        self.assertEqual(d.name, "PinShot")
+        self.assertNotEqual(d.parent.name, "PinShot")       # not nested PinShot/PinShot
+        self.assertNotIn("__main__", str(d))
+        gen = QStandardPaths.writableLocation(QStandardPaths.GenericDataLocation)
+        self.assertEqual(str(d.parent), gen)
+
+    def test_legacy_dirs_listed(self):
+        with tempfile.TemporaryDirectory() as t:
+            new = Path(t, "PinShot")
+            names = {str(p.relative_to(t)) for p in M.legacy_data_dirs(new)}
+            self.assertIn("PinShot/PinShot", names)
+            self.assertIn("__main__.py", names)
+
+    def test_migrate_nested_into_parent(self):
+        with tempfile.TemporaryDirectory() as t:
+            new = Path(t, "PinShot"); old = new / "PinShot" / "ocr-models"; old.mkdir(parents=True)
+            (old / "a.onnx").write_bytes(b"a")
+            M.migrate_legacy_data(new / "PinShot", new)
+            self.assertTrue((new / "ocr-models" / "a.onnx").exists())
+            self.assertFalse((new / "PinShot").exists())
 
     def test_migrate_models(self):
         with tempfile.TemporaryDirectory() as t:
             old = Path(t, "__main__.py", "ocr-models"); old.mkdir(parents=True)
             (old / "m.onnx").write_bytes(b"x")
-            new = Path(t, "PinShot", "PinShot")
+            new = Path(t, "PinShot")
             M.migrate_legacy_data(Path(t, "__main__.py"), new)
             self.assertTrue((new / "ocr-models" / "m.onnx").exists())
+            self.assertFalse(Path(t, "__main__.py").exists())     # emptied legacy dir removed
             M.migrate_legacy_data(Path(t, "__main__.py"), new)   # idempotent
 
 
@@ -87,6 +107,12 @@ class Translations(unittest.TestCase):
         self.assertTrue(w.windowTitle())
         self.assertNotEqual(w.windowTitle(), "PinShot OCR")
         self.assertTrue(w.windowFlags() & Qt.WindowStaysOnTopHint)
+        from PySide6.QtGui import QPixmap
+        from pinshot.pin_window import PinWindow
+        pm = QPixmap(40, 40); pm.fill(Qt.red); pin = PinWindow(pm); pin.show()
+        w.show(); app.processEvents()
+        w.raise_above_pins()   # must not raise
+        pin.close(); w.close()
         i18n.install(app, "en")
         self.assertEqual(ResultWindow().windowTitle(), "PinShot OCR")
 

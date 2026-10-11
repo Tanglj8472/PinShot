@@ -20,7 +20,8 @@ def recognize(image):
     from rapidocr.utils.typings import OCRVersion, ModelType
     with _ocr_lock:
         if _ocr_engine is None:
-            model_dir = Path(QStandardPaths.writableLocation(QStandardPaths.AppLocalDataLocation)) / 'ocr-models'
+            from .settings import data_dir
+            model_dir = data_dir() / 'ocr-models'
             model_dir.mkdir(parents=True, exist_ok=True)
             params = {
                 'Global.model_root_dir': str(model_dir),
@@ -99,7 +100,21 @@ class ResultWindow(QWidget):
 
     def showEvent(self, event):
         super().showEvent(event)
-        self.raise_(); self.activateWindow()   # stay above existing (always-on-top) pins
+        self.raise_above_pins()
+        from PySide6.QtCore import QTimer
+        for ms in (0, 60, 250):   # WMs restack asynchronously after map
+            QTimer.singleShot(ms, lambda: None if self.closed else self.raise_above_pins())
+
+    def raise_above_pins(self):
+        """Pins and this window share the always-on-top layer; push pins to the bottom of that
+        layer (XLowerWindow) and raise this one (XRaiseWindow + activate)."""
+        try:
+            from .pin_window import ALL_PINS
+            for p in list(ALL_PINS):
+                if p.isVisible(): p.lower()
+        except Exception:
+            pass
+        self.raise_(); self.activateWindow()
 
     def closeEvent(self, event):
         self.closed = True; self.request += 1
@@ -121,7 +136,6 @@ class TranslationController(QObject):
         window.translate_button.clicked.connect(lambda: self.start_translation(window))
         window.show(); window.raise_(); window.activateWindow()
         from PySide6.QtCore import QTimer
-        QTimer.singleShot(50, lambda: (not window.closed) and (window.raise_(), window.activateWindow()))
         return window
 
     def image(self, image, auto_translate=False):

@@ -22,13 +22,14 @@ def set_app_identity():
 
 
 def migrate_legacy_data(old_dir, new_dir):
-    """Move files (OCR models) from the old mis-named data dir into the real one. Best effort."""
+    """Move files (OCR models) from an old mis-named data dir into new_dir, then delete the
+    old dir if it ended up empty. Existing files in new_dir win. Best effort, idempotent."""
     import shutil
     from pathlib import Path
     old_dir, new_dir = Path(old_dir), Path(new_dir)
     if not old_dir.is_dir() or old_dir.resolve() == new_dir.resolve():
         return
-    for src in old_dir.rglob("*"):
+    for src in sorted(old_dir.rglob("*")):
         if not src.is_file(): continue
         dst = new_dir / src.relative_to(old_dir)
         if dst.exists(): continue
@@ -36,15 +37,22 @@ def migrate_legacy_data(old_dir, new_dir):
             dst.parent.mkdir(parents=True, exist_ok=True); shutil.move(str(src), str(dst))
         except OSError as e:
             print("[pinshot] migrate", src, e, flush=True)
+    if not any(p.is_file() for p in old_dir.rglob("*")):
+        shutil.rmtree(old_dir, ignore_errors=True)
+
+
+def legacy_data_dirs(new_dir):
+    """Old locations: Qt's nested org/app dir and names derived from argv[0]."""
+    from pathlib import Path
+    base = Path(new_dir).parent
+    return [Path(new_dir) / S.APP] + [base / n for n in ("__main__.py", "__main__", "pinshot_launcher.py",
+                                                       "pinshot_launcher")]
 
 
 def _migrate_default():
-    from pathlib import Path
-    from PySide6.QtCore import QStandardPaths
-    new = Path(QStandardPaths.writableLocation(QStandardPaths.AppLocalDataLocation))
-    for base in {new.parent, new.parent.parent}:
-        for legacy in ("__main__.py", "__main__", "pinshot_launcher.py", "pinshot_launcher"):
-            migrate_legacy_data(base / legacy, new)
+    new = S.data_dir()
+    for old in legacy_data_dirs(new):
+        migrate_legacy_data(old, new)
 
 
 def _icon():
