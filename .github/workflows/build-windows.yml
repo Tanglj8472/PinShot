@@ -21,14 +21,22 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements-windows.txt
       - name: Compile check
-        run: python -m compileall -q pinshot pinshot_launcher.py tools tests\test_platform.py tests\win_smoke.py
+        run: python -m compileall -q pinshot pinshot_launcher.py tools tests
       - name: Unit tests (platform helpers, real ctypes)
         run: python tests\test_platform.py
+      - name: Annotation interaction tests
+        run: python tests\test_annotation_interactions.py
+      - name: Translation / OCR lifecycle tests
+        run: python tests\test_translation.py
+      - name: i18n table and runtime UI tests
+        run: python tests\test_i18n.py
       - name: Win32 smoke test (window enum, hotkeys, click-through, autostart, DPI)
         continue-on-error: true      # needs an interactive desktop session; informative only
         run: python tests\win_smoke.py
       - name: Generate icon
         run: python tools\make_icon.py
+      - name: Prepare OCR models
+        run: python tools\prepare_ocr_models.py
       - name: PyInstaller (--onedir --windowed)
         run: python -m PyInstaller --noconfirm --clean pinshot.spec
       - name: Smoke-run exe

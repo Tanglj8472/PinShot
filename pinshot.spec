@@ -7,18 +7,33 @@ from PyInstaller.utils.hooks import collect_submodules, collect_data_files
 ROOT = os.path.abspath(SPECPATH)
 ICON = os.path.join(ROOT, "assets", "pinshot.ico")
 
-hidden = collect_submodules("pinshot") + ["comtypes", "comtypes.client", "comtypes.stream", "rapidocr.main", "onnxruntime"]
+hidden = collect_submodules("pinshot") + ["comtypes", "comtypes.client", "comtypes.stream"]
+try:
+    import rapidocr  # noqa: F401
+    hidden += ["rapidocr.main", "onnxruntime"]
+except Exception:
+    pass
 excludes = ["Xlib", "pynput", "gi", "tkinter",
             "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets", "PySide6.Qt3DCore", "PySide6.QtQuick3D",
             "PySide6.QtMultimedia", "PySide6.QtCharts", "PySide6.QtDataVisualization", "PySide6.QtPdf"]
+
+datas = []
+png = os.path.join(ROOT, "assets", "pinshot.png")
+if os.path.exists(png):
+    datas.append((png, "assets"))
+try:
+    datas += collect_data_files("rapidocr", excludes=["models/*.onnx"])
+except Exception:
+    pass
+ocr_dir = os.path.join(ROOT, "assets", "ocr-models")
+if os.path.isdir(ocr_dir):
+    datas.append((ocr_dir, "assets/ocr-models"))
 
 a = Analysis(
     [os.path.join(ROOT, "pinshot_launcher.py")],
     pathex=[ROOT],
     binaries=[],
-    datas=[(os.path.join(ROOT, "assets", "pinshot.png"), "assets")]
-          + collect_data_files('rapidocr', excludes=['models/*.onnx'])
-          + [(os.path.join(ROOT, 'assets', 'ocr-models'), 'assets/ocr-models')],
+    datas=datas,
     hiddenimports=hidden,
     hookspath=[],
     runtime_hooks=[],

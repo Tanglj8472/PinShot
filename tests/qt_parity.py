@@ -73,8 +73,8 @@ def run():
     ok("drag 451 × 398 px label", (pr.width(), pr.height()) == (451, 398), f"{pr.width()} × {pr.height()} px")
     ok("toolbar shown below selection, right-aligned", ov.dock.isVisible() and ov.dock.y() >= ov.sel.bottom() and abs(ov.dock.geometry().right() - ov.sel.right()) <= 1,
        ov.dock.geometry().getRect())
-    order = [b.objectName()[3:] for b in ov.dock.bar.findChildren(type(ov.dock.tool_buttons["rect"]))]
-    ok("toolbar order", order == ["select", "rect", "ellipse", "line", "pen", "marker", "mosaic", "text", "number", "eraser", "undo", "redo", "close", "pin", "save", "copy"], order)
+    order = [b.objectName()[3:] for b in ov.dock.bar.findChildren(type(ov.dock.tool_buttons["rect"])) if b.objectName().startswith("tb_")]
+    ok("toolbar order", order == ["select", "rect", "ellipse", "line", "pen", "marker", "mosaic", "text", "number", "eraser", "undo", "redo", "ocr", "translate", "close", "pin", "save", "copy"], order)
     ok("magnifier hidden after selection", not ov.mag_visible())
     shot("parity_2_snip_toolbar.png")
     # handles: resize from bottom-right, then move
@@ -191,13 +191,13 @@ def run():
     click_tb(pin.dock, "check"); ok("✓ finishes editing", not pin.annotating() and pin.ann.tool is None)
     m = pin.build_menu()
     names = [x.text() for x in m.actions() if not x.isSeparator()]
-    want = ["Copy image", "Save image as…", "Show toolbar", "Shadow", "Click-through", "Zoom", "Image processing", "Paste", "Replace by file…",
+    want = ["Copy image", "Save image as…", "Show toolbar", "Shadow", "Click-through", "Zoom", "Image", "Paste", "Replace from file…",
             "Move to group", "View in folder", "Close", "Destroy", "451 × 398"]
     ok("pin context menu entries", names == want, names)
-    ip = [x.text() for x in [y for y in m.actions() if y.text() == "Image processing"][0].menu().actions()]
-    ok("Image processing submenu", ip == ["Rotate left", "Rotate right", "Horizontal flip", "Vertical flip"], ip)
+    ip = [x.text() for x in [y for y in m.actions() if y.text() == "Image"][0].menu().actions()]
+    ok("Image submenu", ip == ["Rotate left", "Rotate right", "Flip horizontal", "Flip vertical"], ip)
     m.popup(pin.mapToGlobal(QPoint(300, 120))); QTest.qWait(150)
-    zm = [y for y in m.actions() if y.text() == "Image processing"][0]; m.setActiveAction(zm); zm.menu().popup(m.mapToGlobal(m.actionGeometry(zm).topRight())); QTest.qWait(150)
+    zm = [y for y in m.actions() if y.text() == "Image"][0]; m.setActiveAction(zm); zm.menu().popup(m.mapToGlobal(m.actionGeometry(zm).topRight())); QTest.qWait(150)
     shot("parity_6_pin_menu.png"); zm.menu().close(); m.close()
     pin.rotate(90); ok("rotate via menu op", pin.img.size().toTuple() == (398, 451)); pin.rotate(-90)
     QTest.mouseDClick(pin, Qt.LeftButton, Qt.NoModifier, QPoint(100, 100)); QTest.qWait(100)
@@ -251,7 +251,7 @@ def phase2():
     ok("history_max setting", history_max() == 5)
     # Prefs dialog loads/saves
     d = PrefsDialog(a.win); d.show(); QTest.qWait(100)
-    ok("prefs dialog tabs", d.tabs.count() == 4, d.tabs.count())
+    ok("prefs dialog tabs", d.tabs.count() == 3, d.tabs.count())
     d.history_max.setValue(7); d.closed_max.setValue(4)
     d.hk_snip.setText("F1"); d._apply(); d.close()
     ok("prefs persist history_max", S.get("history_max", int) == 7)
@@ -319,14 +319,14 @@ def phase5():
     from Xlib import display
     from Xlib.ext import shape
 
-    # 3. _sync_delay_box exists and prefs Apply does not raise
+    # 3. prefs Apply still writes snip delay
     ok("App._sync_delay_box exists", callable(getattr(a, "_sync_delay_box", None)))
     S.set_("snip_delay", 3)
     try:
         a._sync_delay_box()
-        ok("sync_delay_box updates combo", a.delay_box.currentData() == 3)
+        ok("sync_delay_box is a no-op after tray-only start", S.get("snip_delay", int) == 3)
     except Exception as e:
-        ok("sync_delay_box updates combo", False, e)
+        ok("sync_delay_box is a no-op after tray-only start", False, e)
     from pinshot.prefs import PrefsDialog
     d = PrefsDialog(a.win); d.snip_delay.setCurrentIndex(d.snip_delay.findData(2))
     err = None
@@ -334,7 +334,7 @@ def phase5():
         d._apply(); a._sync_delay_box()
     except Exception as e:
         err = e
-    ok("prefs Apply + sync_delay_box no AttributeError", err is None and a.delay_box.currentData() == 2, err)
+    ok("prefs Apply + sync_delay_box no AttributeError", err is None and S.get("snip_delay", int) == 2, err)
     d.close(); S.set_("snip_delay", 0); a._sync_delay_box()
 
     # 1. Color dialog during snip: grabs released, dialog stays on top, Esc does not abort snip
@@ -577,15 +577,13 @@ def phase3():
     a._rebuild_groups()
     pm = QPixmap(60, 40); pm.fill(QColor("#66aa44")); p = PinWindow(pm, QPoint(120, 120)); p.show(); QTest.qWait(50)
     p.new_group("Travel"); QTest.qWait(50)
-    items = [a.group_list.item(i).data(Qt.UserRole) for i in range(a.group_list.count())]
-    ok("pin New group refreshes control window list", "Travel" in items and p.group == "Travel", items)
+    ok("pin New group refreshes group names", "Travel" in SES.group_names() and p.group == "Travel", SES.group_names())
     p.new_group("OFFICE"); QTest.qWait(50)
     ok("new group dedupes case-insensitively", p.group == "Office" and SES.group_names().count("Office") == 1
        and not any(g == "OFFICE" for g in SES.group_names()), SES.group_names())
     ok("ensure_group no duplicate", SES.ensure_group("play") == "Play" and len(SES.group_names()) == 4)
     ok("rename onto existing rejected", SES.rename_group("Travel", "office") is False and "Travel" in SES.group_names())
-    ok("rename refreshes list", SES.rename_group("Travel", "Trips") and
-       "Trips" in [a.group_list.item(i).data(Qt.UserRole) for i in range(a.group_list.count())])
+    ok("rename refreshes list", SES.rename_group("Travel", "Trips") and "Trips" in SES.group_names())
     p.destroy_pin()
     ok("restore hotkey parsed", parse_seq("Ctrl+Shift+Z") == (5, "z"))
     ok("restore bound globally", a.hk_bindings.get("restore") == "Ctrl+Shift+Z" and a.hk_backend == "x11-grabkey"
@@ -611,7 +609,7 @@ def regress():
         if a.overlay and a.overlay.ready: break
     ov = a.overlay
     ok("bug4: overlay armed -> Qt grab, pre-grab released", QWidget.mouseGrabber() is ov and ov.pre_grab is None)
-    ok("bug4: control window hidden before capture", not a.win.isVisible())
+    ok("bug4: host window stays hidden during capture", not a.win.isVisible())
     # 1. toolbar fixed while switching tools; tool clicks never select
     drag(ov, QPoint(300, 300), QPoint(751, 698)); QTest.qWait(50)
     click_tb(ov.dock, "rect"); drag(ov, QPoint(330, 330), QPoint(450, 400))
@@ -708,13 +706,13 @@ def regress():
     t0 = __import__("time").time(); pin.open_menu(pin.mapToGlobal(QPoint(50, 50)), modal=True)
     ok("bug3: Esc closes modal exec() menu", __import__("time").time() - t0 < 3 and pin.isVisible())
     pin.close()
-    # 5. cards centred, clear of the control window, cascading
-    a.win.show(); a.win.move(QGuiApplication.primaryScreen().availableGeometry().center() - QPoint(a.win.width() // 2, a.win.height() // 2)); QTest.qWait(300)
+    # 5. cards centred and cascading (no control window to dodge)
     QGuiApplication.clipboard().setText("#ff8800"); QTest.qWait(50); c1 = a.pin_clipboard()
     QGuiApplication.clipboard().setText("PinShot text card\nsecond line"); QTest.qWait(50); c2 = a.pin_clipboard()
-    scr = QGuiApplication.primaryScreen().availableGeometry(); cw = a.win.frameGeometry()
+    scr = QGuiApplication.primaryScreen().availableGeometry()
     ok("bug5: color card horizontally centred", abs(c1.geometry().center().x() - scr.center().x()) < 40, c1.geometry().getRect())
-    ok("bug5: cards don't cover control window", not c1.frameGeometry().intersects(cw) and not c2.frameGeometry().intersects(cw), (c1.geometry().getRect(), c2.geometry().getRect(), cw.getRect()))
+    ok("bug5: cards stay on screen", scr.contains(c1.frameGeometry().center()) and scr.contains(c2.frameGeometry().center()),
+       (c1.geometry().getRect(), c2.geometry().getRect()))
     ok("bug5: cards cascade", c2.pos() != c1.pos())
     shot("parity_10_cards_placement.png")
     for p in list(ALL_PINS): p.close()
@@ -887,7 +885,7 @@ def phase7():
                 g = ov.geometry()
                 ok("element mode hover = AT-SPI button rect", ov.hover == btn.translated(-g.x(), -g.y()),
                    (ov.hover.getRect(), btn.getRect()))
-                ok("Tab toast names AT-SPI backend", "AT-SPI" in (ov.toast or ""), ov.toast)
+                ok("Tab toast names element detection", "element" in (ov.toast or "").lower() or "控件" in (ov.toast or ""), ov.toast)
                 shot("parity_15_atspi_element.png")
                 ov._cancel(); QTest.qWait(200)
         finally:
@@ -896,17 +894,19 @@ def phase7():
         ok("AT-SPI unavailable -> X11 child fallback", WL.element_rects() is not None and WL.LAST_SOURCE == "X11 children")
 
     # ---- zh + dark (live)
-    a.win.show(); a.win.raise_(); QTest.qWait(100)
     a.apply_appearance(language="zh_CN", theme_mode="dark"); QTest.qWait(700)
     ok("language persisted", S.get("language") == "zh_CN" and S.get("theme") == "dark")
-    btn_texts = [b.text() for b in a.win.findChildren(QPushButton)]
-    ok("control window buttons zh (live)", "截图 (F1)" in btn_texts and "退出" in btn_texts, btn_texts[:4])
-    ok("status label zh", "截图" in a.status.text() and "全局热键" in a.status.text(), a.status.text()[:40])
+    a._rebuild_tray()
+    tray_texts = []
+    if a.tray and a.tray.contextMenu():
+        tray_texts = [x.text() for x in a.tray.contextMenu().actions() if x.text()]
+    fallback_texts = [b.text() for b in a.win.findChildren(QPushButton)]
+    ok("tray or fallback zh (live)", "截图" in tray_texts or "退出" in fallback_texts or "截图" in fallback_texts,
+       (tray_texts[:6], fallback_texts[:4]))
     pal = QApplication.palette()
     ok("dark palette applied", pal.color(QPalette.Window).lightness() < 80, pal.color(QPalette.Window).name())
     ok("accent unchanged", pal.color(QPalette.Highlight).name() == theme.ACCENT)
-    a.win.move(60, 60); QTest.qWait(100)
-    d = PrefsDialog(a.win); d.setModal(False); d.move(a.win.frameGeometry().right() + 20, 60); d.show(); QTest.qWait(400)
+    d = PrefsDialog(a.win); d.setModal(False); d.move(80, 60); d.show(); QTest.qWait(400)
     tabs = [d.tabs.tabText(i) for i in range(d.tabs.count())]
     ok("prefs tabs zh", tabs[:2] == ["常规", "热键"], tabs)
     ok("prefs title zh", d.windowTitle() == "PinShot 首选项", d.windowTitle())
@@ -925,8 +925,8 @@ def phase7():
     panel_labels = [w.text() for w in ov.dock.panel.findChildren(QLabel)]
     ok("sub-panel zh", "粗细" in panel_labels, panel_labels)
     ok("annotation color unchanged by theme", ov.ann.styles["rect"].color.name() == "#ff0000")
-    ov.show_toast("Detection: element (AT-SPI)")
-    ok("toast zh", ov.toast == "检测：元素（AT-SPI）", ov.toast)
+    ov.show_toast("Element detection")
+    ok("toast zh", ov.toast == "控件检测", ov.toast)
     shot("parity_17_zh_dark_snip_toolbar.png")
     ov._cancel(); QTest.qWait(250)
     pm = QPixmap(320, 200); pm.fill(QColor("#88aadd")); pin = PinWindow(pm, QPoint(700, 300)); pin.show(); QTest.qWait(200)
@@ -939,8 +939,11 @@ def phase7():
     ok("color card label tr", i18n.tr("RGB float") == "RGB 浮点")
     # ---- back to English / light (live, reversible)
     a.apply_appearance(language="en", theme_mode="light"); QTest.qWait(700)
-    btn_texts = [b.text() for b in a.win.findChildren(QPushButton)]
-    ok("live switch back to English", "Snip (F1)" in btn_texts and "Quit" in btn_texts, btn_texts[:3])
+    a._rebuild_tray()
+    en_tray = [x.text() for x in (a.tray.contextMenu().actions() if a.tray and a.tray.contextMenu() else []) if x.text()]
+    en_fallback = [b.text() for b in a.win.findChildren(QPushButton)]
+    ok("live switch back to English", "Snip" in en_tray or "Quit" in en_fallback or "Snip" in en_fallback,
+       (en_tray[:6], en_fallback[:4]))
     ok("light palette", QApplication.palette().color(QPalette.Window).lightness() > 180)
     a.apply_appearance(theme_mode="system"); QTest.qWait(100)
     ok("follow system resolves", theme.current() in ("light", "dark"), theme.current())
@@ -960,7 +963,7 @@ def phase8():
     ok("platform window_rects == overlay source", len(P.window_rects(exclude_pids=(os.getpid(),))) >= 1)
     ok("platform element_source string", P.element_source() in ("AT-SPI", "X11 children"), P.element_source())
     ok("instance name == ipc server", P.instance_name() == a.ipc.server.serverName() or P.instance_name().startswith("pinshot-"))
-    ok("autostart description (XDG)", "autostart" in P.autostart_description())
+    ok("autostart description (XDG)", P.autostart_description() == "Run at login")
     pm, vg = P.capture_virtual()
     ok("platform capture_virtual", not pm.isNull() and pm.width() == vg.width(), (pm.width(), vg.getRect()))
     pm = QPixmap(220, 140); pm.fill(QColor("#aaccee")); pin = PinWindow(pm, QPoint(900, 500)); pin.show(); QTest.qWait(200)

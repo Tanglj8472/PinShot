@@ -6,12 +6,12 @@ from PySide6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QToolButton, Q
 from .icons import icon
 from .annotate import TOOLS, PALETTE
 
-TIPS = {"select": "Select / move / resize (V)", "rect": "Rectangle", "ellipse": "Ellipse",
-        "line": "Line / arrow (Shift+drag continues polyline)",
+TIPS = {"select": "Select (V)", "rect": "Rectangle", "ellipse": "Ellipse",
+        "line": "Line / arrow (Shift)",
         "pen": "Pencil", "marker": "Marker", "mosaic": "Mosaic / blur", "text": "Text",
-        "number": "Numbered marker (N)", "eraser": "Eraser",
-        "undo": "Undo (Ctrl+Z)", "redo": "Redo (Ctrl+Y)", "close": "Cancel (Esc)", "pin": "Pin to screen (Ctrl+T)",
-        "save": "Save as… (Ctrl+S)", "copy": "Copy (Ctrl+C / Enter)", "check": "Finish editing (Space)"}
+        "number": "Number (N)", "eraser": "Eraser",
+        "undo": "Undo (Ctrl+Z)", "redo": "Redo (Ctrl+Y)", "close": "Cancel (Esc)", "pin": "Pin (Ctrl+T)",
+        "save": "Save (Ctrl+S)", "copy": "Copy (Ctrl+C)", "check": "Done (Space)"}
 
 CSS = """
 QFrame#bar, QFrame#panel { background:#f7f7f7; border:1px solid #9a9a9a; border-radius:3px; }
@@ -38,7 +38,7 @@ class Palette(QWidget):
         super().__init__(); self.get, self.set_ = get, set_
         lay = QHBoxLayout(self); lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(4)
         self.cur = QToolButton(); self.cur.setFixedSize(30, 30); self.cur.setObjectName("current_color")
-        self.cur.setToolTip("Custom color… (with alpha)"); self.cur.setFocusPolicy(Qt.NoFocus)
+        self.cur.setToolTip("Custom color"); self.cur.setFocusPolicy(Qt.NoFocus)
         self.cur.clicked.connect(self.custom); lay.addWidget(self.cur)
         grid = QGridLayout(); grid.setSpacing(2); lay.addLayout(grid)
         self.swatches = []
@@ -113,9 +113,10 @@ class ToolDock(QWidget):
             b = _tb(a); b.clicked.connect(lambda _=False, a=a: self.action.emit(a)); row.addWidget(b); self.action_buttons[a] = b
         row.addWidget(_sep())
         if not for_pin:
-            for name, label in [('ocr', 'OCR'), ('translate', '译')]:
+            for name, label, tip in (('ocr', 'OCR', 'Recognize text'),
+                                     ('translate', 'Translate', 'Recognize and translate')):
                 b = QToolButton(); b.setText(label); b.setFocusPolicy(Qt.NoFocus)
-                b.setToolTip('识别选区文字（本地）' if name == 'ocr' else '识别并翻译选区文字（Edge）')
+                b.setObjectName("tb_" + name); b.setToolTip(tip)
                 b.clicked.connect(lambda _=False, name=name: self.action.emit(name))
                 row.addWidget(b); self.action_buttons[name] = b
         for a in (["close", "save", "copy", "check"] if for_pin else ["close", "pin", "save", "copy"]):
@@ -178,7 +179,7 @@ class ToolDock(QWidget):
         self._clear(); self.spin = None
         if not tool: self.panel.hide(); return
         if tool == "select":
-            self.panel_lay.addWidget(QLabel("Click to select · drag move · handles resize · Del delete · dbl-click text"))
+            self.panel_lay.addWidget(QLabel("Click, drag, Del, double-click text"))
             if self.isVisible(): self.panel.show(); self._fit_panel()
             else: self.panel.hide()
             return
@@ -187,8 +188,12 @@ class ToolDock(QWidget):
             self._choice([(False, "Outline"), (True, "Filled")], lambda: st.filled, S("filled"), "fill")
             self._spin("Width", 1, 60, lambda: st.width, S("width"), "width")
         elif tool == "line":
-            c = QComboBox(); c.addItems(["solid", "dash", "dot"]); c.setCurrentText(st.line_style); c.setObjectName("line_style")
-            c.currentTextChanged.connect(lambda v: (S("line_style")(v), self.ann.changed.emit())); self.panel_lay.addWidget(c)
+            c = QComboBox(); c.setObjectName("line_style")
+            for val, label in (("solid", "Solid"), ("dash", "Dash"), ("dot", "Dot")):
+                c.addItem(label, val)
+            c.setCurrentIndex(max(0, c.findData(st.line_style)))
+            c.currentIndexChanged.connect(lambda i: (S("line_style")(c.itemData(i)), self.ann.changed.emit()))
+            self.panel_lay.addWidget(c)
             self._toggle("Arrow", lambda: st.arrow, S("arrow"), "Arrow at end")
             self._spin("Width", 1, 60, lambda: st.width, S("width"), "width")
         elif tool in ("pen", "marker"):
@@ -203,7 +208,7 @@ class ToolDock(QWidget):
         elif tool == "text":
             self._toggle("B", lambda: st.bold, S("bold"), "Bold").setObjectName("opt_bold")
             self._toggle("I", lambda: st.italic, S("italic"), "Italic").setObjectName("opt_italic")
-            self._toggle("Outline", lambda: st.outline, S("outline"), "Outline / halo")
+            self._toggle("Outline", lambda: st.outline, S("outline"), "Outline / glow")
             f = QFontComboBox(); f.setObjectName("font"); f.setFixedWidth(140)
             if st.family: f.setCurrentText(st.family)
             f.currentFontChanged.connect(lambda q: (S("family")(q.family()), self.ann.changed.emit())); self.panel_lay.addWidget(f)

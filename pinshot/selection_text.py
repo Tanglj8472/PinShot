@@ -24,7 +24,7 @@ def send_copy():
     keys += [(0x11, 0), (0x43, 0), (0x43, 2), (0x11, 2)]
     events = (Input * len(keys))(*(Input(1, Union(key=Key(vk, 0, flags, 0, 0))) for vk, flags in keys))
     if user32.SendInput(len(keys), events, C.sizeof(Input)) != len(keys):
-        raise RuntimeError('无法复制选中文字，目标窗口可能以管理员身份运行。')
+        raise RuntimeError('Could not copy selected text.')
 
 
 class SelectionReader(QObject):
@@ -34,7 +34,7 @@ class SelectionReader(QObject):
 
     def read(self, callback):
         if self.active: return
-        if sys.platform != 'win32': callback('', '当前划词翻译仅支持 Windows。'); return
+        if sys.platform != 'win32': callback('', 'Select-text translate is only available here.'); return
         import time
         self.callback = callback; self.active = True; self.deadline = time.monotonic() + .5
         clipboard = QGuiApplication.clipboard(); self.backup = QMimeData()
