@@ -3,6 +3,13 @@ from PySide6.QtCore import QSettings, QStandardPaths
 
 ORG, APP = "PinShot", "PinShot"
 
+def data_dir():
+    """Per-user data dir: ~/.local/share/PinShot (Linux), %APPDATA%/PinShot (Windows).
+    GenericDataLocation + one folder avoids Qt's org/app nesting (PinShot/PinShot)."""
+    from pathlib import Path
+    return Path(QStandardPaths.writableLocation(QStandardPaths.GenericDataLocation)) / APP
+
+
 DEFAULTS = {
     "run_at_login": False,
     "start_minimized": False,

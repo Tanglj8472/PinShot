@@ -2,7 +2,7 @@
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QDialog, QTabWidget, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
                                QCheckBox, QLineEdit, QSpinBox, QComboBox, QPushButton, QLabel,
-                               QFileDialog, QListWidget, QInputDialog, QMessageBox, QToolButton)
+                               QFileDialog, QListWidget, QListWidgetItem, QInputDialog, QMessageBox, QToolButton)
 from . import settings as S
 from .platform import current as _plat
 
@@ -66,6 +66,7 @@ class PrefsDialog(QDialog):
         self.language = QComboBox()
         self.language.setObjectName("language")
         self.language.setProperty("i18n", False)
+        self.language.setFocusPolicy(Qt.StrongFocus)
         for code, name in LANGS:
             self.language.addItem(name, code)
         self.theme = QComboBox()
@@ -179,6 +180,11 @@ class PrefsDialog(QDialog):
         if d:
             self.save_folder.setText(d)
 
+    @staticmethod
+    def _gid(it):
+        v = it.data(Qt.UserRole)
+        return v if v else it.text()
+
     def _add_group(self):
         name, ok = QInputDialog.getText(self, "Add group", "Name:")
         n = name.strip()
@@ -190,18 +196,22 @@ class PrefsDialog(QDialog):
         it = self.groups.currentItem()
         if not it:
             return
+        if self._gid(it) == "Default":
+            return
         name, ok = QInputDialog.getText(self, "Rename group", "Name:", text=it.text())
         n = name.strip()
+        if n == it.text():
+            return
         if ok and n and not any(self.groups.item(i) is not it
                                 and self.groups.item(i).text().lower() == n.lower()
                                 for i in range(self.groups.count())):
-            it.setText(n)
+            it.setText(n); it.setData(Qt.UserRole, n)
 
     def _rm_group(self):
         row = self.groups.currentRow()
         if row < 0:
             return
-        if self.groups.item(row).text() == "Default":
+        if self._gid(self.groups.item(row)) == "Default":
             QMessageBox.information(self, "PinShot", "The Default group cannot be removed.")
             return
         self.groups.takeItem(row)
@@ -216,8 +226,10 @@ class PrefsDialog(QDialog):
         self.history_max.setValue(S.get("history_max", int))
         self.closed_max.setValue(S.get("closed_pins_max", int))
         self.groups.clear()
+        from .i18n import group_label
         for g in S.get("groups"):
-            self.groups.addItem(g)
+            it = QListWidgetItem(group_label(g)); it.setData(Qt.UserRole, g)
+            self.groups.addItem(it)
         self.hk_snip.setText(S.get("hotkey_snip"))
         self.hk_pin.setText(S.get("hotkey_pin"))
         self.hk_hide.setText(S.get("hotkey_hide_all"))
@@ -242,7 +254,7 @@ class PrefsDialog(QDialog):
         S.set_("dblclick_pin_action", self.dblclick.currentData())
         S.set_("history_max", self.history_max.value())
         S.set_("closed_pins_max", self.closed_max.value())
-        S.set_("groups", [self.groups.item(i).text() for i in range(self.groups.count())] or ["Default"])
+        S.set_("groups", [self._gid(self.groups.item(i)) for i in range(self.groups.count())] or ["Default"])
         S.set_("hotkey_snip", self.hk_snip.text().strip() or "F1")
         S.set_("hotkey_pin", self.hk_pin.text().strip() or "F3")
         S.set_("hotkey_hide_all", self.hk_hide.text().strip() or "Shift+F3")

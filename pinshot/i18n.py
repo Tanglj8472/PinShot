@@ -168,6 +168,8 @@ STRINGS = {
     "Handles": {"en": "Handles", "zh": "手柄"},
     "Double-click text": {"en": "Double-click text", "zh": "双击文字"},
     "Right-click": {"en": "Right-click", "zh": "右键"},
+    "1 2 / wheel": {"en": "1 2 / wheel", "zh": "1 2 / 滚轮"},
+    "Default": {"en": "Default", "zh": "默认"},
     "Save snip": {"en": "Save snip", "zh": "保存截图"},
     "Window detection": {"en": "Window detection", "zh": "窗口检测"},
     "Element detection": {"en": "Element detection", "zh": "控件检测"},
@@ -225,7 +227,7 @@ STRINGS = {
     "No translation returned": {"en": "No translation returned", "zh": "没有返回译文"},
     "No text to translate": {"en": "No text to translate", "zh": "没有可翻译的文字"},
     # OCR / translation window
-    "PinShot OCR": {"en": "PinShot OCR", "zh": "PinShot OCR"},
+    "PinShot OCR": {"en": "PinShot OCR", "zh": "PinShot 文字识别与翻译"},
     "Original (editable)": {"en": "Original (editable)", "zh": "原文（可编辑）"},
     "Translation": {"en": "Translation", "zh": "译文"},
     "Copy original": {"en": "Copy original", "zh": "复制原文"},
@@ -263,6 +265,7 @@ PATTERNS = [
     (r"^Cleared click-through on (\d+) pin\(s\)$",
      {"en": "Cleared click-through on {0} pin(s)", "zh": "已清除 {0} 个贴图的鼠标穿透"}),
     (r"^Group '(.+)' already exists$", {"en": "Group '{0}' already exists", "zh": "分组“{0}”已存在"}),
+    (r"^Group (\d+)$", {"en": "Group {0}", "zh": "分组 {0}"}),
     (r"^Hide (.+)$", {"en": "Hide {0}", "zh": "隐藏 {0}"}),
     (r"^Show (.+)$", {"en": "Show {0}", "zh": "显示 {0}"}),
     (r"^(\d+) s$", {"en": "{0} s", "zh": "{0} 秒"}),
@@ -314,6 +317,14 @@ def tr(s):
     if _code() == "en":
         return s
     return "\n".join(_tr_line(x) for x in s.split("\n"))
+
+
+def group_label(name):
+    """Display name for a stored group id: built-in 'Default' / auto 'Group N' are translated,
+    user-created names are shown verbatim. The stored id never changes."""
+    if name == "Default" or re.fullmatch(r"Group \d+", name or ""):
+        return tr(name)
+    return name
 
 
 # ---------- live widget translation
@@ -445,6 +456,8 @@ class Translator(QObject):
 
     def eventFilter(self, obj, ev):
         t = ev.type()
+        if QApplication.activePopupWidget() is not None:
+            return False
         if t in (QEvent.Show, QEvent.Polish) and isinstance(obj, QWidget):
             translate_widget(obj)
             if t == QEvent.Show and obj.isWindow():
@@ -455,6 +468,8 @@ class Translator(QObject):
     def _refresh(self):
         if _lang == "en" and not getattr(self, "_dirty", False):
             return
+        if QApplication.activePopupWidget() is not None:
+            return   # never mutate combos/menus while their popup is open (breaks mouse selection)
         self._dirty = False
         for top in QApplication.topLevelWidgets():
             if top.isVisible():

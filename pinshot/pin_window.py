@@ -31,9 +31,22 @@ def _tip_show(pos, text, *a):
     QToolTip.showText(pos, tr(text), *a)
 
 
+def _x11():
+    from PySide6.QtGui import QGuiApplication
+    return QGuiApplication.platformName() == "xcb"
+
+
+def pin_flags():
+    """On X11, Qt.Tool windows get WM_TRANSIENT_FOR=<client leader>; xfwm4 (and others) then keep
+    them above *every* other window of the app, so the OCR window could never cover a pin.
+    Use a plain always-on-top window there and hide it from the taskbar via EWMH instead."""
+    base = Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
+    return base | (Qt.Window if _x11() else Qt.Tool)
+
+
 class PinWindow(QWidget):
     def __init__(self, pm: QPixmap, pos: QPoint = None):
-        super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+        super().__init__(None, pin_flags())
         self.setAttribute(Qt.WA_DeleteOnClose)
         self.can_shadow = _composited()
         if self.can_shadow: self.setAttribute(Qt.WA_TranslucentBackground)
@@ -51,6 +64,13 @@ class PinWindow(QWidget):
         if pos is not None: self.move(pos - QPoint(self.M, self.M))
         ALL_PINS.append(self)
         self._glow_timer = QTimer(self, interval=40); self._glow_timer.timeout.connect(self._fade); self._glow_timer.start()
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        if _x11():
+            from .x11raise import set_skip_taskbar
+            for ms in (0, 150):   # WM only honours _NET_WM_STATE requests once the window is mapped
+                QTimer.singleShot(ms, lambda: self.isVisible() and set_skip_taskbar(self))
 
     # --- geometry
     @property
@@ -286,9 +306,10 @@ class PinWindow(QWidget):
         m.addSeparator()
         m.addAction("Paste", self.paste); m.addAction("Replace from file…", self.replace_by_file)
         from . import session as SES
+        from .i18n import group_label
         g = m.addMenu("Move to group"); ag = QActionGroup(g)
         for name in SES.group_names():
-            act = g.addAction(name, lambda n=name: self.move_to_group(n)); act.setCheckable(True); act.setChecked(self.group == name); ag.addAction(act)
+            act = g.addAction(group_label(name), lambda n=name: self.move_to_group(n)); act.setCheckable(True); act.setChecked(self.group == name); ag.addAction(act)
         g.addSeparator()
         g.addAction("New group…", self._new_group)
         g.addAction("Rename group…", self._rename_group)
@@ -343,8 +364,10 @@ class PinWindow(QWidget):
     def _rename_group(self):
         from PySide6.QtWidgets import QInputDialog
         from . import session as SES
-        name, ok = QInputDialog.getText(self, "Rename group", "Name:", text=self.group)
-        if ok and name.strip() and self.group != "Default":
+        from .i18n import group_label
+        shown = group_label(self.group)
+        name, ok = QInputDialog.getText(self, "Rename group", "Name:", text=shown)
+        if ok and name.strip() and name.strip() != shown and self.group != "Default":
             SES.rename_group(self.group, name.strip())
 
     def set_clickthrough(self, on: bool):

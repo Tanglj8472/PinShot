@@ -20,7 +20,8 @@ def recognize(image):
     from rapidocr.utils.typings import OCRVersion, ModelType
     with _ocr_lock:
         if _ocr_engine is None:
-            model_dir = Path(QStandardPaths.writableLocation(QStandardPaths.AppLocalDataLocation)) / 'ocr-models'
+            from .settings import data_dir
+            model_dir = data_dir() / 'ocr-models'
             model_dir.mkdir(parents=True, exist_ok=True)
             params = {
                 'Global.model_root_dir': str(model_dir),
@@ -65,7 +66,8 @@ def translate(text, target='zh-Hans'):
 class ResultWindow(QWidget):
     def __init__(self):
         super().__init__(None, Qt.Window | Qt.WindowStaysOnTopHint)
-        self.setWindowTitle('PinShot OCR')
+        from .i18n import tr
+        self.setWindowTitle(tr('PinShot OCR'))
         self.resize(480, 460)
         self.closed = False; self.request = 0; self.busy = False
         layout = QVBoxLayout(self)
@@ -96,6 +98,39 @@ class ResultWindow(QWidget):
         self.move(QPoint(max(area.left(), min(QCursor.pos().x(), area.right()-self.width())),
                          max(area.top(), min(QCursor.pos().y(), area.bottom()-self.height()))))
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.raise_above_pins()
+        from PySide6.QtCore import QTimer
+        for ms in (0, 60, 250):   # WMs restack asynchronously after map
+            QTimer.singleShot(ms, lambda: None if self.closed else self.raise_above_pins())
+
+    def raise_above_pins(self):
+        """Pins and this window share the always-on-top layer; push pins to the bottom of that
+        layer (XLowerWindow) and raise this one (XRaiseWindow + activate)."""
+        from .platform import current as _plat
+        _plat().raise_on_top(self, self.windows_to_lower())
+
+    def windows_to_lower(self):
+        """Every other visible always-on-top top-level window, however it was created
+        (session-restored pins, history pins, pin toolbars...), plus the pin registry."""
+        from PySide6.QtWidgets import QApplication
+        out = []
+        try:
+            from .pin_window import ALL_PINS
+            out = [p for p in ALL_PINS if p.isVisible()]
+        except Exception:
+            pass
+        for w in QApplication.topLevelWidgets():
+            try:
+                if (w is not self and w not in out and w.isVisible() and not isinstance(w, ResultWindow)
+                        and w.windowFlags() & Qt.WindowStaysOnTopHint
+                        and w.__class__.__name__ != "SnipOverlay"):
+                    out.append(w)
+            except RuntimeError:
+                pass
+        return out
+
     def closeEvent(self, event):
         self.closed = True; self.request += 1
         super().closeEvent(event)
@@ -115,6 +150,7 @@ class TranslationController(QObject):
         window = ResultWindow(); self.windows.append(window)
         window.translate_button.clicked.connect(lambda: self.start_translation(window))
         window.show(); window.raise_(); window.activateWindow()
+        from PySide6.QtCore import QTimer
         return window
 
     def image(self, image, auto_translate=False):
