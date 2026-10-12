@@ -91,6 +91,7 @@ pub struct PinMenuState {
     pub opacity: f32,
     pub group: String,
     pub groups: Vec<String>,
+    pub group_counts: Vec<(String, usize)>,
     pub img_w: u32,
     pub img_h: u32,
     pub smooth: bool,
@@ -701,12 +702,18 @@ fn build_sub_rows(state: &PinMenuState, kind: SubKind) -> Vec<Row> {
             let mut rows = Vec::new();
             for g in &state.groups {
                 let on = g.eq_ignore_ascii_case(&state.group);
-                rows.push(check_item(
-                    groups::label(g),
-                    PinMenuAction::MoveGroup(g.clone()),
-                    on,
-                    false,
-                ));
+                let n = state
+                    .group_counts
+                    .iter()
+                    .find(|(name, _)| name.eq_ignore_ascii_case(g))
+                    .map(|(_, c)| *c)
+                    .unwrap_or(0);
+                let label = if n > 0 {
+                    format!("{:<10} {n}", groups::label(g))
+                } else {
+                    groups::label(g)
+                };
+                rows.push(check_item(label, PinMenuAction::MoveGroup(g.clone()), on, false));
             }
             rows.push(item(tr("New group…"), PinMenuAction::NewGroup, false, false));
             rows.push(item(
@@ -984,6 +991,7 @@ mod tests {
             opacity: 1.0,
             group: "Default".into(),
             groups: vec!["Default".into()],
+            group_counts: vec![("Default".into(), 1)],
             img_w: 100,
             img_h: 80,
             smooth: true,

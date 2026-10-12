@@ -29,7 +29,7 @@ use windows::Win32::Graphics::Gdi::{
 };
 
 use crate::native::NativeWin;
-use crate::toolbar::{TbAction, Toolbar};
+use crate::toolbar::{ExtraKind, TbAction, TbExtra, Toolbar};
 
 /// Fallback / prefs / pin-menu chrome colours (Python `theme.py` light/dark).
 #[derive(Clone, Copy, Debug)]
@@ -176,15 +176,15 @@ const CHROME_HOVER: Rgba = Rgba {
     a: 255,
 };
 const CHROME_SELECTED: Rgba = Rgba {
-    r: 210,
-    g: 232,
-    b: 250,
+    r: 53,
+    g: 148,
+    b: 242,
     a: 255,
 };
 const CHROME_SELECTED_EDGE: Rgba = Rgba {
-    r: 61,
-    g: 143,
-    b: 209,
+    r: 40,
+    g: 122,
+    b: 210,
     a: 255,
 };
 const CHROME_CHIP: Rgba = Rgba {
@@ -215,12 +215,6 @@ const CHROME_ICON: Rgba = Rgba {
     r: 48,
     g: 50,
     b: 56,
-    a: 255,
-};
-const CHROME_ICON_ON: Rgba = Rgba {
-    r: 28,
-    g: 92,
-    b: 160,
     a: 255,
 };
 
@@ -985,11 +979,7 @@ pub fn paint_toolbar(pm: &mut Pixmap, tb: &Toolbar, cursor: Option<Point>) -> Re
                 stroke_rounded_rect(pm, b.rect.inflated(-1.0), 4.0, CHROME_SELECTED_EDGE, 1.0);
             }
         }
-        let ink = if b.checked {
-            CHROME_ICON_ON
-        } else {
-            CHROME_ICON
-        };
+        let ink = if b.checked { Rgba::WHITE } else { CHROME_ICON };
         draw_icon(pm, b.icon, b.rect.adjusted(2.0, 2.0, -2.0, -2.0), Some(ink));
         if b.checked {
             fill_rect(
@@ -1001,7 +991,18 @@ pub fn paint_toolbar(pm: &mut Pixmap, tb: &Toolbar, cursor: Option<Point>) -> Re
     }
     let mut dirty = tb.bar;
     if let Some(pr) = tb.panel {
-        paint_chrome_surface(pm, pr, 6.0);
+        paint_chrome_surface(pm, pr, 5.0);
+        if !tb.width_label.is_empty() {
+            paint_width_chip(pm, tb.width_label, tb.width_value);
+        }
+        for extra in &tb.extras {
+            paint_extra(pm, extra, cursor);
+        }
+        if !tb.custom_color.is_empty() {
+            fill_rounded_rect(pm, tb.custom_color, 3.0, tb.custom_value);
+            stroke_rounded_rect(pm, tb.custom_color, 3.0, Rgba::rgb(40, 40, 44), 1.0);
+            paint_color_nub(pm, tb.custom_color);
+        }
         for (r, c, _) in &tb.swatches {
             fill_rounded_rect(pm, *r, 2.0, *c);
             let selected =
@@ -1012,52 +1013,8 @@ pub fn paint_toolbar(pm: &mut Pixmap, tb: &Toolbar, cursor: Option<Point>) -> Re
                 stroke_rounded_rect(pm, *r, 2.0, Rgba::rgb(170, 172, 176), 1.0);
             }
         }
-        paint_stepper(pm, tb.width_minus, "−", hover_at(cursor, tb.width_minus));
-        paint_stepper(pm, tb.width_plus, "+", hover_at(cursor, tb.width_plus));
-        let wl = if tb.width_value > 0 {
-            format!("{}", tb.width_value)
-        } else {
-            "w".into()
-        };
-        crate::text::blit_into_pm(
-            pm,
-            &wl,
-            tb.width_label.x + 6.0,
-            tb.width_label.y + 3.0,
-            12,
-            CHROME_TEXT,
-            true,
-        );
-        for extra in &tb.extras {
-            let hot = hover_at(cursor, extra.rect);
-            let (fill, ink) = if extra.checked {
-                (CHROME_CHIP_ON, Rgba::WHITE)
-            } else if hot {
-                (CHROME_HOVER, CHROME_TEXT)
-            } else {
-                (CHROME_CHIP, CHROME_TEXT)
-            };
-            fill_rounded_rect(pm, extra.rect, 4.0, fill);
-            if extra.checked {
-                stroke_rounded_rect(pm, extra.rect, 4.0, CHROME_SELECTED_EDGE, 1.0);
-            }
-            if let Some(icon) = extra.icon {
-                draw_icon(pm, icon, extra.rect.adjusted(2.0, 2.0, -2.0, -2.0), Some(ink));
-            } else {
-                crate::text::blit_into_pm(
-                    pm,
-                    &extra.label,
-                    extra.rect.x + 5.0,
-                    extra.rect.y + 3.0,
-                    12,
-                    ink,
-                    extra.checked,
-                );
-            }
-        }
-        if !tb.custom_color.is_empty() {
-            fill_rounded_rect(pm, tb.custom_color, 4.0, tb.custom_value);
-            stroke_rounded_rect(pm, tb.custom_color, 4.0, Rgba::rgb(40, 40, 44), 1.0);
+        if !tb.slider.is_empty() {
+            paint_slider(pm, tb.slider, tb.width_value, tb.slider_min, tb.slider_max);
         }
         dirty = dirty.union(pr);
     }
@@ -1086,10 +1043,132 @@ pub fn paint_toolbar(pm: &mut Pixmap, tb: &Toolbar, cursor: Option<Point>) -> Re
     dirty.inflated(8.0)
 }
 
-fn paint_stepper(pm: &mut Pixmap, r: Rect, label: &str, hot: bool) {
-    fill_rounded_rect(pm, r, 4.0, if hot { CHROME_HOVER } else { CHROME_CHIP });
-    stroke_rounded_rect(pm, r, 4.0, CHROME_BORDER, 1.0);
-    crate::text::blit_into_pm(pm, label, r.x + 5.0, r.y + 2.0, 16, CHROME_TEXT, true);
+fn paint_width_chip(pm: &mut Pixmap, r: Rect, value: i32) {
+    fill_rounded_rect(pm, r, 4.0, CHROME_SELECTED);
+    let numeric = value >= 8 || r.w >= 27.0;
+    if numeric && value > 0 {
+        let s = format!("{value}");
+        crate::text::blit_into_pm(pm, &s, r.x + 6.0, r.y + 4.0, 12, Rgba::WHITE, true);
+    } else {
+        let d = (value as f32 * 1.6).clamp(4.0, 12.0);
+        let cx = r.x + r.w * 0.5 - d * 0.5;
+        let cy = r.y + r.h * 0.5 - d * 0.5;
+        fill_rounded_rect(pm, Rect::new(cx, cy, d, d), d * 0.5, Rgba::WHITE);
+    }
+}
+
+fn paint_extra(pm: &mut Pixmap, extra: &TbExtra, cursor: Option<Point>) {
+    let hot = hover_at(cursor, extra.rect);
+    match extra.kind {
+        ExtraKind::Combo => {
+            fill_rounded_rect(pm, extra.rect, 3.0, Rgba::WHITE);
+            stroke_rounded_rect(pm, extra.rect, 3.0, CHROME_BORDER, 1.0);
+            if let Some(icon) = extra.icon {
+                draw_icon(
+                    pm,
+                    icon,
+                    Rect::new(extra.rect.x + 4.0, extra.rect.y + 2.0, 18.0, 18.0),
+                    Some(CHROME_ICON),
+                );
+            }
+            if !extra.label.is_empty() {
+                crate::text::blit_into_pm(
+                    pm,
+                    &extra.label,
+                    extra.rect.x + 6.0,
+                    extra.rect.y + 4.0,
+                    11,
+                    CHROME_TEXT,
+                    false,
+                );
+            }
+            paint_chevron(pm, extra.rect.right() - 12.0, extra.rect.y + 9.0);
+        }
+        ExtraKind::Chip | ExtraKind::Icon => {
+            let (fill, ink) = if extra.checked {
+                (CHROME_SELECTED, Rgba::WHITE)
+            } else if hot {
+                (CHROME_HOVER, CHROME_TEXT)
+            } else {
+                (Rgba::WHITE, CHROME_TEXT)
+            };
+            fill_rounded_rect(pm, extra.rect, 3.0, fill);
+            if extra.checked {
+                stroke_rounded_rect(pm, extra.rect, 3.0, CHROME_SELECTED_EDGE, 1.0);
+            }
+            if let Some(icon) = extra.icon {
+                draw_icon(
+                    pm,
+                    icon,
+                    extra.rect.adjusted(2.0, 2.0, -2.0, -2.0),
+                    Some(if extra.checked { Rgba::WHITE } else { CHROME_ICON }),
+                );
+            } else {
+                crate::text::blit_into_pm(
+                    pm,
+                    &extra.label,
+                    extra.rect.x + 6.0,
+                    extra.rect.y + 4.0,
+                    12,
+                    ink,
+                    extra.checked,
+                );
+            }
+            if extra.checked {
+                fill_rect(
+                    pm,
+                    Rect::new(extra.rect.right() - 6.0, extra.rect.y + 2.0, 4.0, 4.0),
+                    Rgba::rgb(220, 40, 40),
+                );
+            }
+        }
+    }
+}
+
+fn paint_color_nub(pm: &mut Pixmap, r: Rect) {
+    let mut pb = PathBuilder::new();
+    pb.move_to(r.x + 1.0, r.bottom() - 1.0);
+    pb.line_to(r.x + 8.0, r.bottom() - 1.0);
+    pb.line_to(r.x + 1.0, r.bottom() - 8.0);
+    pb.close();
+    if let Some(path) = pb.finish() {
+        pm.fill_path(
+            &path,
+            &paint(Rgba::rgb(30, 30, 34)),
+            FillRule::Winding,
+            Transform::identity(),
+            None,
+        );
+    }
+}
+
+fn paint_slider(pm: &mut Pixmap, r: Rect, value: i32, min: i32, max: i32) {
+    let track = Rect::new(r.x, r.y + r.h * 0.5 - 1.5, r.w, 3.0);
+    fill_rounded_rect(pm, track, 1.5, Rgba::rgb(200, 204, 210));
+    let t = if max <= min {
+        0.0
+    } else {
+        ((value - min) as f32 / (max - min) as f32).clamp(0.0, 1.0)
+    };
+    let kx = r.x + t * r.w;
+    fill_rounded_rect(pm, Rect::new(kx - 5.0, r.y - 1.0, 10.0, r.h + 2.0), 5.0, CHROME_SELECTED);
+}
+
+fn paint_chevron(pm: &mut Pixmap, x: f32, y: f32) {
+    let mut pb = PathBuilder::new();
+    pb.move_to(x, y);
+    pb.line_to(x + 6.0, y);
+    pb.line_to(x + 3.0, y + 4.0);
+    pb.close();
+    if let Some(path) = pb.finish() {
+        pm.fill_path(
+            &path,
+            &paint(CHROME_ICON),
+            FillRule::Winding,
+            Transform::identity(),
+            None,
+        );
+    }
 }
 
 pub fn paint_toast(pm: &mut Pixmap, text: &str, w: u32, h: u32) -> Rect {
@@ -1673,22 +1752,18 @@ mod tests {
             .iter()
             .find(|e| e.label == "A" || e.label.contains('描') || e.label == "Outline")
             .expect("outline chip");
-        let default = tb
+        let font = tb
             .extras
             .iter()
-            .find(|e| e.label.contains('默') || e.label == "Default")
-            .expect("default chip");
-        let mono = tb
-            .extras
-            .iter()
-            .find(|e| e.label.contains('等') || e.label == "Mono")
-            .expect("mono chip");
+            .find(|e| e.kind == crate::toolbar::ExtraKind::Combo)
+            .expect("font combo");
+        let bold = tb.extras.iter().find(|e| e.label == "B").expect("bold chip");
         let bins_outline = luma_bins(&pm, outline.rect.inflated(-2.0));
-        let bins_default = luma_bins(&pm, default.rect.inflated(-2.0));
-        let bins_mono = luma_bins(&pm, mono.rect.inflated(-2.0));
+        let bins_font = luma_bins(&pm, font.rect.inflated(-2.0));
+        let bins_bold = luma_bins(&pm, bold.rect.inflated(-2.0));
         assert!(
-            bins_outline >= 6 && bins_default >= 6 && bins_mono >= 6,
-            "CJK chips need smooth luma ramps, got outline={bins_outline} default={bins_default} mono={bins_mono} fonts={:?}",
+            bins_outline >= 6 && bins_font >= 6 && bins_bold >= 4,
+            "text chrome needs smooth luma ramps, got outline={bins_outline} font={bins_font} bold={bins_bold} fonts={:?}",
             chrome_font_paths()
         );
 

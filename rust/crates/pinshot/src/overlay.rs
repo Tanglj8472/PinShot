@@ -386,11 +386,25 @@ impl Overlay {
             "tb bar {:.0},{:.0} {:.0}x{:.0}",
             tb.bar.x, tb.bar.y, tb.bar.w, tb.bar.h
         ));
-        if let Some(c) = tb.button_center(TbAction::Tool(Tool::Text)) {
-            crate::logutil::log(&format!("tb Text at {:.0},{:.0}", c.x, c.y));
+        for (name, act) in [
+            ("Rect", TbAction::Tool(Tool::Rect)),
+            ("Line", TbAction::Tool(Tool::Line)),
+            ("Pen", TbAction::Tool(Tool::Pen)),
+            ("Mosaic", TbAction::Tool(Tool::Mosaic)),
+            ("Text", TbAction::Tool(Tool::Text)),
+            ("Eraser", TbAction::Tool(Tool::Eraser)),
+            ("Ocr", TbAction::Ocr),
+            ("Pin", TbAction::Pin),
+        ] {
+            if let Some(c) = tb.button_center(act) {
+                crate::logutil::log(&format!("tb {name} at {:.0},{:.0}", c.x, c.y));
+            }
         }
-        if let Some(c) = tb.button_center(TbAction::Pin) {
-            crate::logutil::log(&format!("tb Pin at {:.0},{:.0}", c.x, c.y));
+        if let Some(pr) = tb.panel {
+            crate::logutil::log(&format!(
+                "tb panel {:.0},{:.0} {:.0}x{:.0}",
+                pr.x, pr.y, pr.w, pr.h
+            ));
         }
     }
 
@@ -562,6 +576,9 @@ impl Overlay {
             TbAction::Check => {}
             TbAction::Width(d) => {
                 self.annot.adjust_width(d);
+            }
+            TbAction::WidthSet(v) => {
+                self.annot.set_option_width(v);
             }
             TbAction::Color(i) => {
                 if let Some(tool) = self.annot.tool.filter(|t| *t != Tool::Select) {

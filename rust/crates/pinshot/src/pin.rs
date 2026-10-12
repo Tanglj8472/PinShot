@@ -474,6 +474,9 @@ impl PinWin {
             TbAction::Width(d) => {
                 let _ = self.annot.adjust_width(d);
             }
+            TbAction::WidthSet(v) => {
+                let _ = self.annot.set_option_width(v);
+            }
             TbAction::Color(i) => {
                 if let Some(tool) = self.annot.tool.filter(|t| *t != Tool::Select) {
                     let c = pinshot_core::palette_colors()[i as usize];

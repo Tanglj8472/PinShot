@@ -747,6 +747,74 @@ impl Annotator {
         true
     }
 
+    pub fn set_option_width(&mut self, value: i32) -> bool {
+        let cur = self.option_width();
+        if cur == 0 {
+            return false;
+        }
+        let kind = if self.text_edit.is_some() {
+            Tool::Text
+        } else if let Some(live) = &self.live {
+            live.kind
+        } else if let Some(i) = self.option_target() {
+            self.shapes[i].kind
+        } else if let Some(t) = self.tool.filter(|t| *t != Tool::Select) {
+            t
+        } else {
+            return false;
+        };
+        let clamped = match kind {
+            Tool::Text => value.clamp(8, 120),
+            Tool::Mosaic => value.clamp(1, 30),
+            Tool::Number => value.clamp(12, 80),
+            _ => value.clamp(1, 60),
+        };
+        if clamped == cur {
+            return false;
+        }
+        let assign = |st: &mut Style| Self::assign_style_width(st, kind, clamped);
+        if self.text_edit.is_some() {
+            let existing = self.text_edit.as_ref().and_then(|e| e.existing);
+            if let Some(i) = existing {
+                self.push_edit();
+                assign(&mut self.shapes[i].style);
+                let st = self.shapes[i].style.clone();
+                *self.style_mut(Tool::Text) = st;
+            } else {
+                assign(self.style_mut(Tool::Text));
+            }
+            return true;
+        }
+        if let Some(live) = self.live.as_mut() {
+            assign(&mut live.style);
+            let st = live.style.clone();
+            *self.style_mut(kind) = st;
+            return true;
+        }
+        if let Some(i) = self.option_target() {
+            self.push_edit();
+            assign(&mut self.shapes[i].style);
+            let st = self.shapes[i].style.clone();
+            *self.style_mut(kind) = st;
+        } else {
+            assign(self.style_mut(kind));
+        }
+        true
+    }
+
+    fn assign_style_width(st: &mut Style, kind: Tool, value: i32) {
+        match kind {
+            Tool::Text => st.font_size = value,
+            Tool::Mosaic => st.size = value,
+            Tool::Number => {
+                st.width = value;
+                st.font_size = (st.width as f32 * 0.65) as i32;
+                st.font_size = st.font_size.max(8);
+            }
+            _ => st.width = value,
+        }
+    }
+
     /// Qt `QWheelEvent.angleDelta().y()` — 120 units per notch. Truncates toward 0.
     pub fn wheel(&mut self, angle_delta: i32) -> bool {
         self.wheel_delta += angle_delta;

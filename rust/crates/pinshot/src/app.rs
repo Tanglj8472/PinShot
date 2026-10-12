@@ -678,6 +678,19 @@ impl App {
             opacity: p.opacity,
             group: p.group.clone(),
             groups: self.cfg.groups.clone(),
+            group_counts: self
+                .cfg
+                .groups
+                .iter()
+                .map(|g| {
+                    let n = self
+                        .pins
+                        .iter()
+                        .filter(|pin| pin.group.eq_ignore_ascii_case(g))
+                        .count();
+                    (g.clone(), n)
+                })
+                .collect(),
             img_w: p.img.width,
             img_h: p.img.height,
             smooth: p.smooth,

@@ -117,8 +117,8 @@ window but styles it like Snipaste prefs (egui, CJK, always-on-top).
 | Tool order Rect Ellipse Line Arrow Pen Marker Mosaic Text Number | `toolbar.rs` | done |
 | OCR / Translate / Undo Redo Close Pin Save Copy | done |
 | Pin Check (done) | `TbAction::Check` | done |
-| Palette 20 + width −/+ | done | Panel shows `option_width` (selected/live), not the tool default |
-| Per-tool panel (filled, dash, blur, font…) | Compact one-row Snipaste-style icons: Fill/Outline, Dash/Dot, mosaic/blur, B/I/A | done | Mosaic/text −/+ show `size` / `font_size` via `option_width`. Eraser on the bar. OCR has its own document icon + hover tooltip |
+| Palette 20 + width −/+ | done | Snipaste-style: blue width chip (dot or number) + 2×10 palette; mosaic uses a slider (`WidthSet`) instead of −/+ |
+| Per-tool panel (filled, dash, blur, font…) | Compact hugging one-row panel | done | Rect Fill/Outline/line-style; Line style combo; Pen colour-only; Mosaic mosaic/blur + slider; Text B/I/A + font combo; Eraser size + brush/rect. Red corner dot on the active tool. OCR has its own document icon + hover tooltip |
 | Tips / i18n keys | `Tool::tip` + `tr` painted on hover | done |
 
 ## Pin window (`pin_window.py`)
@@ -132,7 +132,7 @@ window but styles it like Snipaste prefs (egui, CJK, always-on-top).
 | TOOL_KEYS R E P T N … | R E P T N + 1/2/3/4 | done |
 | Esc close / Ctrl+W | done |
 | Double-click close/hide/none + tip | `PinWin::on_double_click` | done | First hit tips; `dblclick_tip_shown` persisted |
-| Context menu full (`build_menu`) | Win32 popup / in-process `PinMenuWin` | done | Compact Snipaste flyouts: Zoom 33.3/50/100/200 + Smoothing; Image processing rotate/flip; Move to group; size submenu (Group/Zoom/Rotation/Opacity/mirrors/Grayscale/Color inverted). Esc closes menu only |
+| Context menu full (`build_menu`) | Win32 popup / in-process `PinMenuWin` | done | Compact Snipaste flyouts: Zoom 33.3/50/100/200 + Current + Smoothing; Image processing rotate/flip; Move to group (name + count); size submenu (Group/Zoom/Rotation/Opacity/mirrors/Grayscale/Color inverted). Esc closes menu only |
 | Rotate / flip / paste / replace file | done | Also grayscale / invert / bilinear smoothing on paint |
 | Shadow / thumb | `shadow` + Shift+dblclick 72px thumb | done | Default on when `_NET_WM_CM_Sn` is owned; persisted. Widget is image+2M, photo at (M,M), `WA_TranslucentBackground` + premultiplied ARGB present; hairline `QRectF(r).adjusted(-0.5,-0.5,-0.5,-0.5)`; session stores image origin |
 | Click-through XShape / WS_EX_TRANSPARENT | done |

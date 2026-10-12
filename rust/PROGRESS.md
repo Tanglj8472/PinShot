@@ -20,7 +20,7 @@ HEAD 在本轮 Snipaste 对齐：文字标注（点击落字、IME、光标、�
 | 设置窗（对照 Snipaste 版式） | **已修**：七个标签固定 480×300（按最高的 Control 页）；主题下拉与其它 `form_combo` 同宽同箭头；每页恢复默认；底栏应用/确定/取消 |
 | OCR（Snipaste 无结果窗） | **已修**：rec RGB + 宽至 1280 + 方向自适应 CTC；失败进状态栏不进编辑框；`--ocr-window` 子进程 reap；关闭后释放 stray grab（F1 可再用）；OCR 独立图标+tooltip |
 | chrome 文字（芯片 / 菜单 / toast / prefs） | **已修**：平滑 AA；CJK 优先 Noto/Source Han/Droid/文泉驿，拉丁 Liberation |
-| 标注工具栏 / 子面板视觉 | **本轮**：单行 ~36px 子面板；Fill/Outline/Dash 图标；文字 B/I/A；马赛克/模糊图标；橡皮在栏上；选中红点；悬停 tooltip |
+| 标注工具栏 / 子面板视觉 | **本轮**：贴内容的单行子面板（不再 500px 空条）；蓝底线宽圆点/数字；直线线型下拉；文字 B/I/A + 字体下拉；马赛克滑条；选中亮蓝+红点；色块三角 |
 | 图钉右键菜单 / 贴图编辑 | **本轮**：Zoom / 图像处理 / 分组 / 尺寸 四级菜单；33.3% + 平滑；旋转翻转；灰度/反色；双线性缩放 |
 | 确认放弃 / 取色 / toast / 尺寸条 / fallback·prefs 按钮 | 本轮：同一套圆角 chrome（prefs 有余力带过） |
 | Linux 框选 / 矩形·椭圆·箭头 / 点边 8 手柄 / 滚轮改宽与面板数字 | 实机过（`7ef18fe`） |
@@ -66,7 +66,7 @@ HEAD 在本轮 Snipaste 对齐：文字标注（点击落字、IME、光标、�
 | 文字 1–7 | Unicode keysym；编辑时不整段 ungrab；2px caret 立刻可见；框 hug 字形；点框外只提交；回编隐藏原稿；caret 跟点击；拖已有文字是移动 |
 | OCR 8–12 | rec RGB + 宽 1280 + (N,C,T)/(N,T,C) + 双 blank CTC；失败只进状态栏；reap `--ocr-window`；Drop grab + stray ungrab；OCR 独立图标 |
 | 设置 13–14 | 固定 480×300；Theme 走 `form_combo` |
-| 工具栏 | 单行图标子面板、橡皮、红点、tooltip |
+| 工具栏 | 贴内容子面板、蓝底线宽、线型/字体下拉、马赛克滑条、亮蓝选中 |
 | 贴图 | 飞出子菜单；灰度/反色/平滑 |
 
 验证：`cargo test --workspace --lib`；`cargo build --release --bin pinshot`。截图 `/opt/cursor/artifacts/snipaste-toolbar/`。
