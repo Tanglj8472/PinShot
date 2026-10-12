@@ -21,6 +21,7 @@ pub mod raster;
 pub mod render;
 pub mod selection;
 pub mod session;
+pub mod snap;
 pub mod translate;
 pub mod wheel;
 
@@ -46,5 +47,6 @@ pub use icons::{app_icon_rgba, draw_app_icon, draw_icon, IconKind};
 pub use magnifier::{layout_magnifier, magnifier_visible, sample_color, Magnifier};
 pub use raster::Raster;
 pub use selection::{DetectMode, Nudge, PressKind, SelState, Selection};
+pub use snap::{SnapGuides, SNAP_PX};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

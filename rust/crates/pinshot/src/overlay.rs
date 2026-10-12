@@ -8,6 +8,7 @@ use pinshot_core::color::Rgba;
 use pinshot_core::colorpicker::{color_picker_layout, ColorPicker, PickerAction};
 use pinshot_core::confirm::{confirm_abort_layout, ConfirmAbortHit};
 use pinshot_core::geom::{hover_rect, Point, Rect};
+use pinshot_core::snap::SnapGuides;
 use pinshot_core::wheel::WheelGate;
 use pinshot_core::history::{HistoryEntry, HistoryView, SnipHistory};
 use pinshot_core::i18n::tr;
@@ -52,6 +53,7 @@ pub struct Overlay {
     hover: Rect,
     windows: Vec<Rect>,
     elements: Vec<Rect>,
+    elements_rx: Option<std::sync::mpsc::Receiver<Vec<Rect>>>,
     annot: Annotator,
     toolbar: Option<Toolbar>,
     hex: bool,
@@ -121,6 +123,13 @@ impl Overlay {
         };
         let front = OverlayFront::new(&capture.composed, 110)?;
         let windows = translated_windows(capture.virtual_origin);
+        crate::logutil::log(&format!("detect windows={}", windows.len()));
+        let (elem_tx, elem_rx) = std::sync::mpsc::channel();
+        let origin = capture.virtual_origin;
+        std::thread::spawn(move || {
+            let elems = translated_elements(origin);
+            let _ = elem_tx.send(elems);
+        });
         let overlay = Rect::new(0.0, 0.0, w as f32, h as f32);
         let mut s = Self {
             window,
@@ -131,6 +140,7 @@ impl Overlay {
             hover: overlay,
             windows,
             elements: Vec::new(),
+            elements_rx: Some(elem_rx),
             annot: Annotator::new(),
             toolbar: None,
             hex: false,
@@ -277,6 +287,35 @@ impl Overlay {
 
     fn img_pt(&self, p: Point) -> Point {
         Point::new(p.x * self.dpr, p.y * self.dpr)
+    }
+
+    fn poll_elements(&mut self) {
+        let Some(rx) = self.elements_rx.as_ref() else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(elems) => {
+                crate::logutil::log(&format!(
+                    "detect elements={} ({})",
+                    elems.len(),
+                    element_source()
+                ));
+                self.elements = elems;
+                self.elements_rx = None;
+                self.update_hover();
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.elements_rx = None;
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        }
+    }
+
+    fn snap_guides(&self) -> SnapGuides {
+        let mut rects = self.windows.clone();
+        rects.extend(self.elements.iter().copied());
+        rects.push(self.bounds());
+        SnapGuides::from_rects(rects)
     }
 
     fn update_hover(&mut self) {
@@ -447,8 +486,14 @@ impl Overlay {
     }
 
     fn load_elements(&mut self) {
+        self.poll_elements();
         if self.elements.is_empty() {
             self.elements = translated_elements(self.capture.virtual_origin);
+            crate::logutil::log(&format!(
+                "detect elements={} ({})",
+                self.elements.len(),
+                element_source()
+            ));
         }
     }
 
@@ -599,10 +644,20 @@ impl Overlay {
         }
     }
 
+    fn finish_sel_drag(&mut self, pt: Point) {
+        let guides = self.snap_guides();
+        self.sel
+            .release_snapped(pt, self.hover, self.bounds(), Some(&guides));
+        self.log_sel_translate();
+        self.relayout_toolbar();
+        self.log_tb_chrome();
+    }
+
     fn apply_sel_motion(&mut self, pt: Point) {
         let moving = self.sel.state == SelState::Moving;
         let before = self.sel.normalized();
-        self.sel.motion(pt, self.bounds());
+        let guides = self.snap_guides();
+        self.sel.motion_snapped(pt, self.bounds(), Some(&guides));
         if moving {
             let after = self.sel.normalized();
             let dx = (after.x - before.x) * self.dpr;
@@ -695,6 +750,7 @@ impl Overlay {
     }
 
     pub fn handle(&mut self, event: &WindowEvent) {
+        self.poll_elements();
         if self.color_picker.is_some() {
             match event {
                 WindowEvent::CursorMoved { position, .. } => {
@@ -814,10 +870,7 @@ impl Overlay {
                     if self.annot.live.is_some() || self.annot.is_selecting() {
                         self.commit_annot_release(pt);
                     } else {
-                        self.sel.release(pt, self.hover, self.bounds());
-                        self.log_sel_translate();
-                        self.relayout_toolbar();
-                        self.log_tb_chrome();
+                        self.finish_sel_drag(pt);
                         if self.translate_on_select && self.sel.has_sel() {
                             self.finish_ocr(true);
                         }
@@ -1192,6 +1245,7 @@ impl Overlay {
     }
 
     pub fn pump_redraw(&mut self) {
+        self.poll_elements();
         self.recover_pointer_drag();
         self.expire_toast();
         if self.dirty {
@@ -1260,10 +1314,7 @@ impl Overlay {
                 SelState::Creating | SelState::Moving | SelState::Resizing
             )
         {
-            self.sel.release(pt, self.hover, self.bounds());
-            self.log_sel_translate();
-            self.relayout_toolbar();
-            self.log_tb_chrome();
+            self.finish_sel_drag(pt);
             if self.sel.has_sel() {
                 let r = self.sel.normalized();
                 crate::logutil::log(&format!("recover release sel {:.0}x{:.0}", r.w, r.h));

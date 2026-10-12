@@ -58,7 +58,7 @@ Counts at the bottom. Python sources are not modified.
 |---|---|---|
 | `SnipOverlay` fullscreen freeze | `overlay.rs` + override-redirect | done |
 | Dim + hole + handles + size label | `draw::OverlayFront` | done |
-| Window hover / Tab element | `selection` + `detect` | done |
+| Window hover / Tab element | `selection` + `detect` | done | Drag/move/resize also magnet-snaps edges to window + control rects (`snap.rs`, 8 px) |
 | Magnifier 15×15 @ 8×, C / Shift | `magnifier.rs` + overlay keys | done |
 | Drag / move / 8 handles | `selection.rs` | done | First F1 *selection* drag recovered via `QueryPointer`. Annotation press is winit-only — recover must not `annot.press` (that emptied the live shape) |
 | Toolbar + OCR/Translate | `toolbar.rs` | done |

@@ -805,10 +805,7 @@ impl ApplicationHandler<AppEvent> for App {
             self.rebuild_tray();
         }
         self.ensure_fallback(event_loop);
-        #[cfg(unix)]
-        {
-            std::thread::spawn(crate::detect::warm_element_backend);
-        }
+        std::thread::spawn(crate::detect::warm_element_backend);
         if !self.session_restored {
             self.session_restored = true;
             self.restore_session(event_loop);
