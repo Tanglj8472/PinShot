@@ -468,8 +468,8 @@ pub fn insert_spaces_aligned(text: &str, glyph_fracs: &[f32], gap_fracs: &[f32])
     if n == 0 || gap_fracs.is_empty() {
         return text.to_string();
     }
-    // Letter-level cuts (more gaps than half the glyphs) are tracking, not words.
-    if gap_fracs.len() * 2 > n {
+    // Letter-level cuts (more gaps than ~¼ of the glyphs) are tracking, not words.
+    if gap_fracs.len() > (n / 4).max(2) {
         return text.to_string();
     }
     let fracs: Vec<f32> = if glyph_fracs.len() == n {
@@ -831,6 +831,14 @@ mod tests {
             segment_glued_latin("Mozillaofficiallysponsoredtheproject."),
             "Mozilla officially sponsored the project."
         );
+        let glued = "In2009,Hozillaofficiallysponsoredtheproject.";
+        let too_many: Vec<f32> = (0..23).map(|i| (i as f32 + 1.0) / 24.0).collect();
+        let restored = restore_english_spaces(glued, &[], &too_many);
+        assert!(
+            restored.contains("officially") && restored.contains(' '),
+            "{restored:?}"
+        );
+        assert!(!restored.contains("o f f"), "{restored:?}");
     }
 
     #[test]
