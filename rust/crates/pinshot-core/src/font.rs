@@ -838,5 +838,10 @@ mod tests {
             "bold resolve {}",
             bold_path.display()
         );
+        let def = paint_text("", false, false);
+        let def_bold = paint_text("", true, false);
+        let def_italic = paint_text("", false, true);
+        assert_ne!(def, def_bold, "Default Bold must change pixels");
+        assert_ne!(def, def_italic, "Default Italic must change pixels");
     }
 }

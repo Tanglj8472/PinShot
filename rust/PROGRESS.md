@@ -2,7 +2,7 @@
 
 对照源：`main` 上的 Python/PySide6 PinShot。Rust 在 `rust/`，分支 `rust`。Python 源码不改。
 
-最后更新：2026-10-12（`a08bf05` 实机两项：字体 Liberation/DejaVu TTF + 分组框可打字）。
+最后更新：2026-10-12（`ce3b8ae`/`5264145` 字体 TTF + 分组框可打字；Xvfb `:26` 9/9 复测）。
 
 ---
 
@@ -342,7 +342,21 @@ HEAD 在 `rust`（本轮 PARITY 剩余项）。对照 Python/`main`，**先 Linu
 | ID | 问题 | 状态 | 修法 |
 |---|---|---|---|
 | 1 | B/I/Serif/Mono 几乎看不出；B 像素相同；I 可能落到 DejaVuSansMono；Serif/Mono 被 PFB 抢走 | **已修** | 只接受 TTF/OTF/TTC；Liberation/DejaVu 优先并必须 `fontdue` 能加载；Sans 排除 `mono`/`serif`；无 Bold/Italic 文件则假粗/假斜 |
-| 2 | 分组 New/Rename 不能打字：`Ime::Enabled` 把 KeyboardInput 丢掉 | **已修** | 与 overlay 文字相同：非 preedit 时收 `event.text`；只有非空 Preedit 才挡键；`Ime::Commit` 仍收 CJK；空/空白 Enter 忽略 |
+| 2 | 分组 New/Rename 不能打字：`Ime::Enabled` 把 KeyboardInput 丢掉 | **已修** | 与 overlay 文字相同：非 preedit 时收 `event.text`；只有非空 Preedit 才挡键；`Ime::Commit` 仍收 CJK；空/空白 Enter 忽略。提示期间失焦不关窗；无 preedit 时 Enter 才提交 |
+
+### Xvfb `:26` 复测（1920×1200 + xfwm4）
+
+脚本 `/tmp/pinshot-font-ime-verify.sh`。`pass=9 fail=0`。
+
+| 检查 | 结果 |
+|---|---|
+| pin 创建 | PASS（`pin create 420x300`） |
+| 右键菜单 | PASS（`pin menu new-group at …`） |
+| New 提示框 | PASS（`pin menu prompt new group`） |
+| 打 ASCII `hello` | PASS（`pin menu prompt text "hello"` + 画面 `hello|`） |
+| Enter 提交 | PASS（`pin menu new group named`） |
+| Text 工具 + B/I/Family | PASS（`tb Bold(true)` / `tb Italic(true)` / `tb Family`） |
+| 字体像素 | PASS（`bold_and_italic_change_paint`：Default/Sans B/I 与 Serif/Mono 互异；Liberation TTF） |
 
 ### Xvfb `6f19f21` PARITY 剩余项（`:25` 1920×1200 + xfwm4）
 

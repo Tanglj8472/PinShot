@@ -105,6 +105,12 @@ impl PinMenuWin {
         let rows_src = build_rows(&state);
         let (w, h) = menu_pixel_size(&state);
         crate::logutil::log(&format!("pin menu {w}x{h}"));
+        if let Some((cx, cy)) = menu_action_center(&state, &PinMenuAction::NewGroup) {
+            crate::logutil::log(&format!("pin menu new-group at {cx:.0},{cy:.0}"));
+        }
+        if let Some((cx, cy)) = menu_action_center(&state, &PinMenuAction::RenameGroup) {
+            crate::logutil::log(&format!("pin menu rename-group at {cx:.0},{cy:.0}"));
+        }
         let attrs = Window::default_attributes()
             .with_title("PinShot")
             .with_decorations(false)
@@ -201,8 +207,18 @@ impl PinMenuWin {
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
                 if self.prompt.is_some() {
                     match &event.logical_key {
-                        Key::Named(NamedKey::Escape) => self.close(),
-                        Key::Named(NamedKey::Enter) => return self.submit_prompt(),
+                        Key::Named(NamedKey::Escape) => {
+                            if self.ime_preedit {
+                                self.ime_preedit = false;
+                            } else {
+                                self.close();
+                            }
+                        }
+                        Key::Named(NamedKey::Enter) => {
+                            if !self.ime_preedit {
+                                return self.submit_prompt();
+                            }
+                        }
                         Key::Named(NamedKey::Backspace) => {
                             if let Some(p) = self.prompt.as_mut() {
                                 p.buf.pop();
@@ -218,6 +234,12 @@ impl PinMenuWin {
                                     self.ime_preedit,
                                     t,
                                 ) {
+                                    if let Some(p) = &self.prompt {
+                                        crate::logutil::log(&format!(
+                                            "pin menu prompt text {:?}",
+                                            p.buf
+                                        ));
+                                    }
                                     self.dirty = true;
                                 }
                             }
@@ -580,6 +602,22 @@ fn row_h(row: &Row) -> f32 {
         Row::Sep => 8.0,
         _ => ROW_H,
     }
+}
+
+/// Client-pixel centre of a menu action row (for Xvfb clicks).
+pub fn menu_action_center(state: &PinMenuState, want: &PinMenuAction) -> Option<(f32, f32)> {
+    let rows = build_rows(state);
+    let mut y = PAD;
+    for row in rows {
+        let hh = row_h(&row);
+        if let Row::Item { action, .. } = &row {
+            if action == want {
+                return Some((MENU_W / 2.0, y + hh / 2.0));
+            }
+        }
+        y += hh;
+    }
+    None
 }
 
 /// Pixel size of the in-process pin menu (separators are 8px, not `ROW_H`).
