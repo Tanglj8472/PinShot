@@ -54,12 +54,12 @@ impl OcrModelKind {
 }
 
 /// RapidOCR defaults: padding, max side, box_score_thresh, box_thresh, unclip.
-/// Unclip stays 1.6: 2.0 merged adjacent Latin words into one blob.
+/// Unclip 1.7: 1.6 shaved the last CJK glyph on a wrapped line; 2.0 merged Latin.
 pub const DET_PADDING: u32 = 50;
 pub const DET_MAX_SIDE: u32 = 2560;
 pub const DET_BOX_SCORE: f32 = 0.5;
 pub const DET_BOX_THRESH: f32 = 0.3;
-pub const DET_UNCLIP: f32 = 1.6;
+pub const DET_UNCLIP: f32 = 1.7;
 
 /// RapidOCR uses 50px pad, but a 2-line 58px crop would become mostly pad
 /// and drop the first line. Keep the default on article-sized clips.
@@ -68,10 +68,17 @@ pub fn det_padding(width: u32, height: u32) -> u32 {
     DET_PADDING.min(side / 4).max(8)
 }
 
+/// Extra left/right pixels so unclip / rec crop can keep the last CJK glyph
+/// when a wrapped line sits on the F1 clip's right edge.
+pub fn det_edge_pad(width: u32, height: u32) -> u32 {
+    let short = width.min(height).max(8);
+    (short / 8).clamp(8, 32)
+}
+
 /// paddle-ocr-rs rec is hardcoded to H=48. Chrome Wikipedia is ~13px
 /// (glyph band ~14px). 1×/2× det misses those lines (`T` / `In` only);
 /// 3× on a real 790×120 F1 crop recovered the 2010s sentence with spaces.
-/// Full-screen stays 1× so det does not melt columns. Unclip stays 1.6.
+/// Full-screen stays 1× so det does not melt columns. Unclip stays 1.7.
 pub fn ocr_upsample(width: u32, height: u32) -> u32 {
     if let Ok(v) = std::env::var("PINSHOT_OCR_SCALE") {
         if let Ok(n) = v.trim().parse::<u32>() {
@@ -321,7 +328,9 @@ fn join_line_boxes(boxes: &[(Rect, String)]) -> String {
             let gap = prev_rect
                 .map(|pr| (rect.x - pr.right()).max(0.0))
                 .unwrap_or(0.0);
-            if gap > line_h * 0.3 || needs_space(s.chars().last(), text.chars().next()) {
+            if !cite_glue(s.chars().last(), text)
+                && (gap > line_h * 0.3 || needs_space(s.chars().last(), text.chars().next()))
+            {
                 s.push(' ');
             }
         }
@@ -347,7 +356,7 @@ fn is_closing_bracket(c: char) -> bool {
 }
 
 /// Space at Latin/`(` and after `)` / `]` when the next char is a letter.
-/// CJK stays glued to brackets (`。[16]`, `文[15]`).
+/// CJK stays glued to brackets (`。[16]`, `文[15]`). Do not space `]note`.
 fn needs_space(prev: Option<char>, next: Option<char>) -> bool {
     match (prev, next) {
         (Some(a), Some(b)) if a.is_whitespace() || b.is_whitespace() => false,
@@ -377,12 +386,48 @@ fn insert_bracket_spaces(s: &str) -> String {
             if !is_cjk(a)
                 && !is_cjk(c)
                 && ((a.is_ascii_alphanumeric() && is_opening_paren(c))
-                    || (is_closing_bracket(a) && c.is_ascii_alphabetic()))
+                    || (is_closing_bracket(a)
+                        && c.is_ascii_alphabetic()
+                        && note_cite_len(&chars[i..]).is_none()))
             {
                 out.push(' ');
             }
         }
         out.push(c);
+    }
+    out
+}
+
+fn note_after_cite(prev: Option<char>, next: &str) -> bool {
+    prev.is_some_and(is_closing_bracket)
+        && note_cite_len(&next.chars().collect::<Vec<_>>()).is_some()
+}
+
+fn cite_glue(prev: Option<char>, next: &str) -> bool {
+    if note_after_cite(prev, next) {
+        return true;
+    }
+    let start = next.chars().find(|c| !c.is_whitespace());
+    prev.is_some_and(is_closing_bracket) && start.is_some_and(|c| c == '[' || c == '【')
+}
+
+/// `[26] [note 5]` / `[21] [28]` sit as one citation cluster.
+fn glue_adjacent_cites(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if is_closing_bracket(chars[i])
+            && i + 2 < chars.len()
+            && chars[i + 1].is_whitespace()
+            && matches!(chars[i + 2], '[' | '【')
+        {
+            out.push(chars[i]);
+            i += 2;
+            continue;
+        }
+        out.push(chars[i]);
+        i += 1;
     }
     out
 }
@@ -395,9 +440,13 @@ fn restore_note_brackets(s: &str) -> String {
         let prev = out.chars().last();
         let prev_token = out.chars().rev().find(|c| !c.is_whitespace());
         let already = prev_token == Some('[') || prev_token == Some('【');
+        // `]` is a word boundary, so `[26]note 5` / `[26] note 5` wrap too.
         let boundary = prev.is_none() || prev.is_some_and(|c| !c.is_ascii_alphanumeric());
         if !already && boundary {
             if let Some(n) = note_cite_len(&chars[i..]) {
+                if out.ends_with(' ') && prev_token.is_some_and(is_closing_bracket) {
+                    out.pop();
+                }
                 out.push('[');
                 out.extend(chars[i..i + n].iter());
                 out.push(']');
@@ -476,8 +525,43 @@ fn polish_ocr_text(s: &str) -> String {
     let s = collapse_cjk_spaces(s);
     let s = insert_bracket_spaces(&s);
     let s = restore_note_brackets(&s);
+    let s = glue_adjacent_cites(&s);
     let s = repair_leading_cite(&s);
     repair_rustc(&s)
+}
+
+/// Grow det boxes left/right so a wrap-end CJK glyph is still hittable, and
+/// extend the last box toward the line end (rec crop often shaves that edge).
+fn pad_line_boxes(boxes: &mut [(Rect, String)]) {
+    if boxes.is_empty() {
+        return;
+    }
+    let line_h = boxes
+        .iter()
+        .map(|(r, _)| r.h)
+        .fold(0.0f32, f32::max)
+        .max(1.0);
+    let side = (line_h * 0.2).clamp(2.0, 12.0);
+    let n = boxes.len();
+    for (i, (rect, _)) in boxes.iter_mut().enumerate() {
+        rect.x -= side;
+        rect.w += side * 2.0;
+        if i + 1 == n {
+            rect.w += line_h * 0.4;
+        }
+        if rect.x < 0.0 {
+            rect.w += rect.x;
+            rect.x = 0.0;
+        }
+        rect.w = rect.w.max(1.0);
+    }
+    for i in 0..n.saturating_sub(1) {
+        let next_x = boxes[i + 1].0.x;
+        let r = &mut boxes[i].0;
+        if r.right() > next_x {
+            r.w = (next_x - r.x).max(1.0);
+        }
+    }
 }
 
 fn dedupe_line_seams(boxes: &mut [(Rect, String)]) {
@@ -707,6 +791,7 @@ pub fn page_from_blocks(blocks: Vec<(Vec<(u32, u32)>, String)>) -> OcrPage {
     let mut lines: Vec<String> = Vec::new();
     for (line_i, mut line_boxes) in cluster_lines(items).into_iter().enumerate() {
         dedupe_line_seams(&mut line_boxes);
+        pad_line_boxes(&mut line_boxes);
         let mut polished: Vec<(Rect, String)> = Vec::new();
         for (rect, text) in line_boxes {
             let text = polish_ocr_text(&text);
@@ -827,14 +912,16 @@ pub fn selected_text(tokens: &[OcrToken], a: usize, b: usize) -> String {
                 } else if translate_join_space(s.chars().last(), t.text.chars().next()) {
                     s.push(' ');
                 }
-            } else if needs_space(s.chars().last(), t.text.chars().next()) {
+            } else if !cite_glue(s.chars().last(), &t.text)
+                && needs_space(s.chars().last(), t.text.chars().next())
+            {
                 s.push(' ');
             }
         }
         s.push_str(&t.text);
         prev_line = Some(t.line);
     }
-    s
+    polish_ocr_text(&s)
 }
 
 #[cfg(test)]
@@ -857,6 +944,9 @@ mod tests {
         assert_eq!(det_padding(1295, 58), 14);
         assert_eq!(det_padding(1100, 400), 50);
         assert_eq!(det_padding(8, 8), 8);
+        assert_eq!(det_edge_pad(1295, 58), 8);
+        assert_eq!(det_edge_pad(1100, 400), 32);
+        assert_eq!(det_edge_pad(8, 8), 8);
     }
 
     #[test]
@@ -1113,6 +1203,53 @@ mod tests {
         );
         let already = page_from_blocks(vec![(quad(0, 0, 80, 16), "[note 5]".into())]);
         assert_eq!(already.text, "[note 5]");
+        let after_cite = page_from_blocks(vec![(quad(0, 0, 120, 16), "[26]note 5".into())]);
+        assert!(
+            after_cite.text.contains("[26][note 5]"),
+            "note after a cite must keep both brackets, got {:?}",
+            after_cite.text
+        );
+        assert!(
+            !after_cite.text.contains("[26] note 5"),
+            "must not drop note brackets after [26], got {:?}",
+            after_cite.text
+        );
+        let spaced = page_from_blocks(vec![(quad(0, 0, 120, 16), "[26] note 5".into())]);
+        assert!(
+            spaced.text.contains("[26][note 5]"),
+            "spaced note after a cite, got {:?}",
+            spaced.text
+        );
+        let sel = selected_text(&after_cite.tokens, 0, after_cite.tokens.len() - 1);
+        assert!(
+            sel.contains("[26][note 5]"),
+            "copy must keep [26][note 5], got {sel:?}"
+        );
+        let split = page_from_blocks(vec![
+            (quad(0, 0, 40, 16), "[26]".into()),
+            (quad(48, 0, 120, 16), "note 5".into()),
+        ]);
+        assert!(
+            split.text.contains("[26][note 5]"),
+            "note in the next box after a cite, got {:?}",
+            split.text
+        );
+        let split_sel = selected_text(&split.tokens, 0, split.tokens.len() - 1);
+        assert!(
+            split_sel.contains("[26][note 5]"),
+            "copy of split cite+note, got {split_sel:?}"
+        );
+    }
+
+    #[test]
+    fn page_extends_last_box_toward_line_end() {
+        let page = page_from_blocks(vec![(quad(0, 0, 80, 16), "其編譯器".into())]);
+        let last = page.tokens.last().expect("token");
+        assert!(
+            last.rect.right() > 80.0,
+            "last CJK box must extend past the raw det edge, got {}",
+            last.rect.right()
+        );
     }
 
     #[test]

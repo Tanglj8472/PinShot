@@ -497,6 +497,9 @@ mod tests {
             assert_eq!(tr("Show toolbar"), "显示工具栏");
             assert_eq!(tr("Rotate left"), "向左旋转");
             assert_eq!(tr("PinShot is running"), "PinShot 正在运行");
+            assert_eq!(tr("Save"), "保存");
+            assert_eq!(tr("Copy"), "复制");
+            assert_eq!(tr("Close"), "关闭");
         });
     }
 

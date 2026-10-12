@@ -6,8 +6,8 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use pinshot_core::ocr::{
-    det_padding, model_dir, ocr_upsample, page_from_blocks, ModelPaths, OcrModelKind, OcrPage,
-    DET_BOX_SCORE, DET_BOX_THRESH, DET_MAX_SIDE, DET_UNCLIP,
+    det_edge_pad, det_padding, model_dir, ocr_upsample, page_from_blocks, ModelPaths, OcrModelKind,
+    OcrPage, DET_BOX_SCORE, DET_BOX_THRESH, DET_MAX_SIDE, DET_UNCLIP,
 };
 use pinshot_core::raster::Raster;
 
@@ -252,12 +252,14 @@ fn infer(image: &Raster, paths: &ModelPaths) -> Result<OcrPage, String> {
         Some(u) => (raster_to_rgb(u), u.width, u.height),
         None => (raster_to_rgb(image), image.width, image.height),
     };
+    let edge = det_edge_pad(pad_w, pad_h);
+    let rgb = pad_rgb_lr(&rgb, edge);
     with_engine(paths, |ocr| {
         let result = ocr
             // paddle-ocr-rs AngleNet is 48×192 (PP-OCRv2 cls). RapidOCR v5
             // orientation is 80×160, so skip angle; screenshot lines are upright.
             // Chrome 13px glyphs are ~14px tall; rec is H=48, so article clips
-            // use 3×. Unclip 1.6. max_side 2560.
+            // use 3×. Extra L/R pad + unclip 1.7 keep the last CJK wrap glyph.
             .detect(
                 &rgb,
                 det_padding(pad_w, pad_h),
@@ -270,7 +272,7 @@ fn infer(image: &Raster, paths: &ModelPaths) -> Result<OcrPage, String> {
             )
             .map_err(|e| format!("ocr detect: {e:?}"))?;
         crate::logutil::log(&format!(
-            "ocr blocks {} scale={scale} pad={} max_side={DET_MAX_SIDE} unclip={unclip} box={box_score} {pad_w}x{pad_h} det={} rec={}",
+            "ocr blocks {} scale={scale} pad={} edge={edge} max_side={DET_MAX_SIDE} unclip={unclip} box={box_score} {pad_w}x{pad_h} det={} rec={}",
             result.text_blocks.len(),
             det_padding(pad_w, pad_h),
             paths.det.display(),
@@ -287,10 +289,12 @@ fn infer(image: &Raster, paths: &ModelPaths) -> Result<OcrPage, String> {
                 .box_points
                 .iter()
                 .map(|p| {
+                    let x = p.x.saturating_sub(edge);
+                    let y = p.y;
                     if scale <= 1 {
-                        (p.x, p.y)
+                        (x, y)
                     } else {
-                        (p.x / scale, p.y / scale)
+                        (x / scale, y / scale)
                     }
                 })
                 .collect();
@@ -308,6 +312,17 @@ fn infer(image: &Raster, paths: &ModelPaths) -> Result<OcrPage, String> {
             Ok(page)
         }
     })
+}
+
+#[cfg(any(feature = "ocr", unix))]
+fn pad_rgb_lr(rgb: &image::RgbImage, pad: u32) -> image::RgbImage {
+    if pad == 0 {
+        return rgb.clone();
+    }
+    let (w, h) = rgb.dimensions();
+    let mut out = image::RgbImage::from_pixel(w + 2 * pad, h, image::Rgb([255, 255, 255]));
+    image::imageops::replace(&mut out, rgb, pad as i64, 0);
+    out
 }
 
 #[cfg(any(feature = "ocr", unix))]

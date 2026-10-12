@@ -1029,34 +1029,44 @@ pub fn paint_toolbar(pm: &mut Pixmap, tb: &Toolbar, cursor: Option<Point>) -> Re
         dirty = dirty.union(pr);
     }
     if let Some(cursor) = cursor {
-        for b in &tb.buttons {
-            if b.rect.inflated(3.0).contains(cursor) {
-                let tip = tr(b.tip);
-                let (tw, th) = crate::text::measure(&tip, 11, false);
-                let tw = tw as f32 + 12.0;
-                let th = th as f32 + 8.0;
-                let mut tx = b.rect.x;
-                let panel_below = tb
-                    .panel
-                    .is_some_and(|pr| pr.y + 1.0 >= tb.bar.bottom() - 2.0);
-                let mut ty = if panel_below {
-                    b.rect.y - th - 4.0
-                } else {
-                    b.rect.bottom() + 4.0
-                };
-                if ty < 2.0 {
-                    ty = b.rect.bottom() + 4.0;
-                }
-                if ty + th > pm.height() as f32 {
-                    ty = (b.rect.y - th - 4.0).max(2.0);
-                }
-                tx = tx.min(pm.width() as f32 - tw - 2.0).max(2.0);
-                let tip_r = Rect::new(tx, ty, tw, th);
-                fill_rounded_rect(pm, tip_r, 4.0, Rgba::rgba(20, 20, 24, 230));
-                crate::text::blit_into_pm(pm, &tip, tx + 6.0, ty + 3.0, 11, Rgba::WHITE, false);
-                dirty = dirty.union(tip_r.inflated(2.0));
-                break;
+        // Exact hit first: hover cells abut, so inflated(3) on the first
+        // icon used to steal 保存 / 复制 / 关闭.
+        let hit = tb
+            .buttons
+            .iter()
+            .find(|b| b.rect.contains(cursor))
+            .or_else(|| {
+                tb.buttons
+                    .iter()
+                    .find(|b| b.rect.inflated(3.0).contains(cursor))
+            });
+        if let Some(b) = hit {
+            let tip = tr(b.tip);
+            let (tw, th) = crate::text::measure(&tip, 11, false);
+            let tw = tw as f32 + 12.0;
+            let th = th as f32 + 8.0;
+            let mut tx = b.rect.x;
+            let panel_below = tb
+                .panel
+                .is_some_and(|pr| pr.y + 1.0 >= tb.bar.bottom() - 2.0);
+            // Idle pin hover bar sits on the bottom edge; keep the tip above.
+            let hover_only = tb.panel.is_none();
+            let mut ty = if panel_below || hover_only {
+                b.rect.y - th - 4.0
+            } else {
+                b.rect.bottom() + 4.0
+            };
+            if ty < 2.0 {
+                ty = b.rect.bottom() + 4.0;
             }
+            if ty + th > pm.height() as f32 {
+                ty = (b.rect.y - th - 4.0).max(2.0);
+            }
+            tx = tx.min(pm.width() as f32 - tw - 2.0).max(2.0);
+            let tip_r = Rect::new(tx, ty, tw, th);
+            fill_rounded_rect(pm, tip_r, 4.0, Rgba::rgba(20, 20, 24, 230));
+            crate::text::blit_into_pm(pm, &tip, tx + 6.0, ty + 3.0, 11, Rgba::WHITE, false);
+            dirty = dirty.union(tip_r.inflated(2.0));
         }
     }
     let _ = IconKind::Rect;
@@ -1121,7 +1131,11 @@ fn paint_extra(pm: &mut Pixmap, extra: &TbExtra, cursor: Option<Point>) {
                     pm,
                     icon,
                     extra.rect.adjusted(2.0, 2.0, -2.0, -2.0),
-                    Some(if extra.checked { Rgba::WHITE } else { CHROME_ICON }),
+                    Some(if extra.checked {
+                        Rgba::WHITE
+                    } else {
+                        CHROME_ICON
+                    }),
                 );
             } else {
                 crate::text::blit_into_pm(
@@ -1171,7 +1185,12 @@ fn paint_slider(pm: &mut Pixmap, r: Rect, value: i32, min: i32, max: i32) {
         ((value - min) as f32 / (max - min) as f32).clamp(0.0, 1.0)
     };
     let kx = r.x + t * r.w;
-    fill_rounded_rect(pm, Rect::new(kx - 5.0, r.y - 1.0, 10.0, r.h + 2.0), 5.0, CHROME_SELECTED);
+    fill_rounded_rect(
+        pm,
+        Rect::new(kx - 5.0, r.y - 1.0, 10.0, r.h + 2.0),
+        5.0,
+        CHROME_SELECTED,
+    );
 }
 
 fn paint_chevron(pm: &mut Pixmap, x: f32, y: f32) {
@@ -1435,7 +1454,18 @@ pub fn paint_pin(
     shadow: bool,
     thumb: bool,
 ) -> Pixmap {
-    paint_pin_ex(img, annot, scale, click_through, glow, shadow, thumb, true, false, false)
+    paint_pin_ex(
+        img,
+        annot,
+        scale,
+        click_through,
+        glow,
+        shadow,
+        thumb,
+        true,
+        false,
+        false,
+    )
 }
 
 pub fn paint_pin_ex(
@@ -1635,6 +1665,31 @@ mod tests {
     }
 
     #[test]
+    fn pin_hover_toolbar_paints_tip_on_every_icon() {
+        use crate::toolbar::Toolbar;
+        let sel = Rect::new(0.0, 0.0, 280.0, 160.0);
+        let over = Rect::new(0.0, 0.0, 280.0, 160.0);
+        let tb = Toolbar::layout_pin_hover(sel, over);
+        assert_eq!(tb.buttons.len(), 4);
+        for b in &tb.buttons {
+            let mut pm = Pixmap::new(280, 160).unwrap();
+            pm.fill(tiny_skia::Color::from_rgba8(200, 200, 200, 255));
+            paint_toolbar(&mut pm, &tb, Some(b.rect.center()));
+            let y = (b.rect.y - 6.0).max(1.0) as u32;
+            let x = (b.rect.x + 6.0).clamp(1.0, 278.0) as u32;
+            let px = pm.pixel(x, y).expect("px").demultiply();
+            assert!(
+                px.red() < 60 && px.green() < 60 && px.blue() < 60,
+                "expected a dark tooltip above {:?}, got {},{},{}",
+                b.tip,
+                px.red(),
+                px.green(),
+                px.blue()
+            );
+        }
+    }
+
+    #[test]
     fn toolbar_selected_uses_blue_accent() {
         use crate::toolbar::Toolbar;
         use pinshot_core::annotation::{Style, Tool};
@@ -1777,7 +1832,11 @@ mod tests {
             .iter()
             .find(|e| e.kind == crate::toolbar::ExtraKind::Combo)
             .expect("font combo");
-        let bold = tb.extras.iter().find(|e| e.label == "B").expect("bold chip");
+        let bold = tb
+            .extras
+            .iter()
+            .find(|e| e.label == "B")
+            .expect("bold chip");
         let bins_outline = luma_bins(&pm, outline.rect.inflated(-2.0));
         let bins_font = luma_bins(&pm, font.rect.inflated(-2.0));
         let bins_bold = luma_bins(&pm, bold.rect.inflated(-2.0));

@@ -370,8 +370,8 @@ impl Toolbar {
     pub fn layout_pin_hover(sel: Rect, overlay: Rect) -> Self {
         let acts = [
             (IconKind::Ocr, TbAction::Ocr, "Recognize text"),
-            (IconKind::Save, TbAction::Save, "Save as… (Ctrl+S)"),
-            (IconKind::Copy, TbAction::Copy, "Copy (Ctrl+C / Enter)"),
+            (IconKind::Save, TbAction::Save, "Save"),
+            (IconKind::Copy, TbAction::Copy, "Copy"),
             (IconKind::Close, TbAction::Close, "Close"),
         ];
         let n_acts = acts.len() as f32;
@@ -610,6 +610,9 @@ mod tests {
                 .all(|b| !matches!(b.action, TbAction::Tool(_))),
             "idle hover bar is actions only"
         );
+        let tips: Vec<&str> = tb.buttons.iter().map(|b| b.tip).collect();
+        assert_eq!(tips, ["Recognize text", "Save", "Copy", "Close"]);
+        assert!(tips.iter().all(|t| !t.is_empty()));
     }
 
     #[test]
