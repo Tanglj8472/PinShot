@@ -249,6 +249,10 @@ impl Overlay {
         self.window.id()
     }
 
+    pub fn cursor(&self) -> Point {
+        self.cursor
+    }
+
     pub fn take_result(&mut self) -> Option<OverlayResult> {
         self.result.take()
     }

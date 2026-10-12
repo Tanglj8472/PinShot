@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use pinshot_core::config::{self, data_dir, Config};
+use pinshot_core::geom::Point;
 use pinshot_core::history::{HistoryEntry, HistoryFile, SnipHistory};
 use pinshot_core::hotkey::Command;
 use pinshot_core::i18n::{set_lang, tr};
@@ -114,7 +115,7 @@ struct App {
     start_translate: bool,
     dump_capture: bool,
     mods: ModifiersState,
-    last_click: Option<(WindowId, Instant)>,
+    last_click: Option<(WindowId, Instant, Point)>,
     pins_hidden: bool,
     snip_at: Option<Instant>,
     translate_next: bool,
@@ -922,15 +923,21 @@ impl ApplicationHandler<AppEvent> for App {
                 } = &event
                 {
                     let now = Instant::now();
-                    if let Some((wid, t)) = self.last_click {
-                        if wid == id && now.duration_since(t).as_millis() < 350 {
+                    let pt = ov.cursor();
+                    if let Some((wid, t, prev)) = self.last_click {
+                        // Same-spot only — a toolbar click then a drag inside
+                        // the hole is not a double-click (would copy/abort A).
+                        if wid == id
+                            && now.duration_since(t).as_millis() < 350
+                            && pt.manhattan(prev) <= 12.0
+                        {
                             ov.on_double_click();
                             self.last_click = None;
                         } else {
-                            self.last_click = Some((id, now));
+                            self.last_click = Some((id, now, pt));
                         }
                     } else {
-                        self.last_click = Some((id, now));
+                        self.last_click = Some((id, now, pt));
                     }
                 }
                 ov.handle(&event);
@@ -951,15 +958,22 @@ impl ApplicationHandler<AppEvent> for App {
                 } = &event
                 {
                     let now = Instant::now();
-                    if let Some((wid, t)) = self.last_click {
-                        if wid == id && now.duration_since(t).as_millis() < 350 {
+                    let pt = Point::new(
+                        p.last_cursor_i32().0 as f32,
+                        p.last_cursor_i32().1 as f32,
+                    );
+                    if let Some((wid, t, prev)) = self.last_click {
+                        if wid == id
+                            && now.duration_since(t).as_millis() < 350
+                            && pt.manhattan(prev) <= 12.0
+                        {
                             p.on_double_click(&mut self.cfg, self.mods.shift_key());
                             self.last_click = None;
                         } else {
-                            self.last_click = Some((id, now));
+                            self.last_click = Some((id, now, pt));
                         }
                     } else {
-                        self.last_click = Some((id, now));
+                        self.last_click = Some((id, now, pt));
                     }
                 }
                 if let WindowEvent::MouseWheel { delta, .. } = &event {

@@ -283,7 +283,7 @@ HEAD 在 `rust`（用户提交 `ed59e0f` 之后本轮继续）。对照 Python/`
 
 | ID | 问题 | 状态 | 修法 |
 |---|---|---|---|
-| A | 关掉工具后拖动选区，标注留在原屏幕位置（被裁切） | 已修 | `Annotator::translate_all`：Moving / 方向键 Move 时按选区位移×dpr 平移全部点与 undo |
+| A | 关掉工具后拖动选区，标注留在原屏幕位置（被裁切） | 已修 | `Annotator::translate_all`：Moving / 方向键 Move 时按选区位移×dpr 平移全部点与 undo。双击复制只认**同点**（12px），避免点工具再拖选区被当成双击 Copy |
 | B | 当前色块调 zenity，无 zenity 则无反应 | 已修 | overlay/pin 内 HSV+调色板+OK/Cancel；不放抓、不依赖外部进程 |
 | C | `_NET_WM_WINDOW_OPACITY` 已设但 picom 下仍不透明 | 已修 | 属性写到 client **和** WM frame；`apply_geom` 后重设 |
 | D | 未聚焦 pin 上 Ctrl+滚轮不可靠 | 已修 | `QueryPointer` mask Control=4，与 winit mods 或运算 |
