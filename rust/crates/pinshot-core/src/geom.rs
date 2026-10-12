@@ -369,6 +369,9 @@ impl Handle {
 
 pub const HANDLE_SIZE: f32 = 6.0;
 
+/// Overlay selection handle slop. Matches Python `_hit_handle` (`HANDLE+2` = 8).
+pub const HANDLE_HIT: f32 = 8.0;
+
 /// Handle positions. Matches Python: xs = left / center / right+1, ys = top / center / bottom+1.
 pub fn handle_points(r: Rect) -> [(Handle, Point); 8] {
     let r = r.normalized();
@@ -399,6 +402,41 @@ pub fn hit_handle(r: Rect, p: Point, slop: f32) -> Option<Handle> {
     None
 }
 
+/// Overlay selection handles. `handle_points` sit on `right()+1` / `bottom()+1`,
+/// which a pointer clamped to the screen edge cannot reach. On a large rect,
+/// a grab within [`HANDLE_HIT`] of the border still resizes.
+pub fn hit_sel_handle(r: Rect, p: Point) -> Option<Handle> {
+    if let Some(h) = hit_handle(r, p, HANDLE_HIT) {
+        return Some(h);
+    }
+    let r = r.normalized();
+    if r.w < 80.0 || r.h < 80.0 {
+        return None;
+    }
+    if p.x < r.x - HANDLE_HIT
+        || p.x > r.right() + HANDLE_HIT
+        || p.y < r.y - HANDLE_HIT
+        || p.y > r.bottom() + HANDLE_HIT
+    {
+        return None;
+    }
+    let left = (p.x - r.x).abs() <= HANDLE_HIT;
+    let right = (p.x - r.right()).abs() <= HANDLE_HIT;
+    let top = (p.y - r.y).abs() <= HANDLE_HIT;
+    let bottom = (p.y - r.bottom()).abs() <= HANDLE_HIT;
+    match (left, right, top, bottom) {
+        (true, _, true, _) => Some(Handle::Tl),
+        (_, true, true, _) => Some(Handle::Tr),
+        (true, _, _, true) => Some(Handle::Bl),
+        (_, true, _, true) => Some(Handle::Br),
+        (true, false, false, false) => Some(Handle::L),
+        (false, true, false, false) => Some(Handle::R),
+        (false, false, true, false) => Some(Handle::T),
+        (false, false, false, true) => Some(Handle::B),
+        _ => None,
+    }
+}
+
 /// Resize `r` by dragging `handle` to `p` (Python overlay `resizing` branch).
 pub fn resize_rect(r: Rect, handle: Handle, p: Point) -> Rect {
     let mut r = r.normalized();
@@ -425,7 +463,11 @@ pub fn hover_rect(cursor: Point, windows: &[Rect], elements: &[Rect], full: Rect
         .iter()
         .copied()
         .filter(|r| r.contains(cursor))
-        .min_by(|a, b| a.area().partial_cmp(&b.area()).unwrap_or(std::cmp::Ordering::Equal))
+        .min_by(|a, b| {
+            a.area()
+                .partial_cmp(&b.area())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
     {
         return r;
     }
@@ -546,8 +588,25 @@ mod tests {
     #[test]
     fn handle_hit() {
         let r = Rect::new(100.0, 100.0, 50.0, 40.0);
-        assert_eq!(hit_handle(r, Point::new(100.0, 100.0), 4.0), Some(Handle::Tl));
+        assert_eq!(
+            hit_handle(r, Point::new(100.0, 100.0), 4.0),
+            Some(Handle::Tl)
+        );
         assert_eq!(hit_handle(r, Point::new(125.0, 200.0), 4.0), None);
+    }
+
+    #[test]
+    fn handle_hit_inside_screen_edge_corner() {
+        let r = Rect::new(0.0, 0.0, 1920.0, 1080.0);
+        assert_eq!(
+            hit_sel_handle(r, Point::new(1916.0, 1076.0)),
+            Some(Handle::Br)
+        );
+        assert_eq!(hit_sel_handle(r, Point::new(4.0, 4.0)), Some(Handle::Tl));
+        assert_eq!(hit_sel_handle(r, Point::new(960.0, 540.0)), None);
+        // Small rect: interior stays Move (not a border grab).
+        let small = Rect::new(10.0, 10.0, 40.0, 20.0);
+        assert_eq!(hit_sel_handle(small, Point::new(20.0, 15.0)), None);
     }
 
     #[test]

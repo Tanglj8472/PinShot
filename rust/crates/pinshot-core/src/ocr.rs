@@ -125,9 +125,41 @@ pub fn aabb_from_quad(pts: &[(u32, u32)]) -> Rect {
     )
 }
 
+/// Drop OCR wrap spaces that split CJK (`編譯 器`, `2009 年`, `Rust 語言`).
+/// Latin word spaces (`In 2009`, `Mozilla officially`) stay.
+pub fn collapse_cjk_spaces(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i].is_whitespace() {
+            let mut j = i;
+            while j < chars.len() && chars[j].is_whitespace() {
+                j += 1;
+            }
+            if glue_cjk_gap(out.chars().last(), chars.get(j).copied()) {
+                i = j;
+                continue;
+            }
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
+}
+
+fn glue_cjk_gap(prev: Option<char>, next: Option<char>) -> bool {
+    match (prev, next) {
+        (Some(a), Some(b)) if is_cjk(a) && is_cjk(b) => true,
+        (Some(a), Some(b)) if is_cjk(a) && b.is_ascii_alphanumeric() => true,
+        (Some(a), Some(b)) if is_cjk(b) && a.is_ascii_alphanumeric() => true,
+        _ => false,
+    }
+}
+
 /// Split a line box into CJK characters / Latin words, mapped by character width.
 pub fn tokenize_line(line: usize, text: &str, box_rect: Rect) -> Vec<OcrToken> {
-    let text = text.trim();
+    let text = collapse_cjk_spaces(text.trim());
     if text.is_empty() || box_rect.w <= 0.0 || box_rect.h <= 0.0 {
         return Vec::new();
     }
@@ -213,7 +245,7 @@ pub fn page_from_blocks(blocks: Vec<(Vec<(u32, u32)>, String)>) -> OcrPage {
             if t.is_empty() || r.is_empty() {
                 None
             } else {
-                Some((r, t))
+                Some((r, collapse_cjk_spaces(&t)))
             }
         })
         .collect();
@@ -237,16 +269,17 @@ pub fn page_from_blocks(blocks: Vec<(Vec<(u32, u32)>, String)>) -> OcrPage {
 
     for (rect, text) in items {
         let mid = rect.y + rect.h * 0.5;
-        let new_line = match prev_mid {
-            None => false,
-            Some(py) => (mid - py).abs() > prev_h.max(rect.h) * 0.6,
+        // Wrapped visual lines sit ~1 line-height below the previous box.
+        // Keep them on the same `line_i` so CJK joins without a space/newline
+        // (`編譯器`, `Rust語言`) while Latin still gets `needs_space`.
+        let gap_ratio = match prev_mid {
+            None => 0.0,
+            Some(py) => (mid - py).abs() / prev_h.max(rect.h).max(1.0),
         };
-        if new_line {
-            if !line_parts.is_empty() {
-                lines.push(join_line_parts(&line_parts));
-                line_parts.clear();
-                line_i += 1;
-            }
+        if gap_ratio > 1.55 && !line_parts.is_empty() {
+            lines.push(collapse_cjk_spaces(&join_line_parts(&line_parts)));
+            line_parts.clear();
+            line_i += 1;
         }
         prev_mid = Some(mid);
         prev_h = rect.h;
@@ -254,7 +287,7 @@ pub fn page_from_blocks(blocks: Vec<(Vec<(u32, u32)>, String)>) -> OcrPage {
         line_parts.push(text);
     }
     if !line_parts.is_empty() {
-        lines.push(join_line_parts(&line_parts));
+        lines.push(collapse_cjk_spaces(&join_line_parts(&line_parts)));
     }
     OcrPage {
         tokens,
@@ -435,5 +468,36 @@ mod tests {
         assert_eq!(page.text, "Hello world");
         assert_eq!(page.tokens.len(), 2);
         assert!(hit_token(&page.tokens, Point::new(20.0, 20.0)).is_some());
+    }
+
+    #[test]
+    fn collapse_cjk_wrap_spaces_keeps_latin() {
+        assert_eq!(collapse_cjk_spaces("編譯 器"), "編譯器");
+        assert_eq!(collapse_cjk_spaces("2009 年"), "2009年");
+        assert_eq!(collapse_cjk_spaces("Rust 語言"), "Rust語言");
+        assert_eq!(
+            collapse_cjk_spaces("In 2009, Mozilla officially"),
+            "In 2009, Mozilla officially"
+        );
+    }
+
+    #[test]
+    fn page_joins_wrapped_cjk_without_space() {
+        let a = vec![(0, 0), (80, 0), (80, 16), (0, 16)];
+        let b = vec![(0, 20), (48, 20), (48, 36), (0, 36)];
+        let page = page_from_blocks(vec![(a, "Rust語".into()), (b, "言".into())]);
+        assert_eq!(page.text, "Rust語言");
+        assert!(page.tokens.iter().all(|t| t.line == 0));
+        let sel = selected_text(&page.tokens, 0, page.tokens.len() - 1);
+        assert_eq!(sel, "Rust語言");
+    }
+
+    #[test]
+    fn page_collapses_cjk_spaces_inside_a_block() {
+        let a = vec![(0, 0), (80, 0), (80, 16), (0, 16)];
+        let compiler = page_from_blocks(vec![(a.clone(), "編譯 器".into())]);
+        assert_eq!(compiler.text, "編譯器");
+        let year = page_from_blocks(vec![(a, "2009 年".into())]);
+        assert_eq!(year.text, "2009年");
     }
 }

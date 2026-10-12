@@ -8,10 +8,7 @@ use pinshot_core::ocr::{model_dir, page_from_blocks, ModelPaths, OcrPage};
 use pinshot_core::raster::Raster;
 
 pub fn recognize(image: &Raster) -> Result<OcrPage, String> {
-    crate::logutil::log(&format!(
-        "ocr recognize {}x{}",
-        image.width, image.height
-    ));
+    crate::logutil::log(&format!("ocr recognize {}x{}", image.width, image.height));
     let paths = ensure_models()?;
     infer(image, &paths)
 }
@@ -39,13 +36,22 @@ pub fn ensure_models() -> Result<ModelPaths, String> {
 
 fn copy_if_present(src: &Path, dest: &ModelPaths) {
     for (from, to) in [
-        (src.join(dest.det.file_name().unwrap_or_default()), &dest.det),
-        (src.join(dest.rec.file_name().unwrap_or_default()), &dest.rec),
+        (
+            src.join(dest.det.file_name().unwrap_or_default()),
+            &dest.det,
+        ),
+        (
+            src.join(dest.rec.file_name().unwrap_or_default()),
+            &dest.rec,
+        ),
         (
             src.join(dest.keys.file_name().unwrap_or_default()),
             &dest.keys,
         ),
-        (src.join(dest.cls.file_name().unwrap_or_default()), &dest.cls),
+        (
+            src.join(dest.cls.file_name().unwrap_or_default()),
+            &dest.cls,
+        ),
     ] {
         if from.is_file() && !to.is_file() {
             let _ = fs::copy(from, to);
@@ -109,10 +115,7 @@ fn infer(image: &Raster, paths: &ModelPaths) -> Result<OcrPage, String> {
         crate::logutil::log(&format!("ocr blocks {}", result.text_blocks.len()));
         let mut blocks = Vec::new();
         for b in result.text_blocks {
-            crate::logutil::log(&format!(
-                "ocr line score={:.3} {:?}",
-                b.text_score, b.text
-            ));
+            crate::logutil::log(&format!("ocr line score={:.3} {:?}", b.text_score, b.text));
             if b.text.trim().is_empty() {
                 continue;
             }
@@ -201,9 +204,7 @@ mod tests {
     use pinshot_core::Rgba;
 
     fn page_text(image: &Raster) -> String {
-        recognize(image)
-            .unwrap_or_else(|e| panic!("ocr: {e}"))
-            .text
+        recognize(image).unwrap_or_else(|e| panic!("ocr: {e}")).text
     }
 
     #[test]
@@ -230,10 +231,7 @@ mod tests {
         let has_en = text.to_ascii_lowercase().contains("hello")
             || text.to_ascii_lowercase().contains("pinshot");
         let has_zh = text.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c));
-        assert!(
-            has_en && has_zh,
-            "expected English + Chinese, got {text:?}"
-        );
+        assert!(has_en && has_zh, "expected English + Chinese, got {text:?}");
     }
 
     #[test]
@@ -417,6 +415,67 @@ mod tests {
         } else {
             assert_wiki_stems(&text, false);
             eprintln!("pango-view missing; used fontdue fallback");
+        }
+    }
+
+    #[test]
+    fn ocr_joins_cjk_wraps_without_spaces_when_requested() {
+        if std::env::var("PINSHOT_OCR_SMOKE").ok().as_deref() != Some("1") {
+            return;
+        }
+        let lines = [
+            "Rust語言是由 Mozilla 開發的程式語言。",
+            "該專案於2009年開始，編譯器來自該專案。",
+        ];
+        let Some(img) = pango_article_raster(&lines, "Noto Sans CJK SC 16")
+            .or_else(|| pango_article_raster(&lines, "Noto Sans CJK JP 16"))
+            .or_else(|| pango_article_raster(&lines, "Droid Sans Fallback 16"))
+        else {
+            let mut img = Raster::new(720, 160);
+            img.fill(Rgba::WHITE);
+            for (i, line) in lines.iter().enumerate() {
+                font::blit_rgba_chrome(
+                    &mut img.pixels,
+                    img.width,
+                    img.width,
+                    img.height,
+                    line,
+                    24.0,
+                    48.0 + i as f32 * 40.0,
+                    22.0,
+                    Rgba::BLACK,
+                );
+            }
+            img.force_opaque();
+            let text = page_text(&img);
+            eprintln!("ocr cjk wrap fontdue => {text:?}");
+            assert_cjk_wrap_bar(&text);
+            return;
+        };
+        let text = page_text(&img);
+        eprintln!(
+            "ocr cjk wrap pango {}x{} => {text:?}",
+            img.width, img.height
+        );
+        assert_cjk_wrap_bar(&text);
+    }
+
+    fn assert_cjk_wrap_bar(text: &str) {
+        assert!(
+            !text.contains("編譯 器") && !text.contains("2009 年"),
+            "CJK wrap inserted a space: {text:?}"
+        );
+        if text.contains("編譯") {
+            assert!(
+                text.contains("編譯器"),
+                "expected 編譯器 joined, got {text:?}"
+            );
+        }
+        if text.contains("2009") && text.chars().any(|c| c == '年') {
+            assert!(
+                text.contains("2009年"),
+                "expected 2009年 joined, got {text:?}"
+            );
         }
     }
 }

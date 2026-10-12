@@ -68,7 +68,7 @@ window but styles it like Snipaste prefs (egui, CJK, always-on-top).
 | Dim + hole + handles + size label | `draw::OverlayFront` | done |
 | Window hover / Tab element | `selection` + `detect` | done | Drag/move/resize also magnet-snaps edges to window + control rects (`snap.rs`, 8 px) |
 | Magnifier 15×15 @ 8×, C / Shift | `magnifier.rs` + overlay keys | done |
-| Drag / move / 8 handles | `selection.rs` | done | First F1 *selection* drag recovered via `QueryPointer`. Annotation press is winit-only — recover must not `annot.press` (that emptied the live shape) |
+| Drag / move / 8 handles | `selection.rs` | done | Click adopts hover window; press-and-drag always draws a fresh rect (even over a window). Recover debounce: two QueryPointer ups, never window-adopt from recover. Large-rect edge-band handle hit so screen-edge corners resize. Pending press origin only for Create (not handle/move). |
 | Toolbar + OCR/Translate | `toolbar.rs` | done |
 | `,` `.` history / Shift+R last rect | `history.rs` + overlay + `data_dir/history` | done | `,`/`.` replay image+rect; **R applies last rect on the live capture** (not the old PNG); persist so R works after restart |
 | Esc confirm abort | in-overlay ConfirmAbort | done | Y/N / Esc / “Do not show again”; skip via prefs |
@@ -164,7 +164,7 @@ window but styles it like Snipaste prefs (egui, CJK, always-on-top).
 
 | Python | Rust | Status |
 |---|---|---|
-| `translation.recognize` RapidOCR | Linux always / `--features ocr` paddle-ocr-rs PP-OCRv5 | done | In-place on the pin: drag-select text, C copies. No result window, Ctrl+A, or region boxes. |
+| `translation.recognize` RapidOCR | Linux always / `--features ocr` paddle-ocr-rs PP-OCRv5 | done | In-place on the pin: drag-select text, C copies. CJK wrap spaces collapsed (`編譯器`, `2009年`); wrapped CJK lines share `line_i`. No result window, Ctrl+A, or region boxes. |
 | Edge `translatetext` | `translate_run.rs` | done | Overlay F5 pins + OCR + a 40px translation strip. |
 | `ResultWindow` above pins | in-place pin overlay | done | `--ocr-window` / egui result window removed. |
 | `selection_text.send_copy` | `win32::send_ctrl_c` | done (Windows) / impossible (Linux; Python same) |

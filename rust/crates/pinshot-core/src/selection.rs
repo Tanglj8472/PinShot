@@ -1,7 +1,11 @@
 //! Overlay selection state machine (idle → creating → selected + move/resize).
 
-use crate::geom::{hit_handle, Handle, Point, Rect};
+use crate::geom::{hit_sel_handle, Handle, Point, Rect};
 use crate::snap::{SnapGuides, SNAP_PX};
+
+/// Manhattan pixels: at or below this, mouse-up is a click (adopt hover window).
+/// Larger than this is a drag, even if the span is a thin strip.
+const CLICK_PX: f32 = 4.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SelState {
@@ -55,17 +59,12 @@ impl Selection {
     }
 
     /// Left press. `tool_active` means the annotator should own the click.
-    pub fn press(
-        &mut self,
-        pt: Point,
-        bounds: Rect,
-        tool_active: bool,
-    ) -> PressKind {
+    pub fn press(&mut self, pt: Point, bounds: Rect, tool_active: bool) -> PressKind {
         if self.state == SelState::Creating {
             return PressKind::Create;
         }
         if self.has_sel() && !tool_active {
-            if let Some(h) = hit_handle(self.normalized(), pt, 8.0) {
+            if let Some(h) = hit_sel_handle(self.normalized(), pt) {
                 self.state = SelState::Resizing;
                 self.handle = Some(h);
                 self.rect = self.normalized();
@@ -100,9 +99,7 @@ impl Selection {
         match self.state {
             SelState::Creating => {
                 if let Some(origin) = self.press {
-                    let pt = guides
-                        .map(|g| g.snap_point(pt, SNAP_PX))
-                        .unwrap_or(pt);
+                    let pt = guides.map(|g| g.snap_point(pt, SNAP_PX)).unwrap_or(pt);
                     if pt.manhattan(origin) > 3.0 {
                         self.rect = Rect::span(origin, pt);
                     }
@@ -110,12 +107,7 @@ impl Selection {
             }
             SelState::Moving => {
                 let mut r = self.rect;
-                r = Rect::new(
-                    pt.x - self.drag_off.x,
-                    pt.y - self.drag_off.y,
-                    r.w,
-                    r.h,
-                );
+                r = Rect::new(pt.x - self.drag_off.x, pt.y - self.drag_off.y, r.w, r.h);
                 if let Some(g) = guides {
                     r = g.snap_rect_move(r, SNAP_PX);
                 }
@@ -148,12 +140,14 @@ impl Selection {
     ) {
         if self.state == SelState::Creating {
             if let Some(origin) = self.press {
-                let pt = guides
-                    .map(|g| g.snap_point(pt, SNAP_PX))
-                    .unwrap_or(pt);
-                self.rect = Rect::span(origin, pt);
-            }
-            if !self.has_sel() {
+                let pt = guides.map(|g| g.snap_point(pt, SNAP_PX)).unwrap_or(pt);
+                if origin.manhattan(pt) <= CLICK_PX {
+                    // Click: Snipaste window-detect. A press-and-drag keeps the span.
+                    self.rect = if hover.is_empty() { bounds } else { hover };
+                } else {
+                    self.rect = Rect::span(origin, pt);
+                }
+            } else if !self.has_sel() {
                 self.rect = if hover.is_empty() { bounds } else { hover };
             }
         }
@@ -278,7 +272,10 @@ mod tests {
     #[test]
     fn drag_creates_rect() {
         let mut s = Selection::new();
-        assert_eq!(s.press(Point::new(10.0, 10.0), bounds(), false), PressKind::Create);
+        assert_eq!(
+            s.press(Point::new(10.0, 10.0), bounds(), false),
+            PressKind::Create
+        );
         s.motion(Point::new(80.0, 50.0), bounds());
         s.release(Point::new(80.0, 50.0), Rect::EMPTY, bounds());
         assert_eq!(s.state, SelState::Selected);
@@ -292,6 +289,42 @@ mod tests {
         s.press(Point::new(120.0, 100.0), bounds(), false);
         s.release(Point::new(121.0, 101.0), hover, bounds());
         assert_eq!(s.normalized(), hover);
+    }
+
+    #[test]
+    fn drag_over_window_does_not_adopt_hover() {
+        let mut s = Selection::new();
+        let hover = Rect::new(80.0, 60.0, 900.0, 500.0);
+        s.press(Point::new(120.0, 100.0), bounds(), false);
+        s.motion(Point::new(320.0, 240.0), bounds());
+        s.release(Point::new(320.0, 240.0), hover, bounds());
+        let r = s.normalized();
+        assert!(
+            (r.w - 200.0).abs() < 1.0 && (r.h - 140.0).abs() < 1.0,
+            "drag must keep the rectangle, got {r:?} hover={hover:?}"
+        );
+    }
+
+    #[test]
+    fn corner_handle_near_screen_edge_resizes_not_moves() {
+        let mut s = Selection::new();
+        s.set_rect(Rect::new(10.0, 10.0, 1900.0, 1060.0), bounds());
+        let before = s.normalized();
+        let br = before.bottom_right();
+        // Pointer sits inside the corner, as on a real screen edge.
+        let grab = Point::new(br.x - 4.0, br.y - 4.0);
+        assert_eq!(
+            s.press(grab, bounds(), false),
+            PressKind::Resize(Handle::Br)
+        );
+        s.motion(Point::new(br.x - 120.0, br.y - 80.0), bounds());
+        s.release(Point::new(br.x - 120.0, br.y - 80.0), Rect::EMPTY, bounds());
+        let r = s.normalized();
+        assert!(
+            r.w < before.w - 80.0 && r.h < before.h - 50.0,
+            "corner drag must resize, got {r:?} before={before:?}"
+        );
+        assert!((r.x - before.x).abs() < 1.0 && (r.y - before.y).abs() < 1.0);
     }
 
     #[test]
@@ -345,7 +378,12 @@ mod tests {
         let guides = crate::snap::SnapGuides::from_rects([Rect::new(40.0, 40.0, 80.0, 24.0)]);
         s.press(Point::new(10.0, 10.0), bounds(), false);
         s.motion_snapped(Point::new(118.0, 66.0), bounds(), Some(&guides));
-        s.release_snapped(Point::new(118.0, 66.0), Rect::EMPTY, bounds(), Some(&guides));
+        s.release_snapped(
+            Point::new(118.0, 66.0),
+            Rect::EMPTY,
+            bounds(),
+            Some(&guides),
+        );
         let r = s.normalized();
         assert!((r.x + r.w - 120.0).abs() < 0.01, "right snapped, got {r:?}");
         assert!((r.y + r.h - 64.0).abs() < 0.01, "bottom snapped, got {r:?}");
@@ -356,7 +394,10 @@ mod tests {
         let mut s = Selection::new();
         s.press(Point::new(10.0, 10.0), bounds(), false);
         s.motion(Point::new(80.0, 50.0), bounds());
-        assert_eq!(s.press(Point::new(80.0, 50.0), bounds(), false), PressKind::Create);
+        assert_eq!(
+            s.press(Point::new(80.0, 50.0), bounds(), false),
+            PressKind::Create
+        );
         s.release(Point::new(80.0, 50.0), Rect::EMPTY, bounds());
         assert_eq!(s.normalized(), Rect::new(10.0, 10.0, 70.0, 40.0));
     }
