@@ -30,7 +30,17 @@ Ctrl+Shift+S
   → SelectionOverlay（只画选框）
   → ScreenCapture::CaptureRegion(screenRect)   // GDI BitBlt，ZoomIt 风格
   → AnnotationOverlay 拥有 base 位图
-       ├─ DrawStack（笔/矩形/箭头 + undo）
-       ├─ Toolbar（工具切换 + undo/redo/close/pin/save/copy）
+       ├─ DrawStack（笔/矩形/椭圆/箭头/文字/马赛克 + undo）
+       ├─ Toolbar（工具 + w-/w+/clr + undo/redo + close/pin/save/copy）
        └─ Compose → ImageUtil 剪贴板/PNG 或 PinManager::CreatePin
 ```
+
+## 批注快捷键（对齐 PinShot 习惯）
+
+| 键 | 作用 |
+|----|------|
+| P / R / E / A / X / M | 笔 / 矩形 / 椭圆 / 箭头 / 文字 / 马赛克 |
+| 1 / 2 | 线宽、字号或马赛克块减小/增大 |
+| 点击文字工具后输入 | Enter 提交，Esc 取消当前文字 |
+| Ctrl+Z / Y | 撤销 / 重做 |
+| Ctrl+C / S / T | 复制 / 保存 / 贴图 |

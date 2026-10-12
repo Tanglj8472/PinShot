@@ -1,5 +1,5 @@
 //==============================================================================
-// SnipClone — D2D annotation renderer（底层绘制参考 ZoomIt 抗锯齿矢量思路）
+// SnipClone — D2D annotation renderer
 //==============================================================================
 #pragma once
 
@@ -8,6 +8,7 @@
 #include "DrawStack.h"
 
 #include <d2d1.h>
+#include <dwrite.h>
 #include <wincodec.h>
 
 namespace snip
@@ -25,13 +26,12 @@ public:
     bool Initialize();
     void Shutdown();
 
-    // Draw base + shapes into an existing DC render target (already BeginDraw).
     void DrawScene(
         ID2D1RenderTarget* rt,
         ID2D1Bitmap* baseBitmap,
+        const CaptureResult* basePixels,
         const DrawStack& stack);
 
-    // Merge base BGRA + shapes → new CaptureResult (PinShot composed()).
     CaptureResult Compose(const CaptureResult& base, const DrawStack& stack);
 
     ID2D1Bitmap* CreateBitmapFromCapture(ID2D1RenderTarget* rt, const CaptureResult& image);
@@ -40,10 +40,22 @@ public:
 
 private:
     void EnsureBrushes(ID2D1RenderTarget* rt);
-    void DrawCommandOn(ID2D1RenderTarget* rt, const DrawCommand& cmd);
+    void DrawCommandOn(
+        ID2D1RenderTarget* rt,
+        ID2D1Bitmap* baseBitmap,
+        const CaptureResult* basePixels,
+        const DrawCommand& cmd,
+        bool preview);
     void DrawArrowHead(ID2D1RenderTarget* rt, D2D1_POINT_2F from, D2D1_POINT_2F to, const DrawStyle& style);
+    void DrawTextCmd(ID2D1RenderTarget* rt, const DrawCommand& cmd);
+    void DrawMosaic(
+        ID2D1RenderTarget* rt,
+        ID2D1Bitmap* baseBitmap,
+        const CaptureResult* basePixels,
+        const DrawCommand& cmd);
 
     ID2D1Factory* m_factory = nullptr;
+    IDWriteFactory* m_dwrite = nullptr;
     IWICImagingFactory* m_wic = nullptr;
     ID2D1SolidColorBrush* m_brush = nullptr;
 };

@@ -1,11 +1,12 @@
 //==============================================================================
-// SnipClone — vector draw commands (PinShot Shape 对位)
+// SnipClone — vector draw commands（对齐 PinShot Shape）
 //==============================================================================
 #pragma once
 
 #include <Windows.h>
 #include <d2d1.h>
 
+#include <string>
 #include <vector>
 
 namespace snip
@@ -16,22 +17,29 @@ enum class ToolKind
     None = 0,
     Pen,
     Rect,
+    Ellipse,
     Arrow,
+    Text,
+    Mosaic,
+    Count
 };
 
 struct DrawStyle
 {
-    D2D1_COLOR_F color{ 1.f, 0.2f, 0.2f, 1.f };
+    D2D1_COLOR_F color{ 1.f, 0.25f, 0.25f, 1.f };
     float width = 3.f;
     bool arrow = true;
+    bool filled = false;
+    float fontSize = 22.f;
+    int mosaicSize = 8; // pixel block size
 };
 
-// Mirrors PinShot Shape: kind + pts + style.
 struct DrawCommand
 {
     ToolKind kind = ToolKind::None;
     std::vector<D2D1_POINT_2F> pts; // image-local pixels
     DrawStyle style{};
+    std::wstring text; // Text tool
 };
 
 inline const wchar_t* ToolKindName(ToolKind k)
@@ -42,11 +50,29 @@ inline const wchar_t* ToolKindName(ToolKind k)
         return L"pen";
     case ToolKind::Rect:
         return L"rect";
+    case ToolKind::Ellipse:
+        return L"ellip";
     case ToolKind::Arrow:
         return L"arrow";
+    case ToolKind::Text:
+        return L"text";
+    case ToolKind::Mosaic:
+        return L"mos";
     default:
         return L"none";
     }
+}
+
+inline bool IsDragShapeTool(ToolKind k)
+{
+    return k == ToolKind::Pen || k == ToolKind::Rect || k == ToolKind::Ellipse ||
+           k == ToolKind::Arrow || k == ToolKind::Mosaic;
+}
+
+inline bool IsTwoPointTool(ToolKind k)
+{
+    return k == ToolKind::Rect || k == ToolKind::Ellipse || k == ToolKind::Arrow ||
+           k == ToolKind::Mosaic;
 }
 
 } // namespace snip

@@ -14,18 +14,20 @@
 | 全局热键 `Ctrl+Shift+S` | ✅ |
 | 框选 Overlay + 尺寸 | ✅ |
 | 选区 GDI 捕获（ZoomIt 风格 BitBlt） | ✅ |
-| Annotator：笔 / 矩形 / 箭头 + undo/redo | ✅ |
-| 悬浮工具栏（PinShot ToolDock 顺序子集） | ✅ |
+| Annotator：笔 / 矩形 / 椭圆 / 箭头 / 文字 / 马赛克 + undo/redo | ✅ |
+| 悬浮工具栏 + 线宽/颜色调节（PinShot 装配子集） | ✅ |
 | 复制剪贴板 / 保存 PNG / 贴图 Pin | ✅ |
-| GraphicsCapture / 文字 / 马赛克 / 完整图标 | ❌ 后续 |
+| GraphicsCapture / 样式子面板 / 完整图标 / 橡皮擦 | ❌ 后续 |
 
 ## 使用
 
 1. VS2022 打开 `SnipClone.sln`，`Release|x64` 生成（或 `.\build.ps1`）
 2. 运行 EXE，按 `Ctrl+Shift+S`
 3. 拖拽框选 → 松手进入批注
-4. 工具栏：`pen|rect|arrow | undo redo | close pin save copy`
-5. 贴图窗口可拖拽；双击关闭
+4. 工具栏：`pen rect ellip arrow text mos | w- w+ clr | undo redo | close pin save copy`
+5. 文字：点一下后直接键入，Enter 提交 / Esc 取消
+6. 贴图窗口可拖拽；双击关闭
+7. 快捷键：`P/R/E/A/X/M` 切工具，`1/2` 调粗细/字号/马赛克块
 
 ## 状态机
 

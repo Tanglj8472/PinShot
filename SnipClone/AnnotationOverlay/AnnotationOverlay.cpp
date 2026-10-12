@@ -135,6 +135,10 @@ LRESULT AnnotationOverlay::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         m_ann.Press(D2D1::Point2F(
             static_cast<float>(GET_X_LPARAM(lParam)),
             static_cast<float>(GET_Y_LPARAM(lParam))));
+        if (m_toolbar)
+        {
+            m_toolbar->SyncFromAnnotator();
+        }
         return 0;
     case WM_MOUSEMOVE:
         if (GetCapture() == hwnd)
@@ -153,6 +157,13 @@ LRESULT AnnotationOverlay::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             static_cast<float>(GET_X_LPARAM(lParam)),
             static_cast<float>(GET_Y_LPARAM(lParam))));
         return 0;
+    case WM_CHAR:
+        if (m_ann.IsEditingText())
+        {
+            m_ann.AppendTextChar(static_cast<wchar_t>(wParam));
+            return 0;
+        }
+        break;
     case WM_SNIP_CLOSE_SELF:
         Stop();
         return 0;
@@ -160,8 +171,23 @@ LRESULT AnnotationOverlay::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
     case WM_KEYDOWN:
         if (wParam == VK_ESCAPE)
         {
+            if (m_ann.IsEditingText())
+            {
+                m_ann.CommitText(true);
+                return 0;
+            }
             RequestClose();
             return 0;
+        }
+        if (wParam == VK_RETURN && m_ann.IsEditingText())
+        {
+            m_ann.CommitText(false);
+            return 0;
+        }
+        // While typing text, don't steal letter hotkeys.
+        if (m_ann.IsEditingText())
+        {
+            break;
         }
         if (wParam == 'Z' && (GetKeyState(VK_CONTROL) & 0x8000))
         {
@@ -187,6 +213,56 @@ LRESULT AnnotationOverlay::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         {
             DoPin();
             return 0;
+        }
+        // PinShot-like tool jump keys.
+        if (!(GetKeyState(VK_CONTROL) & 0x8000))
+        {
+            auto setTool = [this](ToolKind k) {
+                m_ann.SetTool(k);
+                if (m_toolbar)
+                {
+                    m_toolbar->SyncFromAnnotator();
+                }
+            };
+            switch (wParam)
+            {
+            case 'P':
+                setTool(ToolKind::Pen);
+                return 0;
+            case 'R':
+                setTool(ToolKind::Rect);
+                return 0;
+            case 'E':
+                setTool(ToolKind::Ellipse);
+                return 0;
+            case 'A':
+                setTool(ToolKind::Arrow);
+                return 0;
+            case 'X':
+                setTool(ToolKind::Text);
+                return 0;
+            case 'M':
+                setTool(ToolKind::Mosaic);
+                return 0;
+            case '1':
+                if (m_ann.Tool() == ToolKind::Text)
+                    m_ann.AdjustFontSize(-1);
+                else if (m_ann.Tool() == ToolKind::Mosaic)
+                    m_ann.AdjustMosaicSize(-1);
+                else
+                    m_ann.AdjustWidth(-1);
+                return 0;
+            case '2':
+                if (m_ann.Tool() == ToolKind::Text)
+                    m_ann.AdjustFontSize(+1);
+                else if (m_ann.Tool() == ToolKind::Mosaic)
+                    m_ann.AdjustMosaicSize(+1);
+                else
+                    m_ann.AdjustWidth(+1);
+                return 0;
+            default:
+                break;
+            }
         }
         break;
     case WM_DESTROY:
@@ -221,6 +297,25 @@ void AnnotationOverlay::OnToolbarAction(ToolbarAction action, ToolKind /*tool*/)
     case ToolbarAction::Redo:
         m_ann.Redo();
         break;
+    case ToolbarAction::WidthDec:
+        if (m_ann.Tool() == ToolKind::Text)
+            m_ann.AdjustFontSize(-1);
+        else if (m_ann.Tool() == ToolKind::Mosaic)
+            m_ann.AdjustMosaicSize(-1);
+        else
+            m_ann.AdjustWidth(-1);
+        break;
+    case ToolbarAction::WidthInc:
+        if (m_ann.Tool() == ToolKind::Text)
+            m_ann.AdjustFontSize(+1);
+        else if (m_ann.Tool() == ToolKind::Mosaic)
+            m_ann.AdjustMosaicSize(+1);
+        else
+            m_ann.AdjustWidth(+1);
+        break;
+    case ToolbarAction::ColorCycle:
+        m_ann.CycleColor();
+        break;
     case ToolbarAction::Copy:
         DoCopy();
         break;
@@ -246,6 +341,10 @@ void AnnotationOverlay::OnToolbarAction(ToolbarAction action, ToolKind /*tool*/)
 
 CaptureResult AnnotationOverlay::ComposeExport()
 {
+    if (m_ann.IsEditingText())
+    {
+        m_ann.CommitText(false);
+    }
     m_ann.Finish();
     return m_renderer.Compose(m_base, m_ann);
 }
@@ -377,7 +476,7 @@ void AnnotationOverlay::Present()
     m_rt->BindDC(m_memDc, &bind);
     m_rt->BeginDraw();
     m_rt->Clear(D2D1::ColorF(0, 0, 0, 0));
-    m_renderer.DrawScene(m_rt, m_baseBmp, m_ann);
+    m_renderer.DrawScene(m_rt, m_baseBmp, &m_base, m_ann);
     m_rt->EndDraw();
 
     POINT ptSrc{ 0, 0 };

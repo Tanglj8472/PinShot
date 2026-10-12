@@ -1,12 +1,14 @@
 //==============================================================================
-// SnipClone — D2D annotation renderer
+// SnipClone — D2D annotation renderer（文字 / 马赛克对齐 PinShot 效果思路）
 //==============================================================================
 #include "AnnotationRenderer.h"
 
+#include <algorithm>
 #include <cmath>
 #include <vector>
 
 #pragma comment(lib, "d2d1.lib")
+#pragma comment(lib, "dwrite.lib")
 #pragma comment(lib, "windowscodecs.lib")
 
 namespace snip
@@ -28,6 +30,13 @@ bool AnnotationRenderer::Initialize()
         return false;
     }
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    if (FAILED(DWriteCreateFactory(
+            DWRITE_FACTORY_TYPE_SHARED,
+            __uuidof(IDWriteFactory),
+            reinterpret_cast<IUnknown**>(&m_dwrite))))
+    {
+        return false;
+    }
     if (FAILED(CoCreateInstance(
             CLSID_WICImagingFactory,
             nullptr,
@@ -50,6 +59,11 @@ void AnnotationRenderer::Shutdown()
     {
         m_wic->Release();
         m_wic = nullptr;
+    }
+    if (m_dwrite)
+    {
+        m_dwrite->Release();
+        m_dwrite = nullptr;
     }
     if (m_factory)
     {
@@ -76,7 +90,6 @@ ID2D1Bitmap* AnnotationRenderer::CreateBitmapFromCapture(ID2D1RenderTarget* rt, 
     D2D1_BITMAP_PROPERTIES props = D2D1::BitmapProperties(
         D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
 
-    // Premultiply for layered/D2D.
     std::vector<std::uint8_t> premul(image.bgra.size());
     for (int y = 0; y < image.height; ++y)
     {
@@ -87,7 +100,7 @@ ID2D1Bitmap* AnnotationRenderer::CreateBitmapFromCapture(ID2D1RenderTarget* rt, 
             const std::uint8_t b = src[x * 4 + 0];
             const std::uint8_t g = src[x * 4 + 1];
             const std::uint8_t r = src[x * 4 + 2];
-            const std::uint8_t a = src[x * 4 + 3];
+            const std::uint8_t a = src[x * 4 + 3] ? src[x * 4 + 3] : 255;
             dst[x * 4 + 0] = static_cast<std::uint8_t>(b * a / 255);
             dst[x * 4 + 1] = static_cast<std::uint8_t>(g * a / 255);
             dst[x * 4 + 2] = static_cast<std::uint8_t>(r * a / 255);
@@ -132,7 +145,172 @@ void AnnotationRenderer::DrawArrowHead(
     rt->DrawLine(to, p2, m_brush, style.width, nullptr);
 }
 
-void AnnotationRenderer::DrawCommandOn(ID2D1RenderTarget* rt, const DrawCommand& cmd)
+void AnnotationRenderer::DrawTextCmd(ID2D1RenderTarget* rt, const DrawCommand& cmd)
+{
+    if (!m_dwrite || cmd.pts.empty())
+    {
+        return;
+    }
+
+    const std::wstring& content = cmd.text.empty() ? L"|" : cmd.text; // caret hint while empty
+    IDWriteTextFormat* format = nullptr;
+    if (FAILED(m_dwrite->CreateTextFormat(
+            L"Segoe UI",
+            nullptr,
+            DWRITE_FONT_WEIGHT_SEMI_BOLD,
+            DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL,
+            cmd.style.fontSize,
+            L"en-us",
+            &format)))
+    {
+        return;
+    }
+
+    const float x = cmd.pts[0].x;
+    const float y = cmd.pts[0].y;
+    const float w = 2000.f;
+    const float h = cmd.style.fontSize * 4.f;
+    D2D1_RECT_F layout = D2D1::RectF(x, y, x + w, y + h);
+
+    // Outline for contrast (PinShot outline).
+    m_brush->SetColor(D2D1::ColorF(0, 0, 0, 0.85f));
+    for (int ox = -1; ox <= 1; ++ox)
+    {
+        for (int oy = -1; oy <= 1; ++oy)
+        {
+            if (ox == 0 && oy == 0)
+            {
+                continue;
+            }
+            D2D1_RECT_F r = D2D1::RectF(layout.left + ox, layout.top + oy, layout.right + ox, layout.bottom + oy);
+            rt->DrawText(content.c_str(), static_cast<UINT32>(content.size()), format, r, m_brush);
+        }
+    }
+
+    m_brush->SetColor(cmd.style.color);
+    rt->DrawText(content.c_str(), static_cast<UINT32>(content.size()), format, layout, m_brush);
+    format->Release();
+}
+
+void AnnotationRenderer::DrawMosaic(
+    ID2D1RenderTarget* rt,
+    ID2D1Bitmap* baseBitmap,
+    const CaptureResult* basePixels,
+    const DrawCommand& cmd)
+{
+    if (cmd.pts.size() < 2 || !baseBitmap)
+    {
+        return;
+    }
+
+    const float l = (std::min)(cmd.pts[0].x, cmd.pts[1].x);
+    const float t = (std::min)(cmd.pts[0].y, cmd.pts[1].y);
+    const float r = (std::max)(cmd.pts[0].x, cmd.pts[1].x);
+    const float b = (std::max)(cmd.pts[0].y, cmd.pts[1].y);
+    const float rw = r - l;
+    const float rh = b - t;
+    if (rw < 2.f || rh < 2.f)
+    {
+        return;
+    }
+
+    const int block = (std::max)(2, cmd.style.mosaicSize);
+    // PinShot-style: scale down then nearest-neighbor up via D2D bitmap draw.
+    const UINT smallW = (std::max)(1u, static_cast<UINT>(rw / block));
+    const UINT smallH = (std::max)(1u, static_cast<UINT>(rh / block));
+
+    // Prefer sampling from CPU base for correct source rect; fall back to full bitmap stretch.
+    if (basePixels && !basePixels->Empty())
+    {
+        const int x0 = (std::max)(0, static_cast<int>(l));
+        const int y0 = (std::max)(0, static_cast<int>(t));
+        const int x1 = (std::min)(basePixels->width, static_cast<int>(r));
+        const int y1 = (std::min)(basePixels->height, static_cast<int>(b));
+        const int cw = x1 - x0;
+        const int ch = y1 - y0;
+        if (cw <= 0 || ch <= 0)
+        {
+            return;
+        }
+
+        const int sw = (std::max)(1, cw / block);
+        const int sh = (std::max)(1, ch / block);
+        std::vector<std::uint8_t> small(static_cast<size_t>(sw * sh * 4));
+        for (int sy = 0; sy < sh; ++sy)
+        {
+            const int srcY = y0 + sy * ch / sh;
+            for (int sx = 0; sx < sw; ++sx)
+            {
+                const int srcX = x0 + sx * cw / sw;
+                const auto* p = basePixels->bgra.data() +
+                                static_cast<size_t>(srcY) * basePixels->stride +
+                                static_cast<size_t>(srcX) * 4;
+                auto* d = small.data() + static_cast<size_t>((sy * sw + sx) * 4);
+                d[0] = p[0];
+                d[1] = p[1];
+                d[2] = p[2];
+                d[3] = 255;
+            }
+        }
+
+        // Upscale on CPU with nearest neighbor into region-sized buffer.
+        std::vector<std::uint8_t> big(static_cast<size_t>(cw * ch * 4));
+        for (int y = 0; y < ch; ++y)
+        {
+            const int sy = y * sh / ch;
+            for (int x = 0; x < cw; ++x)
+            {
+                const int sx = x * sw / cw;
+                const auto* s = small.data() + static_cast<size_t>((sy * sw + sx) * 4);
+                auto* d = big.data() + static_cast<size_t>((y * cw + x) * 4);
+                d[0] = s[0];
+                d[1] = s[1];
+                d[2] = s[2];
+                d[3] = 255;
+            }
+        }
+
+        D2D1_BITMAP_PROPERTIES props = D2D1::BitmapProperties(
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+        ID2D1Bitmap* mosa = nullptr;
+        // Premultiply (opaque).
+        rt->CreateBitmap(
+            D2D1::SizeU(static_cast<UINT32>(cw), static_cast<UINT32>(ch)),
+            big.data(),
+            static_cast<UINT32>(cw * 4),
+            props,
+            &mosa);
+        if (mosa)
+        {
+            rt->DrawBitmap(
+                mosa,
+                D2D1::RectF(static_cast<float>(x0), static_cast<float>(y0),
+                            static_cast<float>(x1), static_cast<float>(y1)),
+                1.f,
+                D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
+            mosa->Release();
+        }
+        return;
+    }
+
+    // Fallback: draw source sub-rect via full bitmap with nearest neighbor into dest.
+    UNREFERENCED_PARAMETER(smallW);
+    UNREFERENCED_PARAMETER(smallH);
+    rt->DrawBitmap(
+        baseBitmap,
+        D2D1::RectF(l, t, r, b),
+        1.f,
+        D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR,
+        D2D1::RectF(l, t, r, b));
+}
+
+void AnnotationRenderer::DrawCommandOn(
+    ID2D1RenderTarget* rt,
+    ID2D1Bitmap* baseBitmap,
+    const CaptureResult* basePixels,
+    const DrawCommand& cmd,
+    bool preview)
 {
     if (cmd.pts.empty() || !m_brush)
     {
@@ -153,7 +331,31 @@ void AnnotationRenderer::DrawCommandOn(ID2D1RenderTarget* rt, const DrawCommand&
         if (cmd.pts.size() >= 2)
         {
             D2D1_RECT_F r = D2D1::RectF(cmd.pts[0].x, cmd.pts[0].y, cmd.pts[1].x, cmd.pts[1].y);
-            rt->DrawRectangle(r, m_brush, cmd.style.width);
+            if (cmd.style.filled)
+            {
+                rt->FillRectangle(r, m_brush);
+            }
+            else
+            {
+                rt->DrawRectangle(r, m_brush, cmd.style.width);
+            }
+        }
+        break;
+    case ToolKind::Ellipse:
+        if (cmd.pts.size() >= 2)
+        {
+            D2D1_ELLIPSE e = D2D1::Ellipse(
+                D2D1::Point2F((cmd.pts[0].x + cmd.pts[1].x) * 0.5f, (cmd.pts[0].y + cmd.pts[1].y) * 0.5f),
+                std::fabs(cmd.pts[1].x - cmd.pts[0].x) * 0.5f,
+                std::fabs(cmd.pts[1].y - cmd.pts[0].y) * 0.5f);
+            if (cmd.style.filled)
+            {
+                rt->FillEllipse(e, m_brush);
+            }
+            else
+            {
+                rt->DrawEllipse(e, m_brush, cmd.style.width);
+            }
         }
         break;
     case ToolKind::Arrow:
@@ -166,6 +368,20 @@ void AnnotationRenderer::DrawCommandOn(ID2D1RenderTarget* rt, const DrawCommand&
             }
         }
         break;
+    case ToolKind::Text:
+        DrawTextCmd(rt, cmd);
+        break;
+    case ToolKind::Mosaic:
+        DrawMosaic(rt, baseBitmap, basePixels, cmd);
+        if (preview && cmd.pts.size() >= 2)
+        {
+            m_brush->SetColor(D2D1::ColorF(1, 1, 1, 0.6f));
+            rt->DrawRectangle(
+                D2D1::RectF(cmd.pts[0].x, cmd.pts[0].y, cmd.pts[1].x, cmd.pts[1].y),
+                m_brush,
+                1.f);
+        }
+        break;
     default:
         break;
     }
@@ -174,6 +390,7 @@ void AnnotationRenderer::DrawCommandOn(ID2D1RenderTarget* rt, const DrawCommand&
 void AnnotationRenderer::DrawScene(
     ID2D1RenderTarget* rt,
     ID2D1Bitmap* baseBitmap,
+    const CaptureResult* basePixels,
     const DrawStack& stack)
 {
     EnsureBrushes(rt);
@@ -184,11 +401,11 @@ void AnnotationRenderer::DrawScene(
     }
     for (const auto& cmd : stack.Shapes())
     {
-        DrawCommandOn(rt, cmd);
+        DrawCommandOn(rt, baseBitmap, basePixels, cmd, false);
     }
     if (const auto* live = stack.Live())
     {
-        DrawCommandOn(rt, *live);
+        DrawCommandOn(rt, baseBitmap, basePixels, *live, true);
     }
 }
 
@@ -200,7 +417,6 @@ CaptureResult AnnotationRenderer::Compose(const CaptureResult& base, const DrawS
         return out;
     }
 
-    // Render to WIC bitmap → copy pixels out.
     IWICBitmap* wicBmp = nullptr;
     if (FAILED(m_wic->CreateBitmap(
             static_cast<UINT>(base.width),
@@ -224,10 +440,14 @@ CaptureResult AnnotationRenderer::Compose(const CaptureResult& base, const DrawS
     }
 
     ID2D1Bitmap* baseBmp = CreateBitmapFromCapture(rt, base);
+    if (m_brush)
+    {
+        m_brush->Release();
+        m_brush = nullptr;
+    }
     rt->BeginDraw();
     rt->Clear(D2D1::ColorF(0, 0, 0, 0));
-    // Temporary stack without live for export (caller should Finish first).
-    DrawScene(rt, baseBmp, stack);
+    DrawScene(rt, baseBmp, &base, stack);
     rt->EndDraw();
 
     if (baseBmp)
@@ -241,7 +461,6 @@ CaptureResult AnnotationRenderer::Compose(const CaptureResult& base, const DrawS
     out.bgra.resize(bufSize);
     wicBmp->CopyPixels(nullptr, stride, bufSize, out.bgra.data());
 
-    // Convert premultiplied → straight for clipboard/PNG consistency.
     for (int y = 0; y < out.height; ++y)
     {
         auto* row = out.bgra.data() + static_cast<size_t>(y) * out.stride;
@@ -258,7 +477,7 @@ CaptureResult AnnotationRenderer::Compose(const CaptureResult& base, const DrawS
                 row[x * 4 + 1] = static_cast<std::uint8_t>(row[x * 4 + 1] * 255 / a);
                 row[x * 4 + 2] = static_cast<std::uint8_t>(row[x * 4 + 2] * 255 / a);
             }
-            row[x * 4 + 3] = 255; // snip exports opaque
+            row[x * 4 + 3] = 255;
         }
     }
 

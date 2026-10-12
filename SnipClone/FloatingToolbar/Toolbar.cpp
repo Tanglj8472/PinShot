@@ -52,7 +52,7 @@ bool Toolbar::Create(HINSTANCE instance, HWND owner, DrawStack* annotator, Actio
     const int height = kPad * 2 + kBtn;
 
     m_hwnd = CreateWindowExW(
-        WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TOOLWINDOW,
+        WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
         kClass,
         L"",
         WS_POPUP,
@@ -118,10 +118,17 @@ void Toolbar::BuildButtons()
         m_buttons.push_back(b);
     };
 
-    // Order mirrors PinShot snip dock (subset): tools | undo redo | close pin save copy
-    addTool(ToolKind::Pen, L"pen", L"Pen");
-    addTool(ToolKind::Rect, L"rect", L"Rectangle");
-    addTool(ToolKind::Arrow, L"arrow", L"Arrow");
+    // Order mirrors PinShot snip dock (subset):
+    // tools | style | undo redo | close pin save copy
+    addTool(ToolKind::Pen, L"pen", L"Pen (P)");
+    addTool(ToolKind::Rect, L"rect", L"Rectangle (R)");
+    addTool(ToolKind::Ellipse, L"ellip", L"Ellipse (E)");
+    addTool(ToolKind::Arrow, L"arrow", L"Arrow (A)");
+    addTool(ToolKind::Text, L"text", L"Text (X)");
+    addTool(ToolKind::Mosaic, L"mos", L"Mosaic (M)");
+    addAct(ToolbarAction::WidthDec, L"w-", L"Thinner / smaller (1)");
+    addAct(ToolbarAction::WidthInc, L"w+", L"Thicker / larger (2)");
+    addAct(ToolbarAction::ColorCycle, L"clr", L"Cycle color");
     addAct(ToolbarAction::Undo, L"undo", L"Undo");
     addAct(ToolbarAction::Redo, L"redo", L"Redo");
     addAct(ToolbarAction::Close, L"close", L"Cancel");
@@ -135,8 +142,9 @@ void Toolbar::LayoutButtons()
     int x = kPad;
     for (auto& b : m_buttons)
     {
-        // Visual separator gap before undo and before close (PinShot separators).
-        if (b.action == ToolbarAction::Undo || b.action == ToolbarAction::Close)
+        // Visual separators like PinShot: before style, undo, and close groups.
+        if (b.action == ToolbarAction::WidthDec || b.action == ToolbarAction::Undo ||
+            b.action == ToolbarAction::Close)
         {
             x += 8;
         }
