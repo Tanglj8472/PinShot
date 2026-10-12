@@ -32,6 +32,9 @@ pub struct Config {
     pub closed_pins_max: u32,
     pub theme: String,
     pub dim_alpha: u8,
+    /// F5 translator (pot / STranslate / openai-translator style).
+    #[serde(default)]
+    pub translate: TranslateSettings,
 }
 
 impl Default for Config {
@@ -51,7 +54,12 @@ impl Default for Config {
             hotkey_selection_translate: "F5".into(),
             hotkey_capture_translate: "F6".into(),
             run_at_login: false,
-            groups: vec!["Default".into(), "Group 1".into(), "Group 2".into(), "Group 3".into()],
+            groups: vec![
+                "Default".into(),
+                "Group 1".into(),
+                "Group 2".into(),
+                "Group 3".into(),
+            ],
             quick_save_folder: String::new(),
             image_quality: 92,
             snip_delay: 0,
@@ -59,6 +67,54 @@ impl Default for Config {
             closed_pins_max: 10,
             theme: "system".into(),
             dim_alpha: 110,
+            translate: TranslateSettings::default(),
+        }
+    }
+}
+
+/// Provider + endpoint + key + model + target. `api_key` is never shown in Debug.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TranslateSettings {
+    /// `edge` (free default), `openai` (chat-completions), or `deepl`.
+    pub provider: String,
+    pub api_url: String,
+    pub api_key: String,
+    pub model: String,
+    /// Edge/DeepL/OpenAI `to=` code (`en`, `zh-Hans`, …). Empty = follow UI language.
+    pub target: String,
+}
+
+impl Default for TranslateSettings {
+    fn default() -> Self {
+        Self {
+            provider: "edge".into(),
+            api_url: String::new(),
+            api_key: String::new(),
+            model: String::new(),
+            target: String::new(),
+        }
+    }
+}
+
+impl std::fmt::Debug for TranslateSettings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TranslateSettings")
+            .field("provider", &self.provider)
+            .field("api_url", &self.api_url)
+            .field("api_key", &if self.api_key.is_empty() { "" } else { "***" })
+            .field("model", &self.model)
+            .field("target", &self.target)
+            .finish()
+    }
+}
+
+impl TranslateSettings {
+    pub fn normalized_provider(&self) -> &str {
+        match self.provider.trim() {
+            "openai" | "openai-compatible" | "openai_compatible" => "openai",
+            "deepl" => "deepl",
+            _ => "edge",
         }
     }
 }
@@ -69,7 +125,9 @@ impl Config {
     }
 
     pub fn validate(mut self) -> Self {
-        if Lang::from_code(&self.language) == Lang::ZhCn && self.language != "zh_CN" && self.language != "en"
+        if Lang::from_code(&self.language) == Lang::ZhCn
+            && self.language != "zh_CN"
+            && self.language != "en"
         {
             self.language = "zh_CN".into();
         }
@@ -100,6 +158,17 @@ impl Config {
         if self.schema_version == 0 {
             self.schema_version = SCHEMA_VERSION;
         }
+        match self.translate.provider.trim() {
+            "openai" | "openai-compatible" | "openai_compatible" => {
+                self.translate.provider = "openai".into();
+            }
+            "deepl" => self.translate.provider = "deepl".into(),
+            _ => self.translate.provider = "edge".into(),
+        }
+        self.translate.api_url = self.translate.api_url.trim().to_string();
+        self.translate.api_key = self.translate.api_key.trim().to_string();
+        self.translate.model = self.translate.model.trim().to_string();
+        self.translate.target = self.translate.target.trim().to_string();
         self
     }
 
@@ -181,7 +250,10 @@ pub fn data_dir() -> PathBuf {
             return PathBuf::from(xdg).join("PinShot");
         }
         if let Ok(home) = std::env::var("HOME") {
-            return PathBuf::from(home).join(".local").join("share").join("PinShot");
+            return PathBuf::from(home)
+                .join(".local")
+                .join("share")
+                .join("PinShot");
         }
         PathBuf::from("PinShot")
     }
@@ -298,5 +370,31 @@ mod tests {
     fn empty_clickthrough_becomes_f4() {
         let c = Config::from_toml("hotkey_clickthrough = \"\"\n").unwrap();
         assert_eq!(c.hotkey_clickthrough, "F4");
+    }
+
+    #[test]
+    fn translate_settings_roundtrip_redacts_key() {
+        let mut c = Config::default();
+        c.translate.provider = "openai".into();
+        c.translate.api_url = "https://api.deepseek.com/v1/chat/completions".into();
+        c.translate.api_key = "sk-secret-do-not-log".into();
+        c.translate.model = "deepseek-chat".into();
+        c.translate.target = "en".into();
+        let text = c.to_toml().unwrap();
+        assert!(text.contains("[translate]"));
+        assert!(text.contains("sk-secret-do-not-log"), "key is stored");
+        let back = Config::from_toml(&text).unwrap();
+        assert_eq!(back.translate.api_key, "sk-secret-do-not-log");
+        assert_eq!(back.translate.provider, "openai");
+        let dbg = format!("{:?}", c.translate);
+        assert!(!dbg.contains("sk-secret"));
+        assert!(dbg.contains("***"));
+    }
+
+    #[test]
+    fn old_toml_defaults_translate_to_edge() {
+        let c = Config::from_toml("language = \"en\"\n").unwrap();
+        assert_eq!(c.translate.provider, "edge");
+        assert!(c.translate.api_key.is_empty());
     }
 }

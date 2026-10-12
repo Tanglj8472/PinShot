@@ -447,12 +447,14 @@ impl App {
 
     fn spawn_translate(&self, pin: winit::window::WindowId, text: String) {
         let proxy = self.proxy.clone();
-        let target = crate::translate_run::default_target();
+        let settings = self.cfg.translate.clone();
+        let ui_lang = self.cfg.language.clone();
         std::thread::spawn(move || {
-            let result = crate::translate_run::translate(&text, &target).map_err(|e| {
-                crate::logutil::log(&format!("translate fail: {e}"));
-                e
-            });
+            let result =
+                crate::translate_run::translate_with(&settings, &ui_lang, &text).map_err(|e| {
+                    crate::logutil::log(&format!("translate fail: {e}"));
+                    e
+                });
             let _ = proxy.send_event(AppEvent::TranslateDone { pin, result });
         });
     }

@@ -22,7 +22,7 @@ use crate::event::AppEvent;
 static OPEN: AtomicBool = AtomicBool::new(false);
 
 /// Snipaste Preferences uses one fixed height (tallest tab). Width hugs the form.
-const PREFS_W: f32 = 480.0;
+const PREFS_W: f32 = 540.0;
 const PREFS_H: f32 = 300.0;
 const PREFS_MIN_W: f32 = 420.0;
 const PREFS_MIN_H: f32 = PREFS_H;
@@ -43,6 +43,7 @@ const TABS: &[&str] = &[
     "Paste",
     "Output",
     "Control",
+    "Translate",
     "About",
 ];
 
@@ -66,7 +67,9 @@ pub fn open(cfg: Config, proxy: EventLoopProxy<AppEvent>) {
         }
     }
     match std::env::current_exe().and_then(|exe| {
-        std::process::Command::new(exe).arg("--settings-window").spawn()
+        std::process::Command::new(exe)
+            .arg("--settings-window")
+            .spawn()
     }) {
         Ok(proc) => {
             *child = Some(proc);
@@ -149,6 +152,7 @@ pub fn run_preferences() {
                 group_sel: 0,
                 group_edit: String::new(),
                 status: String::new(),
+                test_rx: None,
             }))
         }),
     ) {
@@ -231,6 +235,7 @@ struct PrefsApp {
     group_sel: usize,
     group_edit: String,
     status: String,
+    test_rx: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
 }
 
 impl PrefsApp {
@@ -240,7 +245,8 @@ impl PrefsApp {
         self.draft.hotkey_hide_all = normalize_seq(&self.draft.hotkey_hide_all);
         self.draft.hotkey_restore = normalize_seq(&self.draft.hotkey_restore);
         self.draft.hotkey_clickthrough = normalize_seq(&self.draft.hotkey_clickthrough);
-        self.draft.hotkey_selection_translate = normalize_seq(&self.draft.hotkey_selection_translate);
+        self.draft.hotkey_selection_translate =
+            normalize_seq(&self.draft.hotkey_selection_translate);
         self.draft.hotkey_capture_translate = normalize_seq(&self.draft.hotkey_capture_translate);
         let conflicts = find_conflicts(&bindings_from_config(&self.draft));
         if !conflicts.is_empty() {
@@ -306,6 +312,9 @@ impl PrefsApp {
                 self.draft.hotkey_capture_translate = d.hotkey_capture_translate;
                 self.draft.hotkey_clickthrough = d.hotkey_clickthrough;
             }
+            6 => {
+                self.draft.translate = d.translate;
+            }
             _ => {}
         }
         i18n::set_lang(self.draft.lang());
@@ -315,6 +324,26 @@ impl PrefsApp {
 
 impl eframe::App for PrefsApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if let Some(rx) = &self.test_rx {
+            match rx.try_recv() {
+                Ok(Ok(text)) => {
+                    let preview: String = text.chars().take(80).collect();
+                    self.status = format!("{} {preview}", tr("Translation OK:"));
+                    self.test_rx = None;
+                }
+                Ok(Err(e)) => {
+                    self.status = format!("{} {e}", tr("Translation failed:"));
+                    self.test_rx = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    ctx.request_repaint_after(std::time::Duration::from_millis(80));
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.status = tr("Translation failed:");
+                    self.test_rx = None;
+                }
+            }
+        }
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(tr("PinShot Preferences")));
         apply_theme(ctx, &self.draft.theme);
         egui::TopBottomPanel::bottom("btns")
@@ -325,7 +354,9 @@ impl eframe::App for PrefsApp {
             )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    if self.tab != 6 && ui.button(tr("Restore Defaults")).clicked() {
+                    if TABS.get(self.tab) != Some(&"About")
+                        && ui.button(tr("Restore Defaults")).clicked()
+                    {
                         self.restore_tab();
                     }
                     if !self.status.is_empty() {
@@ -350,7 +381,8 @@ impl eframe::App for PrefsApp {
             });
         egui::CentralPanel::default()
             .frame(
-                egui::Frame::central_panel(&ctx.style()).inner_margin(egui::Margin::symmetric(8, 4)),
+                egui::Frame::central_panel(&ctx.style())
+                    .inner_margin(egui::Margin::symmetric(8, 4)),
             )
             .show(ctx, |ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(4.0, 3.0);
@@ -373,6 +405,7 @@ impl eframe::App for PrefsApp {
                     3 => self.ui_paste(ui),
                     4 => self.ui_output(ui),
                     5 => self.ui_control(ui),
+                    6 => self.ui_translate(ui),
                     _ => self.ui_about(ui),
                 };
             });
@@ -517,9 +550,7 @@ impl PrefsApp {
             }
         }
         ui.horizontal(|ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut self.group_edit).desired_width(200.0),
-            );
+            ui.add(egui::TextEdit::singleline(&mut self.group_edit).desired_width(200.0));
             if ui.button(tr("Add")).clicked() {
                 let _ = groups::ensure(&mut self.draft.groups, &self.group_edit);
             }
@@ -585,7 +616,11 @@ impl PrefsApp {
                 tr("Snip and translate:"),
                 &mut self.draft.hotkey_capture_translate,
             );
-            form_line(ui, tr("Click-through:"), &mut self.draft.hotkey_clickthrough);
+            form_line(
+                ui,
+                tr("Click-through:"),
+                &mut self.draft.hotkey_clickthrough,
+            );
         });
         let conflicts = find_conflicts(&bindings_from_config(&self.draft));
         if !conflicts.is_empty() {
@@ -604,6 +639,117 @@ impl PrefsApp {
         ui.weak(tr(
             "Hotkeys already used by another app cannot be bound. Click Apply to rebind.",
         ));
+    }
+
+    fn ui_translate(&mut self, ui: &mut Ui) {
+        form_grid(ui, "prefs_translate", |ui| {
+            let prov = match self.draft.translate.normalized_provider() {
+                "openai" => tr("OpenAI-compatible"),
+                "deepl" => tr("DeepL"),
+                _ => tr("Microsoft Edge (free)"),
+            };
+            form_combo(ui, tr("Provider:"), "tr_prov", prov, |ui| {
+                ui.selectable_value(
+                    &mut self.draft.translate.provider,
+                    "edge".into(),
+                    tr("Microsoft Edge (free)"),
+                );
+                ui.selectable_value(
+                    &mut self.draft.translate.provider,
+                    "openai".into(),
+                    tr("OpenAI-compatible"),
+                );
+                ui.selectable_value(
+                    &mut self.draft.translate.provider,
+                    "deepl".into(),
+                    tr("DeepL"),
+                );
+            });
+            let tgt = match self.draft.translate.target.as_str() {
+                "" => tr("Follow UI language"),
+                "zh-Hans" => tr("Simplified Chinese"),
+                "zh-Hant" => tr("Traditional Chinese"),
+                "ja" => tr("Japanese"),
+                "en" => tr("English"),
+                other => other.to_string(),
+            };
+            form_combo(ui, tr("Target language:"), "tr_tgt", tgt, |ui| {
+                ui.selectable_value(
+                    &mut self.draft.translate.target,
+                    String::new(),
+                    tr("Follow UI language"),
+                );
+                ui.selectable_value(
+                    &mut self.draft.translate.target,
+                    "zh-Hans".into(),
+                    tr("Simplified Chinese"),
+                );
+                ui.selectable_value(&mut self.draft.translate.target, "en".into(), tr("English"));
+                ui.selectable_value(
+                    &mut self.draft.translate.target,
+                    "ja".into(),
+                    tr("Japanese"),
+                );
+                ui.selectable_value(
+                    &mut self.draft.translate.target,
+                    "zh-Hant".into(),
+                    tr("Traditional Chinese"),
+                );
+            });
+            let openai = self.draft.translate.normalized_provider() == "openai";
+            let deepl = self.draft.translate.normalized_provider() == "deepl";
+            if openai || deepl {
+                let url_hint = if deepl {
+                    pinshot_core::translate::DEEPL_URL_DEFAULT
+                } else {
+                    "https://api.openai.com/v1"
+                };
+                form_line_hint(
+                    ui,
+                    tr("API URL:"),
+                    &mut self.draft.translate.api_url,
+                    url_hint,
+                );
+                form_secret(ui, tr("API key:"), &mut self.draft.translate.api_key);
+            }
+            if openai {
+                form_line_hint(
+                    ui,
+                    tr("Model:"),
+                    &mut self.draft.translate.model,
+                    pinshot_core::translate::OPENAI_MODEL_DEFAULT,
+                );
+            }
+        });
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            let testing = self.test_rx.is_some();
+            if ui
+                .add_enabled(!testing, egui::Button::new(tr("Test")))
+                .clicked()
+            {
+                self.start_translate_test();
+            }
+            if testing {
+                ui.label(tr("Testing…"));
+            }
+        });
+        ui.add_space(2.0);
+        ui.weak(tr(
+            "OpenAI-compatible covers OpenAI, DeepSeek, Qwen, Ollama, OpenRouter. Edge stays the free fallback.",
+        ));
+    }
+
+    fn start_translate_test(&mut self) {
+        let settings = self.draft.translate.clone();
+        let ui_lang = self.draft.language.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.test_rx = Some(rx);
+        self.status = tr("Testing…");
+        std::thread::spawn(move || {
+            let r = crate::translate_run::translate_with(&settings, &ui_lang, "hello");
+            let _ = tx.send(r);
+        });
     }
 
     fn ui_about(&mut self, ui: &mut Ui) {
@@ -665,12 +811,31 @@ fn form_combo(
 }
 
 fn form_line(ui: &mut Ui, label: String, val: &mut String) {
+    form_line_hint(ui, label, val, "");
+}
+
+fn form_line_hint(ui: &mut Ui, label: String, val: &mut String, hint: &str) {
     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
         ui.set_min_width(FORM_LABEL_W);
         ui.label(label);
     });
     ui.add(
         egui::TextEdit::singleline(val)
+            .hint_text(hint)
+            .desired_width(CONTROL_W)
+            .min_size(egui::vec2(CONTROL_W, ROW_H)),
+    );
+    ui.end_row();
+}
+
+fn form_secret(ui: &mut Ui, label: String, val: &mut String) {
+    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+        ui.set_min_width(FORM_LABEL_W);
+        ui.label(label);
+    });
+    ui.add(
+        egui::TextEdit::singleline(val)
+            .password(true)
             .desired_width(CONTROL_W)
             .min_size(egui::vec2(CONTROL_W, ROW_H)),
     );
@@ -701,8 +866,9 @@ mod tests {
         assert_eq!(size.x, PREFS_W);
         assert_eq!(size.y, PREFS_H);
         assert!(PREFS_H >= 280.0, "must fit the Control tab");
-        assert!(PREFS_W < 500.0);
-        assert_eq!(TABS.len(), 7);
+        assert!(PREFS_W <= 560.0);
+        assert_eq!(TABS.len(), 8);
+        assert_eq!(TABS[6], "Translate");
         assert_eq!(PREFS_MIN_H, PREFS_MAX_H);
     }
 
@@ -733,6 +899,7 @@ mod tests {
             group_sel: 0,
             group_edit: String::new(),
             status: String::new(),
+            test_rx: None,
         };
         app.restore_tab();
         let d = Config::default();

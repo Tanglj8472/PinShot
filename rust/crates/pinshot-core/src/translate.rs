@@ -15,6 +15,187 @@ pub fn request_url(target: &str) -> String {
     format!("{EDGE_URL}?from=&to={target}&isEnterpriseClient=false")
 }
 
+pub const OPENAI_CHAT_DEFAULT: &str = "https://api.openai.com/v1/chat/completions";
+pub const DEEPL_URL_DEFAULT: &str = "https://api-free.deepl.com/v2/translate";
+pub const OPENAI_MODEL_DEFAULT: &str = "gpt-4o-mini";
+
+/// pot-desktop: if the path is not already `/chat/completions`, append
+/// `/v1/chat/completions` (covers OpenAI, DeepSeek, Qwen, Ollama, OpenRouter).
+pub fn openai_chat_url(raw: &str) -> String {
+    let mut u = raw.trim().to_string();
+    if u.is_empty() {
+        return OPENAI_CHAT_DEFAULT.into();
+    }
+    if !u.starts_with("http://") && !u.starts_with("https://") {
+        u = format!("https://{u}");
+    }
+    while u.ends_with('/') {
+        u.pop();
+    }
+    if u.ends_with("/chat/completions") {
+        return u;
+    }
+    if u.ends_with("/v1") {
+        return format!("{u}/chat/completions");
+    }
+    format!("{u}/v1/chat/completions")
+}
+
+pub fn openai_model(raw: &str) -> &str {
+    let t = raw.trim();
+    if t.is_empty() {
+        OPENAI_MODEL_DEFAULT
+    } else {
+        t
+    }
+}
+
+/// Human name for the prompt (`$to` in pot / openai-translator).
+pub fn target_display_name(code: &str) -> &'static str {
+    for (name, c) in TARGETS {
+        if *c == code {
+            return name;
+        }
+    }
+    match lang_family(code) {
+        "zh" => "简体中文",
+        "ja" => "日本語",
+        "en" => "English",
+        _ => "English",
+    }
+}
+
+pub fn openai_messages(text: &str, target: &str) -> serde_json::Value {
+    let to = target_display_name(target);
+    serde_json::json!([
+        {
+            "role": "system",
+            "content": "You are a professional translation engine. Translate into a colloquial, professional, elegant and fluent result, without machine-translation style. Output only the translation, never interpret or add notes."
+        },
+        {
+            "role": "user",
+            "content": format!("Translate into {to}:\n\"\"\"\n{text}\n\"\"\"")
+        }
+    ])
+}
+
+pub fn openai_request_body(model: &str, text: &str, target: &str) -> Result<String, String> {
+    if text.trim().is_empty() {
+        return Err("No text to translate".into());
+    }
+    let body = serde_json::json!({
+        "model": openai_model(model),
+        "temperature": 0.2,
+        "messages": openai_messages(text, target),
+    });
+    serde_json::to_string(&body).map_err(|e| e.to_string())
+}
+
+/// `choices[0].message.content` from chat-completions (string or text parts).
+pub fn openai_read_content(body: &str) -> Result<String, String> {
+    let v: serde_json::Value = serde_json::from_str(body).map_err(|e| e.to_string())?;
+    if let Some(msg) = v
+        .pointer("/error/message")
+        .and_then(|x| x.as_str())
+        .filter(|s| !s.is_empty())
+    {
+        return Err(msg.into());
+    }
+    let content = v
+        .pointer("/choices/0/message/content")
+        .ok_or_else(|| "No translation returned".to_string())?;
+    let text = match content {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Array(parts) => parts
+            .iter()
+            .filter_map(|p| {
+                p.get("text")
+                    .and_then(|t| t.as_str())
+                    .or_else(|| p.as_str())
+            })
+            .collect::<Vec<_>>()
+            .join(""),
+        _ => String::new(),
+    };
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        Err("No translation returned".into())
+    } else {
+        Ok(text)
+    }
+}
+
+pub fn deepl_url(raw: &str) -> String {
+    let u = raw.trim();
+    if u.is_empty() {
+        DEEPL_URL_DEFAULT.into()
+    } else if u.starts_with("http://") || u.starts_with("https://") {
+        u.trim_end_matches('/').to_string()
+    } else {
+        format!("https://{u}")
+    }
+}
+
+pub fn deepl_target(code: &str) -> &'static str {
+    match lang_family(code) {
+        "zh" => "ZH",
+        "ja" => "JA",
+        _ => "EN",
+    }
+}
+
+pub fn deepl_form_body(text: &str, target: &str) -> Result<String, String> {
+    if text.trim().is_empty() {
+        return Err("No text to translate".into());
+    }
+    Ok(format!(
+        "text={}&target_lang={}",
+        urlencoding_lite(text),
+        deepl_target(target)
+    ))
+}
+
+fn urlencoding_lite(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.as_bytes() {
+        match *b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*b as char);
+            }
+            b' ' => out.push('+'),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+pub fn deepl_read_text(body: &str) -> Result<Translation, String> {
+    let v: serde_json::Value = serde_json::from_str(body).map_err(|e| e.to_string())?;
+    let text = v
+        .pointer("/translations/0/text")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if text.is_empty() {
+        return Err("No translation returned".into());
+    }
+    let detected = v
+        .pointer("/translations/0/detected_source_language")
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string());
+    Ok(Translation { text, detected })
+}
+
+/// Strip a secret out of an error so logs/toasts never echo the API key.
+pub fn redact_secret(msg: &str, key: &str) -> String {
+    let key = key.trim();
+    if key.is_empty() || key.len() < 4 {
+        return msg.to_string();
+    }
+    msg.replace(key, "***")
+}
+
 /// UI language → Edge `to=` code.
 pub fn target_from_ui_lang(lang: &str) -> &'static str {
     match lang {
@@ -179,5 +360,58 @@ mod tests {
         let t = read_translation_ex(body).unwrap();
         assert_eq!(t.text, "Hello");
         assert_eq!(t.detected.as_deref(), Some("zh-Hant"));
+    }
+
+    #[test]
+    fn openai_url_appends_chat_completions() {
+        assert_eq!(openai_chat_url(""), OPENAI_CHAT_DEFAULT);
+        assert_eq!(
+            openai_chat_url("https://api.deepseek.com"),
+            "https://api.deepseek.com/v1/chat/completions"
+        );
+        assert_eq!(
+            openai_chat_url("https://api.deepseek.com/v1/"),
+            "https://api.deepseek.com/v1/chat/completions"
+        );
+        assert_eq!(
+            openai_chat_url("http://127.0.0.1:11434/v1/chat/completions"),
+            "http://127.0.0.1:11434/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn openai_reads_chat_completions_content() {
+        let body = r#"{"id":"x","choices":[{"message":{"role":"assistant","content":"Hello"}}]}"#;
+        assert_eq!(openai_read_content(body).unwrap(), "Hello");
+        let err = r#"{"error":{"message":"Incorrect API key provided"}}"#;
+        assert!(openai_read_content(err)
+            .unwrap_err()
+            .contains("Incorrect API key"));
+    }
+
+    #[test]
+    fn openai_body_contains_model_not_empty_text() {
+        let raw = openai_request_body("deepseek-chat", "並且在2010年", "en").unwrap();
+        assert!(raw.contains("deepseek-chat"));
+        assert!(raw.contains("並且在2010年"));
+        assert!(openai_request_body("m", "  ", "en").is_err());
+    }
+
+    #[test]
+    fn redact_replaces_key() {
+        assert_eq!(
+            redact_secret("Bearer sk-secret-abc failed", "sk-secret-abc"),
+            "Bearer *** failed"
+        );
+    }
+
+    #[test]
+    fn deepl_parses_text() {
+        let body = r#"{"translations":[{"detected_source_language":"ZH","text":"Hello"}]}"#;
+        let t = deepl_read_text(body).unwrap();
+        assert_eq!(t.text, "Hello");
+        assert_eq!(t.detected.as_deref(), Some("ZH"));
+        assert_eq!(deepl_target("zh-Hans"), "ZH");
+        assert_eq!(deepl_target("en"), "EN");
     }
 }
