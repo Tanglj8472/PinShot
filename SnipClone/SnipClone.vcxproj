@@ -104,7 +104,7 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>d2d1.lib;dwrite.lib;windowscodecs.lib;comdlg32.lib;ole32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>d2d1.lib;dwrite.lib;windowscodecs.lib;comdlg32.lib;ole32.lib;comctl32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <Manifest>
       <AdditionalManifestFiles>app.manifest</AdditionalManifestFiles>
@@ -126,7 +126,7 @@
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>d2d1.lib;dwrite.lib;windowscodecs.lib;comdlg32.lib;ole32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>d2d1.lib;dwrite.lib;windowscodecs.lib;comdlg32.lib;ole32.lib;comctl32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <Manifest>
       <AdditionalManifestFiles>app.manifest</AdditionalManifestFiles>
@@ -144,7 +144,7 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>d2d1.lib;dwrite.lib;windowscodecs.lib;comdlg32.lib;ole32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>d2d1.lib;dwrite.lib;windowscodecs.lib;comdlg32.lib;ole32.lib;comctl32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <Manifest>
       <AdditionalManifestFiles>app.manifest</AdditionalManifestFiles>
@@ -166,7 +166,7 @@
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>d2d1.lib;dwrite.lib;windowscodecs.lib;comdlg32.lib;ole32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>d2d1.lib;dwrite.lib;windowscodecs.lib;comdlg32.lib;ole32.lib;comctl32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <Manifest>
       <AdditionalManifestFiles>app.manifest</AdditionalManifestFiles>
@@ -182,6 +182,7 @@
     <ClCompile Include="AnnotationOverlay\DrawStack.cpp" />
     <ClCompile Include="AnnotationOverlay\AnnotationRenderer.cpp" />
     <ClCompile Include="AnnotationOverlay\AnnotationOverlay.cpp" />
+    <ClCompile Include="AnnotationOverlay\TextEditor.cpp" />
     <ClCompile Include="FloatingToolbar\Toolbar.cpp" />
     <ClCompile Include="PinWindow\PinWindow.cpp" />
     <ClCompile Include="PinWindow\PinManager.cpp" />
@@ -199,6 +200,7 @@
     <ClInclude Include="AnnotationOverlay\DrawStack.h" />
     <ClInclude Include="AnnotationOverlay\AnnotationRenderer.h" />
     <ClInclude Include="AnnotationOverlay\AnnotationOverlay.h" />
+    <ClInclude Include="AnnotationOverlay\TextEditor.h" />
     <ClInclude Include="FloatingToolbar\ToolButton.h" />
     <ClInclude Include="FloatingToolbar\Toolbar.h" />
     <ClInclude Include="PinWindow\PinWindow.h" />

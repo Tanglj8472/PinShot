@@ -1,5 +1,6 @@
 //==============================================================================
 // SnipClone — annotation host
+// 文字交互目标：Snipaste / PinShot — 落点浮动 EDIT、Enter 提交、Esc 取消、双击重编
 //==============================================================================
 #include "AnnotationOverlay.h"
 
@@ -74,7 +75,17 @@ bool AnnotationOverlay::Start(HINSTANCE instance, HWND owner, CaptureResult imag
 
     SetWindowDisplayAffinity(m_hwnd, WDA_EXCLUDEFROMCAPTURE);
 
-    m_ann.SetChangedCallback([this]() { Present(); });
+    m_ann.SetChangedCallback([this]() {
+        Present();
+        if (m_toolbar)
+        {
+            m_toolbar->SyncFromAnnotator();
+        }
+        if (m_textEditor && m_textEditor->IsOpen())
+        {
+            m_textEditor->ApplyStyle(m_ann.Style(ToolKind::Text));
+        }
+    });
     m_ann.SetTool(ToolKind::Pen);
 
     m_toolbar = std::make_unique<Toolbar>();
@@ -84,6 +95,8 @@ bool AnnotationOverlay::Start(HINSTANCE instance, HWND owner, CaptureResult imag
     m_toolbar->SyncFromAnnotator();
     m_toolbar->PlaceBelow(m_base.screenRect);
 
+    m_textEditor = std::make_unique<TextEditor>();
+
     ShowWindow(m_hwnd, SW_SHOW);
     SetForegroundWindow(m_hwnd);
     Present();
@@ -92,6 +105,15 @@ bool AnnotationOverlay::Start(HINSTANCE instance, HWND owner, CaptureResult imag
 
 void AnnotationOverlay::Stop()
 {
+    if (m_textEditor)
+    {
+        if (m_textEditor->IsOpen())
+        {
+            m_textEditor->Close(false);
+        }
+        m_textEditor->Destroy();
+        m_textEditor.reset();
+    }
     if (m_toolbar)
     {
         m_toolbar->Destroy();
@@ -126,20 +148,118 @@ LRESULT CALLBACK AnnotationOverlay::StaticWndProc(HWND hwnd, UINT msg, WPARAM wP
     return self ? self->WndProc(hwnd, msg, wParam, lParam) : DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
+void AnnotationOverlay::OpenTextEditorAt(D2D1_POINT_2F imagePt, int editIndex)
+{
+    if (!m_textEditor)
+    {
+        m_textEditor = std::make_unique<TextEditor>();
+    }
+    if (m_textEditor->IsOpen())
+    {
+        m_textEditor->Close(true); // commit previous like PinShot click-away
+    }
+
+    m_editingTextIndex = editIndex;
+    m_textAnchor = imagePt;
+
+    std::wstring initial;
+    DrawStyle style = m_ann.Style(ToolKind::Text);
+    if (editIndex >= 0)
+    {
+        if (const auto* sh = m_ann.ShapeAt(editIndex))
+        {
+            initial = sh->text;
+            style = sh->style;
+            // Keep tool style in sync for B/I/OL toggles while editing.
+            m_ann.MutableStyle(ToolKind::Text) = style;
+        }
+    }
+
+    POINT screen{
+        m_base.screenRect.left + static_cast<LONG>(imagePt.x),
+        m_base.screenRect.top + static_cast<LONG>(imagePt.y)
+    };
+
+    m_textEditor->Open(
+        m_instance,
+        m_hwnd,
+        screen,
+        style,
+        initial,
+        [this](bool committed, const std::wstring& text) { OnTextEditorDone(committed, text); });
+
+    if (m_toolbar)
+    {
+        m_toolbar->SyncFromAnnotator();
+    }
+}
+
+void AnnotationOverlay::OnTextEditorDone(bool committed, const std::wstring& text)
+{
+    const int idx = m_editingTextIndex;
+    m_editingTextIndex = -1;
+
+    if (committed)
+    {
+        if (idx >= 0)
+        {
+            m_ann.UpdateText(idx, text);
+        }
+        else
+        {
+            m_ann.AddText(m_textAnchor, text);
+        }
+    }
+
+    if (m_hwnd)
+    {
+        SetFocus(m_hwnd);
+    }
+    Present();
+}
+
 LRESULT AnnotationOverlay::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     switch (msg)
     {
     case WM_LBUTTONDOWN:
-        SetCapture(hwnd);
-        m_ann.Press(D2D1::Point2F(
+    {
+        const D2D1_POINT_2F pt = D2D1::Point2F(
             static_cast<float>(GET_X_LPARAM(lParam)),
-            static_cast<float>(GET_Y_LPARAM(lParam))));
+            static_cast<float>(GET_Y_LPARAM(lParam)));
+
+        if (m_ann.Tool() == ToolKind::Text)
+        {
+            // PinShot: click existing text → re-edit; blank → place new.
+            // If editor already open, first commit then return (second click places new).
+            if (m_textEditor && m_textEditor->IsOpen())
+            {
+                m_textEditor->Close(true);
+                return 0;
+            }
+            const int hit = m_ann.HitTest(pt);
+            if (hit >= 0)
+            {
+                if (const auto* sh = m_ann.ShapeAt(hit))
+                {
+                    OpenTextEditorAt(sh->pts[0], hit);
+                }
+            }
+            else
+            {
+                OpenTextEditorAt(pt, -1);
+            }
+            return 0;
+        }
+
+        SetCapture(hwnd);
+        m_ann.Press(pt);
         if (m_toolbar)
         {
             m_toolbar->SyncFromAnnotator();
         }
         return 0;
+    }
     case WM_MOUSEMOVE:
         if (GetCapture() == hwnd)
         {
@@ -157,37 +277,44 @@ LRESULT AnnotationOverlay::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             static_cast<float>(GET_X_LPARAM(lParam)),
             static_cast<float>(GET_Y_LPARAM(lParam))));
         return 0;
-    case WM_CHAR:
-        if (m_ann.IsEditingText())
+
+    case WM_LBUTTONDBLCLK:
+    {
+        // Snipaste/PinShot: double-click text to re-edit (even if not on text tool).
+        const D2D1_POINT_2F pt = D2D1::Point2F(
+            static_cast<float>(GET_X_LPARAM(lParam)),
+            static_cast<float>(GET_Y_LPARAM(lParam)));
+        const int hit = m_ann.HitTest(pt);
+        if (hit >= 0)
         {
-            m_ann.AppendTextChar(static_cast<wchar_t>(wParam));
+            if (const auto* sh = m_ann.ShapeAt(hit))
+            {
+                m_ann.SetTool(ToolKind::Text);
+                if (m_toolbar)
+                {
+                    m_toolbar->SyncFromAnnotator();
+                }
+                OpenTextEditorAt(sh->pts[0], hit);
+            }
             return 0;
         }
         break;
+    }
+
     case WM_SNIP_CLOSE_SELF:
         Stop();
         return 0;
 
     case WM_KEYDOWN:
+        // Text editor owns Esc/Enter while open.
+        if (m_textEditor && m_textEditor->IsOpen())
+        {
+            return 0;
+        }
         if (wParam == VK_ESCAPE)
         {
-            if (m_ann.IsEditingText())
-            {
-                m_ann.CommitText(true);
-                return 0;
-            }
             RequestClose();
             return 0;
-        }
-        if (wParam == VK_RETURN && m_ann.IsEditingText())
-        {
-            m_ann.CommitText(false);
-            return 0;
-        }
-        // While typing text, don't steal letter hotkeys.
-        if (m_ann.IsEditingText())
-        {
-            break;
         }
         if (wParam == 'Z' && (GetKeyState(VK_CONTROL) & 0x8000))
         {
@@ -214,10 +341,13 @@ LRESULT AnnotationOverlay::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             DoPin();
             return 0;
         }
-        // PinShot-like tool jump keys.
         if (!(GetKeyState(VK_CONTROL) & 0x8000))
         {
             auto setTool = [this](ToolKind k) {
+                if (m_textEditor && m_textEditor->IsOpen())
+                {
+                    m_textEditor->Close(true);
+                }
                 m_ann.SetTool(k);
                 if (m_toolbar)
                 {
@@ -246,7 +376,13 @@ LRESULT AnnotationOverlay::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
                 return 0;
             case '1':
                 if (m_ann.Tool() == ToolKind::Text)
+                {
                     m_ann.AdjustFontSize(-1);
+                    if (m_textEditor && m_textEditor->IsOpen())
+                    {
+                        m_textEditor->ApplyStyle(m_ann.Style(ToolKind::Text));
+                    }
+                }
                 else if (m_ann.Tool() == ToolKind::Mosaic)
                     m_ann.AdjustMosaicSize(-1);
                 else
@@ -254,7 +390,13 @@ LRESULT AnnotationOverlay::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
                 return 0;
             case '2':
                 if (m_ann.Tool() == ToolKind::Text)
+                {
                     m_ann.AdjustFontSize(+1);
+                    if (m_textEditor && m_textEditor->IsOpen())
+                    {
+                        m_textEditor->ApplyStyle(m_ann.Style(ToolKind::Text));
+                    }
+                }
                 else if (m_ann.Tool() == ToolKind::Mosaic)
                     m_ann.AdjustMosaicSize(+1);
                 else
@@ -281,6 +423,10 @@ LRESULT AnnotationOverlay::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
 
 void AnnotationOverlay::RequestClose()
 {
+    if (m_textEditor && m_textEditor->IsOpen())
+    {
+        m_textEditor->Close(false);
+    }
     if (m_hwnd)
     {
         PostMessageW(m_hwnd, WM_SNIP_CLOSE_SELF, 0, 0);
@@ -292,6 +438,10 @@ void AnnotationOverlay::OnToolbarAction(ToolbarAction action, ToolKind /*tool*/)
     switch (action)
     {
     case ToolbarAction::Undo:
+        if (m_textEditor && m_textEditor->IsOpen())
+        {
+            m_textEditor->Close(false);
+        }
         m_ann.Undo();
         break;
     case ToolbarAction::Redo:
@@ -299,7 +449,13 @@ void AnnotationOverlay::OnToolbarAction(ToolbarAction action, ToolKind /*tool*/)
         break;
     case ToolbarAction::WidthDec:
         if (m_ann.Tool() == ToolKind::Text)
+        {
             m_ann.AdjustFontSize(-1);
+            if (m_textEditor && m_textEditor->IsOpen())
+            {
+                m_textEditor->ApplyStyle(m_ann.Style(ToolKind::Text));
+            }
+        }
         else if (m_ann.Tool() == ToolKind::Mosaic)
             m_ann.AdjustMosaicSize(-1);
         else
@@ -307,7 +463,13 @@ void AnnotationOverlay::OnToolbarAction(ToolbarAction action, ToolKind /*tool*/)
         break;
     case ToolbarAction::WidthInc:
         if (m_ann.Tool() == ToolKind::Text)
+        {
             m_ann.AdjustFontSize(+1);
+            if (m_textEditor && m_textEditor->IsOpen())
+            {
+                m_textEditor->ApplyStyle(m_ann.Style(ToolKind::Text));
+            }
+        }
         else if (m_ann.Tool() == ToolKind::Mosaic)
             m_ann.AdjustMosaicSize(+1);
         else
@@ -315,6 +477,40 @@ void AnnotationOverlay::OnToolbarAction(ToolbarAction action, ToolKind /*tool*/)
         break;
     case ToolbarAction::ColorCycle:
         m_ann.CycleColor();
+        if (m_textEditor && m_textEditor->IsOpen())
+        {
+            m_textEditor->ApplyStyle(m_ann.Style(ToolKind::Text));
+        }
+        break;
+    case ToolbarAction::Bold:
+        m_ann.ToggleBold();
+        if (m_textEditor && m_textEditor->IsOpen())
+        {
+            m_textEditor->ApplyStyle(m_ann.Style(ToolKind::Text));
+        }
+        if (m_toolbar)
+        {
+            m_toolbar->SyncFromAnnotator();
+        }
+        break;
+    case ToolbarAction::Italic:
+        m_ann.ToggleItalic();
+        if (m_textEditor && m_textEditor->IsOpen())
+        {
+            m_textEditor->ApplyStyle(m_ann.Style(ToolKind::Text));
+        }
+        if (m_toolbar)
+        {
+            m_toolbar->SyncFromAnnotator();
+        }
+        break;
+    case ToolbarAction::Outline:
+        m_ann.ToggleOutline();
+        if (m_toolbar)
+        {
+            m_toolbar->SyncFromAnnotator();
+        }
+        Present();
         break;
     case ToolbarAction::Copy:
         DoCopy();
@@ -329,6 +525,10 @@ void AnnotationOverlay::OnToolbarAction(ToolbarAction action, ToolKind /*tool*/)
         RequestClose();
         break;
     case ToolbarAction::SetTool:
+        if (m_textEditor && m_textEditor->IsOpen())
+        {
+            m_textEditor->Close(true);
+        }
         if (m_toolbar)
         {
             m_toolbar->SyncFromAnnotator();
@@ -341,9 +541,9 @@ void AnnotationOverlay::OnToolbarAction(ToolbarAction action, ToolKind /*tool*/)
 
 CaptureResult AnnotationOverlay::ComposeExport()
 {
-    if (m_ann.IsEditingText())
+    if (m_textEditor && m_textEditor->IsOpen())
     {
-        m_ann.CommitText(false);
+        m_textEditor->Close(true);
     }
     m_ann.Finish();
     return m_renderer.Compose(m_base, m_ann);

@@ -6,6 +6,7 @@
 #include "DrawCommand.h"
 
 #include <functional>
+#include <string>
 #include <vector>
 
 namespace snip
@@ -25,7 +26,7 @@ public:
 
     DrawStyle& MutableStyle(ToolKind tool);
     const DrawStyle& Style(ToolKind tool) const;
-    DrawStyle* ActiveStyle(); // style of current tool, or nullptr
+    DrawStyle* ActiveStyle();
 
     const std::vector<DrawCommand>& Shapes() const { return m_shapes; }
     const DrawCommand* Live() const { return m_live.has ? &m_live.cmd : nullptr; }
@@ -35,15 +36,19 @@ public:
     void Release(D2D1_POINT_2F pt);
     void Finish();
 
-    // Text editing (PinShot-style inline commit)
-    bool IsEditingText() const { return m_editingText; }
-    void AppendTextChar(wchar_t ch);
-    void CommitText(bool cancel);
+    // Text shapes — content comes from floating TextEditor (Snipaste-style).
+    int HitTest(D2D1_POINT_2F pt) const; // -1 = miss; prefers text
+    void AddText(D2D1_POINT_2F pt, const std::wstring& text);
+    void UpdateText(int index, const std::wstring& text);
+    const DrawCommand* ShapeAt(int index) const;
 
     void AdjustWidth(int delta);
     void AdjustFontSize(int delta);
     void AdjustMosaicSize(int delta);
     void CycleColor();
+    void ToggleBold();
+    void ToggleItalic();
+    void ToggleOutline();
 
     void Undo();
     void Redo();
@@ -57,7 +62,7 @@ private:
     void PushUndoSnapshot();
     void BeginLive(ToolKind kind, D2D1_POINT_2F pt);
     void CommitLive();
-    void BeginTextAt(D2D1_POINT_2F pt);
+    D2D1_RECT_F ApproxBounds(const DrawCommand& cmd) const;
 
     ToolKind m_tool = ToolKind::Pen;
     DrawStyle m_styles[static_cast<int>(ToolKind::Count)]{};
@@ -72,7 +77,6 @@ private:
     } m_live;
 
     bool m_dragging = false;
-    bool m_editingText = false;
     int m_colorIndex = 0;
     ChangedFn m_changed;
 };

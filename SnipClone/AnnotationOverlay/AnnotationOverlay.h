@@ -1,8 +1,5 @@
 //==============================================================================
 // SnipClone — annotation host（装配对齐 PinShot SnipOverlay）
-//
-// 拥有：底图 CaptureResult、DrawStack(Annotator)、Toolbar、导出动作。
-// 窗口尺寸 = 选区截图；定位到选区屏幕坐标（非 ZoomIt 全屏）。
 //==============================================================================
 #pragma once
 
@@ -10,10 +7,10 @@
 #include "../FloatingToolbar/Toolbar.h"
 #include "AnnotationRenderer.h"
 #include "DrawStack.h"
+#include "TextEditor.h"
 
 #include <Windows.h>
 
-#include <functional>
 #include <memory>
 
 namespace snip
@@ -24,8 +21,6 @@ inline constexpr UINT WM_SNIP_ANNOTATION_DONE = WM_APP + 0x52;
 class AnnotationOverlay
 {
 public:
-    using DoneFn = std::function<void()>;
-
     AnnotationOverlay() = default;
     ~AnnotationOverlay();
 
@@ -33,7 +28,6 @@ public:
     void Stop();
     bool IsActive() const { return m_hwnd != nullptr; }
 
-    // Last composed export (copy/pin/save); pin manager may consume.
     static const CaptureResult& LastExport();
     static POINT LastExportOrigin();
 
@@ -42,11 +36,13 @@ private:
     LRESULT WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
     void OnToolbarAction(ToolbarAction action, ToolKind tool);
+    void OpenTextEditorAt(D2D1_POINT_2F imagePt, int editIndex);
+    void OnTextEditorDone(bool committed, const std::wstring& text);
     CaptureResult ComposeExport();
     void DoCopy();
     void DoSave();
     void DoPin();
-    void RequestClose(); // deferred — safe when called from Toolbar WndProc
+    void RequestClose();
     void Present();
     bool EnsureSurface();
     void ReleaseSurface();
@@ -61,8 +57,11 @@ private:
     DrawStack m_ann;
     AnnotationRenderer m_renderer;
     std::unique_ptr<Toolbar> m_toolbar;
-    ID2D1Bitmap* m_baseBmp = nullptr;
+    std::unique_ptr<TextEditor> m_textEditor;
+    int m_editingTextIndex = -1; // -1 = new text
+    D2D1_POINT_2F m_textAnchor{};
 
+    ID2D1Bitmap* m_baseBmp = nullptr;
     ID2D1DCRenderTarget* m_rt = nullptr;
     HDC m_screenDc = nullptr;
     HDC m_memDc = nullptr;

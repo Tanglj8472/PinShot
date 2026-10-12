@@ -39,6 +39,7 @@
     <ClCompile Include="AnnotationOverlay\DrawStack.cpp"><Filter>AnnotationOverlay</Filter></ClCompile>
     <ClCompile Include="AnnotationOverlay\AnnotationRenderer.cpp"><Filter>AnnotationOverlay</Filter></ClCompile>
     <ClCompile Include="AnnotationOverlay\AnnotationOverlay.cpp"><Filter>AnnotationOverlay</Filter></ClCompile>
+    <ClCompile Include="AnnotationOverlay\TextEditor.cpp"><Filter>AnnotationOverlay</Filter></ClCompile>
     <ClCompile Include="FloatingToolbar\Toolbar.cpp"><Filter>FloatingToolbar</Filter></ClCompile>
     <ClCompile Include="PinWindow\PinWindow.cpp"><Filter>PinWindow</Filter></ClCompile>
     <ClCompile Include="PinWindow\PinManager.cpp"><Filter>PinWindow</Filter></ClCompile>
@@ -56,6 +57,7 @@
     <ClInclude Include="AnnotationOverlay\DrawStack.h"><Filter>AnnotationOverlay</Filter></ClInclude>
     <ClInclude Include="AnnotationOverlay\AnnotationRenderer.h"><Filter>AnnotationOverlay</Filter></ClInclude>
     <ClInclude Include="AnnotationOverlay\AnnotationOverlay.h"><Filter>AnnotationOverlay</Filter></ClInclude>
+    <ClInclude Include="AnnotationOverlay\TextEditor.h"><Filter>AnnotationOverlay</Filter></ClInclude>
     <ClInclude Include="FloatingToolbar\ToolButton.h"><Filter>FloatingToolbar</Filter></ClInclude>
     <ClInclude Include="FloatingToolbar\Toolbar.h"><Filter>FloatingToolbar</Filter></ClInclude>
     <ClInclude Include="PinWindow\PinWindow.h"><Filter>PinWindow</Filter></ClInclude>

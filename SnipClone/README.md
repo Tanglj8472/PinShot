@@ -25,9 +25,11 @@
 2. 运行 EXE，按 `Ctrl+Shift+S`
 3. 拖拽框选 → 松手进入批注
 4. 工具栏：`pen rect ellip arrow text mos | w- w+ clr | undo redo | close pin save copy`
-5. 文字：点一下后直接键入，Enter 提交 / Esc 取消
+5. **文字（Snipaste 目标）**：点击落点 → 浮动输入框（支持中文 IME）→ Enter 提交 / Esc 取消；双击可重编；`B/I/OL` 粗体斜体描边
 6. 贴图窗口可拖拽；双击关闭
 7. 快捷键：`P/R/E/A/X/M` 切工具，`1/2` 调粗细/字号/马赛克块
+
+文字交互细节见 [`docs/TEXT_ANNOTATION.md`](docs/TEXT_ANNOTATION.md)。
 
 ## 状态机
 

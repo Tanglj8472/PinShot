@@ -147,21 +147,20 @@ void AnnotationRenderer::DrawArrowHead(
 
 void AnnotationRenderer::DrawTextCmd(ID2D1RenderTarget* rt, const DrawCommand& cmd)
 {
-    if (!m_dwrite || cmd.pts.empty())
+    if (!m_dwrite || cmd.pts.empty() || cmd.text.empty())
     {
         return;
     }
 
-    const std::wstring& content = cmd.text.empty() ? L"|" : cmd.text; // caret hint while empty
     IDWriteTextFormat* format = nullptr;
     if (FAILED(m_dwrite->CreateTextFormat(
             L"Segoe UI",
             nullptr,
-            DWRITE_FONT_WEIGHT_SEMI_BOLD,
-            DWRITE_FONT_STYLE_NORMAL,
+            cmd.style.bold ? DWRITE_FONT_WEIGHT_BOLD : DWRITE_FONT_WEIGHT_NORMAL,
+            cmd.style.italic ? DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE_NORMAL,
             DWRITE_FONT_STRETCH_NORMAL,
             cmd.style.fontSize,
-            L"en-us",
+            L"zh-cn",
             &format)))
     {
         return;
@@ -169,27 +168,41 @@ void AnnotationRenderer::DrawTextCmd(ID2D1RenderTarget* rt, const DrawCommand& c
 
     const float x = cmd.pts[0].x;
     const float y = cmd.pts[0].y;
-    const float w = 2000.f;
-    const float h = cmd.style.fontSize * 4.f;
+    const float w = 4000.f;
+    const float h = cmd.style.fontSize * 6.f;
     D2D1_RECT_F layout = D2D1::RectF(x, y, x + w, y + h);
 
-    // Outline for contrast (PinShot outline).
-    m_brush->SetColor(D2D1::ColorF(0, 0, 0, 0.85f));
-    for (int ox = -1; ox <= 1; ++ox)
+    // PinShot/Snipaste outline: light text → black halo, dark text → white halo.
+    if (cmd.style.outline)
     {
-        for (int oy = -1; oy <= 1; ++oy)
+        const float lum = 0.2126f * cmd.style.color.r + 0.7152f * cmd.style.color.g + 0.0722f * cmd.style.color.b;
+        const float halo = (std::max)(2.f, cmd.style.fontSize / 7.f);
+        m_brush->SetColor(lum > 0.7f ? D2D1::ColorF(0, 0, 0, 1.f) : D2D1::ColorF(1, 1, 1, 1.f));
+        const int rad = (std::max)(1, static_cast<int>(std::lround(halo)));
+        for (int ox = -rad; ox <= rad; ++ox)
         {
-            if (ox == 0 && oy == 0)
+            for (int oy = -rad; oy <= rad; ++oy)
             {
-                continue;
+                if (ox == 0 && oy == 0)
+                {
+                    continue;
+                }
+                if (ox * ox + oy * oy > rad * rad)
+                {
+                    continue;
+                }
+                D2D1_RECT_F r = D2D1::RectF(
+                    layout.left + static_cast<float>(ox),
+                    layout.top + static_cast<float>(oy),
+                    layout.right + static_cast<float>(ox),
+                    layout.bottom + static_cast<float>(oy));
+                rt->DrawText(cmd.text.c_str(), static_cast<UINT32>(cmd.text.size()), format, r, m_brush);
             }
-            D2D1_RECT_F r = D2D1::RectF(layout.left + ox, layout.top + oy, layout.right + ox, layout.bottom + oy);
-            rt->DrawText(content.c_str(), static_cast<UINT32>(content.size()), format, r, m_brush);
         }
     }
 
     m_brush->SetColor(cmd.style.color);
-    rt->DrawText(content.c_str(), static_cast<UINT32>(content.size()), format, layout, m_brush);
+    rt->DrawText(cmd.text.c_str(), static_cast<UINT32>(cmd.text.size()), format, layout, m_brush);
     format->Release();
 }
 

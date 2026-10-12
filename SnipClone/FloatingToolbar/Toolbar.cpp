@@ -124,11 +124,14 @@ void Toolbar::BuildButtons()
     addTool(ToolKind::Rect, L"rect", L"Rectangle (R)");
     addTool(ToolKind::Ellipse, L"ellip", L"Ellipse (E)");
     addTool(ToolKind::Arrow, L"arrow", L"Arrow (A)");
-    addTool(ToolKind::Text, L"text", L"Text (X)");
+    addTool(ToolKind::Text, L"text", L"Text (X) — click to place, Enter commit");
     addTool(ToolKind::Mosaic, L"mos", L"Mosaic (M)");
     addAct(ToolbarAction::WidthDec, L"w-", L"Thinner / smaller (1)");
     addAct(ToolbarAction::WidthInc, L"w+", L"Thicker / larger (2)");
     addAct(ToolbarAction::ColorCycle, L"clr", L"Cycle color");
+    addAct(ToolbarAction::Bold, L"B", L"Bold");
+    addAct(ToolbarAction::Italic, L"I", L"Italic");
+    addAct(ToolbarAction::Outline, L"OL", L"Outline / glow");
     addAct(ToolbarAction::Undo, L"undo", L"Undo");
     addAct(ToolbarAction::Redo, L"redo", L"Redo");
     addAct(ToolbarAction::Close, L"close", L"Cancel");
@@ -188,9 +191,29 @@ void Toolbar::SyncFromAnnotator()
     {
         return;
     }
+    const auto& textStyle = m_ann->Style(ToolKind::Text);
     for (auto& b : m_buttons)
     {
-        b.checked = (b.action == ToolbarAction::SetTool && b.tool == m_ann->Tool());
+        if (b.action == ToolbarAction::SetTool)
+        {
+            b.checked = (b.tool == m_ann->Tool());
+        }
+        else if (b.action == ToolbarAction::Bold)
+        {
+            b.checked = textStyle.bold;
+        }
+        else if (b.action == ToolbarAction::Italic)
+        {
+            b.checked = textStyle.italic;
+        }
+        else if (b.action == ToolbarAction::Outline)
+        {
+            b.checked = textStyle.outline;
+        }
+        else
+        {
+            b.checked = false;
+        }
     }
     Present();
 }

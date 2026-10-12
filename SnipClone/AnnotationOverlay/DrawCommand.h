@@ -30,8 +30,11 @@ struct DrawStyle
     float width = 3.f;
     bool arrow = true;
     bool filled = false;
-    float fontSize = 22.f;
-    int mosaicSize = 8; // pixel block size
+    float fontSize = 20.f; // PinShot default 20
+    int mosaicSize = 8;
+    bool bold = false;
+    bool italic = false;
+    bool outline = true; // PinShot / Snipaste text default
 };
 
 struct DrawCommand
@@ -39,7 +42,7 @@ struct DrawCommand
     ToolKind kind = ToolKind::None;
     std::vector<D2D1_POINT_2F> pts; // image-local pixels
     DrawStyle style{};
-    std::wstring text; // Text tool
+    std::wstring text;
 };
 
 inline const wchar_t* ToolKindName(ToolKind k)
