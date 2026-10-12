@@ -168,8 +168,10 @@ void TextEditor::ResizeToContent()
     }
     ReleaseDC(m_edit, hdc);
 
-    const int h = (std::max)(sz.cy + 8, static_cast<LONG>(m_style.fontSize) + 8);
-    const int w = (std::max)(80, sz.cx + 16);
+    const int h = (std::max)(
+        static_cast<int>(sz.cy) + 8,
+        static_cast<int>(m_style.fontSize) + 8);
+    const int w = (std::max)(80, static_cast<int>(sz.cx) + 16);
 
     RECT wr{};
     GetWindowRect(m_host, &wr);
