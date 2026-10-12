@@ -7,6 +7,7 @@
 #include "../Capture/CaptureResult.h"
 #include "../Capture/ScreenCapture.h"
 #include "../AnnotationOverlay/AnnotatorDocument.h"
+#include "../Common/AppSettings.h"
 #include "../Common/CoordMap.h"
 #include "../Common/DpiHelper.h"
 #include "../Common/ImageUtil.h"
@@ -452,6 +453,26 @@ void TestStyleEditsSelected()
     Expect(stack.SelectedIndex() == 1, "duplicate selects copy");
 }
 
+void TestAppSettingsDefaults()
+{
+    std::printf("AppSettings defaults\n");
+    const snip::AppSettings d = snip::AppSettings::Defaults();
+    Expect(d.snip.vk == static_cast<UINT>('S'), "default snip vk");
+    Expect((d.snip.mods & (MOD_CONTROL | MOD_SHIFT)) == (MOD_CONTROL | MOD_SHIFT),
+           "default snip mods");
+    Expect(d.pins.vk == static_cast<UINT>('P'), "default pins vk");
+    Expect(d.selectAfterDraw, "selectAfterDraw default on");
+
+    snip::AppSettings s = d;
+    s.snip.vk = static_cast<UINT>('X');
+    s.snip.mods = MOD_ALT;
+    s.pins.vk = static_cast<UINT>('Y');
+    s.RestoreDefaultHotkeys();
+    Expect(s.snip.vk == d.snip.vk && s.snip.mods == d.snip.mods, "restore snip hotkey");
+    Expect(s.pins.vk == d.pins.vk && s.pins.mods == d.pins.mods, "restore pins hotkey");
+    Expect(s.selectAfterDraw == d.selectAfterDraw, "restore hotkeys leaves annotate flag");
+}
+
 void TestComposeFailsEmpty()
 {
     // A02: failure / empty base must not return a non-empty silent base copy.
@@ -560,6 +581,7 @@ int wmain()
     TestRemapForCrop();
     TestCropViewportUndo();
     TestTextExtentConsistent();
+    TestAppSettingsDefaults();
     TestComposeFailsEmpty();
     TestComposeReuseSurface();
     TestComposeExportOmitsSelectionChrome();

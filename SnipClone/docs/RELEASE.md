@@ -26,7 +26,7 @@
 
 ## 设置（`%APPDATA%\SnipClone\settings.ini`）
 
-当前无独立设置页；通过托盘「打开设置目录」编辑 ini。开机启动未实现，勿依赖。
+托盘「设置…」可改热键、输出目录、开机启动、标注完成后是否切到选择工具；「应用 / 确定」后立即生效（热键重新注册，无需重启）。高级用户仍可直接编辑 ini。
 
 ```ini
 [Hotkey]
@@ -37,10 +37,15 @@ PinsMods=6
 
 [General]
 OutputDir=C:\Users\...\Documents\SnipClone
+StartWithWindows=0
+
+[Annotate]
+SelectAfterDraw=1
 ```
 
 - `SnipMods` / `PinsMods`：`MOD_ALT=1`、`MOD_CONTROL=2`、`MOD_SHIFT=4`、`MOD_WIN=8`（可组合相加）  
-- 改热键后需重启 SnipClone  
+- `SelectAfterDraw=1`：画完矩形/箭头等后自动切到选择工具（默认开）  
+- 设置页提供「恢复默认热键」
 
 ## CI 检查
 
@@ -54,6 +59,5 @@ OutputDir=C:\Users\...\Documents\SnipClone
 ## 已知未包含
 
 - 安装器 / 自动更新  
-- 开机启动  
 - 窗口/控件识别、GraphicsCapture（见 `GRAPHICS_CAPTURE.md`）  
 - 预览帧时间桌面基准（A11 资源已复用，p95 目标待实测）  

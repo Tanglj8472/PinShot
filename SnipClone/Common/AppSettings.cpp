@@ -57,6 +57,18 @@ std::wstring AppSettings::SettingsPath()
     return JoinPath(dir, L"settings.ini");
 }
 
+AppSettings AppSettings::Defaults()
+{
+    return AppSettings{};
+}
+
+void AppSettings::RestoreDefaultHotkeys()
+{
+    const AppSettings d = Defaults();
+    snip = d.snip;
+    pins = d.pins;
+}
+
 AppSettings AppSettings::Load()
 {
     AppSettings s;
@@ -71,6 +83,7 @@ AppSettings AppSettings::Load()
     s.pins.vk = ReadUint(L"Hotkey", L"PinsVk", s.pins.vk, path.c_str());
     s.pins.mods = ReadUint(L"Hotkey", L"PinsMods", s.pins.mods, path.c_str());
     s.startWithWindows = ReadUint(L"General", L"StartWithWindows", 0, path.c_str()) != 0;
+    s.selectAfterDraw = ReadUint(L"Annotate", L"SelectAfterDraw", 1, path.c_str()) != 0;
 
     wchar_t outDir[MAX_PATH]{};
     GetPrivateProfileStringW(L"General", L"OutputDir", L"", outDir, MAX_PATH, path.c_str());
@@ -95,6 +108,7 @@ bool AppSettings::Save() const
     WriteUint(L"Hotkey", L"PinsVk", pins.vk, path.c_str());
     WriteUint(L"Hotkey", L"PinsMods", pins.mods, path.c_str());
     WriteUint(L"General", L"StartWithWindows", startWithWindows ? 1u : 0u, path.c_str());
+    WriteUint(L"Annotate", L"SelectAfterDraw", selectAfterDraw ? 1u : 0u, path.c_str());
     if (!WritePrivateProfileStringW(L"General", L"OutputDir", outputDir.c_str(), path.c_str()))
     {
         return false;

@@ -88,6 +88,8 @@ private:
     bool ApplyCropFromHistory(RECT cropScreen);
     void SessionUndo();
     void SessionRedo();
+    // M1: when LiveSettings().selectAfterDraw, switch to Select after a new shape commits.
+    void MaybeSelectAfterCommit(ToolKind drawnKind);
     void PaintCropChrome(const RECT& hostScreen);
     void PaintSizeLabel(const RECT& hostScreen, const RECT& cropScreen);
     void DimOutsideCrop(const RECT& hostScreen, const RECT& cropScreen);

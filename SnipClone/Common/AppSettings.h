@@ -22,9 +22,15 @@ struct AppSettings
     HotkeySpec pins{ static_cast<UINT>('P'), MOD_CONTROL | MOD_SHIFT };
     std::wstring outputDir; // empty → user Documents or last Browse path
     bool startWithWindows = false;
+    // After committing a drawable annotation, switch to Select so handles are usable.
+    bool selectAfterDraw = true;
 
     static AppSettings Load();
     bool Save() const;
+
+    // Built-in factory defaults (hotkeys + annotation behavior). Does not touch outputDir.
+    static AppSettings Defaults();
+    void RestoreDefaultHotkeys();
 
     static std::wstring SettingsDir();
     static std::wstring SettingsPath();

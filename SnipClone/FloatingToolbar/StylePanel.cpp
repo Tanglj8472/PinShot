@@ -9,6 +9,7 @@
 
 #include <windowsx.h>
 
+#include <algorithm>
 #include <cmath>
 #include <string>
 
@@ -21,10 +22,6 @@ namespace snip
 namespace
 {
 constexpr wchar_t kClass[] = L"SnipCloneStylePanel";
-constexpr int kBtn = 30;
-constexpr int kPad = 6;
-constexpr int kGap = 4;
-constexpr int kSwatch = 16;
 
 // PinShot-like light chrome
 constexpr D2D1_COLOR_F kBg = { 0.97f, 0.97f, 0.97f, 0.96f };
@@ -32,6 +29,11 @@ constexpr D2D1_COLOR_F kBorder = { 0.60f, 0.60f, 0.60f, 1.f };
 constexpr D2D1_COLOR_F kHover = { 0.87f, 0.91f, 0.96f, 1.f };
 constexpr D2D1_COLOR_F kChecked = { 0.77f, 0.85f, 0.95f, 1.f };
 constexpr D2D1_COLOR_F kFg = { 0.20f, 0.20f, 0.20f, 1.f };
+}
+
+int StylePanel::Dip(int value) const
+{
+    return ScaleForDpi(value, m_dpi);
 }
 
 StylePanel::~StylePanel()
@@ -259,37 +261,45 @@ void StylePanel::RebuildForTool(ToolKind tool)
 
 void StylePanel::LayoutButtons()
 {
-    int x = kPad;
+    m_btn = Dip(30);
+    m_pad = Dip(6);
+    m_gap = Dip(4);
+    m_swatch = Dip(16);
+    const int custom = Dip(26);
+    const int gapColor = Dip(3);
+
+    int x = m_pad;
     for (auto& b : m_buttons)
     {
         if (b.action == ToolbarAction::None)
         {
-            int bw = 56;
+            int bw = Dip(56);
             if (b.id == L"ctx" || b.id == L"hint")
             {
-                bw = 148;
+                bw = Dip(148);
             }
             else if (b.id == L"wv" || b.id == L"fv" || b.id == L"mv")
             {
-                bw = 56;
+                bw = Dip(56);
             }
-            b.hit = { x, kPad, x + bw, kPad + kBtn };
-            x = b.hit.right + kGap;
+            b.hit = { x, m_pad, x + bw, m_pad + m_btn };
+            x = b.hit.right + m_gap;
             continue;
         }
-        int bw = kBtn;
-        int bh = kBtn;
+        // Color chips: visual swatch ~16 DIP, hit target at least ~28 DIP (plan §3.2).
+        int bw = m_btn;
+        int bh = m_btn;
         if (b.action == ToolbarAction::SetColor)
         {
-            bw = bh = kSwatch;
+            bw = bh = (std::max)(m_swatch + Dip(12), Dip(28));
         }
         else if (b.colorIndex == -2)
         {
-            bw = bh = 26;
+            bw = bh = custom;
         }
-        const int y = kPad + (kBtn - bh) / 2;
+        const int y = m_pad + (m_btn - bh) / 2;
         b.hit = { x, y, x + bw, y + bh };
-        x += bw + ((b.action == ToolbarAction::SetColor) ? 3 : kGap);
+        x += bw + ((b.action == ToolbarAction::SetColor) ? gapColor : m_gap);
     }
 }
 
@@ -299,8 +309,8 @@ void StylePanel::ResizeToContent()
     {
         return;
     }
-    const int width = m_buttons.empty() ? 120 : m_buttons.back().hit.right + kPad;
-    const int height = kPad * 2 + kBtn;
+    const int width = m_buttons.empty() ? Dip(120) : m_buttons.back().hit.right + m_pad;
+    const int height = m_pad * 2 + m_btn;
     SetWindowPos(m_hwnd, nullptr, 0, 0, width, height, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
     ReleaseSurface();
     Present();
@@ -386,17 +396,26 @@ void StylePanel::PlaceUnder(HWND toolbarHwnd)
 
     RECT tr{};
     GetWindowRect(toolbarHwnd, &tr);
+    // M2: match toolbar monitor DPI (was fixed 30/6/16 px).
+    const UINT dpi = GetDpiForRect(tr);
+    if (dpi != m_dpi)
+    {
+        m_dpi = dpi;
+        LayoutButtons();
+        ResizeToContent();
+    }
+
     RECT pr{};
     GetClientRect(m_hwnd, &pr);
     const int pw = pr.right - pr.left;
     const int ph = pr.bottom - pr.top;
 
     int x = tr.left;
-    int y = tr.bottom + 4;
+    int y = tr.bottom + Dip(4);
     const RECT work = GetMonitorWorkAreaFromRect(tr);
     if (y + ph > work.bottom)
     {
-        y = tr.top - ph - 4;
+        y = tr.top - ph - Dip(4);
     }
     if (x + pw > work.right)
     {
@@ -711,10 +730,14 @@ void StylePanel::Present()
 
         if (b.action == ToolbarAction::SetColor && b.colorIndex >= 0)
         {
+            const float inset =
+                (std::max)(0.f, (r.right - r.left - static_cast<float>(m_swatch)) * 0.5f);
+            const D2D1_RECT_F sw = D2D1::RectF(r.left + inset, r.top + inset, r.right - inset,
+                                               r.bottom - inset);
             m_brush->SetColor(DrawStack::PaletteColor(b.colorIndex));
-            m_rt->FillRectangle(r, m_brush);
+            m_rt->FillRectangle(sw, m_brush);
             m_brush->SetColor(kBorder);
-            m_rt->DrawRectangle(r, m_brush, b.checked ? 2.f : 1.f);
+            m_rt->DrawRectangle(sw, m_brush, b.checked ? 2.f : 1.f);
             continue;
         }
 

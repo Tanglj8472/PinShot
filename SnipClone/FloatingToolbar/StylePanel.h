@@ -44,6 +44,7 @@ private:
     void ReleaseSurface();
     ToolButton* HitTest(POINT client);
     void PickCustomColor();
+    int Dip(int value) const;
 
     HWND m_hwnd = nullptr;
     HWND m_owner = nullptr;
@@ -52,6 +53,11 @@ private:
     ActionFn m_onAction;
     ToolKind m_tool = ToolKind::None;
     std::vector<ToolButton> m_buttons;
+    UINT m_dpi = 96;
+    int m_btn = 30;
+    int m_pad = 6;
+    int m_gap = 4;
+    int m_swatch = 16;
 
     ID2D1Factory* m_factory = nullptr;
     ID2D1DCRenderTarget* m_rt = nullptr;

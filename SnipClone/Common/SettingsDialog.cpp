@@ -30,10 +30,12 @@ enum Id : int
     IdPinsLabel,
     IdPinsValue,
     IdPinsRecord,
+    IdRestoreHotkeys,
     IdOutLabel,
     IdOutEdit,
     IdOutBrowse,
     IdAutostart,
+    IdSelectAfterDraw,
     IdApply,
     IdOk,
     IdCancel,
@@ -95,6 +97,8 @@ bool ApplyDraft(HWND hwnd, DlgState* st)
     st->draft.outputDir = outBuf;
     st->draft.startWithWindows =
         (SendMessageW(GetDlgItem(hwnd, IdAutostart), BM_GETCHECK, 0, 0) == BST_CHECKED);
+    st->draft.selectAfterDraw =
+        (SendMessageW(GetDlgItem(hwnd, IdSelectAfterDraw), BM_GETCHECK, 0, 0) == BST_CHECKED);
 
     const AppSettings previous = LiveSettings();
     LiveSettings() = st->draft;
@@ -146,12 +150,16 @@ LRESULT CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         CreateWindowExW(0, L"BUTTON", L"录制…", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 270, 48, 80, 28, hwnd,
                         reinterpret_cast<HMENU>(static_cast<INT_PTR>(IdPinsRecord)), st->instance, nullptr);
 
+        CreateWindowExW(0, L"BUTTON", L"恢复默认热键", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 360, 30, 110, 28,
+                        hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IdRestoreHotkeys)),
+                        st->instance, nullptr);
+
         CreateWindowExW(0, L"STATIC", L"输出目录", WS_CHILD | WS_VISIBLE, 16, 96, 80, 22, hwnd,
                         reinterpret_cast<HMENU>(static_cast<INT_PTR>(IdOutLabel)), st->instance, nullptr);
         CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", st->draft.outputDir.c_str(),
                         WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL, 100, 92, 250, 26, hwnd,
                         reinterpret_cast<HMENU>(static_cast<INT_PTR>(IdOutEdit)), st->instance, nullptr);
-        CreateWindowExW(0, L"BUTTON", L"浏览…", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 360, 90, 70, 28, hwnd,
+        CreateWindowExW(0, L"BUTTON", L"浏览…", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 360, 90, 110, 28, hwnd,
                         reinterpret_cast<HMENU>(static_cast<INT_PTR>(IdOutBrowse)), st->instance, nullptr);
 
         CreateWindowExW(0, L"BUTTON", L"开机启动", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
@@ -160,15 +168,22 @@ LRESULT CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         SendMessageW(GetDlgItem(hwnd, IdAutostart), BM_SETCHECK,
                      st->draft.startWithWindows ? BST_CHECKED : BST_UNCHECKED, 0);
 
-        CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE, 16, 172, 410, 22, hwnd,
+        CreateWindowExW(0, L"BUTTON", L"标注完成后切换到选择工具",
+                        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX, 16, 168, 280, 24, hwnd,
+                        reinterpret_cast<HMENU>(static_cast<INT_PTR>(IdSelectAfterDraw)), st->instance,
+                        nullptr);
+        SendMessageW(GetDlgItem(hwnd, IdSelectAfterDraw), BM_SETCHECK,
+                     st->draft.selectAfterDraw ? BST_CHECKED : BST_UNCHECKED, 0);
+
+        CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE, 16, 204, 450, 22, hwnd,
                         reinterpret_cast<HMENU>(static_cast<INT_PTR>(IdStatus)), st->instance, nullptr);
 
-        CreateWindowExW(0, L"BUTTON", L"应用", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 160, 210, 80, 30, hwnd,
+        CreateWindowExW(0, L"BUTTON", L"应用", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 200, 242, 80, 30, hwnd,
                         reinterpret_cast<HMENU>(static_cast<INT_PTR>(IdApply)), st->instance, nullptr);
-        CreateWindowExW(0, L"BUTTON", L"确定", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON, 250,
-                        210, 80, 30, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IdOk)), st->instance,
+        CreateWindowExW(0, L"BUTTON", L"确定", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON, 290,
+                        242, 80, 30, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IdOk)), st->instance,
                         nullptr);
-        CreateWindowExW(0, L"BUTTON", L"取消", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 340, 210, 80, 30, hwnd,
+        CreateWindowExW(0, L"BUTTON", L"取消", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 380, 242, 80, 30, hwnd,
                         reinterpret_cast<HMENU>(static_cast<INT_PTR>(IdCancel)), st->instance, nullptr);
 
         RefreshHotkeyLabels(hwnd, st->draft);
@@ -194,6 +209,14 @@ LRESULT CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             st->recording = 2;
             SetStatus(hwnd, L"请按下新的穿透退出热键…");
             SetFocus(hwnd);
+            return 0;
+        }
+        if (id == IdRestoreHotkeys)
+        {
+            st->draft.RestoreDefaultHotkeys();
+            st->recording = 0;
+            RefreshHotkeyLabels(hwnd, st->draft);
+            SetStatus(hwnd, L"已恢复默认热键，点击「应用」或「确定」生效。");
             return 0;
         }
         if (id == IdOutBrowse)
@@ -375,8 +398,8 @@ bool ShowSettingsDialog(HWND owner, HINSTANCE instance)
         WS_CAPTION | WS_SYSMENU | WS_POPUP,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
-        460,
-        290,
+        500,
+        330,
         owner,
         nullptr,
         instance,

@@ -258,6 +258,7 @@ void AnnotationOverlay::OnTextEditorDone(bool committed, const std::wstring& tex
         else
         {
             m_ann.AddText(m_textAnchor, text);
+            MaybeSelectAfterCommit(ToolKind::Text);
         }
     }
 
@@ -422,7 +423,10 @@ LRESULT AnnotationOverlay::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         {
             ReleaseCapture();
         }
+        const ToolKind before = m_ann.Tool();
         m_ann.Release(D2D1::Point2F(static_cast<float>(client.x), static_cast<float>(client.y)));
+        // CommitLive auto-selects the new shape; MaybeSelectAfterCommit may switch to Select.
+        MaybeSelectAfterCommit(before);
         return 0;
     }
 
@@ -1081,6 +1085,43 @@ bool AnnotationOverlay::IsSelectLikeTool() const
 {
     const ToolKind t = m_ann.Tool();
     return t == ToolKind::Select || t == ToolKind::None;
+}
+
+void AnnotationOverlay::MaybeSelectAfterCommit(ToolKind drawnKind)
+{
+    if (drawnKind == ToolKind::Select || drawnKind == ToolKind::None ||
+        drawnKind == ToolKind::Eraser)
+    {
+        if (m_toolbar)
+        {
+            m_toolbar->SyncFromAnnotator();
+        }
+        return;
+    }
+    if (!LiveSettings().selectAfterDraw)
+    {
+        if (m_toolbar)
+        {
+            m_toolbar->SyncFromAnnotator();
+        }
+        return;
+    }
+    if (m_ann.SelectedIndex() < 0)
+    {
+        if (m_toolbar)
+        {
+            m_toolbar->SyncFromAnnotator();
+        }
+        return;
+    }
+    if (m_ann.Tool() != ToolKind::Select)
+    {
+        m_ann.SetTool(ToolKind::Select);
+    }
+    if (m_toolbar)
+    {
+        m_toolbar->SyncFromAnnotator();
+    }
 }
 
 void AnnotationOverlay::SessionUndo()

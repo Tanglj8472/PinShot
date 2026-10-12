@@ -1,5 +1,5 @@
 //==============================================================================
-// SnipClone — minimal settings UI (M1: hotkeys + output dir)
+// SnipClone — settings UI (M1: hotkeys, output, autostart, select-after-draw)
 //==============================================================================
 #pragma once
 
