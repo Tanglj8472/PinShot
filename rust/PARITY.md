@@ -82,7 +82,7 @@ Counts at the bottom. Python sources are not modified.
 | Python | Rust | Status |
 |---|---|---|
 | `Style` / `default_styles` / `Shape` | `annotation::{Style,Shape,Tool}` | done |
-| `option_target` live\|selected\|edit\|width | `Annotator::option_target` + live branch | done |
+| `option_target` live\|selected\|edit\|width | `Annotator::option_target` + live branch | done | `add` still sets `width_target` (style/color edit the just-drawn shape). Also sets `selected`/`edit_target` so the 8 handles show; Python paints handles only for `selected` (None after draw) |
 | `option_tool` / `option_style` | `option_tool` | done |
 | `adjust_width` + 0.5s undo merge | done |
 | `wheel` trunc(angle/120) | `Annotator::wheel` | done |
@@ -124,7 +124,7 @@ Counts at the bottom. Python sources are not modified.
 | Double-click close/hide/none + tip | `PinWin::on_double_click` | done | First hit tips; `dblclick_tip_shown` persisted |
 | Context menu full (`build_menu`) | Win32 popup / in-process `PinMenuWin` | done | Height sums real row sizes (Sep=8); Esc closes menu only (pin ignores Esc ~450ms) |
 | Rotate / flip / paste / replace file | done |
-| Shadow / thumb | `shadow` + Shift+dblclick 72px thumb | done | Default on when `_NET_WM_CM_Sn` is owned; persisted |
+| Shadow / thumb | `shadow` + Shift+dblclick 72px thumb | done | Default on when `_NET_WM_CM_Sn` is owned; persisted. Widget is image+2M, photo at (M,M), `WA_TranslucentBackground` + premultiplied ARGB present; hairline `QRectF(r).adjusted(-0.5,-0.5,-0.5,-0.5)`; session stores image origin |
 | Click-through XShape / WS_EX_TRANSPARENT | done |
 | Groups move / new / rename | tray groups; pin menu partial | partial |
 | Glow fade-in | `tick_glow` | done |

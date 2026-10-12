@@ -2,7 +2,7 @@
 
 对照源：`main` 上的 Python/PySide6 PinShot。Rust 在 `rust/`，分支 `rust`。Python 源码不改。
 
-最后更新：2026-10-12（A–F：选区移动带标注、内置取色、透明度/Ctrl 滚轮/prefs 置顶/矩形虚线）。
+最后更新：2026-10-12（0ff0169 实机两项：刚画完的形状出手柄；pin 去顶/左边暗条）。
 
 ---
 
@@ -17,9 +17,9 @@ HEAD 在 `rust`（用户提交 `ed59e0f` 之后本轮继续）。对照 Python/`
 | 重启后 R 套在**当前截图**的上次选区、Tab 不漏到 Chrome | 实机过 |
 | pin 光标锚缩放（不切工作区）、菜单高度、Esc 只关菜单、穿透勾选 | 实机过 |
 | Linux 滚轮每格两次 | **已修**（Xvfb `:22` 15/15）：3 格 → 3 次 `overlay wheel`，线宽 3→6；4 格缩放 → 4 次 `pin zoom`（不再 8 步） |
-| 工具栏子面板 | Fill/Outline、Solid/Dash/Dot（矩形/椭圆/直线）、B/I/Outline、马赛克 Brush/Rect/Blur；当前色块 → overlay/pin 内 HSV 取色（无 zenity） |
+| 工具栏子面板 | Fill/Outline、Solid/Dash/Dot（矩形/椭圆/直线）、B/I/Outline、马赛克 Brush/Rect/Blur；当前色块 → overlay/pin 内 HSV 取色（无 zenity）；刚画完的形状保持 `option_target` 并画出 8 手柄 |
 | Esc 放弃确认 | overlay 内 Y/N /「不再提示」（不再 zenity 抢抓键） |
-| pin 阴影 / 缩略图 | 合成器在则默认阴影 M=12；菜单可勾 Shadow；Shift+双击 72px 中心裁切；写入 session |
+| pin 阴影 / 缩略图 | 合成器在则默认阴影 M=12；窗=图+2M、图在 (M,M)、ARGB 阴影；菜单可勾 Shadow；Shift+双击 72px 中心裁切；session 存图原点 |
 | 画笔采样 | 活笔时 QueryPointer 8ms（Python 8ms timer） |
 | Windows 实机 | **未关**：Linux-first 改动后尚未在真 Windows 上复测（CI 绿） |
 | AT-SPI / IME / 合成器 | 限制同前，见「已知限制」 |
@@ -147,6 +147,8 @@ HEAD 在 `rust`（用户提交 `ed59e0f` 之后本轮继续）。对照 Python/`
 | `7c406a6` | 用户：单击再点同一工具取消；语言标签回归测试 |
 | `a6d6765` | 用户：Windows 设置事件循环 + 截图焦点 |
 | `7d5ebb7` / `c344764` / `6edae0a` | `WheelGate` 去双倍滚轮；Fill/Dash/Dot 子面板；overlay 内 ConfirmAbort；pin 阴影/缩略；zenity 自定义色（已被本轮内置取色替换）；画笔 8ms poll |
+| `f32767c` / `da81652` / `0ff0169` | A–F：选区移动带标注；内置 HSV 取色；透明度写到 frame；Ctrl 滚轮读 QueryPointer；prefs ABOVE；矩形 Dash/Dot；双击复制同点才触发 |
+| （本轮） | `0ff0169` 实机两项：`add` 选中刚画的形状（手柄可见，Solid/色仍改它）；pin 按 Python 图+2M / ARGB / 发丝边，去掉顶左边暗条 |
 
 ### `7ef18fe` 实机（Xfce/xfwm4，2026-10-12 08:33 UTC+8）
 
@@ -255,6 +257,7 @@ HEAD 在 `rust`（用户提交 `ed59e0f` 之后本轮继续）。对照 Python/`
 | Windows 实机 | 未关 | Linux-first 改动后只跑过 CI，尚未在真 Windows 上复测、未出新的 release exe |
 | PARITY 缺口 | 部分关 | ConfirmAbort / 阴影缩略 / 画笔 poll / 子面板 / 内置取色已做；剩字体家族、像素 hit、Pynput（103/10/1/6） |
 | 6edae0a 实机 A–F | 已修 | 见下表 |
+| 0ff0169 实机两项 | 已修 | 刚画完的形状：`option_target` 仍改它，并画出 8 手柄；pin 顶/左边暗条：窗=图+2M + ARGB |
 
 ---
 
@@ -291,6 +294,15 @@ HEAD 在 `rust`（用户提交 `ed59e0f` 之后本轮继续）。对照 Python/`
 | F | 矩形面板无 Solid/Dash/Dot | 已修 | 与直线相同的线型芯片；`render` 已用 `line_style` |
 
 验证约定：Linux 改动必须在 **Xvfb + xfwm4 + xdotool**（以及有桌面时的 `:1` Xfce）上做焦点/按键/菜单回归。本轮用 `type --delay 20`、两步快拖、连续滚轮格（间隔 80ms > 门控 40ms）。
+
+### 0ff0169 实机两项（本轮）
+
+实机 A–F 全过（picom 下 pin 半透明）。两项对齐 Python：
+
+| ID | 问题 | 状态 | 修法 |
+|---|---|---|---|
+| 1 | Solid/取色也改刚画的矩形，但看不见选中 | 已修 | Python `add` 只设 `width_target`，`option_target` 仍改该形状。保留该语义，并设 `selected`/`edit_target`，按 `option_target` 画 8 手柄 |
+| 2 | pin 顶/左边一条暗带（阴影偏移 / 1px 边） | 已修 | 窗按 Python 图+2M、原点图−M、`with_transparent` + `present_argb`；先阴影再贴图；发丝边 `adjusted(-0.5,-0.5,-0.5,-0.5)`；圆角阴影 |
 
 ### Xvfb `da81652` A–F（`:23` 1920×1200 + xfwm4，实机节拍）
 

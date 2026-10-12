@@ -4,7 +4,9 @@ use std::num::NonZeroU32;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use crate::draw::{fill_rect, paint_color_picker, paint_pin, paint_toolbar, present, stroke_rect};
+use crate::draw::{
+    fill_rect, paint_color_picker, paint_pin, paint_toolbar, present_argb, stroke_rect, PIN_SHADOW_M,
+};
 use crate::native;
 use crate::toolbar::{TbAction, Toolbar};
 use pinshot_core::annotation::{Annotator, Tool};
@@ -88,20 +90,28 @@ impl PinWin {
     ) -> Result<Self, String> {
         let w = img.width.max(8);
         let h = img.height.max(8);
+        let can_shadow = native::compositor_active();
+        // Python sizes the widget to image + 2M and places the photo at (M,M).
+        // Creating at bare image size cropped the shadow pixmap to its top-left
+        // — a dark band along the top and left edges.
+        let m = if can_shadow { PIN_SHADOW_M as i32 } else { 0 };
         let attrs = Window::default_attributes()
             .with_title("PinShot Pin")
             .with_decorations(false)
             .with_resizable(false)
             .with_visible(true)
-            .with_position(PhysicalPosition::new(pos.0, pos.1))
-            .with_inner_size(PhysicalSize::new(w, h))
+            .with_transparent(can_shadow)
+            .with_position(PhysicalPosition::new(pos.0 - m, pos.1 - m))
+            .with_inner_size(PhysicalSize::new(
+                (w as i32 + 2 * m) as u32,
+                (h as i32 + 2 * m) as u32,
+            ))
             .with_window_level(winit::window::WindowLevel::AlwaysOnTop);
         let window = Rc::new(event_loop.create_window(attrs).map_err(|e| e.to_string())?);
         native::apply_pin_style(&window);
         window.set_ime_allowed(true);
         let context = Context::new(window.clone()).map_err(|e| e.to_string())?;
         let surface = Surface::new(&context, window.clone()).map_err(|e| e.to_string())?;
-        let can_shadow = native::compositor_active();
         let mut pin = Self {
             window,
             surface,
@@ -113,7 +123,7 @@ impl PinWin {
             glow: 1.0,
             drag: None,
             last_cursor: Point::ZERO,
-            geom_pos: Some(pos),
+            geom_pos: Some((pos.0 - m, pos.1 - m)),
             closed: false,
             dirty: true,
             group: groups::DEFAULT.into(),
@@ -133,6 +143,13 @@ impl PinWin {
             color_picker: None,
         };
         pin.redraw();
+        crate::logutil::log(&format!(
+            "pin create {}x{} at {},{} margin={m} transparent={can_shadow}",
+            w as i32 + 2 * m,
+            h as i32 + 2 * m,
+            pos.0 - m,
+            pos.1 - m
+        ));
         Ok(pin)
     }
 
@@ -154,6 +171,14 @@ impl PinWin {
 
     pub fn pos(&self) -> (i32, i32) {
         self.current_tl()
+    }
+
+    /// Image top-left in screen pixels (Python `PinWindow` constructor `pos`).
+    /// The window itself sits at this origin minus the shadow margin.
+    pub fn img_origin(&self) -> (i32, i32) {
+        let m = self.margin();
+        let tl = self.current_tl();
+        (tl.0 + m, tl.1 + m)
     }
 
     fn current_tl(&self) -> (i32, i32) {
@@ -1011,7 +1036,8 @@ impl PinWin {
         );
         let mut pm =
             tiny_skia::Pixmap::new(ww, hh).unwrap_or_else(|| tiny_skia::Pixmap::new(8, 8).unwrap());
-        pm.data_mut().fill(0xF7);
+        // Keep the shadow margin premultiplied-clear. Filling 0xF7 made the
+        // drop shadow an opaque grey slab (and a dark top/left crop band).
         let img_w = img_pm.width().min(ww);
         let img_h = img_pm.height().min(hh);
         {
@@ -1036,9 +1062,10 @@ impl PinWin {
             }
             if let Some(ed) = &self.annot.text_edit {
                 if let Some(r) = self.annot.text_edit_rect() {
+                    let m = self.margin() as f32;
                     let rr = Rect::new(
-                        r.x * self.scale,
-                        r.y * self.scale,
+                        m + r.x * self.scale,
+                        m + r.y * self.scale,
                         r.w * self.scale,
                         r.h * self.scale,
                     );
@@ -1060,12 +1087,13 @@ impl PinWin {
                 }
             }
         }
-        if let Some(i) = self.annot.selected {
+        if let Some(i) = self.annot.option_target() {
             if let Some(sh) = self.annot.shapes.get(i) {
-                let hb = sh.bounds();
+                let hb = sh.bounds().adjusted(-2.0, -2.0, 2.0, 2.0);
+                let m = self.margin() as f32;
                 let sr = Rect::new(
-                    hb.x * self.scale,
-                    hb.y * self.scale,
+                    m + hb.x * self.scale,
+                    m + hb.y * self.scale,
                     hb.w * self.scale,
                     hb.h * self.scale,
                 );
@@ -1089,7 +1117,7 @@ impl PinWin {
             crate::draw::paint_toast(&mut pm, t, ww, hh);
         }
         if let Ok(mut buf) = self.surface.buffer_mut() {
-            present(&mut buf, &pm);
+            present_argb(&mut buf, &pm);
             let _ = buf.present();
         }
         self.dirty = false;

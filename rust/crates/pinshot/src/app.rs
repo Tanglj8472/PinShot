@@ -433,7 +433,7 @@ impl App {
             if let Some(img) = decode_png(&c.png) {
                 self.spawn_pin(event_loop, img, Some(c.pos), Some(c.group));
                 if let Some(p) = self.pins.last_mut() {
-                    p.shadow = c.shadow && p.can_shadow;
+                    p.set_shadow(c.shadow);
                     p.thumb = c.thumb;
                     p.set_scale(c.scale);
                     p.set_opacity_ex(c.opacity, false);
@@ -495,7 +495,7 @@ impl App {
             if std::fs::write(&path, &png).is_err() {
                 continue;
             }
-            let (x, y) = p.pos();
+            let (x, y) = p.img_origin();
             snaps.push(PinSnapshot {
                 file,
                 x,
@@ -537,7 +537,7 @@ impl App {
                 false,
             );
             if let Some(p) = self.pins.last_mut() {
-                p.shadow = snap.shadow && p.can_shadow;
+                p.set_shadow(snap.shadow);
                 p.thumb = snap.thumb;
                 p.set_scale(snap.scale);
                 p.set_opacity_ex(snap.opacity, false);
@@ -618,7 +618,7 @@ impl App {
                     self.closed.push(
                         ClosedPin {
                             png: encode_png(&p.rendered()),
-                            pos: p.pos(),
+                            pos: p.img_origin(),
                             scale: p.scale,
                             opacity: p.opacity,
                             group: p.group.clone(),

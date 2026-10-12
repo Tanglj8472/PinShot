@@ -94,6 +94,43 @@ pub fn fill_rect(pm: &mut Pixmap, r: Rect, c: Rgba) {
     }
 }
 
+/// Python `QPainter.drawRoundedRect` (cubic circle approximation).
+pub fn fill_rounded_rect(pm: &mut Pixmap, r: Rect, radius: f32, c: Rgba) {
+    if r.is_empty() {
+        return;
+    }
+    let rad = radius.min(r.w / 2.0).min(r.h / 2.0);
+    if rad < 0.5 {
+        fill_rect(pm, r, c);
+        return;
+    }
+    let k = rad * 0.552_284_75;
+    let x0 = r.x;
+    let y0 = r.y;
+    let x1 = r.right();
+    let y1 = r.bottom();
+    let mut pb = PathBuilder::new();
+    pb.move_to(x0 + rad, y0);
+    pb.line_to(x1 - rad, y0);
+    pb.cubic_to(x1 - rad + k, y0, x1, y0 + rad - k, x1, y0 + rad);
+    pb.line_to(x1, y1 - rad);
+    pb.cubic_to(x1, y1 - rad + k, x1 - rad + k, y1, x1 - rad, y1);
+    pb.line_to(x0 + rad, y1);
+    pb.cubic_to(x0 + rad - k, y1, x0, y1 - rad + k, x0, y1 - rad);
+    pb.line_to(x0, y0 + rad);
+    pb.cubic_to(x0, y0 + rad - k, x0 + rad - k, y0, x0 + rad, y0);
+    pb.close();
+    if let Some(path) = pb.finish() {
+        pm.fill_path(
+            &path,
+            &paint(c),
+            FillRule::Winding,
+            Transform::identity(),
+            None,
+        );
+    }
+}
+
 pub fn stroke_rect(pm: &mut Pixmap, r: Rect, c: Rgba, width: f32) {
     if r.is_empty() {
         return;
@@ -463,9 +500,10 @@ impl OverlayFront {
             chrome.push(hole_pad);
         }
 
-        if let Some(i) = annot.selected {
+        if let Some(i) = annot.option_target() {
             if let Some(sh) = annot.shapes.get(i) {
-                let hb = sh.bounds();
+                // Same box `hit_handle_of_selected` / Python `render` use.
+                let hb = sh.bounds().adjusted(-2.0, -2.0, 2.0, 2.0);
                 stroke_rect(&mut self.frame, hb, Rgba::BLUE, 1.0);
                 for (_, c) in handle_points(hb) {
                     let hr = Rect::new(
@@ -1064,8 +1102,12 @@ pub fn paint_pin(
     if shadow {
         paint_pin_shadow(&mut pm, img_r, m);
     }
+    // Image over the shadow (Python clips to `img_rect`) so the +2 drop
+    // offset cannot darken the photo's top/left edge.
     blit_raster(&mut pm, &content, img_r);
-    let stroke_r = Rect::new(m + 0.5, m + 0.5, w as f32 - 1.0, h as f32 - 1.0);
+    // Python `QRectF(r).adjusted(-0.5, -0.5, -0.5, -0.5)` — hairline on the
+    // image box, not an inset that eats the first pixel row/column.
+    let stroke_r = Rect::new(m - 0.5, m - 0.5, w as f32, h as f32);
     if glow > 0.0 {
         stroke_rect(
             &mut pm,
@@ -1117,16 +1159,34 @@ fn paint_pin_shadow(pm: &mut Pixmap, img_r: Rect, m: f32) {
             img_r.w + 2.0 * i as f32,
             img_r.h + 2.0 * i as f32,
         );
-        fill_rect(pm, r, Rgba::rgba(0, 0, 0, a));
+        fill_rounded_rect(pm, r, i as f32, Rgba::rgba(0, 0, 0, a));
     }
 }
 
+/// Softbuffer / XRGB: drop alpha. Overlay chrome is opaque.
 pub fn present(buf: &mut [u32], pm: &Pixmap) {
+    present_ex(buf, pm, false);
+}
+
+/// Softbuffer ARGB (premultiplied). Pin shadow needs this under picom.
+pub fn present_argb(buf: &mut [u32], pm: &Pixmap) {
+    present_ex(buf, pm, true);
+}
+
+fn present_ex(buf: &mut [u32], pm: &Pixmap, argb: bool) {
     let data = pm.data();
     let n = buf.len().min(data.len() / 4);
     for i in 0..n {
         let o = i * 4;
-        buf[i] = (data[o] as u32) << 16 | (data[o + 1] as u32) << 8 | data[o + 2] as u32;
+        let r = data[o] as u32;
+        let g = data[o + 1] as u32;
+        let b = data[o + 2] as u32;
+        let a = data[o + 3] as u32;
+        buf[i] = if argb {
+            a << 24 | r << 16 | g << 8 | b
+        } else {
+            r << 16 | g << 8 | b
+        };
     }
 }
 
@@ -1147,5 +1207,56 @@ mod tests {
             tw
         );
         assert!((r.x + r.w / 2.0 - 640.0).abs() < 40.0);
+    }
+
+    #[test]
+    fn pin_shadow_is_soft_and_image_edge_stays_bright() {
+        let mut px = vec![0u8; 40 * 30 * 4];
+        for p in px.chunks_exact_mut(4) {
+            p[0] = 200;
+            p[1] = 200;
+            p[2] = 200;
+            p[3] = 255;
+        }
+        let img = Raster::from_rgba(40, 30, px).expect("raster");
+        let pm = paint_pin(&img, &Annotator::new(), 1.0, false, 0.0, true, false);
+        let m = PIN_SHADOW_M as u32;
+        assert_eq!(pm.width(), 40 + 2 * m, "widget is image + 2M");
+        assert_eq!(pm.height(), 30 + 2 * m);
+        // Hairline sits on x=m-0.5; sample well outside it.
+        let mid_shadow = pm.pixel(3, m + 14).expect("outer shadow");
+        assert!(
+            mid_shadow.alpha() < 255 && mid_shadow.alpha() > 0,
+            "outer shadow must be translucent, a={}",
+            mid_shadow.alpha()
+        );
+        let br_shadow = pm
+            .pixel(pm.width() - 3, pm.height() - 3)
+            .expect("bottom-right shadow");
+        assert!(
+            br_shadow.alpha() < 255,
+            "shadow must exist on all sides (not a top/left crop), a={}",
+            br_shadow.alpha()
+        );
+        let top_img = pm.pixel(m + 4, m + 2).expect("image top");
+        assert_eq!(top_img.alpha(), 255);
+        assert!(
+            top_img.red() > 150,
+            "photo top must not be a dark band, r={}",
+            top_img.red()
+        );
+        let left_img = pm.pixel(m + 2, m + 10).expect("image left");
+        assert!(
+            left_img.red() > 150,
+            "photo left must not be a dark band, r={}",
+            left_img.red()
+        );
+        let mut buf = vec![0u32; (pm.width() * pm.height()) as usize];
+        present_argb(&mut buf, &pm);
+        let sh = buf[(3 + (m + 14) * pm.width()) as usize];
+        assert!(
+            sh >> 24 > 0 && sh >> 24 < 255,
+            "present_argb keeps shadow alpha, got {sh:#010x}"
+        );
     }
 }

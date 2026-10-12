@@ -239,7 +239,13 @@ impl Overlay {
         if self.annot.shapes.len() > before {
             if let Some(sh) = self.annot.shapes.last() {
                 let b = sh.bounds();
-                crate::logutil::log(&format!("annot {:?} {:.0}x{:.0}", sh.kind, b.w, b.h));
+                crate::logutil::log(&format!(
+                    "annot {:?} {:.0}x{:.0} selected={:?}",
+                    sh.kind,
+                    b.w,
+                    b.h,
+                    self.annot.selected
+                ));
             }
         }
         self.relayout_toolbar();

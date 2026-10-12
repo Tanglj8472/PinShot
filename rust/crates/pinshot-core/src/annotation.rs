@@ -424,7 +424,15 @@ impl Annotator {
     pub fn add(&mut self, shape: Shape) {
         self.push_edit();
         self.shapes.push(shape);
-        self.width_target = Some(self.shapes.len() - 1);
+        let i = self.shapes.len() - 1;
+        // Python `add` sets only `width_target`. `option_target` is
+        // live | selected | edit_target | width_target, so Solid/color after a
+        // draw still edit that shape. Python paints handles only for `selected`
+        // (None after add) — keep the edit, and select the shape so the 8
+        // handles make the target visible and hittable.
+        self.width_target = Some(i);
+        self.selected = Some(i);
+        self.edit_target = Some(i);
         self.renumber();
     }
 
@@ -1427,7 +1435,31 @@ mod tests {
             }
             let b = a.shapes[0].bounds();
             assert!(b.w >= 60.0 && b.h >= 40.0, "{tool:?} bounds {b:?}");
+            assert_eq!(a.selected, Some(0), "{tool:?} just-drawn is selected");
+            assert_eq!(a.option_target(), Some(0));
         }
+    }
+
+    #[test]
+    fn style_after_draw_edits_just_drawn_and_selects_it() {
+        let mut a = Annotator::new();
+        a.set_style_default(Tool::Rect, |s| s.line_style = LineStyleKind::Dot);
+        a.set_tool(Some(Tool::Rect));
+        a.press(Point::new(10.0, 10.0), false);
+        a.move_to(Point::new(80.0, 60.0), false);
+        a.release(Point::new(80.0, 60.0));
+        assert_eq!(a.selected, Some(0));
+        assert_eq!(a.edit_target, Some(0));
+        assert_eq!(a.width_target, Some(0));
+        assert_eq!(a.option_target(), Some(0));
+        assert!(!a.selected_handle_points().is_empty());
+        assert_eq!(a.shapes[0].style.line_style, LineStyleKind::Dot);
+        a.set_style_value(Tool::Rect, |s| s.line_style = LineStyleKind::Solid);
+        assert_eq!(a.shapes[0].style.line_style, LineStyleKind::Solid);
+        a.set_style_value(Tool::Rect, |s| s.color = Rgba::BLUE);
+        assert_eq!(a.shapes[0].style.color, Rgba::BLUE);
+        assert_eq!(a.style(Tool::Rect).line_style, LineStyleKind::Solid);
+        assert_eq!(a.style(Tool::Rect).color, Rgba::BLUE);
     }
 
     #[test]
