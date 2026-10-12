@@ -9,6 +9,7 @@ use crate::native;
 use crate::toolbar::{TbAction, Toolbar};
 use pinshot_core::annotation::{Annotator, Tool};
 use pinshot_core::color::Rgba;
+use pinshot_core::wheel::WheelGate;
 use pinshot_core::geom::{handle_points, HANDLE_SIZE};
 use pinshot_core::geom::{Point, Rect};
 use pinshot_core::groups;
@@ -71,6 +72,10 @@ pub struct PinWin {
     pub destroy: bool,
     pub pending_menu: bool,
     pub saved_path: Option<String>,
+    wheel: WheelGate,
+    pub shadow: bool,
+    pub can_shadow: bool,
+    pub thumb: bool,
 }
 
 impl PinWin {
@@ -94,6 +99,7 @@ impl PinWin {
         window.set_ime_allowed(true);
         let context = Context::new(window.clone()).map_err(|e| e.to_string())?;
         let surface = Surface::new(&context, window.clone()).map_err(|e| e.to_string())?;
+        let can_shadow = native::compositor_active();
         let mut pin = Self {
             window,
             surface,
@@ -118,6 +124,10 @@ impl PinWin {
             destroy: false,
             pending_menu: false,
             saved_path: None,
+            wheel: WheelGate::new(),
+            can_shadow,
+            shadow: can_shadow,
+            thumb: false,
         };
         pin.redraw();
         Ok(pin)
@@ -184,10 +194,10 @@ impl PinWin {
         }
         let tl = self.current_tl();
         self.scale = new;
-        let w = ((self.img.width as f32) * self.scale).round().max(8.0) as u32;
-        let h = ((self.img.height as f32) * self.scale).round().max(8.0) as u32;
+        let (w, h) = self.win_px();
+        let m = self.margin() as f32;
         let (nx, ny) = match anchor {
-            Some(a) => zoom_pos(tl, a, old, new),
+            Some(a) => zoom_pos(tl, a, old, new, m),
             None => tl,
         };
         self.apply_geom(nx, ny, w, h);
@@ -266,6 +276,9 @@ impl PinWin {
     pub fn show_toolbar(&mut self, on: bool) {
         self.annotating = on;
         if on {
+            if self.thumb {
+                self.toggle_thumb();
+            }
             if self.annot.tool.is_none() {
                 self.annot.set_tool(Some(Tool::Rect));
             }
@@ -279,33 +292,89 @@ impl PinWin {
     }
 
     fn relayout_tb(&mut self) {
+        let m = self.margin() as f32;
         let (iw, ih) = self.img_px();
-        let sel = Rect::new(0.0, 0.0, iw as f32, ih as f32);
-        let over = Rect::new(0.0, 0.0, iw.max(420) as f32, ih as f32 + 90.0);
-        let mut tb = Toolbar::layout_pin(sel, over, self.annot.tool, self.arrow_on);
+        let (ww, hh) = self.win_px();
+        let sel = Rect::new(m, m, iw as f32, ih as f32);
+        let over = Rect::new(0.0, 0.0, ww as f32, hh as f32);
+        let mut tb = Toolbar::layout_pin(sel, over, self.annot.tool, self.arrow_on, self.annot.option_style());
         tb.set_width_value(self.annot.option_width());
         self.toolbar = Some(tb);
     }
 
+    fn margin(&self) -> i32 {
+        if self.shadow {
+            crate::draw::PIN_SHADOW_M as i32
+        } else {
+            0
+        }
+    }
+
     fn img_px(&self) -> (u32, u32) {
+        if self.thumb {
+            return (crate::draw::PIN_THUMB, crate::draw::PIN_THUMB);
+        }
         let w = ((self.img.width as f32) * self.scale).round().max(8.0) as u32;
         let h = ((self.img.height as f32) * self.scale).round().max(8.0) as u32;
         (w, h)
     }
 
-    fn apply_size(&mut self) {
+    fn win_px(&self) -> (u32, u32) {
         let (w, h) = self.img_px();
-        let (ww, hh) = if self.annotating {
-            (w.max(420), h + 90)
+        let m = (self.margin() * 2) as u32;
+        let (ww, hh) = (w + m, h + m);
+        if self.annotating {
+            (ww.max(420), hh + 90)
         } else {
-            (w, h)
-        };
+            (ww, hh)
+        }
+    }
+
+    fn apply_size(&mut self) {
+        let (ww, hh) = self.win_px();
         let (x, y) = self.current_tl();
         self.apply_geom(x, y, ww, hh);
     }
 
     fn img_pt(&self, p: Point) -> Point {
-        Point::new(p.x / self.scale.max(0.01), p.y / self.scale.max(0.01))
+        let m = self.margin() as f32;
+        if self.thumb {
+            let s = self.img.width.min(self.img.height) as f32;
+            let sx = (self.img.width as f32 - s) / 2.0;
+            let sy = (self.img.height as f32 - s) / 2.0;
+            let t = crate::draw::PIN_THUMB as f32;
+            Point::new(sx + (p.x - m) / t * s, sy + (p.y - m) / t * s)
+        } else {
+            Point::new(
+                (p.x - m) / self.scale.max(0.01),
+                (p.y - m) / self.scale.max(0.01),
+            )
+        }
+    }
+
+    pub fn set_shadow(&mut self, on: bool) {
+        let m = self.margin();
+        let tl = self.current_tl();
+        let img_tl = (tl.0 + m, tl.1 + m);
+        self.shadow = on && self.can_shadow;
+        let nm = self.margin();
+        let (ww, hh) = self.win_px();
+        self.apply_geom(img_tl.0 - nm, img_tl.1 - nm, ww, hh);
+        self.persist_needed = true;
+        self.dirty = true;
+        crate::logutil::log(&format!("pin shadow {}", self.shadow));
+    }
+
+    pub fn toggle_thumb(&mut self) {
+        let m = self.margin();
+        let tl = self.current_tl();
+        let img_tl = (tl.0 + m, tl.1 + m);
+        self.thumb = !self.thumb;
+        let (ww, hh) = self.win_px();
+        self.apply_geom(img_tl.0 - m, img_tl.1 - m, ww, hh);
+        self.persist_needed = true;
+        self.dirty = true;
+        crate::logutil::log(&format!("pin thumb {}", self.thumb));
     }
 
     fn apply_tb(&mut self, a: TbAction) {
@@ -332,6 +401,43 @@ impl PinWin {
                     let c = pinshot_core::palette_colors()[i as usize];
                     self.annot.set_style_value(tool, |s| s.color = c);
                 }
+            }
+            TbAction::CustomColor => {
+                if let Some(tool) = self.annot.option_tool().filter(|t| *t != Tool::Select) {
+                    let cur = self.annot.style(tool).color;
+                    if let Some(c) = crate::dialog::pick_color(native::hwnd_of(&self.window), cur) {
+                        self.annot.set_style_value(tool, |s| s.color = c);
+                    }
+                }
+            }
+            TbAction::Fill(on) => {
+                if let Some(tool) = self.annot.option_tool().filter(|t| *t != Tool::Select) {
+                    self.annot.set_style_value(tool, |s| s.filled = on);
+                }
+            }
+            TbAction::LineStyle(ls) => {
+                if let Some(tool) = self.annot.option_tool() {
+                    self.annot.set_style_value(tool, |s| s.line_style = ls);
+                }
+            }
+            TbAction::SetMode(mode) => {
+                if let Some(tool) = self.annot.option_tool() {
+                    self.annot.set_style_value(tool, |s| s.mode = mode);
+                }
+            }
+            TbAction::SetEffect(effect) => {
+                if let Some(tool) = self.annot.option_tool() {
+                    self.annot.set_style_value(tool, |s| s.effect = effect);
+                }
+            }
+            TbAction::Bold(on) => {
+                self.annot.set_style_value(Tool::Text, |s| s.bold = on);
+            }
+            TbAction::Italic(on) => {
+                self.annot.set_style_value(Tool::Text, |s| s.italic = on);
+            }
+            TbAction::Outline(on) => {
+                self.annot.set_style_value(Tool::Text, |s| s.outline = on);
             }
             TbAction::Ocr | TbAction::Translate | TbAction::Pin => {}
         }
@@ -386,8 +492,14 @@ impl PinWin {
                                 return;
                             }
                         }
-                        let (_w, ih) = self.img_px();
-                        if p.y <= ih as f32 && self.annot.press(self.img_pt(p), false) {
+                        let m = self.margin() as f32;
+                        let (iw, ih) = self.img_px();
+                        if p.x >= m
+                            && p.y >= m
+                            && p.x <= m + iw as f32
+                            && p.y <= m + ih as f32
+                            && self.annot.press(self.img_pt(p), false)
+                        {
                             self.dirty = true;
                             return;
                         }
@@ -408,9 +520,12 @@ impl PinWin {
                 if let Some((x, y, _)) = native::pointer_in_client(&self.window) {
                     self.last_cursor = Point::new(x as f32, y as f32);
                 }
-                let angle = match delta {
+                let raw = match delta {
                     MouseScrollDelta::LineDelta(_, y) => (*y * 120.0) as i32,
                     MouseScrollDelta::PixelDelta(p) => p.y as i32,
+                };
+                let Some(angle) = self.wheel.take(raw) else {
+                    return;
                 };
                 if self.annotating
                     && (self.annot.tool.is_some()
@@ -419,6 +534,10 @@ impl PinWin {
                         || self.annot.hit_test(self.img_pt(self.last_cursor)).is_some())
                 {
                     if self.annot.wheel_at(self.img_pt(self.last_cursor), angle) {
+                        crate::logutil::log(&format!(
+                            "pin wheel {angle:+} width={}",
+                            self.annot.option_width()
+                        ));
                         self.relayout_tb();
                         self.dirty = true;
                     }
@@ -541,6 +660,16 @@ impl PinWin {
     }
 
     pub fn handle_ctrl_wheel(&mut self, dy: f32) {
+        let raw = if dy > 0.0 {
+            120
+        } else if dy < 0.0 {
+            -120
+        } else {
+            0
+        };
+        if self.wheel.take(raw).is_none() {
+            return;
+        }
         self.set_opacity(self.opacity + if dy > 0.0 { 0.1 } else { -0.1 });
     }
 
@@ -579,6 +708,7 @@ impl PinWin {
             append(menu, ID_COPY, &tr("Copy image"), false);
             append(menu, ID_SAVE, &tr("Save image as…"), false);
             append(menu, ID_TOOLBAR, &tr("Show toolbar"), self.annotating);
+            append(menu, 23, &tr("Shadow"), self.shadow);
             append(menu, 0, "", true);
             append(menu, ID_CT, &tr("Click-through"), self.click_through);
             append(menu, 0, "", true);
@@ -612,6 +742,7 @@ impl PinWin {
                 ID_SAVE => self.save(),
                 ID_CLOSE => self.close(),
                 ID_TOOLBAR => self.show_toolbar(!self.annotating),
+                23 => self.set_shadow(!self.shadow),
                 ID_CT => self.set_click_through(!self.click_through),
                 ID_Z25 => self.set_scale(0.25),
                 ID_Z50 => self.set_scale(0.5),
@@ -641,6 +772,7 @@ impl PinWin {
             PinMenuAction::Save => self.save(),
             PinMenuAction::ToggleToolbar => self.show_toolbar(!self.annotating),
             PinMenuAction::ToggleClickThrough => self.set_click_through(!self.click_through),
+            PinMenuAction::ToggleShadow => self.set_shadow(!self.shadow),
             PinMenuAction::Zoom(pct) => self.set_scale(pct as f32 / 100.0),
             PinMenuAction::Rotate(t) => self.rotate(t),
             PinMenuAction::FlipH => self.flip(true),
@@ -722,8 +854,12 @@ impl PinWin {
     }
 
     /// Python `mouseDoubleClickEvent`: first hit shows a tip, then close/hide/none.
-    pub fn on_double_click(&mut self, cfg: &mut pinshot_core::Config) {
+    pub fn on_double_click(&mut self, cfg: &mut pinshot_core::Config, shift: bool) {
         if self.click_through {
+            return;
+        }
+        if shift && self.annot.tool.is_none() {
+            self.toggle_thumb();
             return;
         }
         if self.annot.tool == Some(Tool::Select)
@@ -767,12 +903,7 @@ impl PinWin {
 
     pub fn redraw(&mut self) {
         self.expire_toast();
-        let (w, h) = self.img_px();
-        let (ww, hh) = if self.annotating {
-            (w.max(420), h + 90)
-        } else {
-            (w, h)
-        };
+        let (ww, hh) = self.win_px();
         if self
             .surface
             .resize(NonZeroU32::new(ww).unwrap(), NonZeroU32::new(hh).unwrap())
@@ -786,6 +917,8 @@ impl PinWin {
             self.scale,
             self.click_through,
             self.glow,
+            self.shadow,
+            self.thumb,
         );
         let mut pm =
             tiny_skia::Pixmap::new(ww, hh).unwrap_or_else(|| tiny_skia::Pixmap::new(8, 8).unwrap());
@@ -883,10 +1016,12 @@ impl PinWin {
 }
 
 /// Keep the image pixel under `anchor` fixed while the scale changes.
-pub fn zoom_pos(tl: (i32, i32), anchor: Point, old: f32, new: f32) -> (i32, i32) {
+pub fn zoom_pos(tl: (i32, i32), anchor: Point, old: f32, new: f32, margin: f32) -> (i32, i32) {
     let old = old.max(0.01);
-    let nx = tl.0 + (anchor.x * (1.0 - new / old)).round() as i32;
-    let ny = tl.1 + (anchor.y * (1.0 - new / old)).round() as i32;
+    let ax = anchor.x - margin;
+    let ay = anchor.y - margin;
+    let nx = tl.0 + (ax * (1.0 - new / old)).round() as i32;
+    let ny = tl.1 + (ay * (1.0 - new / old)).round() as i32;
     (nx, ny)
 }
 
@@ -898,7 +1033,7 @@ mod tests {
     fn zoom_out_moves_origin_so_pointer_stays() {
         // Pin at (100,100), pointer 50px inside. Zoom 1.0 → 0.5 should move
         // the window by +25 so the same image pixel stays under the pointer.
-        let (x, y) = zoom_pos((100, 100), Point::new(50.0, 40.0), 1.0, 0.5);
+        let (x, y) = zoom_pos((100, 100), Point::new(50.0, 40.0), 1.0, 0.5, 0.0);
         assert_eq!((x, y), (125, 120));
     }
 
@@ -909,7 +1044,7 @@ mod tests {
         let mut s = 1.0_f32;
         for _ in 0..3 {
             let n = s / 1.1;
-            tl = zoom_pos(tl, anchor, s, n);
+            tl = zoom_pos(tl, anchor, s, n, 0.0);
             s = n;
         }
         assert!(

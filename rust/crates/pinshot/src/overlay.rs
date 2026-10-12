@@ -5,7 +5,9 @@ use std::time::{Duration, Instant};
 
 use pinshot_core::annotation::{Annotator, Tool};
 use pinshot_core::color::Rgba;
+use pinshot_core::confirm::{confirm_abort_layout, ConfirmAbortHit};
 use pinshot_core::geom::{hover_rect, Point, Rect};
+use pinshot_core::wheel::WheelGate;
 use pinshot_core::history::{HistoryEntry, HistoryView, SnipHistory};
 use pinshot_core::i18n::tr;
 use pinshot_core::magnifier::magnifier_visible;
@@ -36,6 +38,10 @@ pub enum OverlayResult {
     Resnip,
 }
 
+struct ConfirmAbort {
+    dont: bool,
+}
+
 pub struct Overlay {
     window: Rc<Window>,
     front: OverlayFront,
@@ -63,6 +69,10 @@ pub struct Overlay {
     mods: ModifiersState,
     history_max: u32,
     held_btn1: bool,
+    wheel: WheelGate,
+    confirm: Option<ConfirmAbort>,
+    #[cfg(unix)]
+    proxy: winit::event_loop::EventLoopProxy<crate::event::AppEvent>,
     #[cfg(unix)]
     key_grab: Option<crate::x11util::OverlayKeyGrab>,
     #[cfg(not(windows))]
@@ -136,6 +146,10 @@ impl Overlay {
             mods: ModifiersState::empty(),
             history_max: history_max.max(1),
             held_btn1: false,
+            wheel: WheelGate::new(),
+            confirm: None,
+            #[cfg(unix)]
+            proxy: proxy.clone(),
             #[cfg(unix)]
             key_grab: None,
             #[cfg(not(windows))]
@@ -266,6 +280,7 @@ impl Overlay {
                 self.bounds(),
                 self.annot.tool,
                 self.arrow_on,
+                self.annot.option_style(),
             );
             tb.set_width_value(self.annot.option_width());
             self.toolbar = Some(tb);
@@ -442,11 +457,48 @@ impl Overlay {
                     self.annot.set_style_value(tool, |s| s.color = c);
                 }
             }
+            TbAction::CustomColor => self.pick_custom_color(),
+            TbAction::Fill(on) => self.style_tool(|s| s.filled = on),
+            TbAction::LineStyle(ls) => self.style_tool(|s| s.line_style = ls),
+            TbAction::SetMode(mode) => self.style_tool(|s| s.mode = mode),
+            TbAction::SetEffect(effect) => self.style_tool(|s| s.effect = effect),
+            TbAction::Bold(on) => self.style_tool(|s| s.bold = on),
+            TbAction::Italic(on) => self.style_tool(|s| s.italic = on),
+            TbAction::Outline(on) => self.style_tool(|s| s.outline = on),
         }
         crate::logutil::log(&format!("tb {a:?}"));
         self.relayout_toolbar();
         self.held_btn1 = true;
         self.mark_dirty();
+    }
+
+    fn style_tool(&mut self, setter: impl Fn(&mut pinshot_core::annotation::Style)) {
+        if let Some(tool) = self.annot.option_tool().filter(|t| *t != Tool::Select) {
+            self.annot.set_style_value(tool, setter);
+        }
+    }
+
+    fn pick_custom_color(&mut self) {
+        let Some(tool) = self.annot.option_tool().filter(|t| *t != Tool::Select) else {
+            return;
+        };
+        let cur = self.annot.style(tool).color;
+        self.window.set_visible(false);
+        #[cfg(unix)]
+        if let Some(mut g) = self.key_grab.take() {
+            g.release();
+        }
+        let picked = crate::dialog::pick_color(hwnd_of(&self.window), cur);
+        self.window.set_visible(true);
+        native::focus_window(&self.window);
+        #[cfg(unix)]
+        {
+            self.key_grab = native::grab_overlay_keys(&self.window, self.proxy.clone());
+        }
+        if let Some(c) = picked {
+            self.annot.set_style_value(tool, |s| s.color = c);
+            crate::logutil::log(&format!("custom color {}", c.hex()));
+        }
     }
 
     fn sync_pointer(&mut self) {
@@ -464,13 +516,66 @@ impl Overlay {
         let skip = pinshot_core::config::load()
             .map(|c| c.skip_abort_confirm)
             .unwrap_or(false);
-        if skip || crate::dialog::confirm_abort(hwnd_of(&self.window)) {
+        if skip {
             self.cancel();
+            return;
         }
+        if self.confirm.is_some() {
+            return;
+        }
+        self.annot.finish();
+        self.confirm = Some(ConfirmAbort { dont: false });
+        crate::logutil::log("confirm abort shown");
+        self.mark_dirty();
+    }
+
+    fn confirm_yes(&mut self) {
+        let dont = self.confirm.as_ref().map(|c| c.dont).unwrap_or(false);
+        self.confirm = None;
+        if dont {
+            if let Ok(mut cfg) = pinshot_core::config::load() {
+                cfg.skip_abort_confirm = true;
+                let _ = pinshot_core::config::save(&cfg);
+            }
+            crate::logutil::log("confirm abort yes (do not show again)");
+        } else {
+            crate::logutil::log("confirm abort yes");
+        }
+        self.cancel();
+    }
+
+    fn confirm_no(&mut self) {
+        self.confirm = None;
+        crate::logutil::log("confirm abort no");
+        self.mark_dirty();
+    }
+
+    fn hit_confirm(&mut self, pt: Point) -> bool {
+        if self.confirm.is_none() {
+            return false;
+        }
+        let b = self.bounds();
+        let lay = confirm_abort_layout(b.w, b.h);
+        match lay.hit(pt) {
+            Some(ConfirmAbortHit::Yes) => self.confirm_yes(),
+            Some(ConfirmAbortHit::No) => self.confirm_no(),
+            Some(ConfirmAbortHit::Dont) => {
+                if let Some(c) = self.confirm.as_mut() {
+                    c.dont = !c.dont;
+                    crate::logutil::log(&format!("confirm abort dont={}", c.dont));
+                }
+                self.mark_dirty();
+            }
+            None => {}
+        }
+        true
     }
 
     pub fn handle(&mut self, event: &WindowEvent) {
         match event {
+            WindowEvent::CursorMoved { position, .. } if self.confirm.is_some() => {
+                self.cursor = Point::new(position.x as f32, position.y as f32);
+            }
             WindowEvent::CursorMoved { position, .. } => {
                 let next = Point::new(position.x as f32, position.y as f32);
                 let same_px = next.x.round() == self.cursor.x.round()
@@ -507,6 +612,9 @@ impl Overlay {
             WindowEvent::MouseInput { state, button, .. } => {
                 self.sync_pointer();
                 let pt = self.cursor;
+                if *state == ElementState::Pressed && self.hit_confirm(pt) {
+                    return;
+                }
                 if *state == ElementState::Pressed {
                     native::focus_window(&self.window);
                 }
@@ -554,12 +662,22 @@ impl Overlay {
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
+                if self.confirm.is_some() {
+                    return;
+                }
                 self.sync_pointer();
-                let angle = match delta {
+                let raw = match delta {
                     MouseScrollDelta::LineDelta(_, y) => (*y * 120.0) as i32,
                     MouseScrollDelta::PixelDelta(p) => p.y as i32,
                 };
+                let Some(angle) = self.wheel.take(raw) else {
+                    return;
+                };
                 if self.annot.wheel_at(self.img_pt(self.cursor), angle) {
+                    crate::logutil::log(&format!(
+                        "overlay wheel {angle:+} width={}",
+                        self.annot.option_width()
+                    ));
                     self.relayout_toolbar();
                     self.mark_dirty();
                 }
@@ -629,6 +747,16 @@ impl Overlay {
     }
 
     fn key(&mut self, key: &Key, text: Option<&str>) {
+        if self.confirm.is_some() {
+            match key {
+                Key::Named(NamedKey::Enter) => self.confirm_yes(),
+                Key::Named(NamedKey::Escape) => self.confirm_no(),
+                Key::Character(c) if c.eq_ignore_ascii_case("y") => self.confirm_yes(),
+                Key::Character(c) if c.eq_ignore_ascii_case("n") => self.confirm_no(),
+                _ => {}
+            }
+            return;
+        }
         if self.annot.text_edit.is_some() {
             match key {
                 Key::Named(NamedKey::Escape) => self.annot.commit_text(true),
@@ -859,6 +987,7 @@ impl Overlay {
             self.toast.as_deref(),
             self.show_cursor,
             &self.capture.composed,
+            self.confirm.as_ref().map(|c| c.dont),
         );
         #[cfg(not(windows))]
         if let Some(surface) = &mut self.surface {
@@ -896,6 +1025,9 @@ impl Overlay {
     /// no live — rect/ellipse/arrow draw nothing. MouseInput owns press;
     /// recover only continues or commits a stroke that already has extent.
     fn recover_pointer_drag(&mut self) {
+        if self.confirm.is_some() {
+            return;
+        }
         let Some((x, y, down)) = native::pointer_in_window(&self.window) else {
             return;
         };
@@ -947,7 +1079,8 @@ impl Overlay {
     }
 
     pub fn next_wake(&self) -> Option<Instant> {
-        let poll = Instant::now() + Duration::from_millis(16);
+        let ms = if self.annot.is_brush_live() { 8 } else { 16 };
+        let poll = Instant::now() + Duration::from_millis(ms);
         match self.toast_until {
             Some(t) => Some(if t < poll { t } else { poll }),
             None => Some(poll),

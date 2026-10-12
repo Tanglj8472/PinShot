@@ -72,8 +72,8 @@ Counts at the bottom. Python sources are not modified.
 | `` ` `` toggle cursor | toast + `paint_pointer` | done | System cursor hidden while painted |
 | V select, N number, 1/2 width | done |
 | Double-click copy / edit text | done |
-| `wheelEvent` → `ann.wheel` | `annot.wheel(angleDelta)` | done | Linux `7ef18fe` 实机：点边改宽与面板数字已过；**每格生效两次（未关）** |
-| `ConfirmAbort` in-overlay Y/N | native dialog | partial |
+| `wheelEvent` → `ann.wheel` | `annot.wheel(angleDelta)` + `WheelGate` | done | One notch = ±120; X11 double-delivery dropped within 40ms |
+| `ConfirmAbort` in-overlay Y/N | overlay Y/N + “Do not show again” | done | No zenity/MessageBox (keeps the X11 grab) |
 | `show_cursor` paint | `draw::paint_pointer` | done | Also stamped into copy/pin/save crop |
 | Color copy then cancel | done | |
 
@@ -95,9 +95,9 @@ Counts at the bottom. Python sources are not modified.
 | `render` mosaic/blur/eraser | `render.rs` | done |
 | Text glyphs / number digits | `font.rs` fontdue | done |
 | Dash/dot line, fill, arrow, marker alpha | `render.rs` | done |
-| Property panel (bold/italic/family/mode/effect) | toolbar swatches + width only | partial |
-| Custom QColorDialog | missing | |
-| Brush cursor poll timer | move events only | partial |
+| Property panel (bold/italic/family/mode/effect) | B/I/Outline + mosaic mode/effect; no font combo | partial |
+| Custom QColorDialog | current-color swatch → zenity `--color-selection` | partial |
+| Brush cursor poll timer | QueryPointer 8ms while brush live | done |
 | Pixel-perfect hit via 3×3 paint | geometry hit | partial |
 
 ## Toolbar (`toolbar.py`)
@@ -108,7 +108,7 @@ Counts at the bottom. Python sources are not modified.
 | OCR / Translate / Undo Redo Close Pin Save Copy | done |
 | Pin Check (done) | `TbAction::Check` | done |
 | Palette 20 + width −/+ | done | Panel shows `option_width` (selected/live), not the tool default |
-| Per-tool panel (filled, dash, blur, font…) | missing | Colors + width only |
+| Per-tool panel (filled, dash, blur, font…) | Fill/Dash/Dot/mode/effect chips | partial | No QFontComboBox |
 | Tips / i18n keys | `Tool::tip` + `tr` | done |
 
 ## Pin window (`pin_window.py`)
@@ -116,7 +116,7 @@ Counts at the bottom. Python sources are not modified.
 | Python | Rust | Status |
 |---|---|---|
 | Frameless always-on-top + skip taskbar | winit + EWMH / WS_EX_TOOLWINDOW | done |
-| Drag move, wheel zoom (cursor-anchored), Ctrl+wheel opacity | done | Cursor-anchored on `7ef18fe` real mouse; each notch still applied twice on Linux (open) |
+| Drag move, wheel zoom (cursor-anchored), Ctrl+wheel opacity | done | `WheelGate` shared with overlay; one notch = one zoom / opacity step |
 | Annotating: wheel → `ann.wheel` not zoom | done |
 | Space / right-click Show toolbar | Space = toolbar; right-click = full menu | done | Never falls back to toolbar |
 | TOOL_KEYS R E P T N … | R E P T N + 1/2/3/4 | done |
@@ -124,7 +124,7 @@ Counts at the bottom. Python sources are not modified.
 | Double-click close/hide/none + tip | `PinWin::on_double_click` | done | First hit tips; `dblclick_tip_shown` persisted |
 | Context menu full (`build_menu`) | Win32 popup / in-process `PinMenuWin` | done | Height sums real row sizes (Sep=8); Esc closes menu only (pin ignores Esc ~450ms) |
 | Rotate / flip / paste / replace file | done |
-| Shadow / thumb | missing | |
+| Shadow / thumb | `shadow` + Shift+dblclick 72px thumb | done | Default on when `_NET_WM_CM_Sn` is owned; persisted |
 | Click-through XShape / WS_EX_TRANSPARENT | done |
 | Groups move / new / rename | tray groups; pin menu partial | partial |
 | Glow fade-in | `tick_glow` | done |
@@ -194,10 +194,10 @@ Rust config default `language = "zh_CN"` (Phase 1) vs Python QSettings default `
 
 | Status | Rows |
 |---|---|
-| done | 99 |
+| done | 102 |
 | partial | 11 |
-| missing | 4 |
+| missing | 1 |
 | impossible | 6 |
 | **total** | **120** |
 
-Partial/missing that still need Windows or Xfce hands-on: property panel, pin shadow/thumb, AT-SPI when the a11y bus is down, custom color dialog, per-tool toolbar panel.
+Partial/missing that still need Windows or Xfce hands-on: font family combo, pixel-perfect hit, AT-SPI when the a11y bus is down, pin group rename, PynputHotkeys.

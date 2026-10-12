@@ -25,6 +25,24 @@ const MOD2: u16 = 16;
 const MOD4: u16 = 64;
 const IGNORE: [u16; 4] = [0, LOCK, MOD2, LOCK | MOD2];
 
+/// True when an X compositor owns `_NET_WM_CM_Sn` (Python `_composited`).
+pub fn compositor_active() -> bool {
+    let Ok((c, screen)) = conn() else {
+        return false;
+    };
+    let name = format!("_NET_WM_CM_S{screen}");
+    let Ok(atom) = c.intern_atom(false, name.as_bytes()) else {
+        return false;
+    };
+    let Ok(atom) = atom.reply() else {
+        return false;
+    };
+    let Ok(owner) = c.get_selection_owner(atom.atom) else {
+        return false;
+    };
+    owner.reply().map(|r| r.owner != 0).unwrap_or(false)
+}
+
 pub fn xid_of(window: &Window) -> Option<u32> {
     let h = window.window_handle().ok()?;
     match h.as_raw() {

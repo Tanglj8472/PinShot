@@ -38,6 +38,7 @@ enum Row {
 pub struct PinMenuState {
     pub annotating: bool,
     pub click_through: bool,
+    pub shadow: bool,
     pub scale: f32,
     pub opacity: f32,
     pub group: String,
@@ -268,6 +269,12 @@ fn build_rows(state: &PinMenuState) -> Vec<Row> {
             false,
         ),
         check_item(
+            tr("Shadow"),
+            PinMenuAction::ToggleShadow,
+            state.shadow,
+            false,
+        ),
+        check_item(
             tr("Click-through"),
             PinMenuAction::ToggleClickThrough,
             state.click_through,
@@ -418,6 +425,7 @@ mod tests {
         let state = PinMenuState {
             annotating: false,
             click_through: true,
+            shadow: true,
             scale: 0.68,
             opacity: 1.0,
             group: "Default".into(),
@@ -436,6 +444,16 @@ mod tests {
             _ => None,
         });
         assert_eq!(ct, Some((true, true)));
+        let sh = rows.iter().find_map(|r| match r {
+            Row::Item {
+                action: PinMenuAction::ToggleShadow,
+                checked,
+                checkable,
+                ..
+            } => Some((*checked, *checkable)),
+            _ => None,
+        });
+        assert_eq!(sh, Some((true, true)));
         let footer = rows.iter().rev().find_map(|r| match r {
             Row::Head(s) if s.contains('%') => Some(s.clone()),
             _ => None,
@@ -448,6 +466,7 @@ mod tests {
         let state = PinMenuState {
             annotating: false,
             click_through: false,
+            shadow: false,
             scale: 1.0,
             opacity: 1.0,
             group: "Default".into(),

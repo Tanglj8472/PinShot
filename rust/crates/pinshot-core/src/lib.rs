@@ -4,6 +4,7 @@
 
 pub mod annotation;
 pub mod color;
+pub mod confirm;
 pub mod config;
 pub mod font;
 pub mod geom;
@@ -20,8 +21,11 @@ pub mod render;
 pub mod selection;
 pub mod session;
 pub mod translate;
+pub mod wheel;
 
-pub use annotation::{Annotator, Effect, Shape, Style, Tool, UndoStack};
+pub use annotation::{Annotator, DrawMode, Effect, LineStyleKind, Shape, Style, Tool, UndoStack};
+pub use confirm::{confirm_abort_layout, ConfirmAbortHit, ConfirmAbortLayout};
+pub use wheel::WheelGate;
 pub use color::{parse_color_text, palette_colors, Rgba, PALETTE};
 pub use config::{config_dir, config_path, data_dir, Config, ConfigError};
 pub use geom::{hover_rect, phys_to_logical, Handle, Point, Rect};

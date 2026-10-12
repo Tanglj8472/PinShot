@@ -79,6 +79,13 @@ impl Rgba {
                 let a = u8::from_str_radix(&s[6..8], 16).ok()?;
                 Some(Self::rgba(r, g, b, a))
             }
+            12 => {
+                // zenity --color-selection often prints 16-bit #RRRRGGGGBBBB
+                let r = u8::from_str_radix(&s[0..2], 16).ok()?;
+                let g = u8::from_str_radix(&s[4..6], 16).ok()?;
+                let b = u8::from_str_radix(&s[8..10], 16).ok()?;
+                Some(Self::rgb(r, g, b))
+            }
             _ => None,
         }
     }
@@ -171,6 +178,7 @@ mod tests {
         assert_eq!(c, Rgba::BLUE);
         assert_eq!(c.hex(), "#1E90FF");
         assert_eq!(Rgba::from_hex("#f80").unwrap(), Rgba::from_hex("#ff8800").unwrap());
+        assert_eq!(Rgba::from_hex("#ffff88000000").unwrap(), Rgba::from_hex("#ff8800").unwrap());
     }
 
     #[test]

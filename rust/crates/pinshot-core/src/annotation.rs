@@ -557,6 +557,17 @@ impl Annotator {
         self.tool
     }
 
+    /// Style shown in the toolbar panel: live / selected shape, else the tool default.
+    pub fn option_style(&self) -> Option<&Style> {
+        if let Some(live) = &self.live {
+            return Some(&live.style);
+        }
+        if let Some(i) = self.option_target() {
+            return Some(&self.shapes[i].style);
+        }
+        self.tool.filter(|t| *t != Tool::Select).map(|t| self.style(t))
+    }
+
     /// Width shown in the toolbar panel: live / selected shape, else the tool default.
     pub fn option_width(&self) -> i32 {
         if let Some(live) = &self.live {

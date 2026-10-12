@@ -2,27 +2,29 @@
 
 对照源：`main` 上的 Python/PySide6 PinShot。Rust 在 `rust/`，分支 `rust`。Python 源码不改。
 
-最后更新：2026-10-12（`7ef18fe` Linux 实机 7/7 PASS；未关：滚轮每格生效两次）。
+最后更新：2026-10-12（双倍滚轮已关；PARITY ConfirmAbort / 阴影缩略 / 子面板推进）。
 
 ---
 
 ## 当前进度
 
-HEAD `7ef18fe`（`rust`）。对照 Python/`main`，**先 Linux X11**（Xfce / xfwm4，1920×1200），再 Windows。Python 源码不改。
-
-2026-10-12 08:33 UTC+8 对 HEAD 的 **Linux 实机鼠标** 7 项全过（见下表）。此前 b791ea3 报告里的 6 个 FAIL + 被挡住的滚轮改宽，均已在 `7f9b7dc`…`7ef18fe` 关上，并经实机确认。
+HEAD 在 `rust`（用户提交 `ed59e0f` 之后本轮继续）。对照 Python/`main`，**先 Linux X11**（Xfce / xfwm4，1920×1200），再 Windows。Python 源码不改。用户提交（`a6d6765` / `7c406a6` / `ed59e0f` 共享 `toggle_tool`、Windows prefs 循环、语言标签测试）保留。
 
 | 面 | 状态 |
 |---|---|
-| Linux 框选 / 矩形·椭圆·箭头 / 点边 8 手柄 / 滚轮改宽与面板数字 | 实机过 |
+| Linux 框选 / 矩形·椭圆·箭头 / 点边 8 手柄 / 滚轮改宽与面板数字 | 实机过（`7ef18fe`） |
 | 文字快打 `hello world` + Ctrl+Enter、Ctrl+C PNG、prefs、`,` `.` 历史 | 实机过 |
 | 重启后 R 套在**当前截图**的上次选区、Tab 不漏到 Chrome | 实机过 |
 | pin 光标锚缩放（不切工作区）、菜单高度、Esc 只关菜单、穿透勾选 | 实机过 |
-| Linux 滚轮 | **未关**：每格生效两次（线宽 3 次点击 3→9；缩放 4 格走 8 步） |
+| Linux 滚轮每格两次 | **已修**：`WheelGate` 40ms 同号去重并规范为 ±120。overlay 改宽与 pin 缩放 / Ctrl 透明度共用。单元测试：10ms 副本丢、50ms 保留、变号立即保留、3 格间隔 + 副本 → 线宽 3→6 |
+| 工具栏子面板 | Fill/Outline、Solid/Dash/Dot、B/I/Outline、马赛克 Brush/Rect/Blur；当前色块 → zenity `--color-selection` |
+| Esc 放弃确认 | overlay 内 Y/N /「不再提示」（不再 zenity 抢抓键） |
+| pin 阴影 / 缩略图 | 合成器在则默认阴影 M=12；菜单可勾 Shadow；Shift+双击 72px 中心裁切；写入 session |
+| 画笔采样 | 活笔时 QueryPointer 8ms（Python 8ms timer） |
 | Windows 实机 | **未关**：Linux-first 改动后尚未在真 Windows 上复测（CI 绿） |
 | AT-SPI / IME / 合成器 | 限制同前，见「已知限制」 |
 
-`PARITY.md` 计数未变：done 99 / partial 11 / missing 4 / impossible 6（合计 120）。
+`PARITY.md`：done 102 / partial 11 / missing 1 / impossible 6（合计 120）。
 
 ---
 
@@ -135,7 +137,16 @@ HEAD `7ef18fe`（`rust`）。对照 Python/`main`，**先 Linux X11**（Xfce / x
 | 4 | R 后背景是旧截图（应为当前屏幕 + 上次选区） | 已修 | `reuse_last` 只 `set_rect`。`7ef18fe` 实机：重启后 R 套在 live 截图 |
 | 5 | Esc 关 pin 菜单也关掉 pin，其它已恢复的 pin 消失 | 已修 | 菜单 Esc 只关菜单；fallback 不再 Esc=Quit。`7ef18fe` 实机：只关菜单 |
 | 6 | pin 右键菜单很高，末项下大块空白 | 已修 | 高度按行求和（Sep=8）。`7ef18fe` 实机：高度正常；穿透勾选可切换 |
-| — | 选中图形滚轮改线宽（当时被 #1 挡住） | 已修 | `7ef18fe` 实机：点边出 8 手柄，滚轮改宽，面板数字跟着变。**但每格生效两次，见未关** |
+| — | 选中图形滚轮改线宽（当时被 #1 挡住） | 已修 | `7ef18fe` 实机：点边出 8 手柄，滚轮改宽，面板数字跟着变。双倍滚轮见本轮 `WheelGate` |
+
+### `ed59e0f` 之后（本轮）
+
+| SHA | 内容 |
+|---|---|
+| `ed59e0f` | 用户：overlay 用共享 `toggle_tool` |
+| `7c406a6` | 用户：单击再点同一工具取消；语言标签回归测试 |
+| `a6d6765` | 用户：Windows 设置事件循环 + 截图焦点 |
+| （本轮） | `WheelGate` 去双倍滚轮；Fill/Dash/Dot 子面板；overlay 内 ConfirmAbort；pin 阴影/缩略；zenity 自定义色；画笔 8ms poll |
 
 ### `7ef18fe` 实机（Xfce/xfwm4，2026-10-12 08:33 UTC+8）
 
@@ -155,7 +166,7 @@ HEAD `7ef18fe`（`rust`）。对照 Python/`main`，**先 Linux X11**（Xfce / x
 
 ## 已发现的全部问题（各轮测试）
 
-状态：`已修` / `未关`。52d5642 实机 A–L、0098973 实机 11 项、b791ea3 实机 6 项 + 滚轮改宽已关。**仍开：Linux 滚轮双倍、Windows 实机复测。**
+状态：`已修` / `未关`。52d5642 实机 A–L、0098973 实机 11 项、b791ea3 实机 6 项 + 滚轮改宽已关。双倍滚轮已关。**仍开：Windows 实机复测。**
 
 ### Windows 早期轮次
 
@@ -226,23 +237,23 @@ HEAD `7ef18fe`（`rust`）。对照 Python/`main`，**先 Linux X11**（Xfce / x
 
 | 状态 | 行数 |
 |---|---|
-| done | 99 |
+| done | 102 |
 | partial | 11 |
-| missing | 4 |
+| missing | 1 |
 | impossible | 6 |
 | **合计** | **120** |
 
-仍偏 partial/missing 的大块：属性面板细节、自定义取色、pin 阴影/缩略图、无 a11y 总线时的 AT-SPI、逐工具子面板、画笔 8ms 采样、像素级 hit。
+仍偏 partial/missing：完整字体下拉、像素级 hit、无 a11y 时 AT-SPI、pin 分组改名、OCR 条带、`PynputHotkeys`、zenity 自定义色（非 QColorDialog）。
 
 ---
 
-## 仍开（`7ef18fe` 之后）
+## 仍开（本轮之后）
 
 | 项 | 状态 | 说明 |
 |---|---|---|
-| Linux 滚轮每格两次 | 未关 | 线宽：点边后滚 3 格，3→9（期望 3→6）。缩放：4 格滚轮走出 8 步 `pin zoom`。疑 winit LineDelta 与 QueryPointer/Poll 各吃一格 |
-| Windows 实机 | 未关 | Linux-first 改动后只跑过 CI（`7ef18fe` 绿），尚未在真 Windows 上复测、未出新的 release exe |
-| PARITY 缺口 | 未关 | 属性面板、自定义取色、pin 阴影/缩略图、无总线时 AT-SPI、逐工具子面板、画笔 8ms 采样、像素级 hit（99/11/4/6） |
+| Linux 滚轮每格两次 | 已修 | `WheelGate` 去重；Xvfb 连续滚轮应 3 格→+3 宽、4 格缩放 4 步 |
+| Windows 实机 | 未关 | Linux-first 改动后只跑过 CI，尚未在真 Windows 上复测、未出新的 release exe |
+| PARITY 缺口 | 部分关 | ConfirmAbort / 阴影缩略 / 画笔 poll / 子面板主项已做；剩字体家族、像素 hit、Pynput（102/11/1/6） |
 
 ---
 
@@ -262,9 +273,8 @@ HEAD `7ef18fe`（`rust`）。对照 Python/`main`，**先 Linux X11**（Xfce / x
 
 ## 下一步（按优先级）
 
-1. **修 Linux 双倍滚轮**：每格只走一步（线宽与 pin 缩放同一根因）。
-2. **Windows 实机 + 放出 exe**：在真机复测 overlay/pin/热键/剪贴板，CI 已绿的 `pinshot.exe` 再打一版。
-3. **PARITY 剩余**：属性面板（填充/虚线/模糊/字体）、自定义取色、pin 阴影/缩略图、无 a11y 时控件框、逐工具子面板。
+1. **Windows 实机 + 放出 exe**：在真机复测 overlay/pin/热键/剪贴板，CI 已绿的 `pinshot.exe` 再打一版。
+2. **PARITY 剩余**：字体家族下拉、像素级 hit、无 a11y 时控件框、pin 分组改名。
 
 验证约定：Linux 改动必须在 **Xvfb + xfwm4 + xdotool**（以及有桌面时的 `:1` Xfce）上做焦点/按键/菜单回归。本轮用 `type --delay 20`、两步快拖、连续滚轮格。
 

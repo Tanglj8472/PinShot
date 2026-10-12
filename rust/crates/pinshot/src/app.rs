@@ -431,6 +431,13 @@ impl App {
         if let Some(c) = self.closed.pop() {
             if let Some(img) = decode_png(&c.png) {
                 self.spawn_pin(event_loop, img, Some(c.pos), Some(c.group));
+                if let Some(p) = self.pins.last_mut() {
+                    p.shadow = c.shadow && p.can_shadow;
+                    p.thumb = c.thumb;
+                    p.set_scale(c.scale);
+                    p.set_opacity_ex(c.opacity, false);
+                    p.persist_needed = false;
+                }
             }
         }
     }
@@ -496,6 +503,8 @@ impl App {
                 opacity: p.opacity,
                 group: p.group.clone(),
                 shapes: p.annot.shapes.clone(),
+                shadow: p.shadow,
+                thumb: p.thumb,
             });
         }
         let sess = SessionFile {
@@ -527,6 +536,8 @@ impl App {
                 false,
             );
             if let Some(p) = self.pins.last_mut() {
+                p.shadow = snap.shadow && p.can_shadow;
+                p.thumb = snap.thumb;
                 p.set_scale(snap.scale);
                 p.set_opacity_ex(snap.opacity, false);
                 if !snap.shapes.is_empty() {
@@ -610,6 +621,8 @@ impl App {
                             scale: p.scale,
                             opacity: p.opacity,
                             group: p.group.clone(),
+                            shadow: p.shadow,
+                            thumb: p.thumb,
                         },
                         self.cfg.closed_pins_max,
                     );
@@ -639,6 +652,7 @@ impl App {
         let state = crate::pin_menu::PinMenuState {
             annotating: p.annotating,
             click_through: p.click_through,
+            shadow: p.shadow,
             scale: p.scale,
             opacity: p.opacity,
             group: p.group.clone(),
@@ -939,7 +953,7 @@ impl ApplicationHandler<AppEvent> for App {
                     let now = Instant::now();
                     if let Some((wid, t)) = self.last_click {
                         if wid == id && now.duration_since(t).as_millis() < 350 {
-                            p.on_double_click(&mut self.cfg);
+                            p.on_double_click(&mut self.cfg, self.mods.shift_key());
                             self.last_click = None;
                         } else {
                             self.last_click = Some((id, now));

@@ -24,6 +24,7 @@ pub enum PinMenuAction {
     Save,
     ToggleToolbar,
     ToggleClickThrough,
+    ToggleShadow,
     Zoom(i32),
     Rotate(i32),
     FlipH,

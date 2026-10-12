@@ -17,6 +17,10 @@ pub struct PinSnapshot {
     pub group: String,
     #[serde(default)]
     pub shapes: Vec<Shape>,
+    #[serde(default)]
+    pub shadow: bool,
+    #[serde(default)]
+    pub thumb: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
@@ -32,6 +36,8 @@ pub struct ClosedPin {
     pub scale: f32,
     pub opacity: f32,
     pub group: String,
+    pub shadow: bool,
+    pub thumb: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -137,6 +143,8 @@ mod tests {
                 opacity: 0.8,
                 group: "Work".into(),
                 shapes: Vec::new(),
+                shadow: true,
+                thumb: false,
             }],
         };
         let back = SessionFile::from_toml(&s.to_toml().unwrap()).unwrap();
@@ -162,12 +170,16 @@ mod tests {
                 opacity: 1.0,
                 group: "Default".into(),
                 shapes: vec![sh.clone()],
+                shadow: false,
+                thumb: true,
             }],
         };
         let back = SessionFile::from_toml(&s.to_toml().unwrap()).unwrap();
         assert_eq!(back.pins[0].shapes.len(), 1);
         assert_eq!(back.pins[0].shapes[0].kind, Tool::Line);
         assert_eq!(back.pins[0].shapes[0].pts[1], Point::new(8.0, 9.0));
+        assert!(back.pins[0].thumb);
+        assert!(!back.pins[0].shadow);
     }
 
     #[test]
@@ -181,6 +193,8 @@ mod tests {
                     scale: 1.0,
                     opacity: 1.0,
                     group: "Default".into(),
+                    shadow: false,
+                    thumb: false,
                 },
                 2,
             );

@@ -1,8 +1,33 @@
 //! Save / confirm dialogs on Linux (zenity when present, else Pictures + Y default).
 
+use pinshot_core::color::{parse_color_text, Rgba};
 use pinshot_core::i18n::tr;
 use pinshot_core::raster::Raster;
 use std::process::Command;
+
+pub fn pick_color(_parent: (), current: Rgba) -> Option<Rgba> {
+    let color = format!("#{:02x}{:02x}{:02x}", current.r, current.g, current.b);
+    if let Ok(out) = Command::new("zenity")
+        .args([
+            "--color-selection",
+            "--show-palette",
+            &format!("--title={}", tr("Annotation color")),
+            &format!("--color={color}"),
+        ])
+        .output()
+    {
+        if out.status.success() {
+            let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if let Some(c) = parse_color_text(&s) {
+                return Some(c);
+            }
+            if let Some(c) = Rgba::from_hex(&s) {
+                return Some(c);
+            }
+        }
+    }
+    None
+}
 
 pub fn confirm_abort(_parent: ()) -> bool {
     if let Ok(st) = Command::new("zenity")

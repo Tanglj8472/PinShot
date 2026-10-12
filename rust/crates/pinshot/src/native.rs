@@ -150,6 +150,17 @@ pub fn install_hotkeys(
     }
 }
 
+pub fn compositor_active() -> bool {
+    #[cfg(unix)]
+    {
+        crate::x11util::compositor_active()
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
 pub fn platform_name() -> &'static str {
     #[cfg(windows)]
     {

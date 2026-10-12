@@ -7,6 +7,10 @@ use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, IDYES, MB_ICONQUESTIO
 
 use crate::win32::{pcw, wide};
 
+pub fn pick_color(_parent: HWND, _current: pinshot_core::color::Rgba) -> Option<pinshot_core::color::Rgba> {
+    None
+}
+
 pub fn confirm_abort(parent: HWND) -> bool {
     let title = wide("PinShot");
     let body = wide(&tr("Abort snipping?"));

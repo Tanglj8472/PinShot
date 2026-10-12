@@ -360,6 +360,7 @@ impl OverlayFront {
         toast: Option<&str>,
         show_cursor: bool,
         shot: &Raster,
+        confirm_dont: Option<bool>,
     ) {
         let bounds = self.bounds();
         let hole = if sel.has_sel() {
@@ -498,6 +499,10 @@ impl OverlayFront {
 
         if show_cursor {
             chrome.push(paint_pointer(&mut self.frame, cursor));
+        }
+
+        if let Some(dont) = confirm_dont {
+            chrome.push(paint_confirm_abort(&mut self.frame, fw, fh, dont));
         }
 
         if let Some(ed) = &annot.text_edit {
@@ -723,6 +728,31 @@ pub fn paint_toolbar(pm: &mut Pixmap, tb: &Toolbar) -> Rect {
             "w".into()
         };
         crate::text::blit_into_pm(pm, &wl, tb.width_label.x + 4.0, tb.width_label.y + 3.0, 12, Rgba::rgb(20, 20, 20), true);
+        for extra in &tb.extras {
+            fill_rect(
+                pm,
+                extra.rect,
+                if extra.checked {
+                    Rgba::rgb(196, 217, 242)
+                } else {
+                    Rgba::rgb(235, 235, 235)
+                },
+            );
+            stroke_rect(pm, extra.rect, Rgba::rgb(154, 154, 154), 1.0);
+            crate::text::blit_into_pm(
+                pm,
+                &extra.label,
+                extra.rect.x + 4.0,
+                extra.rect.y + 4.0,
+                11,
+                Rgba::rgb(20, 20, 20),
+                extra.checked,
+            );
+        }
+        if !tb.custom_color.is_empty() {
+            fill_rect(pm, tb.custom_color, tb.custom_value);
+            stroke_rect(pm, tb.custom_color, Rgba::rgb(20, 20, 20), 1.0);
+        }
         dirty = dirty.union(pr);
     }
     let _ = IconKind::Rect;
@@ -833,42 +863,138 @@ pub fn pixmap_to_raster(pm: &Pixmap) -> Option<Raster> {
     Raster::from_rgba(w, h, rgba)
 }
 
-pub fn paint_pin(img: &Raster, annot: &Annotator, scale: f32, click_through: bool, glow: f32) -> Pixmap {
-    let w = ((img.width as f32) * scale).round().max(8.0) as u32;
-    let h = ((img.height as f32) * scale).round().max(8.0) as u32;
-    let mut pm = Pixmap::new(w, h).unwrap_or_else(|| Pixmap::new(8, 8).unwrap());
+pub fn paint_confirm_abort(pm: &mut Pixmap, w: u32, h: u32, dont: bool) -> Rect {
+    let lay = pinshot_core::confirm_abort_layout(w as f32, h as f32);
+    fill_rect(pm, lay.frame, Rgba::rgb(247, 247, 247));
+    stroke_rect(pm, lay.frame, Rgba::rgb(80, 80, 80), 1.0);
+    crate::text::blit_into_pm(
+        pm,
+        &tr("Abort snipping?"),
+        lay.frame.x + 16.0,
+        lay.frame.y + 14.0,
+        14,
+        Rgba::rgb(20, 20, 20),
+        true,
+    );
+    let boxr = Rect::new(lay.dont.x, lay.dont.y + 3.0, 14.0, 14.0);
+    fill_rect(
+        pm,
+        boxr,
+        if dont {
+            Rgba::rgb(40, 140, 80)
+        } else {
+            Rgba::rgb(255, 255, 255)
+        },
+    );
+    stroke_rect(pm, boxr, Rgba::rgb(20, 20, 20), 1.0);
+    crate::text::blit_into_pm(
+        pm,
+        &tr("Do not show again"),
+        lay.dont.x + 20.0,
+        lay.dont.y + 4.0,
+        12,
+        Rgba::rgb(20, 20, 20),
+        false,
+    );
+    for (r, label) in [(lay.yes, tr("Yes")), (lay.no, tr("No"))] {
+        fill_rect(pm, r, Rgba::rgb(235, 235, 235));
+        stroke_rect(pm, r, Rgba::rgb(154, 154, 154), 1.0);
+        crate::text::blit_into_pm(pm, &label, r.x + 22.0, r.y + 5.0, 12, Rgba::rgb(20, 20, 20), true);
+    }
+    lay.frame.inflated(2.0)
+}
+
+pub const PIN_SHADOW_M: f32 = 12.0;
+pub const PIN_THUMB: u32 = 72;
+
+pub fn paint_pin(
+    img: &Raster,
+    annot: &Annotator,
+    scale: f32,
+    click_through: bool,
+    glow: f32,
+    shadow: bool,
+    thumb: bool,
+) -> Pixmap {
     let composed = compose(img, &annot.shapes);
-    blit_raster(&mut pm, &composed, Rect::new(0.0, 0.0, w as f32, h as f32));
+    let (content, w, h) = if thumb {
+        let s = composed.width.min(composed.height) as f32;
+        let src = Rect::new(
+            (composed.width as f32 - s) / 2.0,
+            (composed.height as f32 - s) / 2.0,
+            s,
+            s,
+        );
+        let cropped = composed.crop(src).scale_nn(PIN_THUMB, PIN_THUMB);
+        (cropped, PIN_THUMB, PIN_THUMB)
+    } else {
+        let w = ((img.width as f32) * scale).round().max(8.0) as u32;
+        let h = ((img.height as f32) * scale).round().max(8.0) as u32;
+        (composed, w, h)
+    };
+    let m = if shadow { PIN_SHADOW_M } else { 0.0 };
+    let pw = (w as f32 + 2.0 * m).round().max(8.0) as u32;
+    let ph = (h as f32 + 2.0 * m).round().max(8.0) as u32;
+    let mut pm = Pixmap::new(pw, ph).unwrap_or_else(|| Pixmap::new(8, 8).unwrap());
+    let img_r = Rect::new(m, m, w as f32, h as f32);
+    if shadow {
+        paint_pin_shadow(&mut pm, img_r, m);
+    }
+    blit_raster(&mut pm, &content, img_r);
+    let stroke_r = Rect::new(m + 0.5, m + 0.5, w as f32 - 1.0, h as f32 - 1.0);
     if glow > 0.0 {
         stroke_rect(
             &mut pm,
-            Rect::new(0.5, 0.5, w as f32 - 1.0, h as f32 - 1.0),
+            stroke_r,
             Rgba::rgba(40, 220, 90, (255.0 * glow) as u8),
             3.0,
         );
     } else if click_through {
         stroke_rect(
             &mut pm,
-            Rect::new(0.5, 0.5, w as f32 - 1.0, h as f32 - 1.0),
+            stroke_r,
             Rgba::rgba(180, 40, 220, 200),
             2.0,
         );
         fill_rect(
             &mut pm,
-            Rect::new(w as f32 - 88.0, 2.0, 86.0, 18.0),
+            Rect::new(m + w as f32 - 88.0, m + 2.0, 86.0, 18.0),
             Rgba::rgba(180, 40, 220, 200),
         );
-        blit_into(&mut pm, &tr("CLICK-THRU"), w as i32 - 84, 4, 10, Rgba::WHITE, true);
+        blit_into(
+            &mut pm,
+            &tr("CLICK-THRU"),
+            (m + w as f32 - 84.0) as i32,
+            (m + 4.0) as i32,
+            10,
+            Rgba::WHITE,
+            true,
+        );
     } else {
         let col = if annot.tool.is_some() {
             Rgba::rgb(255, 140, 0)
         } else {
             Rgba::rgba(30, 144, 255, 150)
         };
-        stroke_rect(&mut pm, Rect::new(0.5, 0.5, w as f32 - 1.0, h as f32 - 1.0), col, 1.0);
+        stroke_rect(&mut pm, stroke_r, col, 1.0);
     }
     let _ = Tool::Rect;
     pm
+}
+
+fn paint_pin_shadow(pm: &mut Pixmap, img_r: Rect, m: f32) {
+    let steps = m.round().max(1.0) as i32;
+    for i in (1..=steps).rev() {
+        let t = 1.0 - i as f32 / m;
+        let a = ((46.0 * t * t) as u8).saturating_add(2);
+        let r = Rect::new(
+            img_r.x - i as f32,
+            img_r.y - i as f32 + 2.0,
+            img_r.w + 2.0 * i as f32,
+            img_r.h + 2.0 * i as f32,
+        );
+        fill_rect(pm, r, Rgba::rgba(0, 0, 0, a));
+    }
 }
 
 pub fn present(buf: &mut [u32], pm: &Pixmap) {

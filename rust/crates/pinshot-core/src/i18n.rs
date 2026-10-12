@@ -240,6 +240,7 @@ const PAIRS: &[(&str, &str)] = &[
     ("Cursor hidden", "指针：隐藏"),
     ("Select text, then release", "框选文字后松开"),
     ("Shadow", "阴影"),
+    ("Thumbnail", "缩略图"),
     ("Image", "图像"),
     ("Rotate left", "向左旋转"),
     ("Rotate right", "向右旋转"),
