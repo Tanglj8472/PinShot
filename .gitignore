@@ -13,3 +13,5 @@ LOCAL-SETUP.md
 local-validation/
 assets/pinshot.png
 assets/ocr-models/
+tools/ffmpeg/
+docs/media/frames/
