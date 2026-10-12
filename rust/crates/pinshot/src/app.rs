@@ -704,6 +704,10 @@ impl App {
             return;
         }
         if let PinMenuAction::NewGroupNamed(ref name) = action {
+            if name.trim().is_empty() {
+                crate::logutil::log("pin menu empty name ignored");
+                return;
+            }
             let name = pinshot_core::groups::ensure(&mut self.cfg.groups, name);
             self.group_vis.entry(name.clone()).or_insert(true);
             if let Some(p) = self.pins.iter_mut().find(|p| p.window_id() == pid) {
@@ -716,6 +720,10 @@ impl App {
             return;
         }
         if let PinMenuAction::RenameGroupNamed(ref name) = action {
+            if name.trim().is_empty() {
+                crate::logutil::log("pin menu empty name ignored");
+                return;
+            }
             let old = self
                 .pins
                 .iter()

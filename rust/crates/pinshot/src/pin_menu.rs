@@ -34,6 +34,30 @@ struct Prompt {
     buf: String,
 }
 
+/// Overlay-style insert: KeyboardInput text when not composing; skip controls.
+fn prompt_insert(buf: &mut String, ime_preedit: bool, text: &str) -> bool {
+    if ime_preedit {
+        return false;
+    }
+    let mut changed = false;
+    for ch in text.chars() {
+        if !ch.is_control() {
+            buf.push(ch);
+            changed = true;
+        }
+    }
+    changed
+}
+
+fn prompt_submit_name(buf: &str) -> Option<String> {
+    let name = buf.trim();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_string())
+    }
+}
+
 #[derive(Clone)]
 enum Row {
     Sep,
@@ -164,9 +188,12 @@ impl PinMenuWin {
                             self.ime_preedit = false;
                             self.dirty = true;
                         }
-                        winit::event::Ime::Enabled | winit::event::Ime::Preedit(_, _) => {
-                            self.ime_preedit = true;
+                        // Enabled alone must not block KeyboardInput (no IME daemon).
+                        // Only a non-empty Preedit is composing CJK.
+                        winit::event::Ime::Preedit(s, _) => {
+                            self.ime_preedit = !s.is_empty();
                         }
+                        winit::event::Ime::Enabled => {}
                         winit::event::Ime::Disabled => self.ime_preedit = false,
                     }
                 }
@@ -183,15 +210,14 @@ impl PinMenuWin {
                             self.dirty = true;
                         }
                         _ => {
-                            if !self.ime_preedit {
-                                if let Some(t) = event.text.as_deref() {
-                                    for ch in t.chars() {
-                                        if !ch.is_control() {
-                                            if let Some(p) = self.prompt.as_mut() {
-                                                p.buf.push(ch);
-                                            }
-                                        }
-                                    }
+                            // Same as overlay text: accept KeyboardInput when not
+                            // in IME preedit; Ime::Commit still handles CJK.
+                            if let Some(t) = event.text.as_deref() {
+                                if prompt_insert(
+                                    &mut self.prompt.as_mut().unwrap().buf,
+                                    self.ime_preedit,
+                                    t,
+                                ) {
                                     self.dirty = true;
                                 }
                             }
@@ -220,7 +246,11 @@ impl PinMenuWin {
                     }
                 }
             }
-            WindowEvent::Focused(false) if self.born.elapsed().as_millis() > 250 => self.close(),
+            WindowEvent::Focused(false)
+                if self.prompt.is_none() && self.born.elapsed().as_millis() > 250 =>
+            {
+                self.close()
+            }
             WindowEvent::CloseRequested => self.close(),
             WindowEvent::RedrawRequested => self.redraw(),
             _ => {}
@@ -252,11 +282,13 @@ impl PinMenuWin {
         let Some(p) = self.prompt.take() else {
             return None;
         };
-        let name = p.buf.trim().to_string();
-        self.close();
-        if name.is_empty() {
+        let Some(name) = prompt_submit_name(&p.buf) else {
+            crate::logutil::log("pin menu prompt empty ignored");
+            self.close();
             return None;
-        }
+        };
+        self.close();
+        crate::logutil::log(&format!("pin menu prompt submit {name:?}"));
         Some(match p.kind {
             PromptKind::New => PinMenuAction::NewGroupNamed(name),
             PromptKind::Rename => PinMenuAction::RenameGroupNamed(name),
@@ -665,5 +697,17 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    #[test]
+    fn prompt_accepts_keys_when_not_preedit_and_rejects_empty() {
+        let mut buf = String::new();
+        assert!(prompt_insert(&mut buf, false, "Work"));
+        assert_eq!(buf, "Work");
+        assert!(!prompt_insert(&mut buf, true, "x"));
+        assert_eq!(buf, "Work");
+        assert_eq!(prompt_submit_name("Work"), Some("Work".into()));
+        assert_eq!(prompt_submit_name("   "), None);
+        assert_eq!(prompt_submit_name(""), None);
     }
 }

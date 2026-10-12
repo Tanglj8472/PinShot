@@ -483,7 +483,16 @@ impl Overlay {
             TbAction::Bold(on) => self.style_tool(|s| s.bold = on),
             TbAction::Italic(on) => self.style_tool(|s| s.italic = on),
             TbAction::Outline(on) => self.style_tool(|s| s.outline = on),
-            TbAction::Family(fam) => self.style_tool(|s| s.family = fam.to_string()),
+            TbAction::Family(fam) => {
+                self.style_tool(|s| s.family = fam.to_string());
+                if let Some(p) = pinshot_core::font::resolve_family_path(
+                    fam,
+                    self.annot.option_style().map(|s| s.bold).unwrap_or(false),
+                    self.annot.option_style().map(|s| s.italic).unwrap_or(false),
+                ) {
+                    crate::logutil::log(&format!("font resolve {fam:?} -> {}", p.display()));
+                }
+            }
         }
         crate::logutil::log(&format!("tb {a:?}"));
         self.relayout_toolbar();

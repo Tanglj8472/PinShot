@@ -2,7 +2,7 @@
 
 对照源：`main` 上的 Python/PySide6 PinShot。Rust 在 `rust/`，分支 `rust`。Python 源码不改。
 
-最后更新：2026-10-12（`6f19f21`：PARITY 剩余项除 RapidOCR。Xvfb `:25` 11/11）。
+最后更新：2026-10-12（`a08bf05` 实机两项：字体 Liberation/DejaVu TTF + 分组框可打字）。
 
 ---
 
@@ -327,15 +327,22 @@ HEAD 在 `rust`（本轮 PARITY 剩余项）。对照 Python/`main`，**先 Linu
 |---|---|---|
 | 3×3 像素 hit | **done** | `shape_paints_at`：3×3 pixmap，平移使点落在 (1,1)，alpha>16。箭头 margin 仍先做 bbox。马赛克/橡皮保持 path-contains |
 | `option_width` 文字/马赛克 | **done** | 文字显示 `font_size`，马赛克显示 `size`（Python 面板转盘） |
-| 字体家族 + B/I 进渲染 | **done** | 工具栏 Default/Sans/Serif/Mono；`blit_pixmap_ex` 按 family/bold/italic 选文件，缺 Bold 时假粗 |
+| 字体家族 + B/I 进渲染 | **done** | 只选可加载 TTF/OTF（Liberation/DejaVu 优先）；Sans 不匹配 DejaVuSansMono；B/I 走 Bold/Italic 文件，否则假粗/假斜 |
 | F6 toast | **done** | `translate_on_select` 开 overlay 时 toast「框选文字后松开」 |
 | AT-SPI / X11 子窗 | **done** | 行走深度 4；AT-SPI 标 `{role}:{name}` 并排除本进程 pid |
 | `raise_on_top` / OCR 压过 pin | **done** | `_NET_RESTACK_WINDOW` Below `lower`，再 ABOVE+Above+ACTIVE。OCR 在 0/60/250ms 抬，不再每 tick 查 X |
-| pin 分组 New/Rename | **done** | 菜单内名称框（Enter/Esc/IME）；Default 不能改名 |
+| pin 分组 New/Rename | **done** | KeyboardInput 在非 preedit 时写入（与 overlay 文字相同）；`Ime::Enabled` 不挡键；空 Enter 不建空分组；Default 不能改名 |
 | `PynputHotkeys` | **done** | 按 Python 在无 pynput/evdev 时的 XGrabKey 回退 |
 | RapidOCR DBNet | **partial** | 仍用条带检测，完整 DB 太大 |
 
-单元测试：`cargo test --workspace --offline --lib` → pinshot-core 120 + pinshot 19。Windows 交叉编译在本环境缺 SDK（`ring`/`assert.h`），以 CI 为准。
+单元测试：`cargo test --workspace --offline --lib` → pinshot-core 122 + pinshot 20。Windows 交叉编译在本环境缺 SDK（`ring`/`assert.h`），以 CI 为准。
+
+### `a08bf05` 实机两项（本轮）
+
+| ID | 问题 | 状态 | 修法 |
+|---|---|---|---|
+| 1 | B/I/Serif/Mono 几乎看不出；B 像素相同；I 可能落到 DejaVuSansMono；Serif/Mono 被 PFB 抢走 | **已修** | 只接受 TTF/OTF/TTC；Liberation/DejaVu 优先并必须 `fontdue` 能加载；Sans 排除 `mono`/`serif`；无 Bold/Italic 文件则假粗/假斜 |
+| 2 | 分组 New/Rename 不能打字：`Ime::Enabled` 把 KeyboardInput 丢掉 | **已修** | 与 overlay 文字相同：非 preedit 时收 `event.text`；只有非空 Preedit 才挡键；`Ime::Commit` 仍收 CJK；空/空白 Enter 忽略 |
 
 ### Xvfb `6f19f21` PARITY 剩余项（`:25` 1920×1200 + xfwm4）
 

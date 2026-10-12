@@ -74,16 +74,43 @@ fn font() -> Option<&'static fontdue::Font> {
     loaded_default().map(|l| &l.font)
 }
 
+fn compact_name(path: &Path) -> String {
+    path.to_string_lossy()
+        .to_ascii_lowercase()
+        .replace([' ', '-', '_'], "")
+}
+
+fn is_outline_font(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
+            .as_deref(),
+        Some("ttf" | "ttc" | "otf")
+    )
+}
+
+fn file_looks_bold(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    n.contains("bold")
+        || n.contains("heavy")
+        || n.contains("black")
+        || n.contains("semibold")
+        || n.contains("bd.")
+        || n.ends_with("bd")
+}
+
+fn file_looks_italic(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    n.contains("italic") || n.contains("oblique") || n.contains("it.")
+}
+
 fn family_needles(family: &str) -> Vec<String> {
-    let f = family.trim();
-    if f.is_empty() {
-        return Vec::new();
-    }
-    match f.to_ascii_lowercase().as_str() {
-        "sans" => [
-            "notosans",
-            "dejavusans",
+    match family.trim().to_ascii_lowercase().as_str() {
+        "" | "sans" => [
             "liberationsans",
+            "dejavusans",
+            "notosans",
             "wqy-microhei",
             "wqymicrohei",
             "msyh",
@@ -95,9 +122,9 @@ fn family_needles(family: &str) -> Vec<String> {
         .map(str::to_string)
         .collect(),
         "serif" => [
-            "notoserif",
-            "dejavuserif",
             "liberationserif",
+            "dejavuserif",
+            "notoserif",
             "times",
             "georgia",
             "nimbusroman",
@@ -106,8 +133,8 @@ fn family_needles(family: &str) -> Vec<String> {
         .map(str::to_string)
         .collect(),
         "mono" | "monospace" => [
-            "dejavusansmono",
             "liberationmono",
+            "dejavusansmono",
             "notosansmono",
             "consola",
             "cour",
@@ -121,15 +148,46 @@ fn family_needles(family: &str) -> Vec<String> {
     }
 }
 
+/// Sans must not match DejaVuSansMono; Serif must not match Sans; PFB is rejected.
+fn matches_family(path: &Path, family: &str) -> bool {
+    if !is_outline_font(path) {
+        return false;
+    }
+    let c = compact_name(path);
+    let fam = family.trim().to_ascii_lowercase();
+    match fam.as_str() {
+        "" | "sans" => {
+            if c.contains("mono") || c.contains("serif") {
+                return false;
+            }
+            family_needles("Sans").iter().any(|n| {
+                if let Some(rest) = c.split(n.as_str()).nth(1) {
+                    !rest.starts_with("mono")
+                } else {
+                    false
+                }
+            })
+        }
+        "serif" => {
+            if c.contains("mono") {
+                return false;
+            }
+            if c.contains("sans") && !c.contains("serif") {
+                return false;
+            }
+            family_needles("Serif").iter().any(|n| c.contains(n))
+        }
+        "mono" | "monospace" => {
+            family_needles("Mono").iter().any(|n| c.contains(n)) || c.contains("mono")
+        }
+        other => c.contains(&other.replace([' ', '-'], "")),
+    }
+}
+
 fn style_rank(name: &str, bold: bool, italic: bool) -> i32 {
     let n = name.to_ascii_lowercase();
-    let is_bold = n.contains("bold")
-        || n.contains("heavy")
-        || n.contains("black")
-        || n.contains("semibold")
-        || n.contains("bd.")
-        || n.ends_with("bd");
-    let is_italic = n.contains("italic") || n.contains("oblique") || n.contains("it.");
+    let is_bold = file_looks_bold(&n);
+    let is_italic = file_looks_italic(&n);
     let mut score = 0;
     if is_bold == bold {
         score += 3;
@@ -145,6 +203,85 @@ fn style_rank(name: &str, bold: bool, italic: bool) -> i32 {
         score += 1;
     }
     score
+}
+
+fn source_rank(path: &Path) -> i32 {
+    let n = path.to_string_lossy().to_ascii_lowercase();
+    if n.contains("liberation") {
+        30
+    } else if n.contains("dejavu") {
+        20
+    } else if n.contains("segoe") || n.contains("arial") || n.contains("msyh") {
+        12
+    } else if n.contains("noto") && is_outline_font(path) {
+        8
+    } else {
+        0
+    }
+}
+
+fn preferred_fonts(family: &str, bold: bool, italic: bool) -> Vec<PathBuf> {
+    let kind = match family.trim().to_ascii_lowercase().as_str() {
+        "" | "sans" => "Sans",
+        "serif" => "Serif",
+        "mono" | "monospace" => "Mono",
+        _ => return Vec::new(),
+    };
+    let lib = match kind {
+        "Sans" => "LiberationSans",
+        "Serif" => "LiberationSerif",
+        _ => "LiberationMono",
+    };
+    let lib_style = match (bold, italic) {
+        (true, true) => "BoldItalic",
+        (true, false) => "Bold",
+        (false, true) => "Italic",
+        (false, false) => "Regular",
+    };
+    let (djv_reg, djv_bold, djv_italic, djv_bi) = match kind {
+        "Sans" => (
+            "DejaVuSans.ttf",
+            "DejaVuSans-Bold.ttf",
+            "DejaVuSans-Oblique.ttf",
+            "DejaVuSans-BoldOblique.ttf",
+        ),
+        "Serif" => (
+            "DejaVuSerif.ttf",
+            "DejaVuSerif-Bold.ttf",
+            "DejaVuSerif-Italic.ttf",
+            "DejaVuSerif-BoldItalic.ttf",
+        ),
+        _ => (
+            "DejaVuSansMono.ttf",
+            "DejaVuSansMono-Bold.ttf",
+            "DejaVuSansMono-Oblique.ttf",
+            "DejaVuSansMono-BoldOblique.ttf",
+        ),
+    };
+    let djv = match (bold, italic) {
+        (true, true) => djv_bi,
+        (true, false) => djv_bold,
+        (false, true) => djv_italic,
+        (false, false) => djv_reg,
+    };
+    let (win_reg, win_bold, win_italic, win_bi) = match kind {
+        "Sans" => ("segoeui.ttf", "segoeuib.ttf", "segoeuii.ttf", "segoeuiz.ttf"),
+        "Serif" => ("times.ttf", "timesbd.ttf", "timesi.ttf", "timesbi.ttf"),
+        _ => ("consola.ttf", "consolab.ttf", "consolai.ttf", "consolaz.ttf"),
+    };
+    let win = match (bold, italic) {
+        (true, true) => win_bi,
+        (true, false) => win_bold,
+        (false, true) => win_italic,
+        (false, false) => win_reg,
+    };
+    vec![
+        PathBuf::from(format!(
+            "/usr/share/fonts/truetype/liberation/{lib}-{lib_style}.ttf"
+        )),
+        PathBuf::from(format!("/usr/share/fonts/truetype/dejavu/{djv}")),
+        PathBuf::from(format!("C:\\Windows\\Fonts\\{win}")),
+    ]
 }
 
 fn font_files() -> &'static [PathBuf] {
@@ -173,7 +310,7 @@ fn font_files() -> &'static [PathBuf] {
                         continue;
                     }
                     let p = PathBuf::from(path);
-                    if p.is_file() {
+                    if p.is_file() && is_outline_font(&p) {
                         out.push(p);
                     }
                 }
@@ -233,24 +370,43 @@ fn sibling_variant(path: &Path, bold: bool, italic: bool) -> Option<PathBuf> {
 }
 
 fn find_family_file(family: &str, bold: bool, italic: bool) -> Option<PathBuf> {
-    let needles = family_needles(family);
-    if needles.is_empty() {
-        let def = loaded_default()?.path.clone();
-        return sibling_variant(&def, bold, italic).or(Some(def));
+    for p in preferred_fonts(family, bold, italic) {
+        if p.is_file() && is_outline_font(&p) && load_font(&p).is_some() {
+            return Some(p);
+        }
+    }
+    if family.trim().is_empty() {
+        if let Some(def) = loaded_default() {
+            if let Some(sib) = sibling_variant(&def.path, bold, italic) {
+                if sib.is_file() && is_outline_font(&sib) && load_font(&sib).is_some() {
+                    return Some(sib);
+                }
+            }
+            if !bold && !italic {
+                return Some(def.path.clone());
+            }
+        }
     }
     let mut best: Option<(i32, PathBuf)> = None;
     for p in font_files() {
-        let name = p.to_string_lossy().to_ascii_lowercase();
-        let compact = name.replace([' ', '-', '_'], "");
-        if !needles.iter().any(|n| compact.contains(n)) {
+        if !matches_family(p, family) {
             continue;
         }
-        let rank = style_rank(&name, bold, italic);
+        if load_font(p).is_none() {
+            continue;
+        }
+        let name = p.to_string_lossy().to_ascii_lowercase();
+        let rank = style_rank(&name, bold, italic) * 10 + source_rank(p);
         if best.as_ref().map(|(r, _)| rank > *r).unwrap_or(true) {
             best = Some((rank, p.clone()));
         }
     }
     best.map(|(_, p)| p)
+}
+
+/// Resolved outline font for a toolbar family + B/I. `None` falls back to default.
+pub fn resolve_family_path(family: &str, bold: bool, italic: bool) -> Option<PathBuf> {
+    find_family_file(family, bold, italic)
 }
 
 fn font_ex(family: &str, bold: bool, italic: bool) -> Option<&'static fontdue::Font> {
@@ -341,7 +497,7 @@ pub fn blit_rgba(
         return;
     };
     blit_rgba_font(
-        font, pixels, stride_px, dest_w, dest_h, text, x, y, px, color, outline, false,
+        font, pixels, stride_px, dest_w, dest_h, text, x, y, px, color, outline, false, false,
     );
 }
 
@@ -358,9 +514,11 @@ fn blit_rgba_font(
     color: Rgba,
     outline: bool,
     fake_bold: bool,
+    fake_italic: bool,
 ) {
     let px = px.max(8.0);
     let line_h = px * 1.25;
+    let shear = if fake_italic { 0.28 } else { 0.0 };
     for (li, line) in text.lines().enumerate() {
         let mut pen_x = x;
         let baseline = y + px + li as f32 * line_h;
@@ -374,8 +532,9 @@ fn blit_rgba_font(
                     if cov < 8 {
                         continue;
                     }
-                    let dx = gx as i32 + bx as i32;
                     let dy = gy as i32 + by as i32;
+                    let slant = ((baseline - (gy + by as f32)) * shear).round() as i32;
+                    let dx = gx as i32 + bx as i32 + slant;
                     if dx < 0 || dy < 0 || dx >= dest_w as i32 || dy >= dest_h as i32 {
                         continue;
                     }
@@ -426,12 +585,19 @@ pub fn blit_pixmap_ex(
     if text.is_empty() {
         return;
     }
+    let path = find_family_file(family, bold, italic);
     let Some(font) = font_ex(family, bold, italic).or_else(font) else {
         return;
     };
-    let fake_bold = bold && family.is_empty() && find_family_file("", true, italic).is_none();
+    let name = path
+        .as_ref()
+        .map(|p| p.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    let fake_bold = bold && !file_looks_bold(&name);
+    let fake_italic = italic && !file_looks_italic(&name);
     let (tw, th) = measure(text, px);
-    let tw = (tw.ceil() as u32 + 8).max(1);
+    let extra = if fake_italic { (px * 0.4) as u32 + 8 } else { 8 };
+    let tw = (tw.ceil() as u32 + extra).max(1);
     let th = (th.ceil() as u32 + 8).max(1);
     let mut rgba = vec![0u8; tw as usize * th as usize * 4];
     blit_rgba_font(
@@ -447,6 +613,7 @@ pub fn blit_pixmap_ex(
         color,
         outline,
         fake_bold,
+        fake_italic,
     );
     let Some(mut src) = Pixmap::new(tw, th) else {
         return;
@@ -609,5 +776,67 @@ mod tests {
             false,
         );
         assert!(pm.pixels().iter().any(|p| p.alpha() > 0));
+    }
+
+    fn paint_text(family: &str, bold: bool, italic: bool) -> Vec<u8> {
+        let mut pm = Pixmap::new(160, 56).unwrap();
+        blit_pixmap_ex(
+            &mut pm,
+            "HiBg",
+            8.0,
+            8.0,
+            28.0,
+            Rgba::RED,
+            false,
+            family,
+            bold,
+            italic,
+        );
+        pm.data().to_vec()
+    }
+
+    fn ext_ok(p: &Path) -> bool {
+        is_outline_font(p)
+    }
+
+    #[test]
+    fn resolve_prefers_loadable_ttf_not_mono_for_sans() {
+        let sans = resolve_family_path("Sans", false, false).expect("sans");
+        let serif = resolve_family_path("Serif", false, false).expect("serif");
+        let mono = resolve_family_path("Mono", false, false).expect("mono");
+        for p in [&sans, &serif, &mono] {
+            assert!(ext_ok(p), "not outline: {}", p.display());
+            let n = p.to_string_lossy().to_ascii_lowercase();
+            assert!(!n.ends_with(".pfb") && !n.ends_with(".pfa") && !n.ends_with(".t1"));
+        }
+        let sc = compact_name(&sans);
+        assert!(!sc.contains("mono"), "Sans must not be Mono: {}", sans.display());
+        assert_ne!(compact_name(&sans), compact_name(&mono));
+        assert_ne!(compact_name(&serif), compact_name(&sans));
+        let sl = sans.to_string_lossy().to_ascii_lowercase();
+        assert!(
+            sl.contains("liberation") || sl.contains("dejavu"),
+            "prefer Liberation/DejaVu, got {}",
+            sans.display()
+        );
+    }
+
+    #[test]
+    fn bold_and_italic_change_paint() {
+        let regular = paint_text("Sans", false, false);
+        let bold = paint_text("Sans", true, false);
+        let italic = paint_text("Sans", false, true);
+        let serif = paint_text("Serif", false, false);
+        let mono = paint_text("Mono", false, false);
+        assert_ne!(regular, bold, "Bold must change pixels");
+        assert_ne!(regular, italic, "Italic must change pixels");
+        assert_ne!(regular, serif, "Serif must differ from Sans");
+        assert_ne!(regular, mono, "Mono must differ from Sans");
+        let bold_path = resolve_family_path("Sans", true, false).unwrap();
+        assert!(
+            file_looks_bold(&bold_path.to_string_lossy()),
+            "bold resolve {}",
+            bold_path.display()
+        );
     }
 }

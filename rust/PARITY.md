@@ -95,7 +95,7 @@ Counts at the bottom. Python sources are not modified.
 | `render` mosaic/blur/eraser | `render.rs` | done |
 | Text glyphs / number digits | `font.rs` fontdue | done |
 | Dash/dot line, fill, arrow, marker alpha | `render.rs` | done |
-| Property panel (bold/italic/family/mode/effect) | B/I/Outline + family chips + mosaic mode/effect | done | Family is Default/Sans/Serif/Mono (not QFontComboBox). B/I pick Bold/Italic files or fake-bold |
+| Property panel (bold/italic/family/mode/effect) | B/I/Outline + family chips + mosaic mode/effect | done | Family is Default/Sans/Serif/Mono (not QFontComboBox). Prefer loadable Liberation/DejaVu TTF; Sans ≠ Mono; B/I load Bold/Italic or fake-bold/fake-italic |
 | Custom QColorDialog | in-overlay / in-pin HSV + palette picker | done | No zenity; grab stays on the freeze |
 | Brush cursor poll timer | QueryPointer 8ms while brush live | done |
 | Pixel-perfect hit via 3×3 paint | `shape_paints_at` 3×3 paint | done | Translate so `pt` is pixel (1,1); alpha>16. Mosaic/eraser stay path-contains |
@@ -126,7 +126,7 @@ Counts at the bottom. Python sources are not modified.
 | Rotate / flip / paste / replace file | done |
 | Shadow / thumb | `shadow` + Shift+dblclick 72px thumb | done | Default on when `_NET_WM_CM_Sn` is owned; persisted. Widget is image+2M, photo at (M,M), `WA_TranslucentBackground` + premultiplied ARGB present; hairline `QRectF(r).adjusted(-0.5,-0.5,-0.5,-0.5)`; session stores image origin |
 | Click-through XShape / WS_EX_TRANSPARENT | done |
-| Groups move / new / rename | tray groups; pin menu New/Rename prompt | done | In-process name field (Enter/Esc/IME). Default cannot be renamed |
+| Groups move / new / rename | tray groups; pin menu New/Rename prompt | done | KeyboardInput when not IME preedit (overlay text same); Ime::Commit for CJK; empty Enter ignored; Default cannot be renamed |
 | Glow fade-in | `tick_glow` | done |
 
 ## Prefs / settings / theme / i18n
