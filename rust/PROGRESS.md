@@ -292,6 +292,21 @@ HEAD 在 `rust`（用户提交 `ed59e0f` 之后本轮继续）。对照 Python/`
 
 验证约定：Linux 改动必须在 **Xvfb + xfwm4 + xdotool**（以及有桌面时的 `:1` Xfce）上做焦点/按键/菜单回归。本轮用 `type --delay 20`、两步快拖、连续滚轮格（间隔 80ms > 门控 40ms）。
 
+### Xvfb `da81652` A–F（`:23` 1920×1200 + xfwm4，实机节拍）
+
+脚本 `/tmp/pinshot-af-verify.sh`。`pass=14 fail=0`。
+
+| 检查 | 结果 |
+|---|---|
+| A 关工具后拖选区 | PASS（`annot translate 120,100`；标注留在洞内） |
+| B 内置取色 | PASS（`color picker open #FF0000` → `custom color #0088FF`；无 zenity） |
+| C 透明度属性 | PASS（`opacity set 0.90 client=… frame=…`；xprop 非 `0xffffffff`。Xvfb 无 picom，观感仍不透明） |
+| D 未聚焦 Ctrl+滚轮 | PASS（第二次 `opacity set 0.80`） |
+| E prefs 置顶 | PASS（`prefs raise above`；`_NET_WM_STATE_ABOVE`） |
+| F 矩形 Dash | PASS（`tb LineStyle(Dash)`；画面虚线） |
+
+工件：`/opt/cursor/artifacts/af-verify/`。
+
 ### Xvfb `c344764` 双倍滚轮 + PARITY（`:22` 1920×1200 + xfwm4，实机节拍）
 
 脚本 `/tmp/pinshot-wheel-verify.sh`。`pass=15 fail=0`。
