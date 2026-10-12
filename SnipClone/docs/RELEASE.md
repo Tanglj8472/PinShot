@@ -38,14 +38,19 @@ PinsMods=6
 [General]
 OutputDir=C:\Users\...\Documents\SnipClone
 StartWithWindows=0
+ShowWelcomeTip=1
 
 [Annotate]
 SelectAfterDraw=1
+DefaultTool=8
+CloseAfterExport=1
 ```
 
 - `SnipMods` / `PinsMods`：`MOD_ALT=1`、`MOD_CONTROL=2`、`MOD_SHIFT=4`、`MOD_WIN=8`（可组合相加）  
 - `SelectAfterDraw=1`：画完矩形/箭头等后自动切到选择工具（默认开）  
-- 设置页提供「恢复默认热键」
+- `DefaultTool`：`ToolKind` 枚举值（`8`=选择）  
+- `CloseAfterExport=1`：复制/保存成功后关闭标注窗口  
+- 设置页提供「恢复默认热键」；工具栏齿轮也可打开设置
 
 ## CI 检查
 

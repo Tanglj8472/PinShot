@@ -222,6 +222,7 @@ void Toolbar::BuildButtons()
     addTool(ToolKind::Eraser, L"橡皮 (K)");
     addAct(ToolbarAction::Undo, L"undo", L"撤销 (Ctrl+Z)");
     addAct(ToolbarAction::Redo, L"redo", L"重做 (Ctrl+Y)");
+    addAct(ToolbarAction::Settings, L"settings", L"设置…");
     addAct(ToolbarAction::Close, L"close", L"取消 (Esc)");
     addAct(ToolbarAction::Pin, L"pin", L"贴图 (Ctrl+T)");
     addAct(ToolbarAction::Save, L"save", L"保存 (Ctrl+S)");
@@ -237,7 +238,8 @@ void Toolbar::LayoutButtons()
     int x = m_pad;
     for (auto& b : m_buttons)
     {
-        if (b.action == ToolbarAction::Undo || b.action == ToolbarAction::Close)
+        if (b.action == ToolbarAction::Undo || b.action == ToolbarAction::Settings ||
+            b.action == ToolbarAction::Close)
         {
             x += m_sep;
         }
@@ -611,7 +613,8 @@ void Toolbar::Present()
     // Separators before undo and close groups.
     for (const auto& b : m_buttons)
     {
-        if (b.action == ToolbarAction::Undo || b.action == ToolbarAction::Close)
+        if (b.action == ToolbarAction::Undo || b.action == ToolbarAction::Settings ||
+            b.action == ToolbarAction::Close)
         {
             const float sx = static_cast<float>(b.hit.left) - static_cast<float>(m_sep) * 0.5f;
             m_brush->SetColor(kSepColor);

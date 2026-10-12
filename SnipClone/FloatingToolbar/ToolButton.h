@@ -30,6 +30,7 @@ enum class ToolbarAction
     Pin,
     Save,
     Copy,
+    Settings,
 };
 
 struct ToolButton

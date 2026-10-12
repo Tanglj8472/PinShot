@@ -462,6 +462,9 @@ void TestAppSettingsDefaults()
            "default snip mods");
     Expect(d.pins.vk == static_cast<UINT>('P'), "default pins vk");
     Expect(d.selectAfterDraw, "selectAfterDraw default on");
+    Expect(d.closeAfterExport, "closeAfterExport default on");
+    Expect(d.showWelcomeTip, "showWelcomeTip default on");
+    Expect(d.defaultTool == static_cast<UINT>(snip::ToolKind::Select), "default tool Select");
 
     snip::AppSettings s = d;
     s.snip.vk = static_cast<UINT>('X');

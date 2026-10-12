@@ -7,6 +7,7 @@
 
 #include <dwrite.h>
 
+#include <algorithm>
 #include <cmath>
 
 #pragma comment(lib, "dwrite.lib")
@@ -277,6 +278,27 @@ void DrawToolbarIcon(
             brush,
             stroke);
         return;
+    case ToolbarAction::Settings:
+    {
+        // Simple gear: hub + rim.
+        const float cx = (box.left + box.right) * 0.5f;
+        const float cy = (box.top + box.bottom) * 0.5f;
+        const float r = (std::min)(w, h) * 0.22f;
+        rt->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), r, r), brush, stroke);
+        rt->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), r * 0.45f, r * 0.45f), brush, stroke);
+        for (int i = 0; i < 4; ++i)
+        {
+            const float a = static_cast<float>(i) * 3.14159265f * 0.5f;
+            const float c = cosf(a);
+            const float s = sinf(a);
+            rt->DrawLine(
+                D2D1::Point2F(cx + c * r * 0.7f, cy + s * r * 0.7f),
+                D2D1::Point2F(cx + c * r * 1.35f, cy + s * r * 1.35f),
+                brush,
+                stroke);
+        }
+        return;
+    }
     case ToolbarAction::WidthDec:
         Line(rt, brush, box, 2.f, 5, 10, 15, 10);
         return;

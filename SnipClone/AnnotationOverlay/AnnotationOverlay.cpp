@@ -8,6 +8,7 @@
 #include "../Common/CoordMap.h"
 #include "../Common/ImageUtil.h"
 #include "../Common/ProjectIO.h"
+#include "../Common/SettingsDialog.h"
 #include "../Common/WinHelper.h"
 #include "../PinWindow/PinManager.h"
 #include "../PinWindow/PinWindow.h"
@@ -141,8 +142,16 @@ bool AnnotationOverlay::Start(HINSTANCE instance, HWND owner, CaptureResult crop
             m_textEditor->ApplyStyle(m_ann.Style(ToolKind::Text));
         }
     });
-    // Start in Select: drag empty interior moves crop; pick a draw tool to annotate.
-    m_ann.SetTool(ToolKind::Select);
+    // Default tool from settings (Select unless user prefers a draw tool).
+    {
+        const UINT t = LiveSettings().defaultTool;
+        ToolKind start = ToolKind::Select;
+        if (t > 0 && t < static_cast<UINT>(ToolKind::Count))
+        {
+            start = static_cast<ToolKind>(t);
+        }
+        m_ann.SetTool(start);
+    }
     m_ann.SetViewport(m_base.screenRect);
 
     ShowWindow(m_hwnd, SW_SHOW);
@@ -870,6 +879,15 @@ void AnnotationOverlay::OnToolbarAction(ToolbarAction action, ToolKind /*tool*/)
     case ToolbarAction::Pin:
         DoPin();
         break;
+    case ToolbarAction::Settings:
+        if (ShowSettingsDialog(m_hwnd ? m_hwnd : m_owner, m_instance))
+        {
+            if (m_owner)
+            {
+                PostMessageW(m_owner, WM_SNIP_REBIND_HOTKEYS, 0, 0);
+            }
+        }
+        break;
     case ToolbarAction::Close:
         RequestCloseDiscard();
         break;
@@ -918,7 +936,10 @@ void AnnotationOverlay::DoCopy()
             m_writeBackPin->SetVisible(true);
             m_writeBackCommitted = true;
         }
-        RequestClose();
+        if (LiveSettings().closeAfterExport)
+        {
+            RequestClose();
+        }
     }
     else
     {
@@ -960,7 +981,10 @@ void AnnotationOverlay::DoSave()
             m_writeBackPin->SetVisible(true);
             m_writeBackCommitted = true;
         }
-        RequestClose();
+        if (LiveSettings().closeAfterExport)
+        {
+            RequestClose();
+        }
     }
     else
     {

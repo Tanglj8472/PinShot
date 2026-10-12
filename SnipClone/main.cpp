@@ -256,7 +256,7 @@ void ShowAbout()
 bool g_smokeMode = false;
 
 void OnTrayCommand(snip::TrayIcon::Command cmd);
-bool RegisterConfiguredHotkeys(bool showConflictUi);
+bool RegisterConfiguredHotkeys(bool showConflictUi, bool offerOpenSettings = true);
 
 void RefreshTrayTip()
 {
@@ -281,7 +281,8 @@ void OpenSettings()
     {
         snip::GlobalHotkey::Unregister(kHotkeySnip, g_mainWnd);
         snip::GlobalHotkey::Unregister(kHotkeyPins, g_mainWnd);
-        RegisterConfiguredHotkeys(true);
+        // Do not re-offer settings from inside OpenSettings (avoid dialog loop).
+        RegisterConfiguredHotkeys(true, false);
         RefreshTrayTip();
     }
 }
@@ -339,7 +340,7 @@ void OnTrayCommand(snip::TrayIcon::Command cmd)
     }
 }
 
-bool RegisterConfiguredHotkeys(bool showConflictUi)
+bool RegisterConfiguredHotkeys(bool showConflictUi, bool offerOpenSettings)
 {
     g_snipHotkeyOk = snip::GlobalHotkey::Register(
         snip::LiveSettings().snip.vk, snip::LiveSettings().snip.mods, kHotkeySnip, g_mainWnd);
@@ -349,19 +350,46 @@ bool RegisterConfiguredHotkeys(bool showConflictUi)
     // Smoke / headless: never block on modal conflict dialogs (plan parallel fix).
     if (showConflictUi && !g_smokeMode)
     {
+        bool openSettings = false;
         if (!g_snipHotkeyOk)
         {
             std::wstring msg = L"热键 ";
             msg += snip::AppSettings::FormatHotkey(snip::LiveSettings().snip);
-            msg += L" 暂不可用，请换一组按键。\n可在托盘「设置…」中重新录制。";
-            MessageBoxW(g_mainWnd, msg.c_str(), L"SnipClone", MB_ICONWARNING | MB_OK);
+            msg += L" 暂不可用，请换一组按键。";
+            if (offerOpenSettings)
+            {
+                msg += L"\n是否打开设置重新录制？";
+                if (MessageBoxW(g_mainWnd, msg.c_str(), L"SnipClone", MB_ICONWARNING | MB_YESNO) == IDYES)
+                {
+                    openSettings = true;
+                }
+            }
+            else
+            {
+                MessageBoxW(g_mainWnd, msg.c_str(), L"SnipClone", MB_ICONWARNING | MB_OK);
+            }
         }
         if (!g_pinsHotkeyOk)
         {
             std::wstring msg = L"热键 ";
             msg += snip::AppSettings::FormatHotkey(snip::LiveSettings().pins);
-            msg += L" 暂不可用（贴图穿透退出）。\n可在托盘「设置…」中重新录制。";
-            MessageBoxW(g_mainWnd, msg.c_str(), L"SnipClone", MB_ICONWARNING | MB_OK);
+            msg += L" 暂不可用（贴图穿透退出）。";
+            if (offerOpenSettings)
+            {
+                msg += L"\n是否打开设置重新录制？";
+                if (MessageBoxW(g_mainWnd, msg.c_str(), L"SnipClone", MB_ICONWARNING | MB_YESNO) == IDYES)
+                {
+                    openSettings = true;
+                }
+            }
+            else
+            {
+                MessageBoxW(g_mainWnd, msg.c_str(), L"SnipClone", MB_ICONWARNING | MB_OK);
+            }
+        }
+        if (openSettings)
+        {
+            OpenSettings();
         }
     }
     return g_snipHotkeyOk || g_pinsHotkeyOk;
@@ -424,6 +452,13 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
     case snip::WM_SNIP_PIN_EDIT:
         BeginAnnotationFromPin(reinterpret_cast<snip::PinWindow*>(lParam));
+        return 0;
+
+    case snip::WM_SNIP_REBIND_HOTKEYS:
+        snip::GlobalHotkey::Unregister(kHotkeySnip, g_mainWnd);
+        snip::GlobalHotkey::Unregister(kHotkeyPins, g_mainWnd);
+        RegisterConfiguredHotkeys(true, false);
+        RefreshTrayTip();
         return 0;
 
     case WM_DESTROY:
@@ -556,6 +591,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR cmdLine, int)
     else
     {
         g_tray->SetClickThroughHotkeyTip(snip::AppSettings::FormatHotkey(snip::LiveSettings().pins));
+        // M1 scene A: one-shot welcome tip so first launch is discoverable.
+        if (snip::LiveSettings().showWelcomeTip)
+        {
+            std::wstring body = L"单击托盘或按 ";
+            body += snip::AppSettings::FormatHotkey(snip::LiveSettings().snip);
+            body += L" 开始截图。右键打开菜单与设置。";
+            g_tray->ShowBalloon(L"SnipClone", body.c_str());
+            snip::LiveSettings().showWelcomeTip = false;
+            snip::LiveSettings().Save();
+        }
     }
 
     if (smoke)

@@ -4,6 +4,7 @@
 #include "SettingsDialog.h"
 
 #include "AppSettings.h"
+#include "../AnnotationOverlay/DrawCommand.h"
 
 #include <commdlg.h>
 #include <shlobj.h>
@@ -35,11 +36,32 @@ enum Id : int
     IdOutEdit,
     IdOutBrowse,
     IdAutostart,
+    IdWelcomeTip,
     IdSelectAfterDraw,
+    IdCloseAfterExport,
+    IdDefaultToolLabel,
+    IdDefaultTool,
     IdApply,
     IdOk,
     IdCancel,
     IdStatus,
+};
+
+struct DefaultToolOpt
+{
+    ToolKind kind;
+    const wchar_t* label;
+};
+
+constexpr DefaultToolOpt kDefaultTools[] = {
+    { ToolKind::Select, L"选择" },
+    { ToolKind::Rect, L"矩形" },
+    { ToolKind::Ellipse, L"椭圆" },
+    { ToolKind::Arrow, L"箭头" },
+    { ToolKind::Pen, L"画笔" },
+    { ToolKind::Mosaic, L"马赛克" },
+    { ToolKind::Text, L"文字" },
+    { ToolKind::Eraser, L"橡皮" },
 };
 
 struct DlgState
@@ -66,6 +88,34 @@ void RefreshHotkeyLabels(HWND hwnd, const AppSettings& s)
 void SetStatus(HWND hwnd, const wchar_t* text)
 {
     SetStaticText(hwnd, IdStatus, text ? text : L"");
+}
+
+void FillDefaultToolCombo(HWND combo, UINT selected)
+{
+    SendMessageW(combo, CB_RESETCONTENT, 0, 0);
+    int selIndex = 0;
+    for (int i = 0; i < static_cast<int>(sizeof(kDefaultTools) / sizeof(kDefaultTools[0])); ++i)
+    {
+        const auto& opt = kDefaultTools[i];
+        SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(opt.label));
+        SendMessageW(combo, CB_SETITEMDATA, i, static_cast<LPARAM>(opt.kind));
+        if (static_cast<UINT>(opt.kind) == selected)
+        {
+            selIndex = i;
+        }
+    }
+    SendMessageW(combo, CB_SETCURSEL, selIndex, 0);
+}
+
+UINT ReadDefaultToolCombo(HWND combo)
+{
+    const int idx = static_cast<int>(SendMessageW(combo, CB_GETCURSEL, 0, 0));
+    if (idx < 0)
+    {
+        return static_cast<UINT>(ToolKind::Select);
+    }
+    const LPARAM data = SendMessageW(combo, CB_GETITEMDATA, idx, 0);
+    return static_cast<UINT>(data);
 }
 
 bool BrowseFolder(HWND owner, std::wstring& pathOut)
@@ -97,8 +147,13 @@ bool ApplyDraft(HWND hwnd, DlgState* st)
     st->draft.outputDir = outBuf;
     st->draft.startWithWindows =
         (SendMessageW(GetDlgItem(hwnd, IdAutostart), BM_GETCHECK, 0, 0) == BST_CHECKED);
+    st->draft.showWelcomeTip =
+        (SendMessageW(GetDlgItem(hwnd, IdWelcomeTip), BM_GETCHECK, 0, 0) == BST_CHECKED);
     st->draft.selectAfterDraw =
         (SendMessageW(GetDlgItem(hwnd, IdSelectAfterDraw), BM_GETCHECK, 0, 0) == BST_CHECKED);
+    st->draft.closeAfterExport =
+        (SendMessageW(GetDlgItem(hwnd, IdCloseAfterExport), BM_GETCHECK, 0, 0) == BST_CHECKED);
+    st->draft.defaultTool = ReadDefaultToolCombo(GetDlgItem(hwnd, IdDefaultTool));
 
     const AppSettings previous = LiveSettings();
     LiveSettings() = st->draft;
@@ -112,9 +167,7 @@ bool ApplyDraft(HWND hwnd, DlgState* st)
     std::wstring autoErr;
     if (!ApplyStartWithWindows(st->draft.startWithWindows, &autoErr))
     {
-        // Persist flag still saved; surface OS registration failure.
         SetStatus(hwnd, autoErr.empty() ? L"自启动注册失败。" : autoErr.c_str());
-        // Keep settings; caller still rebinds hotkeys.
     }
     else
     {
@@ -168,22 +221,44 @@ LRESULT CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         SendMessageW(GetDlgItem(hwnd, IdAutostart), BM_SETCHECK,
                      st->draft.startWithWindows ? BST_CHECKED : BST_UNCHECKED, 0);
 
+        CreateWindowExW(0, L"BUTTON", L"启动时显示操作提示",
+                        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX, 150, 136, 200, 24, hwnd,
+                        reinterpret_cast<HMENU>(static_cast<INT_PTR>(IdWelcomeTip)), st->instance, nullptr);
+        SendMessageW(GetDlgItem(hwnd, IdWelcomeTip), BM_SETCHECK,
+                     st->draft.showWelcomeTip ? BST_CHECKED : BST_UNCHECKED, 0);
+
+        CreateWindowExW(0, L"STATIC", L"默认工具", WS_CHILD | WS_VISIBLE, 16, 172, 80, 22, hwnd,
+                        reinterpret_cast<HMENU>(static_cast<INT_PTR>(IdDefaultToolLabel)), st->instance,
+                        nullptr);
+        CreateWindowExW(0, L"COMBOBOX", L"",
+                        WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL, 100, 168, 160, 200,
+                        hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IdDefaultTool)), st->instance,
+                        nullptr);
+        FillDefaultToolCombo(GetDlgItem(hwnd, IdDefaultTool), st->draft.defaultTool);
+
         CreateWindowExW(0, L"BUTTON", L"标注完成后切换到选择工具",
-                        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX, 16, 168, 280, 24, hwnd,
+                        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX, 16, 208, 280, 24, hwnd,
                         reinterpret_cast<HMENU>(static_cast<INT_PTR>(IdSelectAfterDraw)), st->instance,
                         nullptr);
         SendMessageW(GetDlgItem(hwnd, IdSelectAfterDraw), BM_SETCHECK,
                      st->draft.selectAfterDraw ? BST_CHECKED : BST_UNCHECKED, 0);
 
-        CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE, 16, 204, 450, 22, hwnd,
+        CreateWindowExW(0, L"BUTTON", L"复制/保存成功后关闭标注",
+                        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX, 16, 236, 280, 24, hwnd,
+                        reinterpret_cast<HMENU>(static_cast<INT_PTR>(IdCloseAfterExport)), st->instance,
+                        nullptr);
+        SendMessageW(GetDlgItem(hwnd, IdCloseAfterExport), BM_SETCHECK,
+                     st->draft.closeAfterExport ? BST_CHECKED : BST_UNCHECKED, 0);
+
+        CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE, 16, 272, 450, 22, hwnd,
                         reinterpret_cast<HMENU>(static_cast<INT_PTR>(IdStatus)), st->instance, nullptr);
 
-        CreateWindowExW(0, L"BUTTON", L"应用", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 200, 242, 80, 30, hwnd,
+        CreateWindowExW(0, L"BUTTON", L"应用", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 200, 308, 80, 30, hwnd,
                         reinterpret_cast<HMENU>(static_cast<INT_PTR>(IdApply)), st->instance, nullptr);
         CreateWindowExW(0, L"BUTTON", L"确定", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON, 290,
-                        242, 80, 30, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IdOk)), st->instance,
+                        308, 80, 30, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IdOk)), st->instance,
                         nullptr);
-        CreateWindowExW(0, L"BUTTON", L"取消", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 380, 242, 80, 30, hwnd,
+        CreateWindowExW(0, L"BUTTON", L"取消", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 380, 308, 80, 30, hwnd,
                         reinterpret_cast<HMENU>(static_cast<INT_PTR>(IdCancel)), st->instance, nullptr);
 
         RefreshHotkeyLabels(hwnd, st->draft);
@@ -388,7 +463,6 @@ bool ShowSettingsDialog(HWND owner, HINSTANCE instance)
     DlgState st;
     st.instance = instance;
     st.draft = LiveSettings();
-    // Reflect real Run-key state for the checkbox.
     st.draft.startWithWindows = IsStartWithWindowsRegistered();
 
     HWND hwnd = CreateWindowExW(
@@ -399,7 +473,7 @@ bool ShowSettingsDialog(HWND owner, HINSTANCE instance)
         CW_USEDEFAULT,
         CW_USEDEFAULT,
         500,
-        330,
+        390,
         owner,
         nullptr,
         instance,
@@ -409,7 +483,6 @@ bool ShowSettingsDialog(HWND owner, HINSTANCE instance)
         return false;
     }
 
-    // Center on owner or work area.
     RECT rc{};
     GetWindowRect(hwnd, &rc);
     const int w = rc.right - rc.left;
@@ -435,7 +508,6 @@ bool ShowSettingsDialog(HWND owner, HINSTANCE instance)
     MSG msg{};
     while (!st.done && GetMessageW(&msg, nullptr, 0, 0) > 0)
     {
-        // Forward hotkey capture to dialog even when a child has focus.
         if (st.recording && (msg.message == WM_KEYDOWN || msg.message == WM_SYSKEYDOWN) &&
             msg.hwnd != hwnd)
         {
