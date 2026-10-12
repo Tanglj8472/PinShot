@@ -68,12 +68,20 @@ pub fn det_padding(width: u32, height: u32) -> u32 {
     DET_PADDING.min(side / 4).max(8)
 }
 
-/// paddle-ocr-rs rec is hardcoded to H=48. Chrome Wikipedia is ~13px; at 1×
-/// the det boxes are a few pixels tall and rec drops Latin spaces / stems.
-/// 2× article-sized clips (short side < 720). Full-screen stays 1× so det
-/// does not melt columns. Unclip stays 1.6 (2.0 merged adjacent words).
+/// paddle-ocr-rs rec is hardcoded to H=48. Chrome Wikipedia is ~13px
+/// (glyph band ~14px). 1×/2× det misses those lines (`T` / `In` only);
+/// 3× on a real 790×120 F1 crop recovered the 2010s sentence with spaces.
+/// Full-screen stays 1× so det does not melt columns. Unclip stays 1.6.
 pub fn ocr_upsample(width: u32, height: u32) -> u32 {
-    if width.min(height) < 720 {
+    if let Ok(v) = std::env::var("PINSHOT_OCR_SCALE") {
+        if let Ok(n) = v.trim().parse::<u32>() {
+            return n.clamp(1, 4);
+        }
+    }
+    let short = width.min(height);
+    if short < 480 {
+        3
+    } else if short < 900 {
         2
     } else {
         1
@@ -692,12 +700,13 @@ mod tests {
 
     #[test]
     fn ocr_upsample_lifts_short_chrome_clips() {
-        assert_eq!(ocr_upsample(1100, 400), 2);
-        assert_eq!(ocr_upsample(900, 120), 2);
+        assert_eq!(ocr_upsample(1100, 400), 3);
+        assert_eq!(ocr_upsample(900, 120), 3);
         assert_eq!(ocr_upsample(1920, 1200), 1);
-        assert_eq!(ocr_upsample(2000, 300), 2);
-        assert_eq!(ocr_upsample(800, 719), 2);
-        assert_eq!(ocr_upsample(800, 720), 1);
+        assert_eq!(ocr_upsample(2000, 300), 3);
+        assert_eq!(ocr_upsample(800, 479), 3);
+        assert_eq!(ocr_upsample(800, 480), 2);
+        assert_eq!(ocr_upsample(1000, 900), 1);
     }
 
     #[test]

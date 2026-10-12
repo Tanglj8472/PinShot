@@ -235,6 +235,14 @@ fn infer(image: &Raster, paths: &ModelPaths) -> Result<OcrPage, String> {
         return Err("image too small for OCR".into());
     }
     let scale = ocr_upsample(image.width, image.height);
+    let unclip = std::env::var("PINSHOT_OCR_UNCLIP")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DET_UNCLIP);
+    let box_score = std::env::var("PINSHOT_OCR_BOX_SCORE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DET_BOX_SCORE);
     let up = if scale > 1 {
         Some(image.scale_bilinear(image.width * scale, image.height * scale))
     } else {
@@ -248,22 +256,21 @@ fn infer(image: &Raster, paths: &ModelPaths) -> Result<OcrPage, String> {
         let result = ocr
             // paddle-ocr-rs AngleNet is 48×192 (PP-OCRv2 cls). RapidOCR v5
             // orientation is 80×160, so skip angle; screenshot lines are upright.
-            // Unclip 1.6 (RapidOCR). 2× only thin clips (short side < 200)
-            // so rec (H=48) sees more than 13px; article-sized crops stay 1×
-            // because 2× merged lines. max_side 2560.
+            // Chrome 13px glyphs are ~14px tall; rec is H=48, so article clips
+            // use 3×. Unclip 1.6. max_side 2560.
             .detect(
                 &rgb,
                 det_padding(pad_w, pad_h),
                 DET_MAX_SIDE,
-                DET_BOX_SCORE,
+                box_score,
                 DET_BOX_THRESH,
-                DET_UNCLIP,
+                unclip,
                 false,
                 false,
             )
             .map_err(|e| format!("ocr detect: {e:?}"))?;
         crate::logutil::log(&format!(
-            "ocr blocks {} scale={scale} pad={} max_side={DET_MAX_SIDE} unclip={DET_UNCLIP} {pad_w}x{pad_h} det={} rec={}",
+            "ocr blocks {} scale={scale} pad={} max_side={DET_MAX_SIDE} unclip={unclip} box={box_score} {pad_w}x{pad_h} det={} rec={}",
             result.text_blocks.len(),
             det_padding(pad_w, pad_h),
             paths.det.display(),
@@ -372,6 +379,34 @@ mod tests {
 
     fn page_text(image: &Raster) -> String {
         recognize(image).unwrap_or_else(|e| panic!("ocr: {e}")).text
+    }
+
+    #[test]
+    fn ocr_real_chrome_pin_png_when_requested() {
+        if std::env::var("PINSHOT_OCR_SMOKE").ok().as_deref() != Some("1") {
+            return;
+        }
+        let path = std::env::var("PINSHOT_OCR_PNG")
+            .unwrap_or_else(|_| "/tmp/pinshot-retest-data/session/pin-000.png".into());
+        let Some(img) = load_png_raster(std::path::Path::new(&path)) else {
+            panic!("missing chrome pin png {path}");
+        };
+        let text = page_text(&img);
+        eprintln!(
+            "ocr chrome-pin {}x{} scale-env={:?} => {text:?}",
+            img.width,
+            img.height,
+            std::env::var("PINSHOT_OCR_SCALE").ok()
+        );
+        let lower = text.to_ascii_lowercase();
+        assert!(
+            lower.contains("work") || lower.contains("ocaml") || lower.contains("mozilla"),
+            "chrome pin OCR missed the paragraph: {text:?}"
+        );
+        assert!(
+            text.contains(' '),
+            "chrome pin OCR dropped English spaces: {text:?}"
+        );
     }
 
     #[test]
