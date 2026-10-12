@@ -8,6 +8,7 @@
 #include "../Capture/ScreenCapture.h"
 #include "../Common/CoordMap.h"
 #include "../Common/DpiHelper.h"
+#include "../Common/TextLayout.h"
 
 #include <cstdio>
 #include <cstdint>
@@ -270,6 +271,25 @@ void TestCropViewportUndo()
     Expect(hasCrop && restored.right == cropA.right, "edge-only undo restores right");
 }
 
+void TestTextExtentConsistent()
+{
+    // A10: MeasureAnnotationText used by hit bounds must be finite and CJK-friendly.
+    std::printf("Text extent\n");
+    snip::DrawStyle style{};
+    style.fontSize = 20.f;
+    const auto en = snip::MeasureAnnotationText(L"Hello", style);
+    const auto zh = snip::MeasureAnnotationText(L"你好世界", style);
+    Expect(en.width > 10.f && en.height >= 20.f, "english extent");
+    Expect(zh.width > en.width * 0.5f && zh.height >= 20.f, "chinese extent");
+
+    snip::DrawStack stack;
+    stack.AddText(D2D1::Point2F(0, 0), L"你好");
+    const auto* sh = stack.ShapeAt(0);
+    Expect(sh != nullptr, "text shape");
+    // Hit near glyph center should succeed with shared metrics.
+    Expect(stack.HitTest(D2D1::Point2F(8.f, 10.f)) == 0, "text hit via shared metrics");
+}
+
 void TestComposeFailsEmpty()
 {
     // A02: failure / empty base must not return a non-empty silent base copy.
@@ -338,6 +358,7 @@ int wmain()
     TestHitAccuracy();
     TestRemapForCrop();
     TestCropViewportUndo();
+    TestTextExtentConsistent();
     TestComposeFailsEmpty();
     TestComposeExportOmitsSelectionChrome();
 

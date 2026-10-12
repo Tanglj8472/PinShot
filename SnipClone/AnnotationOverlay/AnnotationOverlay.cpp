@@ -13,6 +13,7 @@
 #include <windowsx.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <string>
 
 namespace snip
@@ -956,9 +957,11 @@ bool AnnotationOverlay::CommitCropRect(RECT newScreenRect)
 void AnnotationOverlay::ApplyCropDrag(POINT client)
 {
     // Preview only while dragging; CommitCropRect runs on mouse-up (one undo).
+    // Client coords are relative to the current host window (may be union during expand).
     RECT r = m_cropDragStartScreen;
-    const LONG ddx = (m_base.screenRect.left + client.x) - m_cropDragStart.x;
-    const LONG ddy = (m_base.screenRect.top + client.y) - m_cropDragStart.y;
+    const RECT host = (m_hostScreen.right > m_hostScreen.left) ? m_hostScreen : m_base.screenRect;
+    const LONG ddx = (host.left + client.x) - m_cropDragStart.x;
+    const LONG ddy = (host.top + client.y) - m_cropDragStart.y;
 
     switch (m_cropDrag)
     {
@@ -1050,24 +1053,91 @@ void AnnotationOverlay::ApplyCropDrag(POINT client)
     Present();
 }
 
-void AnnotationOverlay::PaintCropChrome()
+RECT AnnotationOverlay::CurrentHostScreen() const
+{
+    if (m_cropDrag != CropHit::None && !m_freeze.Empty())
+    {
+        RECT host = m_base.screenRect;
+        host.left = (std::min)(host.left, m_cropPreviewScreen.left);
+        host.top = (std::min)(host.top, m_cropPreviewScreen.top);
+        host.right = (std::max)(host.right, m_cropPreviewScreen.right);
+        host.bottom = (std::max)(host.bottom, m_cropPreviewScreen.bottom);
+        host.left = (std::max)(host.left, m_freeze.screenRect.left);
+        host.top = (std::max)(host.top, m_freeze.screenRect.top);
+        host.right = (std::min)(host.right, m_freeze.screenRect.right);
+        host.bottom = (std::min)(host.bottom, m_freeze.screenRect.bottom);
+        return host;
+    }
+    return m_base.screenRect;
+}
+
+void AnnotationOverlay::DimOutsideCrop(const RECT& hostScreen, const RECT& cropScreen)
+{
+    if (!m_bits || m_w <= 0 || m_h <= 0 || m_dibStride <= 0)
+    {
+        return;
+    }
+    const int cl = cropScreen.left - hostScreen.left;
+    const int ct = cropScreen.top - hostScreen.top;
+    const int cr = cropScreen.right - hostScreen.left;
+    const int cb = cropScreen.bottom - hostScreen.top;
+    auto* base = static_cast<std::uint8_t*>(m_bits);
+    auto darkenPixel = [](std::uint8_t* p) {
+        p[0] = static_cast<std::uint8_t>(p[0] / 3);
+        p[1] = static_cast<std::uint8_t>(p[1] / 3);
+        p[2] = static_cast<std::uint8_t>(p[2] / 3);
+    };
+    for (int y = 0; y < m_h; ++y)
+    {
+        auto* row = base + static_cast<size_t>(y) * m_dibStride;
+        for (int x = 0; x < m_w; ++x)
+        {
+            if (x < cl || x >= cr || y < ct || y >= cb)
+            {
+                darkenPixel(row + x * 4);
+            }
+        }
+    }
+}
+
+void AnnotationOverlay::PaintSizeLabel(const RECT& hostScreen, const RECT& cropScreen)
+{
+    if (!m_memDc)
+    {
+        return;
+    }
+    const LONG cw = cropScreen.right - cropScreen.left;
+    const LONG ch = cropScreen.bottom - cropScreen.top;
+    wchar_t label[64]{};
+    swprintf_s(label, L"%ld × %ld", cw, ch);
+    const int lx = cropScreen.left - hostScreen.left;
+    int ly = cropScreen.top - hostScreen.top - 22;
+    if (ly < 2)
+    {
+        ly = cropScreen.top - hostScreen.top + 4;
+    }
+    SetBkColor(m_memDc, RGB(0, 0, 0));
+    SetTextColor(m_memDc, RGB(255, 255, 255));
+    SetBkMode(m_memDc, OPAQUE);
+    TextOutW(m_memDc, lx + 4, ly, label, static_cast<int>(wcslen(label)));
+}
+
+void AnnotationOverlay::PaintCropChrome(const RECT& hostScreen)
 {
     if (!m_memDc || m_w <= 0 || m_h <= 0)
     {
         return;
     }
     // Display-only chrome (not in ComposeExport).
-    int l = 0;
-    int t = 0;
-    int r = m_w;
-    int b = m_h;
+    RECT crop = m_base.screenRect;
     if (m_cropDrag != CropHit::None)
     {
-        l = m_cropPreviewScreen.left - m_base.screenRect.left;
-        t = m_cropPreviewScreen.top - m_base.screenRect.top;
-        r = m_cropPreviewScreen.right - m_base.screenRect.left;
-        b = m_cropPreviewScreen.bottom - m_base.screenRect.top;
+        crop = m_cropPreviewScreen;
     }
+    const int l = crop.left - hostScreen.left;
+    const int t = crop.top - hostScreen.top;
+    const int r = crop.right - hostScreen.left;
+    const int b = crop.bottom - hostScreen.top;
 
     HPEN pen = CreatePen(PS_SOLID, 1, RGB(40, 140, 255));
     HGDIOBJ oldPen = SelectObject(m_memDc, pen);
@@ -1096,36 +1166,54 @@ void AnnotationOverlay::PaintCropChrome()
     SelectObject(m_memDc, oldPen);
     DeleteObject(fill);
     DeleteObject(pen);
+
+    PaintSizeLabel(hostScreen, crop);
 }
 
 void AnnotationOverlay::StampCaptureToDib(const CaptureResult& image)
+{
+    BlitCaptureToDibAt(image, 0, 0);
+}
+
+void AnnotationOverlay::BlitCaptureToDibAt(const CaptureResult& image, int dstX, int dstY)
 {
     if (!m_bits || image.Empty() || m_w <= 0 || m_h <= 0 || m_dibStride <= 0)
     {
         return;
     }
-    const int copyW = m_w < image.width ? m_w : image.width;
-    const int copyH = m_h < image.height ? m_h : image.height;
     auto* dstBase = static_cast<std::uint8_t*>(m_bits);
-    for (int y = 0; y < copyH; ++y)
+    for (int y = 0; y < image.height; ++y)
     {
-        const auto* src = image.bgra.data() + static_cast<size_t>(y) * image.stride;
-        auto* dst = dstBase + static_cast<size_t>(y) * m_dibStride;
-        for (int x = 0; x < copyW; ++x)
+        const int dy = dstY + y;
+        if (dy < 0 || dy >= m_h)
         {
-            dst[x * 4 + 0] = src[x * 4 + 0];
-            dst[x * 4 + 1] = src[x * 4 + 1];
-            dst[x * 4 + 2] = src[x * 4 + 2];
-            dst[x * 4 + 3] = 255; // ULW_ALPHA requires opaque for solid photo
+            continue;
+        }
+        const auto* src = image.bgra.data() + static_cast<size_t>(y) * image.stride;
+        auto* dst = dstBase + static_cast<size_t>(dy) * m_dibStride;
+        for (int x = 0; x < image.width; ++x)
+        {
+            const int dx = dstX + x;
+            if (dx < 0 || dx >= m_w)
+            {
+                continue;
+            }
+            dst[dx * 4 + 0] = src[x * 4 + 0];
+            dst[dx * 4 + 1] = src[x * 4 + 1];
+            dst[dx * 4 + 2] = src[x * 4 + 2];
+            dst[dx * 4 + 3] = 255;
         }
     }
 }
 
 bool AnnotationOverlay::EnsureSurface()
 {
-    const int w = m_base.width;
-    const int h = m_base.height;
-    if (w <= 0 || h <= 0 || m_base.Empty())
+    return EnsureSurfaceSize(m_base.width, m_base.height);
+}
+
+bool AnnotationOverlay::EnsureSurfaceSize(int w, int h)
+{
+    if (w <= 0 || h <= 0)
     {
         return false;
     }
@@ -1163,9 +1251,6 @@ bool AnnotationOverlay::EnsureSurface()
 
     m_w = w;
     m_h = h;
-
-    // Seed with freeze crop so the host is never blank before first Compose.
-    StampCaptureToDib(m_base);
     return m_bits != nullptr;
 }
 
@@ -1198,36 +1283,57 @@ void AnnotationOverlay::ReleaseSurface()
 
 void AnnotationOverlay::Present()
 {
-    if (!m_hwnd || !EnsureSurface())
+    if (!m_hwnd)
     {
         return;
     }
 
-    // Preview Compose keeps live stroke + selection chrome; export strips both.
-    CaptureResult frame = m_renderer.Compose(m_base, m_ann, true, true);
-    if (frame.Empty())
+    // A07: while refining crop, host = union(base, preview) so expand shows freeze pixels.
+    const RECT hostScreen = CurrentHostScreen();
+    m_hostScreen = hostScreen;
+    const int hostW = hostScreen.right - hostScreen.left;
+    const int hostH = hostScreen.bottom - hostScreen.top;
+    if (!EnsureSurfaceSize(hostW, hostH))
     {
-        StampCaptureToDib(m_base);
+        return;
+    }
+
+    // Fill host from freeze (or base when freeze unavailable).
+    if (!m_freeze.Empty())
+    {
+        auto hostImg = m_freeze.CropToScreenRect(hostScreen);
+        if (!hostImg.Empty())
+        {
+            StampCaptureToDib(hostImg);
+        }
+        else
+        {
+            StampCaptureToDib(m_base);
+        }
     }
     else
     {
-        StampCaptureToDib(frame);
+        StampCaptureToDib(m_base);
     }
-    PaintCropChrome(); // handles are display-only; ComposeExport never paints them
 
-    // Keep window size in sync with capture pixels (DPI-safe).
-    SetWindowPos(
-        m_hwnd,
-        HWND_TOPMOST,
-        m_base.screenRect.left,
-        m_base.screenRect.top,
-        m_w,
-        m_h,
-        SWP_NOACTIVATE);
+    // Compose annotations in crop-local space, blit onto host at base offset.
+    CaptureResult frame = m_renderer.Compose(m_base, m_ann, true, true);
+    const int ox = m_base.screenRect.left - hostScreen.left;
+    const int oy = m_base.screenRect.top - hostScreen.top;
+    BlitCaptureToDibAt(frame.Empty() ? m_base : frame, ox, oy);
+
+    if (m_cropDrag != CropHit::None)
+    {
+        DimOutsideCrop(hostScreen, m_cropPreviewScreen);
+    }
+
+    PaintCropChrome(hostScreen);
+
+    SetWindowPos(m_hwnd, HWND_TOPMOST, hostScreen.left, hostScreen.top, m_w, m_h, SWP_NOACTIVATE);
 
     POINT ptSrc{ 0, 0 };
     SIZE size{ m_w, m_h };
-    POINT ptDst{ m_base.screenRect.left, m_base.screenRect.top };
+    POINT ptDst{ hostScreen.left, hostScreen.top };
     BLENDFUNCTION blend{ AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
     UpdateLayeredWindow(m_hwnd, m_screenDc, &ptDst, &size, m_memDc, &ptSrc, 0, &blend, ULW_ALPHA);
 }

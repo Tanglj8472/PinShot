@@ -3,6 +3,9 @@
 //==============================================================================
 #include "TrayIcon.h"
 
+#include "../PinWindow/PinManager.h"
+#include "AppSettings.h"
+
 #include <shellapi.h>
 
 #pragma comment(lib, "shell32.lib")
@@ -24,6 +27,7 @@ bool TrayIcon::Create(HWND owner, HINSTANCE instance, const std::wstring& tip, C
     m_owner = owner;
     m_instance = instance;
     m_onCommand = std::move(onCommand);
+    m_tip = tip;
 
     ZeroMemory(&m_nid, sizeof(m_nid));
     m_nid.cbSize = sizeof(m_nid);
@@ -32,7 +36,7 @@ bool TrayIcon::Create(HWND owner, HINSTANCE instance, const std::wstring& tip, C
     m_nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     m_nid.uCallbackMessage = WM_TRAY;
     m_nid.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
-    wcsncpy_s(m_nid.szTip, tip.c_str(), _TRUNCATE);
+    wcsncpy_s(m_nid.szTip, m_tip.c_str(), _TRUNCATE);
 
     if (!Shell_NotifyIconW(NIM_ADD, &m_nid))
     {
@@ -40,7 +44,29 @@ bool TrayIcon::Create(HWND owner, HINSTANCE instance, const std::wstring& tip, C
     }
     m_added = true;
 
-    // Prefer modern icon behavior on Win10+.
+    m_nid.uVersion = NOTIFYICON_VERSION_4;
+    Shell_NotifyIconW(NIM_SETVERSION, &m_nid);
+    return true;
+}
+
+bool TrayIcon::Recreate()
+{
+    if (!m_owner)
+    {
+        return false;
+    }
+    if (m_added)
+    {
+        Shell_NotifyIconW(NIM_DELETE, &m_nid);
+        m_added = false;
+    }
+    m_nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+    wcsncpy_s(m_nid.szTip, m_tip.c_str(), _TRUNCATE);
+    if (!Shell_NotifyIconW(NIM_ADD, &m_nid))
+    {
+        return false;
+    }
+    m_added = true;
     m_nid.uVersion = NOTIFYICON_VERSION_4;
     Shell_NotifyIconW(NIM_SETVERSION, &m_nid);
     return true;
@@ -53,6 +79,11 @@ void TrayIcon::Destroy()
         Shell_NotifyIconW(NIM_DELETE, &m_nid);
         m_added = false;
     }
+}
+
+void TrayIcon::SetClickThroughHotkeyTip(const std::wstring& tip)
+{
+    m_clickThroughTip = tip.empty() ? L"Ctrl+Shift+P" : tip;
 }
 
 void TrayIcon::ShowBalloon(const wchar_t* title, const wchar_t* body)
@@ -82,10 +113,20 @@ void TrayIcon::PopupMenu()
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, static_cast<UINT>(Command::ShowPins), L"显示全部贴图");
     AppendMenuW(menu, MF_STRING, static_cast<UINT>(Command::HidePins), L"隐藏全部贴图");
-    AppendMenuW(menu, MF_STRING, static_cast<UINT>(Command::ClearClickThrough), L"退出贴图穿透");
+    {
+        std::wstring exitThrough = L"退出贴图穿透（";
+        exitThrough += m_clickThroughTip;
+        exitThrough += L"）";
+        AppendMenuW(menu, MF_STRING, static_cast<UINT>(Command::ClearClickThrough), exitThrough.c_str());
+    }
+    AppendMenuW(
+        menu,
+        MF_STRING | (PinManager::Instance().HasLastClosed() ? 0 : MF_GRAYED),
+        static_cast<UINT>(Command::RestoreLastPin),
+        L"恢复最近关闭的贴图");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, static_cast<UINT>(Command::OpenOutputDir), L"打开输出目录");
-    AppendMenuW(menu, MF_STRING, static_cast<UINT>(Command::OpenSettingsDir), L"打开设置目录");
+    AppendMenuW(menu, MF_STRING, static_cast<UINT>(Command::OpenSettingsDir), L"打开设置目录（settings.ini）");
     AppendMenuW(menu, MF_STRING, static_cast<UINT>(Command::About), L"关于");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, static_cast<UINT>(Command::Exit), L"退出");

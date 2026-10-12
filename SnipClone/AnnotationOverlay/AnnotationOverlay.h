@@ -60,8 +60,10 @@ private:
     void RequestClose();
     void Present();
     bool EnsureSurface();
+    bool EnsureSurfaceSize(int w, int h);
     void ReleaseSurface();
     void StampCaptureToDib(const CaptureResult& image);
+    void BlitCaptureToDibAt(const CaptureResult& image, int dstX, int dstY);
 
     CropHit HitCropHandle(POINT client) const;
     void ApplyCropDrag(POINT client);
@@ -70,9 +72,12 @@ private:
     bool ApplyCropFromHistory(RECT cropScreen);
     void SessionUndo();
     void SessionRedo();
-    void PaintCropChrome();
+    void PaintCropChrome(const RECT& hostScreen);
+    void PaintSizeLabel(const RECT& hostScreen, const RECT& cropScreen);
+    void DimOutsideCrop(const RECT& hostScreen, const RECT& cropScreen);
     void UpdateCropCursor(CropHit hit);
     bool IsSelectLikeTool() const;
+    RECT CurrentHostScreen() const;
 
     static constexpr UINT WM_SNIP_CLOSE_SELF = WM_APP + 0x60;
 
@@ -93,6 +98,7 @@ private:
     POINT m_cropDragStart{};
     RECT m_cropDragStartScreen{};
     RECT m_cropPreviewScreen{}; // live rubber-band; committed on mouse-up
+    RECT m_hostScreen{};        // layered window rect while presenting (may exceed crop)
 
     // Layered host is GDI DIB + UpdateLayeredWindow. Scene pixels come from
     // AnnotationRenderer::Compose (WIC) — not a DC render target Clear/Draw path.

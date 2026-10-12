@@ -22,6 +22,12 @@ RECT GetMonitorRectFromCursor();
 // Virtual desktop spanning all monitors (may have negative origin).
 RECT GetVirtualScreenRect();
 
+// Work area (excludes taskbar) for the monitor nearest to `rect`.
+RECT GetMonitorWorkAreaFromRect(const RECT& rect);
+
+// DPI of the monitor nearest to `rect` (Win8.1+ GetDpiForMonitor when available).
+UINT GetDpiForRect(const RECT& rect);
+
 int ScaleForDpi(int value, UINT dpi);
 
 // Normalize two points into a RECT with optional minimum size (inclusive).

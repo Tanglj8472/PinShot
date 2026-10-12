@@ -3,6 +3,8 @@
 //==============================================================================
 #include "DrawStack.h"
 
+#include "../Common/TextLayout.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -192,10 +194,13 @@ D2D1_RECT_F DrawStack::ApproxBounds(const DrawCommand& cmd) const
     }
     if (cmd.kind == ToolKind::Text)
     {
-        // Prefer wider CJK-friendly estimate (~1em per glyph).
-        const float w = (std::max)(40.f, cmd.style.fontSize * 1.05f * static_cast<float>(cmd.text.size() + 1));
-        const float h = cmd.style.fontSize * 1.5f;
-        return D2D1::RectF(cmd.pts[0].x, cmd.pts[0].y, cmd.pts[0].x + w, cmd.pts[0].y + h);
+        // A10: same DirectWrite metrics as renderer selection chrome / draw.
+        const TextExtent ext = MeasureAnnotationText(cmd.text, cmd.style);
+        return D2D1::RectF(
+            cmd.pts[0].x,
+            cmd.pts[0].y,
+            cmd.pts[0].x + ext.width,
+            cmd.pts[0].y + ext.height);
     }
     float minX = cmd.pts[0].x, maxX = cmd.pts[0].x;
     float minY = cmd.pts[0].y, maxY = cmd.pts[0].y;

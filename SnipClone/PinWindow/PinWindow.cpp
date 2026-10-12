@@ -253,11 +253,16 @@ void PinWindow::ShowContextMenu(POINT screen)
     AppendMenuW(opacity, MF_STRING, IDM_OPACITY_50, L"50%");
     AppendMenuW(opacity, MF_STRING, IDM_OPACITY_25, L"25%");
     AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(opacity), L"透明度");
-    AppendMenuW(
-        menu,
-        MF_STRING | (m_clickThrough ? MF_CHECKED : 0),
-        IDM_CLICK_THROUGH,
-        L"鼠标穿透（Ctrl+Shift+P 退出）");
+    {
+        std::wstring through = L"鼠标穿透（";
+        through += AppSettings::FormatHotkey(LiveSettings().pins);
+        through += L" 退出）";
+        AppendMenuW(
+            menu,
+            MF_STRING | (m_clickThrough ? MF_CHECKED : 0),
+            IDM_CLICK_THROUGH,
+            through.c_str());
+    }
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, IDM_HIDE_ALL, L"隐藏全部贴图");
     AppendMenuW(menu, MF_STRING, IDM_SHOW_ALL, L"显示全部贴图");
