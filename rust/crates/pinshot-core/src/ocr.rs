@@ -532,9 +532,11 @@ fn translate_join_space(prev: Option<char>, next: Option<char>) -> bool {
 }
 
 fn ends_sentence(s: &str) -> bool {
+    // Wikipedia lines often end `sentence.[21]`. Skip the trailing cite
+    // so wrap-join does not glue the next paragraph onto this one.
     s.chars()
         .rev()
-        .find(|c| !c.is_whitespace())
+        .find(|c| !c.is_whitespace() && !is_bracket(*c) && !c.is_ascii_digit())
         .is_some_and(|c| matches!(c, '.' | '!' | '?' | '。' | '！' | '？' | '…'))
 }
 
@@ -1197,6 +1199,15 @@ mod tests {
         assert!(
             sel.contains("LLVM.\n官方"),
             "sentence end stays a paragraph break, got {sel:?}"
+        );
+        let cited = page_from_blocks(vec![
+            (quad(0, 0, 200, 16), "targeting LLVM.[21]".into()),
+            (quad(0, 22, 200, 38), "The early 2010s saw".into()),
+        ]);
+        let cited_sel = selected_text(&cited.tokens, 0, cited.tokens.len() - 1);
+        assert!(
+            cited_sel.contains("LLVM.[21]\nThe early"),
+            "cite after period is still a paragraph break, got {cited_sel:?}"
         );
         let wrap = page_from_blocks(vec![
             (quad(0, 0, 80, 16), "編譯".into()),
