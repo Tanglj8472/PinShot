@@ -16,7 +16,7 @@ HEAD 在 `rust`（用户提交 `ed59e0f` 之后本轮继续）。对照 Python/`
 | 文字快打 `hello world` + Ctrl+Enter、Ctrl+C PNG、prefs、`,` `.` 历史 | 实机过 |
 | 重启后 R 套在**当前截图**的上次选区、Tab 不漏到 Chrome | 实机过 |
 | pin 光标锚缩放（不切工作区）、菜单高度、Esc 只关菜单、穿透勾选 | 实机过 |
-| Linux 滚轮每格两次 | **已修**：`WheelGate` 40ms 同号去重并规范为 ±120。overlay 改宽与 pin 缩放 / Ctrl 透明度共用。单元测试：10ms 副本丢、50ms 保留、变号立即保留、3 格间隔 + 副本 → 线宽 3→6 |
+| Linux 滚轮每格两次 | **已修**（Xvfb `:22` 15/15）：3 格 → 3 次 `overlay wheel`，线宽 3→6；4 格缩放 → 4 次 `pin zoom`（不再 8 步） |
 | 工具栏子面板 | Fill/Outline、Solid/Dash/Dot、B/I/Outline、马赛克 Brush/Rect/Blur；当前色块 → zenity `--color-selection` |
 | Esc 放弃确认 | overlay 内 Y/N /「不再提示」（不再 zenity 抢抓键） |
 | pin 阴影 / 缩略图 | 合成器在则默认阴影 M=12；菜单可勾 Shadow；Shift+双击 72px 中心裁切；写入 session |
@@ -146,7 +146,7 @@ HEAD 在 `rust`（用户提交 `ed59e0f` 之后本轮继续）。对照 Python/`
 | `ed59e0f` | 用户：overlay 用共享 `toggle_tool` |
 | `7c406a6` | 用户：单击再点同一工具取消；语言标签回归测试 |
 | `a6d6765` | 用户：Windows 设置事件循环 + 截图焦点 |
-| （本轮） | `WheelGate` 去双倍滚轮；Fill/Dash/Dot 子面板；overlay 内 ConfirmAbort；pin 阴影/缩略；zenity 自定义色；画笔 8ms poll |
+| `7d5ebb7` / `c344764` | `WheelGate` 去双倍滚轮；Fill/Dash/Dot 子面板；overlay 内 ConfirmAbort；pin 阴影/缩略；zenity 自定义色；画笔 8ms poll |
 
 ### `7ef18fe` 实机（Xfce/xfwm4，2026-10-12 08:33 UTC+8）
 
@@ -276,7 +276,22 @@ HEAD 在 `rust`（用户提交 `ed59e0f` 之后本轮继续）。对照 Python/`
 1. **Windows 实机 + 放出 exe**：在真机复测 overlay/pin/热键/剪贴板，CI 已绿的 `pinshot.exe` 再打一版。
 2. **PARITY 剩余**：字体家族下拉、像素级 hit、无 a11y 时控件框、pin 分组改名。
 
-验证约定：Linux 改动必须在 **Xvfb + xfwm4 + xdotool**（以及有桌面时的 `:1` Xfce）上做焦点/按键/菜单回归。本轮用 `type --delay 20`、两步快拖、连续滚轮格。
+验证约定：Linux 改动必须在 **Xvfb + xfwm4 + xdotool**（以及有桌面时的 `:1` Xfce）上做焦点/按键/菜单回归。本轮用 `type --delay 20`、两步快拖、连续滚轮格（间隔 80ms > 门控 40ms）。
+
+### Xvfb `c344764` 双倍滚轮 + PARITY（`:22` 1920×1200 + xfwm4，实机节拍）
+
+脚本 `/tmp/pinshot-wheel-verify.sh`。`pass=15 fail=0`。
+
+| 检查 | 结果 |
+|---|---|
+| 3 格滚轮改宽 | PASS（3 条 `overlay wheel +120`，width 3→4→5→6，不是 3→9） |
+| 4 格 pin 缩放 | PASS（4 条 `pin zoom`，560×460→382×314，锚随指针） |
+| Fill 芯片 | PASS（`tb Fill(true)`） |
+| Esc ConfirmAbort | PASS（`confirm abort shown`；N 留下 overlay；Y 放弃） |
+| 菜单含 Shadow | PASS（`pin menu 268x794`，比无 Shadow 的 772 多一行） |
+| Esc 只关菜单 | PASS |
+
+工件：`/opt/cursor/artifacts/wheel-verify/`。
 
 ### Xvfb `876fc4f` 六项（实机节拍，`:21` 1920×1200 + xfwm4）
 
