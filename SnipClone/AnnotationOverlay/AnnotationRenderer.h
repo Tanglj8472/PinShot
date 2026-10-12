@@ -1,0 +1,76 @@
+//==============================================================================
+// SnipClone — D2D annotation renderer
+//==============================================================================
+#pragma once
+
+#include "../Capture/CaptureResult.h"
+#include "DrawCommand.h"
+#include "DrawStack.h"
+
+#include <d2d1.h>
+#include <dwrite.h>
+#include <wincodec.h>
+
+namespace snip
+{
+
+class AnnotationRenderer
+{
+public:
+    AnnotationRenderer() = default;
+    ~AnnotationRenderer();
+
+    AnnotationRenderer(const AnnotationRenderer&) = delete;
+    AnnotationRenderer& operator=(const AnnotationRenderer&) = delete;
+
+    bool Initialize();
+    void Shutdown();
+
+    // includeSelectionChrome: blue select outline (preview only — never export).
+    // includeLive: in-progress stroke / preview overlays (export after Finish() is empty).
+    void DrawScene(
+        ID2D1RenderTarget* rt,
+        ID2D1Bitmap* baseBitmap,
+        const CaptureResult* basePixels,
+        const DrawStack& stack,
+        bool includeSelectionChrome = true,
+        bool includeLive = true);
+
+    CaptureResult Compose(
+        const CaptureResult& base,
+        const DrawStack& stack,
+        bool includeSelectionChrome = true,
+        bool includeLive = true);
+
+    ID2D1Bitmap* CreateBitmapFromCapture(ID2D1RenderTarget* rt, const CaptureResult& image);
+
+    ID2D1Factory* Factory() const { return m_factory; }
+
+private:
+    void EnsureBrushes(ID2D1RenderTarget* rt);
+    void DrawCommandOn(
+        ID2D1RenderTarget* rt,
+        ID2D1Bitmap* baseBitmap,
+        const CaptureResult* basePixels,
+        const DrawCommand& cmd,
+        bool preview);
+    void DrawArrowHead(ID2D1RenderTarget* rt, D2D1_POINT_2F from, D2D1_POINT_2F to, const DrawStyle& style);
+    void DrawTextCmd(ID2D1RenderTarget* rt, const DrawCommand& cmd);
+    void DrawMosaic(
+        ID2D1RenderTarget* rt,
+        ID2D1Bitmap* baseBitmap,
+        const CaptureResult* basePixels,
+        const DrawCommand& cmd);
+    void DrawEraser(
+        ID2D1RenderTarget* rt,
+        ID2D1Bitmap* baseBitmap,
+        const CaptureResult* basePixels,
+        const DrawCommand& cmd);
+
+    ID2D1Factory* m_factory = nullptr;
+    IDWriteFactory* m_dwrite = nullptr;
+    IWICImagingFactory* m_wic = nullptr;
+    ID2D1SolidColorBrush* m_brush = nullptr;
+};
+
+} // namespace snip
