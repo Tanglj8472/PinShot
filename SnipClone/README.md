@@ -11,6 +11,8 @@
 
 基于 `62bd2f2` 的架构、界面与产品评审及三批改正方案见 [`docs/ARCHITECTURE_UI_PRODUCT_REVIEW.md`](docs/ARCHITECTURE_UI_PRODUCT_REVIEW.md)，包含源码证据、验证边界和验收要求。
 
+基于 `e07c5d8` 的 Snipaste 产品、UI 与新手体验对比及后续改进方案见 [`docs/PRODUCT_UI_UX_IMPROVEMENT_PLAN.md`](docs/PRODUCT_UI_UX_IMPROVEMENT_PLAN.md)，重点覆盖标注二次编辑、可视化设置、贴图继续编辑与分阶段验收。
+
 **版本 0.2.0** · Windows 10 x64 · 解压运行 `SnipClone.exe`
 
 ## 当前进度
