@@ -59,8 +59,15 @@ void DrawStack::SetTool(ToolKind tool)
 
 void DrawStack::ClearSelection()
 {
+    if (m_selected < 0 && !m_movingSelection && !m_resizingSelection)
+    {
+        return;
+    }
     m_selected = -1;
     m_movingSelection = false;
+    m_resizingSelection = false;
+    m_resizeHandle = 0;
+    Notify();
 }
 
 DrawStyle& DrawStack::MutableStyle(ToolKind tool)
@@ -90,6 +97,37 @@ DrawStyle* DrawStack::ActiveStyle()
         return nullptr;
     }
     return &MutableStyle(m_tool);
+}
+
+DrawStyle* DrawStack::EditTargetStyle()
+{
+    if (m_selected >= 0 && m_selected < static_cast<int>(m_shapes.size()))
+    {
+        return &m_shapes[static_cast<size_t>(m_selected)].style;
+    }
+    return ActiveStyle();
+}
+
+const DrawStyle* DrawStack::EditTargetStyle() const
+{
+    if (m_selected >= 0 && m_selected < static_cast<int>(m_shapes.size()))
+    {
+        return &m_shapes[static_cast<size_t>(m_selected)].style;
+    }
+    if (m_tool == ToolKind::None || m_tool == ToolKind::Select)
+    {
+        return nullptr;
+    }
+    return &Style(m_tool);
+}
+
+ToolKind DrawStack::EditTargetKind() const
+{
+    if (m_selected >= 0 && m_selected < static_cast<int>(m_shapes.size()))
+    {
+        return m_shapes[static_cast<size_t>(m_selected)].kind;
+    }
+    return m_tool;
 }
 
 void DrawStack::Notify()
@@ -228,7 +266,7 @@ bool DrawStack::HitShape(const DrawCommand& cmd, D2D1_POINT_2F pt) const
         const auto b = ApproxBounds(cmd);
         return pt.x >= b.left && pt.x <= b.right && pt.y >= b.top && pt.y <= b.bottom;
     }
-    if (cmd.kind == ToolKind::Pen || cmd.kind == ToolKind::Mosaic)
+    if (cmd.kind == ToolKind::Pen)
     {
         return DistPointPolyline(pt, cmd.pts) <= tol;
     }
@@ -236,13 +274,14 @@ bool DrawStack::HitShape(const DrawCommand& cmd, D2D1_POINT_2F pt) const
     {
         return DistPointSeg(pt, cmd.pts.front(), cmd.pts.back()) <= tol;
     }
-    if (cmd.kind == ToolKind::Rect && cmd.pts.size() >= 2)
+    // Mosaic is drawn as a filled AABB (two corners) — hit the full rect, not the diagonal.
+    if ((cmd.kind == ToolKind::Rect || cmd.kind == ToolKind::Mosaic) && cmd.pts.size() >= 2)
     {
         const float l = (std::min)(cmd.pts[0].x, cmd.pts[1].x);
         const float r = (std::max)(cmd.pts[0].x, cmd.pts[1].x);
         const float t = (std::min)(cmd.pts[0].y, cmd.pts[1].y);
         const float b = (std::max)(cmd.pts[0].y, cmd.pts[1].y);
-        if (cmd.style.filled)
+        if (cmd.kind == ToolKind::Mosaic || cmd.style.filled)
         {
             return pt.x >= l && pt.x <= r && pt.y >= t && pt.y <= b;
         }
@@ -659,8 +698,22 @@ void DrawStack::Release(D2D1_POINT_2F pt)
 
 void DrawStack::AdjustWidth(int delta)
 {
+    const ToolKind kind = EditTargetKind();
+    if (kind == ToolKind::Text || kind == ToolKind::Mosaic || kind == ToolKind::None ||
+        kind == ToolKind::Select)
+    {
+        return;
+    }
+    if (m_selected >= 0 && m_selected < static_cast<int>(m_shapes.size()))
+    {
+        PushUndoSnapshot();
+        auto& st = m_shapes[static_cast<size_t>(m_selected)].style;
+        st.width = (std::max)(1.f, (std::min)(40.f, st.width + static_cast<float>(delta)));
+        Notify();
+        return;
+    }
     auto* st = ActiveStyle();
-    if (!st || m_tool == ToolKind::Text || m_tool == ToolKind::Mosaic)
+    if (!st)
     {
         return;
     }
@@ -674,13 +727,32 @@ void DrawStack::AdjustWidth(int delta)
 
 void DrawStack::AdjustFontSize(int delta)
 {
+    const float step = static_cast<float>(delta) * 2.f;
+    if (m_selected >= 0 && m_selected < static_cast<int>(m_shapes.size()) &&
+        m_shapes[static_cast<size_t>(m_selected)].kind == ToolKind::Text)
+    {
+        PushUndoSnapshot();
+        auto& st = m_shapes[static_cast<size_t>(m_selected)].style;
+        st.fontSize = (std::max)(8.f, (std::min)(120.f, st.fontSize + step));
+        Notify();
+        return;
+    }
     auto& st = MutableStyle(ToolKind::Text);
-    st.fontSize = (std::max)(8.f, (std::min)(120.f, st.fontSize + static_cast<float>(delta) * 2.f));
+    st.fontSize = (std::max)(8.f, (std::min)(120.f, st.fontSize + step));
     Notify();
 }
 
 void DrawStack::AdjustMosaicSize(int delta)
 {
+    if (m_selected >= 0 && m_selected < static_cast<int>(m_shapes.size()) &&
+        m_shapes[static_cast<size_t>(m_selected)].kind == ToolKind::Mosaic)
+    {
+        PushUndoSnapshot();
+        auto& st = m_shapes[static_cast<size_t>(m_selected)].style;
+        st.mosaicSize = (std::max)(2, (std::min)(40, st.mosaicSize + delta));
+        Notify();
+        return;
+    }
     auto& st = MutableStyle(ToolKind::Mosaic);
     st.mosaicSize = (std::max)(2, (std::min)(40, st.mosaicSize + delta));
     if (m_live.has && m_live.cmd.kind == ToolKind::Mosaic)
@@ -708,6 +780,14 @@ void DrawStack::SetColorIndex(int index)
 void DrawStack::SetColorRgb(float r, float g, float b)
 {
     const D2D1_COLOR_F c = D2D1::ColorF(r, g, b, 1.f);
+    if (m_selected >= 0 && m_selected < static_cast<int>(m_shapes.size()) &&
+        ToolUsesColor(m_shapes[static_cast<size_t>(m_selected)].kind))
+    {
+        PushUndoSnapshot();
+        m_shapes[static_cast<size_t>(m_selected)].style.color = c;
+        Notify();
+        return;
+    }
     for (ToolKind k : { ToolKind::Pen, ToolKind::Rect, ToolKind::Ellipse, ToolKind::Arrow, ToolKind::Text })
     {
         MutableStyle(k).color = c;
@@ -721,6 +801,15 @@ void DrawStack::SetColorRgb(float r, float g, float b)
 
 void DrawStack::ToggleBold()
 {
+    if (m_selected >= 0 && m_selected < static_cast<int>(m_shapes.size()) &&
+        m_shapes[static_cast<size_t>(m_selected)].kind == ToolKind::Text)
+    {
+        PushUndoSnapshot();
+        auto& st = m_shapes[static_cast<size_t>(m_selected)].style;
+        st.bold = !st.bold;
+        Notify();
+        return;
+    }
     auto& st = MutableStyle(ToolKind::Text);
     st.bold = !st.bold;
     Notify();
@@ -728,6 +817,15 @@ void DrawStack::ToggleBold()
 
 void DrawStack::ToggleItalic()
 {
+    if (m_selected >= 0 && m_selected < static_cast<int>(m_shapes.size()) &&
+        m_shapes[static_cast<size_t>(m_selected)].kind == ToolKind::Text)
+    {
+        PushUndoSnapshot();
+        auto& st = m_shapes[static_cast<size_t>(m_selected)].style;
+        st.italic = !st.italic;
+        Notify();
+        return;
+    }
     auto& st = MutableStyle(ToolKind::Text);
     st.italic = !st.italic;
     Notify();
@@ -735,6 +833,15 @@ void DrawStack::ToggleItalic()
 
 void DrawStack::ToggleOutline()
 {
+    if (m_selected >= 0 && m_selected < static_cast<int>(m_shapes.size()) &&
+        m_shapes[static_cast<size_t>(m_selected)].kind == ToolKind::Text)
+    {
+        PushUndoSnapshot();
+        auto& st = m_shapes[static_cast<size_t>(m_selected)].style;
+        st.outline = !st.outline;
+        Notify();
+        return;
+    }
     auto& st = MutableStyle(ToolKind::Text);
     st.outline = !st.outline;
     Notify();
@@ -742,6 +849,15 @@ void DrawStack::ToggleOutline()
 
 void DrawStack::ToggleFilled()
 {
+    if (m_selected >= 0 && m_selected < static_cast<int>(m_shapes.size()) &&
+        ToolUsesFill(m_shapes[static_cast<size_t>(m_selected)].kind))
+    {
+        PushUndoSnapshot();
+        auto& st = m_shapes[static_cast<size_t>(m_selected)].style;
+        st.filled = !st.filled;
+        Notify();
+        return;
+    }
     auto& rect = MutableStyle(ToolKind::Rect);
     rect.filled = !rect.filled;
     MutableStyle(ToolKind::Ellipse).filled = rect.filled;
@@ -750,6 +866,21 @@ void DrawStack::ToggleFilled()
         m_live.cmd.style.filled = rect.filled;
     }
     Notify();
+}
+
+bool DrawStack::DuplicateSelected()
+{
+    if (m_selected < 0 || m_selected >= static_cast<int>(m_shapes.size()))
+    {
+        return false;
+    }
+    PushUndoSnapshot();
+    DrawCommand copy = m_shapes[static_cast<size_t>(m_selected)];
+    TranslateShape(copy, 8.f, 8.f);
+    m_shapes.push_back(std::move(copy));
+    m_selected = static_cast<int>(m_shapes.size()) - 1;
+    Notify();
+    return true;
 }
 
 bool DrawStack::Undo(RECT* outCrop, bool* outHasCrop)

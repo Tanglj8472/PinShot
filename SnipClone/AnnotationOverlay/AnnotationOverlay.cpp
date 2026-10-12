@@ -412,6 +412,37 @@ LRESULT AnnotationOverlay::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         }
         if (wParam == VK_ESCAPE)
         {
+            // M1 graded Esc: cancel crop drag → clear selection → Select tool → close.
+            if (m_cropDrag != CropHit::None)
+            {
+                m_cropDrag = CropHit::None;
+                m_cropPreviewScreen = {};
+                if (GetCapture() == hwnd)
+                {
+                    ReleaseCapture();
+                }
+                RequestPresent();
+                return 0;
+            }
+            if (m_ann.SelectedIndex() >= 0)
+            {
+                m_ann.ClearSelection();
+                if (m_toolbar)
+                {
+                    m_toolbar->SyncFromAnnotator();
+                }
+                RequestPresent();
+                return 0;
+            }
+            if (m_ann.Tool() != ToolKind::Select && m_ann.Tool() != ToolKind::None)
+            {
+                m_ann.SetTool(ToolKind::Select);
+                if (m_toolbar)
+                {
+                    m_toolbar->SyncFromAnnotator();
+                }
+                return 0;
+            }
             RequestClose();
             return 0;
         }
@@ -434,6 +465,14 @@ LRESULT AnnotationOverlay::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         if (wParam == 'Y' && (GetKeyState(VK_CONTROL) & 0x8000))
         {
             SessionRedo();
+            return 0;
+        }
+        if (wParam == 'D' && (GetKeyState(VK_CONTROL) & 0x8000))
+        {
+            if (m_ann.DuplicateSelected() && m_toolbar)
+            {
+                m_toolbar->SyncFromAnnotator();
+            }
             return 0;
         }
         if (wParam == 'C' && (GetKeyState(VK_CONTROL) & 0x8000))
@@ -498,33 +537,29 @@ LRESULT AnnotationOverlay::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
                 }
                 return 0;
             case '1':
-                if (m_ann.Tool() == ToolKind::Text)
-                {
-                    m_ann.AdjustFontSize(-1);
-                    if (m_textEditor && m_textEditor->IsOpen())
-                    {
-                        m_textEditor->ApplyStyle(m_ann.Style(ToolKind::Text));
-                    }
-                }
-                else if (m_ann.Tool() == ToolKind::Mosaic)
-                    m_ann.AdjustMosaicSize(-1);
-                else
-                    m_ann.AdjustWidth(-1);
-                return 0;
             case '2':
-                if (m_ann.Tool() == ToolKind::Text)
+            {
+                const int delta = (wParam == '1') ? -1 : +1;
+                const ToolKind kind = m_ann.EditTargetKind();
+                if (kind == ToolKind::Text)
                 {
-                    m_ann.AdjustFontSize(+1);
+                    m_ann.AdjustFontSize(delta);
                     if (m_textEditor && m_textEditor->IsOpen())
                     {
-                        m_textEditor->ApplyStyle(m_ann.Style(ToolKind::Text));
+                        const DrawStyle* st = m_ann.EditTargetStyle();
+                        m_textEditor->ApplyStyle(st ? *st : m_ann.Style(ToolKind::Text));
                     }
                 }
-                else if (m_ann.Tool() == ToolKind::Mosaic)
-                    m_ann.AdjustMosaicSize(+1);
+                else if (kind == ToolKind::Mosaic)
+                    m_ann.AdjustMosaicSize(delta);
                 else
-                    m_ann.AdjustWidth(+1);
+                    m_ann.AdjustWidth(delta);
+                if (m_toolbar)
+                {
+                    m_toolbar->SyncFromAnnotator();
+                }
                 return 0;
+            }
             default:
                 break;
             }
@@ -571,33 +606,49 @@ void AnnotationOverlay::OnToolbarAction(ToolbarAction action, ToolKind /*tool*/)
         SessionRedo();
         break;
     case ToolbarAction::WidthDec:
-        if (m_ann.Tool() == ToolKind::Text)
+    {
+        const ToolKind kind = m_ann.EditTargetKind();
+        if (kind == ToolKind::Text)
         {
             m_ann.AdjustFontSize(-1);
             if (m_textEditor && m_textEditor->IsOpen())
             {
-                m_textEditor->ApplyStyle(m_ann.Style(ToolKind::Text));
+                const DrawStyle* st = m_ann.EditTargetStyle();
+                m_textEditor->ApplyStyle(st ? *st : m_ann.Style(ToolKind::Text));
             }
         }
-        else if (m_ann.Tool() == ToolKind::Mosaic)
+        else if (kind == ToolKind::Mosaic)
             m_ann.AdjustMosaicSize(-1);
         else
             m_ann.AdjustWidth(-1);
+        if (m_toolbar)
+        {
+            m_toolbar->SyncFromAnnotator();
+        }
         break;
+    }
     case ToolbarAction::WidthInc:
-        if (m_ann.Tool() == ToolKind::Text)
+    {
+        const ToolKind kind = m_ann.EditTargetKind();
+        if (kind == ToolKind::Text)
         {
             m_ann.AdjustFontSize(+1);
             if (m_textEditor && m_textEditor->IsOpen())
             {
-                m_textEditor->ApplyStyle(m_ann.Style(ToolKind::Text));
+                const DrawStyle* st = m_ann.EditTargetStyle();
+                m_textEditor->ApplyStyle(st ? *st : m_ann.Style(ToolKind::Text));
             }
         }
-        else if (m_ann.Tool() == ToolKind::Mosaic)
+        else if (kind == ToolKind::Mosaic)
             m_ann.AdjustMosaicSize(+1);
         else
             m_ann.AdjustWidth(+1);
+        if (m_toolbar)
+        {
+            m_toolbar->SyncFromAnnotator();
+        }
         break;
+    }
     case ToolbarAction::ColorCycle:
         m_ann.CycleColor();
         if (m_textEditor && m_textEditor->IsOpen())

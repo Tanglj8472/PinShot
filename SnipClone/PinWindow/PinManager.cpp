@@ -131,8 +131,8 @@ bool PinManager::RestoreLastClosed(HINSTANCE instance)
     {
         return false;
     }
-    PinSnapshot snap = std::move(m_closedStack.back());
-    m_closedStack.pop_back();
+    // Pop only after successful create — failed restore must not consume history (M1).
+    PinSnapshot snap = m_closedStack.back();
 
     auto* pin = new PinWindow();
     if (!pin->CreateFromSnapshot(instance, std::move(snap)))
@@ -140,6 +140,7 @@ bool PinManager::RestoreLastClosed(HINSTANCE instance)
         delete pin;
         return false;
     }
+    m_closedStack.pop_back();
     m_pins.push_back(pin);
     if (m_hidden)
     {

@@ -125,6 +125,7 @@ void TrayIcon::PopupMenu()
         static_cast<UINT>(Command::RestoreLastPin),
         L"恢复最近关闭的贴图");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING, static_cast<UINT>(Command::Settings), L"设置…");
     AppendMenuW(menu, MF_STRING, static_cast<UINT>(Command::OpenOutputDir), L"打开输出目录");
     AppendMenuW(menu, MF_STRING, static_cast<UINT>(Command::OpenSettingsDir), L"打开设置目录（settings.ini）");
     AppendMenuW(menu, MF_STRING, static_cast<UINT>(Command::About), L"关于");
@@ -160,7 +161,8 @@ bool TrayIcon::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam)
         PopupMenu();
         return true;
     }
-    if (notify == WM_LBUTTONDBLCLK)
+    // M1 / Snipaste-like: single click starts snip (dblclick kept as alias).
+    if (notify == WM_LBUTTONUP || notify == WM_LBUTTONDBLCLK)
     {
         if (m_onCommand)
         {

@@ -185,6 +185,7 @@
     <ClCompile Include="Common\WinHelper.cpp" />
     <ClCompile Include="Common\ImageUtil.cpp" />
     <ClCompile Include="Common\AppSettings.cpp" />
+    <ClCompile Include="Common\SettingsDialog.cpp" />
     <ClCompile Include="Common\TrayIcon.cpp" />
     <ClCompile Include="SelectionOverlay\SelectionOverlay.cpp" />
     <ClCompile Include="Capture\ScreenCapture.cpp" />
@@ -206,6 +207,7 @@
     <ClInclude Include="Common\WinHelper.h" />
     <ClInclude Include="Common\ImageUtil.h" />
     <ClInclude Include="Common\AppSettings.h" />
+    <ClInclude Include="Common\SettingsDialog.h" />
     <ClInclude Include="Common\SingleInstance.h" />
     <ClInclude Include="Common\TrayIcon.h" />
     <ClInclude Include="Hotkey\GlobalHotkey.h" />

@@ -31,6 +31,10 @@
 | 贴图恢复栈 (A12) | 已实现 | — | 待验证 | |
 | 托盘 TaskbarCreated / 静态 CRT (A13) | 已实现 | CI 构建 | 待验证 | Release `/MT` |
 | `--smoke` 契约 (A14) | 已实现 | CI | — | exit 0/1/2/3 见 RELEASE |
+| 选中对象改色/线宽 (M1 E01) | 已实现 | 自动验证通过 | 待验证 | `TestStyleEditsSelected` |
+| 马赛克矩形命中 (M1 E02) | 已实现 | 自动验证通过 | 待验证 | `TestMosaicHitRect` |
+| 可视化设置热键/目录 (M1) | 已实现 | — | 待验证 | 托盘「设置…」；smoke 不弹冲突框 |
+| Esc 分级退出 (M1) | 已实现 | — | 待验证 | 取消裁切→清选择→Select→关闭 |
 
 ## Smoke 退出码
 

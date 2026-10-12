@@ -34,6 +34,12 @@
     <ClCompile Include="Common\DpiHelper.cpp"><Filter>Common</Filter></ClCompile>
     <ClCompile Include="Common\WinHelper.cpp"><Filter>Common</Filter></ClCompile>
     <ClCompile Include="Common\ImageUtil.cpp"><Filter>Common</Filter></ClCompile>
+    <ClCompile Include="Common\AppSettings.cpp"><Filter>Common</Filter></ClCompile>
+    <ClCompile Include="Common\SettingsDialog.cpp"><Filter>Common</Filter></ClCompile>
+    <ClCompile Include="Common\TrayIcon.cpp"><Filter>Common</Filter></ClCompile>
+    <ClCompile Include="Common\TextLayout.cpp"><Filter>Common</Filter></ClCompile>
+    <ClCompile Include="FloatingToolbar\StylePanel.cpp"><Filter>FloatingToolbar</Filter></ClCompile>
+    <ClCompile Include="FloatingToolbar\ToolIcons.cpp"><Filter>FloatingToolbar</Filter></ClCompile>
     <ClCompile Include="SelectionOverlay\SelectionOverlay.cpp"><Filter>SelectionOverlay</Filter></ClCompile>
     <ClCompile Include="Capture\ScreenCapture.cpp"><Filter>Capture</Filter></ClCompile>
     <ClCompile Include="AnnotationOverlay\DrawStack.cpp"><Filter>AnnotationOverlay</Filter></ClCompile>

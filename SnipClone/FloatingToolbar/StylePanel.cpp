@@ -9,6 +9,7 @@
 
 #include <windowsx.h>
 
+#include <cmath>
 #include <string>
 
 #pragma comment(lib, "d2d1.lib")
@@ -104,6 +105,30 @@ void StylePanel::Destroy()
     }
 }
 
+namespace
+{
+const wchar_t* StyleKindLabel(ToolKind k)
+{
+    switch (k)
+    {
+    case ToolKind::Pen:
+        return L"画笔";
+    case ToolKind::Rect:
+        return L"矩形";
+    case ToolKind::Ellipse:
+        return L"椭圆";
+    case ToolKind::Arrow:
+        return L"箭头";
+    case ToolKind::Text:
+        return L"文字";
+    case ToolKind::Mosaic:
+        return L"马赛克";
+    default:
+        return L"对象";
+    }
+}
+} // namespace
+
 void StylePanel::RebuildForTool(ToolKind tool)
 {
     m_tool = tool;
@@ -117,66 +142,115 @@ void StylePanel::RebuildForTool(ToolKind tool)
         m_buttons.push_back(b);
     };
 
-    if (tool == ToolKind::None || tool == ToolKind::Select)
+    auto addStyleControls = [&](ToolKind kind, bool selectedTarget) {
+        ToolButton ctx;
+        ctx.action = ToolbarAction::None;
+        ctx.id = L"ctx";
+        ctx.tip = selectedTarget
+                      ? (std::wstring(StyleKindLabel(kind)) + L" · 已选中")
+                      : (std::wstring(StyleKindLabel(kind)) + L" · 新建样式");
+        m_buttons.push_back(ctx);
+
+        if (kind == ToolKind::Rect || kind == ToolKind::Ellipse)
+        {
+            addAct(ToolbarAction::ToggleFill, L"fill", L"填充 / 描边 (F)");
+        }
+        if (kind == ToolKind::Text)
+        {
+            addAct(ToolbarAction::WidthDec, L"A-", L"字号减 (1)");
+            addAct(ToolbarAction::WidthInc, L"A+", L"字号加 (2)");
+            ToolButton val;
+            val.action = ToolbarAction::None;
+            val.id = L"fv";
+            val.tip = L"字号";
+            m_buttons.push_back(val);
+            addAct(ToolbarAction::Bold, L"B", L"粗体");
+            addAct(ToolbarAction::Italic, L"I", L"斜体");
+            addAct(ToolbarAction::Outline, L"OL", L"描边");
+        }
+        else if (kind == ToolKind::Mosaic)
+        {
+            addAct(ToolbarAction::WidthDec, L"w-", L"颗粒减小 (1)");
+            addAct(ToolbarAction::WidthInc, L"w+", L"颗粒增大 (2)");
+            ToolButton val;
+            val.action = ToolbarAction::None;
+            val.id = L"mv";
+            val.tip = L"颗粒大小";
+            m_buttons.push_back(val);
+        }
+        else if (kind != ToolKind::None && kind != ToolKind::Select && kind != ToolKind::Eraser)
+        {
+            addAct(ToolbarAction::WidthDec, L"w-", L"线宽减 (1)");
+            addAct(ToolbarAction::WidthInc, L"w+", L"线宽加 (2)");
+            ToolButton val;
+            val.action = ToolbarAction::None;
+            val.id = L"wv";
+            val.tip = L"线宽";
+            m_buttons.push_back(val);
+        }
+        else if (kind == ToolKind::Eraser)
+        {
+            addAct(ToolbarAction::WidthDec, L"w-", L"橡皮减小 (1)");
+            addAct(ToolbarAction::WidthInc, L"w+", L"橡皮增大 (2)");
+            ToolButton val;
+            val.action = ToolbarAction::None;
+            val.id = L"wv";
+            val.tip = L"橡皮大小";
+            m_buttons.push_back(val);
+        }
+
+        if (ToolUsesColor(kind))
+        {
+            ToolButton cur;
+            cur.action = ToolbarAction::ColorCycle;
+            cur.id = L"cur";
+            cur.tip = L"自定义颜色";
+            cur.colorIndex = -2;
+            m_buttons.push_back(cur);
+
+            for (int i = 0; i < kPaletteCount; ++i)
+            {
+                ToolButton b;
+                b.action = ToolbarAction::SetColor;
+                b.colorIndex = i;
+                b.id = L"c" + std::to_wstring(i);
+                b.tip = L"颜色";
+                m_buttons.push_back(b);
+            }
+        }
+    };
+
+    if (tool == ToolKind::None)
     {
-        ToolButton hint;
-        hint.action = ToolbarAction::None;
-        hint.id = (tool == ToolKind::Select) ? L"Drag · Del · dbl-click text" : L"";
-        hint.tip = L"";
-        m_buttons.push_back(hint);
         LayoutButtons();
         ResizeToContent();
         SyncFromAnnotator();
         return;
     }
 
-    if (tool == ToolKind::Rect || tool == ToolKind::Ellipse)
+    if (tool == ToolKind::Select)
     {
-        addAct(ToolbarAction::ToggleFill, L"fill", L"填充 / 描边 (F)");
-    }
-    if (tool != ToolKind::Text)
-    {
-        addAct(ToolbarAction::WidthDec, L"w-", L"线宽减 (1)");
-        addAct(ToolbarAction::WidthInc, L"w+", L"线宽加 (2)");
-        ToolButton val;
-        val.action = ToolbarAction::None;
-        val.id = L"wv"; // width value readout
-        val.tip = L"当前线宽";
-        m_buttons.push_back(val);
-    }
-    else
-    {
-        addAct(ToolbarAction::WidthDec, L"A-", L"字号减 (1)");
-        addAct(ToolbarAction::WidthInc, L"A+", L"字号加 (2)");
-        ToolButton val;
-        val.action = ToolbarAction::None;
-        val.id = L"fv"; // font value readout
-        val.tip = L"当前字号";
-        m_buttons.push_back(val);
-        addAct(ToolbarAction::Bold, L"B", L"粗体");
-        addAct(ToolbarAction::Italic, L"I", L"斜体");
-        addAct(ToolbarAction::Outline, L"OL", L"描边");
-    }
-
-    if (ToolUsesColor(tool))
-    {
-        ToolButton cur;
-        cur.action = ToolbarAction::ColorCycle; // opens custom via click handler special
-        cur.id = L"cur";
-        cur.tip = L"Custom color";
-        cur.colorIndex = -2; // marker: current / custom
-        m_buttons.push_back(cur);
-
-        for (int i = 0; i < kPaletteCount; ++i)
+        const int sel = m_ann ? m_ann->SelectedIndex() : -1;
+        if (sel >= 0 && m_ann && m_ann->ShapeAt(sel))
         {
-            ToolButton b;
-            b.action = ToolbarAction::SetColor;
-            b.colorIndex = i;
-            b.id = L"c" + std::to_wstring(i);
-            b.tip = L"Color";
-            m_buttons.push_back(b);
+            addStyleControls(m_ann->ShapeAt(sel)->kind, true);
         }
+        else
+        {
+            ToolButton hint;
+            hint.action = ToolbarAction::None;
+            hint.id = L"hint";
+            hint.tip = L"拖动调整 · 双击改文字 · Del 删除";
+            m_buttons.push_back(hint);
+        }
+        LayoutButtons();
+        ResizeToContent();
+        SyncFromAnnotator();
+        return;
     }
+
+    addStyleControls(tool, m_ann && m_ann->SelectedIndex() >= 0 &&
+                               m_ann->EditTargetKind() == tool);
 
     LayoutButtons();
     ResizeToContent();
@@ -190,7 +264,16 @@ void StylePanel::LayoutButtons()
     {
         if (b.action == ToolbarAction::None)
         {
-            b.hit = { x, kPad, x + 180, kPad + kBtn };
+            int bw = 56;
+            if (b.id == L"ctx" || b.id == L"hint")
+            {
+                bw = 148;
+            }
+            else if (b.id == L"wv" || b.id == L"fv" || b.id == L"mv")
+            {
+                bw = 56;
+            }
+            b.hit = { x, kPad, x + bw, kPad + kBtn };
             x = b.hit.right + kGap;
             continue;
         }
@@ -229,14 +312,29 @@ void StylePanel::SyncFromAnnotator()
     {
         return;
     }
-    const auto& textStyle = m_ann->Style(ToolKind::Text);
-    const bool filled = m_ann->Style(ToolKind::Rect).filled;
-    const DrawStyle* active = m_ann->ActiveStyle();
+    const DrawStyle* target = m_ann->EditTargetStyle();
+    const auto& textStyle = target && m_ann->EditTargetKind() == ToolKind::Text
+                                ? *target
+                                : m_ann->Style(ToolKind::Text);
+    const bool filled = target && ToolUsesFill(m_ann->EditTargetKind())
+                            ? target->filled
+                            : m_ann->Style(ToolKind::Rect).filled;
     for (auto& b : m_buttons)
     {
         if (b.action == ToolbarAction::SetColor)
         {
-            b.checked = (b.colorIndex == m_ann->ColorIndex());
+            b.checked = false;
+            if (target && b.colorIndex >= 0)
+            {
+                const auto pal = DrawStack::PaletteColor(b.colorIndex);
+                b.checked = std::abs(pal.r - target->color.r) < 0.02f &&
+                            std::abs(pal.g - target->color.g) < 0.02f &&
+                            std::abs(pal.b - target->color.b) < 0.02f;
+            }
+            else
+            {
+                b.checked = (b.colorIndex == m_ann->ColorIndex());
+            }
         }
         else if (b.action == ToolbarAction::ToggleFill)
         {
@@ -254,13 +352,21 @@ void StylePanel::SyncFromAnnotator()
         {
             b.checked = textStyle.outline;
         }
-        else if (b.action == ToolbarAction::None && b.id == L"wv" && active)
+        else if (b.action == ToolbarAction::None && b.id == L"wv" && target)
         {
-            b.tip = L"线宽 " + std::to_wstring(static_cast<int>(active->width + 0.5f)) + L" px";
+            b.tip = std::to_wstring(static_cast<int>(target->width + 0.5f)) + L"px";
         }
         else if (b.action == ToolbarAction::None && b.id == L"fv")
         {
-            b.tip = L"字号 " + std::to_wstring(static_cast<int>(textStyle.fontSize + 0.5f));
+            b.tip = std::to_wstring(static_cast<int>(textStyle.fontSize + 0.5f)) + L"pt";
+        }
+        else if (b.action == ToolbarAction::None && b.id == L"mv" && target)
+        {
+            b.tip = L"颗粒 " + std::to_wstring(target->mosaicSize);
+        }
+        else if (b.action == ToolbarAction::None && (b.id == L"ctx" || b.id == L"hint"))
+        {
+            // tip already set in RebuildForTool
         }
         else
         {
@@ -272,8 +378,7 @@ void StylePanel::SyncFromAnnotator()
 
 void StylePanel::PlaceUnder(HWND toolbarHwnd)
 {
-    if (!m_hwnd || !toolbarHwnd || m_buttons.empty() ||
-        (m_buttons.size() == 1 && m_buttons[0].action == ToolbarAction::None && m_buttons[0].id.empty()))
+    if (!m_hwnd || !toolbarHwnd || m_buttons.empty())
     {
         Show(false);
         return;
@@ -329,8 +434,11 @@ void StylePanel::PickCustomColor()
         return;
     }
     static COLORREF cust[16]{};
-    const auto& st = m_ann->Style(
-        m_tool == ToolKind::None ? ToolKind::Pen : m_tool);
+    const DrawStyle* target = m_ann->EditTargetStyle();
+    const DrawStyle& st = target ? *target
+                                 : m_ann->Style(m_tool == ToolKind::None || m_tool == ToolKind::Select
+                                                    ? ToolKind::Pen
+                                                    : m_tool);
     CHOOSECOLORW cc{};
     cc.lStructSize = sizeof(cc);
     cc.hwndOwner = m_hwnd;
@@ -594,9 +702,7 @@ void StylePanel::Present()
             m_brush->SetColor(kFg);
             if (m_text)
             {
-                // Prefer tip for value readouts (wv/fv); else id hint text.
-                const std::wstring& label =
-                    (b.id == L"wv" || b.id == L"fv") && !b.tip.empty() ? b.tip : b.id;
+                const std::wstring& label = !b.tip.empty() ? b.tip : b.id;
                 m_text->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
                 m_rt->DrawText(label.c_str(), static_cast<UINT32>(label.size()), m_text, r, m_brush);
             }
@@ -614,7 +720,10 @@ void StylePanel::Present()
 
         if (b.colorIndex == -2 && m_ann)
         {
-            D2D1_COLOR_F c = m_ann->Style(ToolUsesColor(m_tool) ? m_tool : ToolKind::Pen).color;
+            const DrawStyle* target = m_ann->EditTargetStyle();
+            D2D1_COLOR_F c = target
+                                 ? target->color
+                                 : m_ann->Style(ToolUsesColor(m_tool) ? m_tool : ToolKind::Pen).color;
             m_brush->SetColor(c);
             m_rt->FillRectangle(r, m_brush);
             m_brush->SetColor(kBorder);

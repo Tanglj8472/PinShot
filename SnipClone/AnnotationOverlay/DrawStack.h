@@ -44,12 +44,18 @@ public:
     DrawStyle& MutableStyle(ToolKind tool);
     const DrawStyle& Style(ToolKind tool) const;
     DrawStyle* ActiveStyle();
+    // M1: selected shape style when present; otherwise current tool preset (may be null).
+    DrawStyle* EditTargetStyle();
+    const DrawStyle* EditTargetStyle() const;
+    // Kind of the style edit target (selected shape kind, else current tool).
+    ToolKind EditTargetKind() const;
 
     const std::vector<DrawCommand>& Shapes() const { return m_shapes; }
     const DrawCommand* Live() const { return m_live.has ? &m_live.cmd : nullptr; }
 
     int SelectedIndex() const { return m_selected; }
     void ClearSelection();
+    bool DuplicateSelected(); // Ctrl+D — object copy, not whole-image copy
 
     void Press(D2D1_POINT_2F pt);
     void Move(D2D1_POINT_2F pt);

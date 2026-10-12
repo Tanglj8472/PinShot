@@ -295,6 +295,50 @@ void TestTextExtentConsistent()
     Expect(stack.HitTest(D2D1::Point2F(8.f, 10.f)) == 0, "text hit via shared metrics");
 }
 
+void TestMosaicHitRect()
+{
+    // M1 / E02: mosaic hit uses filled AABB, not diagonal polyline.
+    std::printf("Mosaic hit rect\n");
+    snip::DrawStack stack;
+    stack.SetTool(snip::ToolKind::Mosaic);
+    stack.Press(D2D1::Point2F(10, 10));
+    stack.Move(D2D1::Point2F(60, 40));
+    stack.Release(D2D1::Point2F(60, 40));
+    stack.SetTool(snip::ToolKind::Select);
+    Expect(stack.HitTest(D2D1::Point2F(35, 25)) == 0, "mosaic center hit");
+    Expect(stack.HitTest(D2D1::Point2F(55, 12)) == 0, "mosaic near edge off-diagonal hit");
+    Expect(stack.HitTest(D2D1::Point2F(80, 80)) < 0, "mosaic far miss");
+}
+
+void TestStyleEditsSelected()
+{
+    // M1 / E01: color/width mutate selected shape and push undo.
+    std::printf("Style edits selected\n");
+    snip::DrawStack stack;
+    stack.SetTool(snip::ToolKind::Rect);
+    stack.Press(D2D1::Point2F(0, 0));
+    stack.Move(D2D1::Point2F(40, 30));
+    stack.Release(D2D1::Point2F(40, 30));
+    Expect(stack.SelectedIndex() == 0, "auto-select after create");
+    stack.SetTool(snip::ToolKind::Select);
+    Expect(stack.SelectedIndex() == 0, "selection kept in Select");
+
+    const float w0 = stack.ShapeAt(0)->style.width;
+    stack.AdjustWidth(+2);
+    Expect(stack.ShapeAt(0)->style.width == w0 + 2.f, "width edits selected");
+    Expect(stack.CanUndo(), "style change undoable");
+    stack.SetColorRgb(0.f, 0.f, 1.f);
+    Expect(stack.ShapeAt(0)->style.color.b > 0.9f, "color edits selected");
+    Expect(stack.Undo(), "undo color");
+    Expect(stack.ShapeAt(0)->style.width == w0 + 2.f, "undo restores prior style frame");
+    Expect(stack.Undo(), "undo width");
+    Expect(stack.ShapeAt(0)->style.width == w0, "width restored");
+
+    Expect(stack.DuplicateSelected(), "duplicate selected");
+    Expect(stack.Shapes().size() == 2, "duplicate adds shape");
+    Expect(stack.SelectedIndex() == 1, "duplicate selects copy");
+}
+
 void TestComposeFailsEmpty()
 {
     // A02: failure / empty base must not return a non-empty silent base copy.
@@ -394,6 +438,8 @@ int wmain()
     TestRectsIntersect();
     TestDrawStackUndo();
     TestHitAccuracy();
+    TestMosaicHitRect();
+    TestStyleEditsSelected();
     TestRemapForCrop();
     TestCropViewportUndo();
     TestTextExtentConsistent();

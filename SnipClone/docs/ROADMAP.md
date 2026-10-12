@@ -9,8 +9,9 @@
 | 批次一 | A01–A06 状态/生命周期 + 回归 | ✅ |
 | 批次二 | A07–A10、A12–A13 冻结编辑与视觉 | ✅ |
 | 批次三 | A11 / A14 / 静态 CRT | ✅（本分支 `cursor/snipclone-17f2`） |
+| M1 | 会话内二次编辑 + 基本设置 | 🔧 进行中 |
 
-状态字典见 `VERIFICATION.md`。
+状态字典见 `VERIFICATION.md`。产品方案见 `PRODUCT_UI_UX_IMPROVEMENT_PLAN.md`。
 
 ## 阶段 A — 核心稳定性
 

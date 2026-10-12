@@ -60,6 +60,7 @@ private:
     std::vector<ToolButton> m_buttons;
     std::unique_ptr<StylePanel> m_stylePanel;
     ToolKind m_panelTool = ToolKind::Count; // force rebuild sentinel
+    int m_panelSelected = -2;               // rebuild StylePanel when Select selection changes
     UINT m_dpi = 96;
     int m_btn = 34;
     int m_pad = 5;

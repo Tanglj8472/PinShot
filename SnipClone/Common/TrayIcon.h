@@ -25,6 +25,7 @@ public:
         RestoreLastPin,
         OpenOutputDir,
         OpenSettingsDir,
+        Settings,
         About,
         Exit,
     };

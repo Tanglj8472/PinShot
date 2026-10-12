@@ -10,6 +10,7 @@
 #include "AnnotationOverlay/AnnotationOverlay.h"
 #include "Capture/ScreenCapture.h"
 #include "Common/AppSettings.h"
+#include "Common/SettingsDialog.h"
 #include "Common/SingleInstance.h"
 #include "Common/TrayIcon.h"
 #include "Hotkey/GlobalHotkey.h"
@@ -140,6 +141,39 @@ void ShowAbout()
     MessageBoxW(g_mainWnd, body.c_str(), L"关于 SnipClone", MB_ICONINFORMATION | MB_OK);
 }
 
+bool g_smokeMode = false;
+
+void OnTrayCommand(snip::TrayIcon::Command cmd);
+bool RegisterConfiguredHotkeys(bool showConflictUi);
+
+void RefreshTrayTip()
+{
+    if (!g_tray)
+    {
+        return;
+    }
+    std::wstring tip = L"SnipClone — ";
+    tip += snip::AppSettings::FormatHotkey(snip::LiveSettings().snip);
+    g_tray->Destroy();
+    if (!g_tray->Create(g_mainWnd, g_instance, tip, OnTrayCommand))
+    {
+        g_tray.reset();
+        return;
+    }
+    g_tray->SetClickThroughHotkeyTip(snip::AppSettings::FormatHotkey(snip::LiveSettings().pins));
+}
+
+void OpenSettings()
+{
+    if (snip::ShowSettingsDialog(g_mainWnd, g_instance))
+    {
+        snip::GlobalHotkey::Unregister(kHotkeySnip, g_mainWnd);
+        snip::GlobalHotkey::Unregister(kHotkeyPins, g_mainWnd);
+        RegisterConfiguredHotkeys(true);
+        RefreshTrayTip();
+    }
+}
+
 void OnTrayCommand(snip::TrayIcon::Command cmd)
 {
     switch (cmd)
@@ -159,6 +193,9 @@ void OnTrayCommand(snip::TrayIcon::Command cmd)
     case snip::TrayIcon::Command::RestoreLastPin:
         snip::PinManager::Instance().RestoreLastClosed(g_instance);
         break;
+    case snip::TrayIcon::Command::Settings:
+        OpenSettings();
+        break;
     case snip::TrayIcon::Command::OpenOutputDir:
         ChooseOutputDir();
         break;
@@ -175,26 +212,30 @@ void OnTrayCommand(snip::TrayIcon::Command cmd)
     }
 }
 
-bool RegisterConfiguredHotkeys()
+bool RegisterConfiguredHotkeys(bool showConflictUi)
 {
     g_snipHotkeyOk = snip::GlobalHotkey::Register(
         snip::LiveSettings().snip.vk, snip::LiveSettings().snip.mods, kHotkeySnip, g_mainWnd);
     g_pinsHotkeyOk = snip::GlobalHotkey::Register(
         snip::LiveSettings().pins.vk, snip::LiveSettings().pins.mods, kHotkeyPins, g_mainWnd);
 
-    if (!g_snipHotkeyOk)
+    // Smoke / headless: never block on modal conflict dialogs (plan parallel fix).
+    if (showConflictUi && !g_smokeMode)
     {
-        std::wstring msg = L"热键 ";
-        msg += snip::AppSettings::FormatHotkey(snip::LiveSettings().snip);
-        msg += L" 注册失败，可能被其他程序占用。\n可编辑 %APPDATA%\\SnipClone\\settings.ini 后重启。";
-        MessageBoxW(nullptr, msg.c_str(), L"SnipClone", MB_ICONWARNING | MB_OK);
-    }
-    if (!g_pinsHotkeyOk)
-    {
-        std::wstring msg = L"热键 ";
-        msg += snip::AppSettings::FormatHotkey(snip::LiveSettings().pins);
-        msg += L" 注册失败（贴图穿透退出）。";
-        MessageBoxW(nullptr, msg.c_str(), L"SnipClone", MB_ICONWARNING | MB_OK);
+        if (!g_snipHotkeyOk)
+        {
+            std::wstring msg = L"热键 ";
+            msg += snip::AppSettings::FormatHotkey(snip::LiveSettings().snip);
+            msg += L" 暂不可用，请换一组按键。\n可在托盘「设置…」中重新录制。";
+            MessageBoxW(g_mainWnd, msg.c_str(), L"SnipClone", MB_ICONWARNING | MB_OK);
+        }
+        if (!g_pinsHotkeyOk)
+        {
+            std::wstring msg = L"热键 ";
+            msg += snip::AppSettings::FormatHotkey(snip::LiveSettings().pins);
+            msg += L" 暂不可用（贴图穿透退出）。\n可在托盘「设置…」中重新录制。";
+            MessageBoxW(g_mainWnd, msg.c_str(), L"SnipClone", MB_ICONWARNING | MB_OK);
+        }
     }
     return g_snipHotkeyOk || g_pinsHotkeyOk;
 }
@@ -312,6 +353,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR cmdLine, int)
 {
     g_instance = hInstance;
     const bool smoke = HasArg(cmdLine, L"--smoke");
+    g_smokeMode = smoke;
 
     snip::SingleInstance single;
     if (single.AlreadyRunning())
@@ -368,7 +410,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR cmdLine, int)
         return 1;
     }
 
-    RegisterConfiguredHotkeys();
+    RegisterConfiguredHotkeys(!smoke);
 
     g_taskbarCreatedMsg = RegisterWindowMessageW(L"TaskbarCreated");
 

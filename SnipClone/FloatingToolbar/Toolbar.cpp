@@ -253,9 +253,14 @@ void Toolbar::SyncStylePanel()
         return;
     }
     const ToolKind t = m_ann->Tool();
-    if (t != m_panelTool)
+    const int sel = m_ann->SelectedIndex();
+    // Rebuild when tool changes, Select selection changes, or draw-tool
+    // selection appears/clears (preset vs 已选中 label).
+    const bool selChanged = sel != m_panelSelected;
+    if (t != m_panelTool || selChanged)
     {
         m_panelTool = t;
+        m_panelSelected = sel;
         m_stylePanel->RebuildForTool(t);
     }
     else
