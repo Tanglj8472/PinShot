@@ -40,6 +40,8 @@
 | 对象右键复制/删除 (M1) | 已实现 | — | 待验证 | Ctrl+D / Del |
 | 贴图 Document 再编辑 (M2) | 已实现 | 自动验证通过 | 待验证 | `TestLoadShapesDocument`；右键/Space/双击 |
 | 贴图关闭→恢复仍可编辑 (M2) | 已实现 | — | 待验证 | Snapshot 含 document |
+| 项目 .scdoc 往返 (M3) | 已实现 | 自动验证通过 | 待验证 | `TestProjectRoundTrip`；Ctrl+Shift+E |
+| 自动保存恢复 (M3) | 已实现 | — | 待验证 | 托盘「恢复自动保存的项目」 |
 
 ## Smoke 退出码
 

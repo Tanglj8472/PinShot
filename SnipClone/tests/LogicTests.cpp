@@ -345,6 +345,39 @@ void TestMosaicHitRect()
     Expect(stack.HitTest(D2D1::Point2F(80, 80)) < 0, "mosaic far miss");
 }
 
+void TestProjectRoundTrip()
+{
+    std::printf("Project .scdoc round-trip\n");
+    snip::AnnotatorDocument doc;
+    doc.base.width = 8;
+    doc.base.height = 4;
+    doc.base.stride = 32;
+    doc.base.screenRect = { 10, 20, 18, 24 };
+    doc.base.bgra.assign(static_cast<size_t>(doc.base.stride * doc.base.height), 40);
+    doc.freeze = doc.base;
+    snip::DrawCommand arrow;
+    arrow.kind = snip::ToolKind::Arrow;
+    arrow.pts = { D2D1::Point2F(1, 1), D2D1::Point2F(6, 3) };
+    arrow.style.width = 4.f;
+    arrow.style.color = D2D1::ColorF(0.f, 0.f, 1.f);
+    doc.shapes.push_back(arrow);
+
+    wchar_t tmp[MAX_PATH]{};
+    GetTempPathW(MAX_PATH, tmp);
+    std::wstring path = tmp;
+    path += L"snipclone_test.scdoc";
+    std::wstring err;
+    Expect(snip::ProjectIO::Save(doc, path, &err), "save project");
+    snip::AnnotatorDocument loaded;
+    Expect(snip::ProjectIO::Load(path, loaded, &err), "load project");
+    Expect(loaded.base.width == 8 && loaded.base.height == 4, "base size");
+    Expect(loaded.base.bgra == doc.base.bgra, "base pixels");
+    Expect(loaded.shapes.size() == 1 && loaded.shapes[0].kind == snip::ToolKind::Arrow, "shape kind");
+    Expect(loaded.shapes[0].pts.size() == 2 && loaded.shapes[0].pts[1].x == 6.f, "shape pts");
+    Expect(loaded.shapes[0].style.width == 4.f, "shape style");
+    DeleteFileW(path.c_str());
+}
+
 void TestLoadShapesDocument()
 {
     // M2: LoadShapes restores vectors for pin re-edit.
@@ -497,6 +530,7 @@ int wmain()
     TestBoxHandleResize();
     TestMosaicHitRect();
     TestLoadShapesDocument();
+    TestProjectRoundTrip();
     TestStyleEditsSelected();
     TestRemapForCrop();
     TestCropViewportUndo();

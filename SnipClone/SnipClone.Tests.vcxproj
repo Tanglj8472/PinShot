@@ -85,6 +85,8 @@
     <ClCompile Include="tests\LogicTests.cpp" />
     <ClCompile Include="Common\DpiHelper.cpp" />
     <ClCompile Include="Common\TextLayout.cpp" />
+    <ClCompile Include="Common\AppSettings.cpp" />
+    <ClCompile Include="Common\ProjectIO.cpp" />
     <ClCompile Include="Capture\ScreenCapture.cpp" />
     <ClCompile Include="AnnotationOverlay\DrawStack.cpp" />
     <ClCompile Include="AnnotationOverlay\AnnotationRenderer.cpp" />
@@ -94,9 +96,12 @@
     <ClInclude Include="Common\DpiHelper.h" />
     <ClInclude Include="Common\TextLayout.h" />
     <ClInclude Include="Common\WinCompat.h" />
+    <ClInclude Include="Common\AppSettings.h" />
+    <ClInclude Include="Common\ProjectIO.h" />
     <ClInclude Include="Capture\CaptureResult.h" />
     <ClInclude Include="Capture\ScreenCapture.h" />
     <ClInclude Include="AnnotationOverlay\DrawCommand.h" />
+    <ClInclude Include="AnnotationOverlay\AnnotatorDocument.h" />
     <ClInclude Include="AnnotationOverlay\DrawStack.h" />
     <ClInclude Include="AnnotationOverlay\AnnotationRenderer.h" />
   </ItemGroup>
