@@ -1,7 +1,12 @@
 //! Settings window (egui). Spawned as `--settings-window` so it has its own
 //! event loop: eframe on a second thread after `gtk::init` fails on Linux, and
 //! winit only allows one loop per process on Windows.
+//!
+//! Tab names and page layout follow Snipaste Preferences (public UI):
+//! General / Interface / Snip / Paste / Output / Control / About.
+//! PinShot-only keys stay; no Snipaste-only options are invented.
 
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use eframe::egui::{self, Color32, RichText, Ui, Visuals};
@@ -9,29 +14,31 @@ use pinshot_core::config::{self, Config};
 use pinshot_core::groups;
 use pinshot_core::hotkey::{bindings_from_config, find_conflicts, normalize_seq};
 use pinshot_core::i18n::{self, tr, Lang};
+use pinshot_core::VERSION;
 use winit::event_loop::EventLoopProxy;
 
 use crate::event::AppEvent;
 
 static OPEN: AtomicBool = AtomicBool::new(false);
 
-/// Snipaste-like compact landscape dialog. General (Advanced collapsed) hugs
-/// the form instead of leaving a square empty band.
-const PREFS_W: f32 = 520.0;
-const PREFS_MIN_W: f32 = 460.0;
-const PREFS_MIN_H: f32 = 260.0;
-const FORM_LABEL_W: f32 = 168.0;
-const ROW_H: f32 = 28.0;
+/// Snipaste Preferences is a compact landscape dialog that keeps one size.
+const PREFS_W: f32 = 600.0;
+const PREFS_H: f32 = 400.0;
+const PREFS_MIN_W: f32 = 480.0;
+const PREFS_MIN_H: f32 = 320.0;
+const FORM_LABEL_W: f32 = 120.0;
+const ROW_H: f32 = 24.0;
+const CONTROL_W: f32 = 220.0;
 
-fn prefs_inner_size(tab: usize, advanced: bool) -> egui::Vec2 {
-    let h = match (tab, advanced) {
-        (0, true) => 620.0,
-        (0, false) => 318.0,
-        (1, _) => 420.0,
-        _ => 268.0,
-    };
-    egui::vec2(PREFS_W, h)
-}
+const TABS: &[&str] = &[
+    "General",
+    "Interface",
+    "Snip",
+    "Paste",
+    "Output",
+    "Control",
+    "About",
+];
 
 pub fn is_open() -> bool {
     OPEN.load(Ordering::SeqCst)
@@ -101,11 +108,10 @@ pub fn run_preferences() {
     crate::native::init_process();
     let cfg = config::load().unwrap_or_default();
     i18n::set_lang(cfg.lang());
-    let size = prefs_inner_size(0, false);
     let opts = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title(tr("PinShot Settings"))
-            .with_inner_size([size.x, size.y])
+            .with_title(tr("PinShot Preferences"))
+            .with_inner_size([PREFS_W, PREFS_H])
             .with_min_inner_size([PREFS_MIN_W, PREFS_MIN_H])
             .with_always_on_top(),
         persist_window: false,
@@ -113,24 +119,22 @@ pub fn run_preferences() {
         ..Default::default()
     };
     if let Err(e) = eframe::run_native(
-        "PinShot Settings",
+        "PinShot Preferences",
         opts,
         Box::new(move |cc| {
             crate::ui_font::install_cjk(&cc.egui_ctx);
             let mut style = (*cc.egui_ctx.style()).clone();
-            style.spacing.item_spacing = egui::vec2(16.0, 8.0);
-            style.spacing.button_padding = egui::vec2(12.0, 5.0);
+            style.spacing.item_spacing = egui::vec2(8.0, 6.0);
+            style.spacing.button_padding = egui::vec2(10.0, 4.0);
             style.spacing.interact_size.y = ROW_H;
             cc.egui_ctx.set_style(style);
             apply_theme(&cc.egui_ctx, &cfg.theme);
             Ok(Box::new(PrefsApp {
                 draft: cfg,
                 tab: 0,
-                advanced: false,
                 group_sel: 0,
                 group_edit: String::new(),
                 status: String::new(),
-                size_key: (0, false),
             }))
         }),
     ) {
@@ -196,14 +200,23 @@ fn system_dark() -> bool {
     }
 }
 
+fn reveal_dir(path: &Path) {
+    #[cfg(windows)]
+    {
+        let _ = std::process::Command::new("explorer").arg(path).spawn();
+    }
+    #[cfg(unix)]
+    {
+        let _ = std::process::Command::new("xdg-open").arg(path).spawn();
+    }
+}
+
 struct PrefsApp {
     draft: Config,
     tab: usize,
-    advanced: bool,
     group_sel: usize,
     group_edit: String,
     status: String,
-    size_key: (usize, bool),
 }
 
 impl PrefsApp {
@@ -241,24 +254,60 @@ impl PrefsApp {
         }
         true
     }
+
+    fn restore_tab(&mut self) {
+        let d = Config::default();
+        match self.tab {
+            0 => {
+                self.draft.language = d.language;
+                self.draft.run_at_login = d.run_at_login;
+                self.draft.start_minimized = d.start_minimized;
+            }
+            1 => {
+                self.draft.theme = d.theme;
+            }
+            2 => {
+                self.draft.snip_delay = d.snip_delay;
+                self.draft.skip_abort_confirm = d.skip_abort_confirm;
+                self.draft.history_max = d.history_max;
+                self.draft.dim_alpha = d.dim_alpha;
+            }
+            3 => {
+                self.draft.dblclick_pin_action = d.dblclick_pin_action;
+                self.draft.closed_pins_max = d.closed_pins_max;
+                self.draft.groups = d.groups;
+                self.group_sel = 0;
+                self.group_edit.clear();
+            }
+            4 => {
+                self.draft.quick_save_folder = d.quick_save_folder;
+                self.draft.image_quality = d.image_quality;
+            }
+            5 => {
+                self.draft.hotkey_snip = d.hotkey_snip;
+                self.draft.hotkey_pin = d.hotkey_pin;
+                self.draft.hotkey_hide_all = d.hotkey_hide_all;
+                self.draft.hotkey_restore = d.hotkey_restore;
+                self.draft.hotkey_selection_translate = d.hotkey_selection_translate;
+                self.draft.hotkey_capture_translate = d.hotkey_capture_translate;
+                self.draft.hotkey_clickthrough = d.hotkey_clickthrough;
+            }
+            _ => {}
+        }
+        i18n::set_lang(self.draft.lang());
+        self.status = tr("Restored this page to defaults.");
+    }
 }
 
 impl eframe::App for PrefsApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(tr("PinShot Settings")));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title(tr("PinShot Preferences")));
         apply_theme(ctx, &self.draft.theme);
-        let key = (self.tab, self.advanced);
-        if self.size_key != key {
-            self.size_key = key;
-            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(prefs_inner_size(
-                key.0, key.1,
-            )));
-        }
         egui::TopBottomPanel::bottom("btns")
-            .exact_height(48.0)
+            .exact_height(40.0)
             .frame(
                 egui::Frame::side_top_panel(&ctx.style())
-                    .inner_margin(egui::Margin::symmetric(16, 10)),
+                    .inner_margin(egui::Margin::symmetric(12, 8)),
             )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
@@ -269,45 +318,60 @@ impl eframe::App for PrefsApp {
                         if ui.button(tr("Cancel")).clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                         }
-                        ui.add_space(6.0);
+                        ui.add_space(4.0);
                         if ui.button(tr("OK")).clicked() {
                             if self.apply() {
                                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                             }
                         }
-                        ui.add_space(6.0);
+                        ui.add_space(4.0);
                         if ui.button(tr("Apply")).clicked() {
                             self.apply();
                         }
                     });
                 });
             });
+        if self.tab != 6 {
+            egui::TopBottomPanel::bottom("restore")
+                .exact_height(32.0)
+                .frame(
+                    egui::Frame::side_top_panel(&ctx.style())
+                        .inner_margin(egui::Margin::symmetric(12, 4)),
+                )
+                .show(ctx, |ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button(tr("Restore Defaults")).clicked() {
+                            self.restore_tab();
+                        }
+                    });
+                });
+        }
         egui::CentralPanel::default()
             .frame(
-                egui::Frame::central_panel(&ctx.style()).inner_margin(egui::Margin::symmetric(16, 12)),
+                egui::Frame::central_panel(&ctx.style()).inner_margin(egui::Margin::symmetric(12, 8)),
             )
             .show(ctx, |ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(12.0, 8.0);
+                ui.spacing_mut().item_spacing = egui::vec2(2.0, 6.0);
                 ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 4.0;
-                    for (i, name) in [tr("General"), tr("Hotkeys"), tr("Output")]
-                        .iter()
-                        .enumerate()
-                    {
+                    ui.spacing_mut().item_spacing.x = 2.0;
+                    for (i, name) in TABS.iter().enumerate() {
                         let selected = self.tab == i;
-                        let btn = egui::SelectableLabel::new(selected, name.as_str());
-                        if ui.add_sized([108.0, 28.0], btn).clicked() {
+                        if ui.selectable_label(selected, tr(name)).clicked() {
                             self.tab = i;
                         }
                     }
                 });
-                ui.add_space(6.0);
+                ui.add_space(2.0);
                 ui.separator();
-                ui.add_space(10.0);
+                ui.add_space(8.0);
                 match self.tab {
                     0 => self.ui_general(ui),
-                    1 => self.ui_hotkeys(ui),
-                    _ => self.ui_output(ui),
+                    1 => self.ui_interface(ui),
+                    2 => self.ui_snip(ui),
+                    3 => self.ui_paste(ui),
+                    4 => self.ui_output(ui),
+                    5 => self.ui_control(ui),
+                    _ => self.ui_about(ui),
                 }
             });
     }
@@ -315,201 +379,222 @@ impl eframe::App for PrefsApp {
 
 impl PrefsApp {
     fn ui_general(&mut self, ui: &mut Ui) {
-        egui::Grid::new("prefs_general")
-            .num_columns(2)
-            .spacing([16.0, 10.0])
-            .min_col_width(FORM_LABEL_W)
-            .min_row_height(ROW_H)
-            .show(ui, |ui| {
-                form_combo(
-                    ui,
-                    tr("Language:"),
-                    "lang",
-                    self.draft.lang().display_name(),
-                    |ui| {
-                        ui.selectable_value(
-                            &mut self.draft.language,
-                            "zh_CN".into(),
-                            Lang::ZhCn.display_name(),
-                        );
-                        ui.selectable_value(
-                            &mut self.draft.language,
-                            "en".into(),
-                            Lang::En.display_name(),
-                        );
-                    },
-                );
-                form_combo(
-                    ui,
-                    tr("Theme:"),
-                    "theme",
-                    match self.draft.theme.as_str() {
-                        "light" => tr("Light"),
-                        "dark" => tr("Dark"),
-                        _ => tr("System"),
-                    },
-                    |ui| {
-                        ui.selectable_value(&mut self.draft.theme, "system".into(), tr("System"));
-                        ui.selectable_value(&mut self.draft.theme, "light".into(), tr("Light"));
-                        ui.selectable_value(&mut self.draft.theme, "dark".into(), tr("Dark"));
-                    },
-                );
-                ui.label("");
-                ui.checkbox(&mut self.draft.run_at_login, tr("Run at login"))
-                    .on_hover_text(tr("Start PinShot when you log in"));
-                ui.end_row();
-                let mut secs = self.draft.snip_delay;
-                form_combo(
-                    ui,
-                    tr("Snip delay:"),
-                    "delay",
-                    if secs == 0 {
-                        tr("None (0 s)")
-                    } else {
-                        tr(&format!("{secs} s"))
-                    },
-                    |ui| {
-                        for s in [0, 1, 2, 3, 5] {
-                            ui.selectable_value(
-                                &mut secs,
-                                s,
-                                if s == 0 {
-                                    tr("None (0 s)")
-                                } else {
-                                    tr(&format!("{s} s"))
-                                },
-                            );
-                        }
-                    },
-                );
-                self.draft.snip_delay = secs;
-            });
-
-        ui.add_space(8.0);
-        let body = egui::CollapsingHeader::new(tr("Advanced"))
-            .id_salt("prefs_advanced")
-            .open(Some(self.advanced))
-            .show(ui, |ui| {
-                ui.add_space(6.0);
-                egui::Grid::new("prefs_advanced_grid")
-                    .num_columns(2)
-                    .spacing([16.0, 10.0])
-                    .min_col_width(FORM_LABEL_W)
-                    .min_row_height(ROW_H)
-                    .show(ui, |ui| {
-                        let mut confirm = !self.draft.skip_abort_confirm;
-                        ui.label("");
-                        ui.checkbox(&mut confirm, tr("Confirm before abort (Esc)"));
-                        self.draft.skip_abort_confirm = !confirm;
-                        ui.end_row();
-                        form_combo(
-                            ui,
-                            tr("Double-click pin:"),
-                            "dbl",
-                            match self.draft.dblclick_pin_action.as_str() {
-                                "hide" => tr("Hide pin"),
-                                "none" => tr("Do nothing"),
-                                _ => tr("Close pin"),
-                            },
-                            |ui| {
-                                ui.selectable_value(
-                                    &mut self.draft.dblclick_pin_action,
-                                    "close".into(),
-                                    tr("Close pin"),
-                                );
-                                ui.selectable_value(
-                                    &mut self.draft.dblclick_pin_action,
-                                    "hide".into(),
-                                    tr("Hide pin"),
-                                );
-                                ui.selectable_value(
-                                    &mut self.draft.dblclick_pin_action,
-                                    "none".into(),
-                                    tr("Do nothing"),
-                                );
-                            },
-                        );
-                        form_slider(ui, tr("Snip history:"), &mut self.draft.history_max, 1..=50);
-                        form_slider(
-                            ui,
-                            tr("Closed pins:"),
-                            &mut self.draft.closed_pins_max,
-                            0..=50,
-                        );
-                    });
-                ui.add_space(8.0);
-                ui.label(tr("Pin groups:"));
-                let groups = self.draft.groups.clone();
-                egui::ScrollArea::vertical()
-                    .max_height(100.0)
-                    .show(ui, |ui| {
-                        for (i, g) in groups.iter().enumerate() {
-                            if ui
-                                .selectable_label(self.group_sel == i, groups::label(g))
-                                .clicked()
-                            {
-                                self.group_sel = i;
-                                self.group_edit = g.clone();
-                            }
-                        }
-                    });
-                ui.horizontal(|ui| {
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.group_edit)
-                            .desired_width(ui.available_width() - 200.0),
+        ui.horizontal(|ui| {
+            ui.label(tr("Language:"));
+            egui::ComboBox::from_id_salt("lang")
+                .selected_text(self.draft.lang().display_name())
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut self.draft.language,
+                        "zh_CN".into(),
+                        Lang::ZhCn.display_name(),
                     );
-                    if ui.button(tr("Add")).clicked() {
-                        let _ = groups::ensure(&mut self.draft.groups, &self.group_edit);
-                    }
-                    if ui.button(tr("Rename")).clicked() {
-                        if let Some(old) = self.draft.groups.get(self.group_sel).cloned() {
-                            match groups::rename(&mut self.draft.groups, &old, &self.group_edit) {
-                                Ok(_) => {}
-                                Err(e) => self.status = tr(&e),
-                            }
-                        }
-                    }
-                    if ui.button(tr("Remove")).clicked() {
-                        if let Some(name) = self.draft.groups.get(self.group_sel).cloned() {
-                            if let Err(e) = groups::remove(&mut self.draft.groups, &name) {
-                                self.status = tr(&e);
-                            }
-                            self.group_sel = 0;
-                        }
-                    }
+                    ui.selectable_value(
+                        &mut self.draft.language,
+                        "en".into(),
+                        Lang::En.display_name(),
+                    );
                 });
-            });
-        if body.header_response.clicked() {
-            self.advanced = !self.advanced;
-        }
+        });
+        ui.add_space(4.0);
+        ui.checkbox(&mut self.draft.run_at_login, tr("Run at login"))
+            .on_hover_text(tr("Start PinShot when you log in"));
+        ui.checkbox(&mut self.draft.start_minimized, tr("Start minimized"));
+        ui.add_space(10.0);
+        ui.label(RichText::new(tr("Configuration")).strong());
+        ui.horizontal(|ui| {
+            ui.label(config::config_dir().display().to_string());
+        });
+        ui.horizontal(|ui| {
+            if ui.button(tr("Open containing folder")).clicked() {
+                reveal_dir(&config::config_dir());
+            }
+            if ui.button(tr("Open log folder")).clicked() {
+                reveal_dir(&config::data_dir());
+            }
+        });
     }
 
-    fn ui_hotkeys(&mut self, ui: &mut Ui) {
-        egui::Grid::new("prefs_hotkeys")
-            .num_columns(2)
-            .spacing([16.0, 10.0])
-            .min_col_width(FORM_LABEL_W)
-            .min_row_height(ROW_H)
+    fn ui_interface(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            ui.label(tr("Theme:"));
+            let theme_txt = match self.draft.theme.as_str() {
+                "light" => tr("Light"),
+                "dark" => tr("Dark"),
+                _ => tr("System"),
+            };
+            egui::ComboBox::from_id_salt("theme")
+                .selected_text(theme_txt)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut self.draft.theme, "system".into(), tr("System"));
+                    ui.selectable_value(&mut self.draft.theme, "light".into(), tr("Light"));
+                    ui.selectable_value(&mut self.draft.theme, "dark".into(), tr("Dark"));
+                });
+        });
+    }
+
+    fn ui_snip(&mut self, ui: &mut Ui) {
+        form_grid(ui, "prefs_snip", |ui| {
+            let mut secs = self.draft.snip_delay;
+            form_combo(
+                ui,
+                tr("Snip delay:"),
+                "delay",
+                if secs == 0 {
+                    tr("None (0 s)")
+                } else {
+                    tr(&format!("{secs} s"))
+                },
+                |ui| {
+                    for s in [0, 1, 2, 3, 5] {
+                        ui.selectable_value(
+                            &mut secs,
+                            s,
+                            if s == 0 {
+                                tr("None (0 s)")
+                            } else {
+                                tr(&format!("{s} s"))
+                            },
+                        );
+                    }
+                },
+            );
+            self.draft.snip_delay = secs;
+            form_slider(ui, tr("Mask opacity:"), &mut self.draft.dim_alpha, 0..=200);
+            form_slider(ui, tr("Snip history:"), &mut self.draft.history_max, 1..=50);
+        });
+        ui.add_space(4.0);
+        let mut confirm = !self.draft.skip_abort_confirm;
+        ui.checkbox(&mut confirm, tr("Confirm before abort (Esc)"));
+        self.draft.skip_abort_confirm = !confirm;
+    }
+
+    fn ui_paste(&mut self, ui: &mut Ui) {
+        form_grid(ui, "prefs_paste", |ui| {
+            form_combo(
+                ui,
+                tr("Double-click pin:"),
+                "dbl",
+                match self.draft.dblclick_pin_action.as_str() {
+                    "hide" => tr("Hide pin"),
+                    "none" => tr("Do nothing"),
+                    _ => tr("Close pin"),
+                },
+                |ui| {
+                    ui.selectable_value(
+                        &mut self.draft.dblclick_pin_action,
+                        "close".into(),
+                        tr("Close pin"),
+                    );
+                    ui.selectable_value(
+                        &mut self.draft.dblclick_pin_action,
+                        "hide".into(),
+                        tr("Hide pin"),
+                    );
+                    ui.selectable_value(
+                        &mut self.draft.dblclick_pin_action,
+                        "none".into(),
+                        tr("Do nothing"),
+                    );
+                },
+            );
+            form_slider(
+                ui,
+                tr("Closed pins:"),
+                &mut self.draft.closed_pins_max,
+                0..=50,
+            );
+        });
+        ui.add_space(8.0);
+        ui.label(RichText::new(tr("Pin groups:")).strong());
+        let groups = self.draft.groups.clone();
+        egui::ScrollArea::vertical()
+            .max_height(90.0)
             .show(ui, |ui| {
-                form_line(ui, tr("Snip:"), &mut self.draft.hotkey_snip);
-                form_line(ui, tr("Pin clipboard:"), &mut self.draft.hotkey_pin);
-                form_line(ui, tr("Hide/show pins:"), &mut self.draft.hotkey_hide_all);
-                form_line(ui, tr("Restore last pin:"), &mut self.draft.hotkey_restore);
-                form_line(
-                    ui,
-                    tr("Select-text translate:"),
-                    &mut self.draft.hotkey_selection_translate,
-                );
-                form_line(
-                    ui,
-                    tr("Snip and translate:"),
-                    &mut self.draft.hotkey_capture_translate,
-                );
-                form_line(ui, tr("Click-through:"), &mut self.draft.hotkey_clickthrough);
+                for (i, g) in groups.iter().enumerate() {
+                    if ui
+                        .selectable_label(self.group_sel == i, groups::label(g))
+                        .clicked()
+                    {
+                        self.group_sel = i;
+                        self.group_edit = g.clone();
+                    }
+                }
             });
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.group_edit).desired_width(200.0),
+            );
+            if ui.button(tr("Add")).clicked() {
+                let _ = groups::ensure(&mut self.draft.groups, &self.group_edit);
+            }
+            if ui.button(tr("Rename")).clicked() {
+                if let Some(old) = self.draft.groups.get(self.group_sel).cloned() {
+                    match groups::rename(&mut self.draft.groups, &old, &self.group_edit) {
+                        Ok(_) => {}
+                        Err(e) => self.status = tr(&e),
+                    }
+                }
+            }
+            if ui.button(tr("Remove")).clicked() {
+                if let Some(name) = self.draft.groups.get(self.group_sel).cloned() {
+                    if let Err(e) = groups::remove(&mut self.draft.groups, &name) {
+                        self.status = tr(&e);
+                    }
+                    self.group_sel = 0;
+                }
+            }
+        });
+    }
+
+    fn ui_output(&mut self, ui: &mut Ui) {
+        ui.label(RichText::new(tr("File")).strong());
+        form_grid(ui, "prefs_output", |ui| {
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.set_min_width(FORM_LABEL_W);
+                ui.label(tr("Save folder:"));
+            });
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.draft.quick_save_folder)
+                        .desired_width(CONTROL_W),
+                );
+                if ui.button(tr("Browse…")).clicked() {
+                    if let Some(p) = crate::dialog::open_folder() {
+                        self.draft.quick_save_folder = p;
+                    }
+                }
+                if ui.button(tr("Open")).clicked() && !self.draft.quick_save_folder.is_empty() {
+                    reveal_dir(Path::new(&self.draft.quick_save_folder));
+                }
+            });
+            ui.end_row();
+            form_slider(ui, tr("Quality:"), &mut self.draft.image_quality, 1..=100);
+        });
+    }
+
+    fn ui_control(&mut self, ui: &mut Ui) {
+        ui.label(RichText::new(tr("Global hotkeys")).strong());
+        form_grid(ui, "prefs_hotkeys", |ui| {
+            form_line(ui, tr("Snip:"), &mut self.draft.hotkey_snip);
+            form_line(ui, tr("Pin clipboard:"), &mut self.draft.hotkey_pin);
+            form_line(ui, tr("Hide/show pins:"), &mut self.draft.hotkey_hide_all);
+            form_line(ui, tr("Restore last pin:"), &mut self.draft.hotkey_restore);
+            form_line(
+                ui,
+                tr("Select-text translate:"),
+                &mut self.draft.hotkey_selection_translate,
+            );
+            form_line(
+                ui,
+                tr("Snip and translate:"),
+                &mut self.draft.hotkey_capture_translate,
+            );
+            form_line(ui, tr("Click-through:"), &mut self.draft.hotkey_clickthrough);
+        });
         let conflicts = find_conflicts(&bindings_from_config(&self.draft));
         if !conflicts.is_empty() {
-            ui.add_space(8.0);
+            ui.add_space(6.0);
             ui.colored_label(
                 Color32::from_rgb(200, 60, 40),
                 RichText::new(format!(
@@ -520,38 +605,29 @@ impl PrefsApp {
                 )),
             );
         }
-        ui.add_space(10.0);
+        ui.add_space(8.0);
         ui.weak(tr(
             "Hotkeys already used by another app cannot be bound. Click Apply to rebind.",
         ));
     }
 
-    fn ui_output(&mut self, ui: &mut Ui) {
-        egui::Grid::new("prefs_output")
-            .num_columns(2)
-            .spacing([16.0, 10.0])
-            .min_col_width(FORM_LABEL_W)
-            .min_row_height(ROW_H)
-            .show(ui, |ui| {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.set_min_width(FORM_LABEL_W);
-                    ui.label(tr("Save folder:"));
-                });
-                ui.horizontal(|ui| {
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.draft.quick_save_folder)
-                            .desired_width(ui.available_width() - 88.0),
-                    );
-                    if ui.button(tr("Browse…")).clicked() {
-                        if let Some(p) = crate::dialog::open_folder() {
-                            self.draft.quick_save_folder = p;
-                        }
-                    }
-                });
-                ui.end_row();
-                form_slider(ui, tr("Quality:"), &mut self.draft.image_quality, 1..=100);
-            });
+    fn ui_about(&mut self, ui: &mut Ui) {
+        ui.label(RichText::new(format!("PinShot {VERSION}")).heading());
+        ui.label(crate::native::platform_name());
+        ui.add_space(8.0);
+        ui.label(tr(
+            "Settings layout follows Snipaste Preferences. Features stay PinShot's.",
+        ));
     }
+}
+
+fn form_grid(ui: &mut Ui, id: &'static str, add: impl FnOnce(&mut Ui)) {
+    egui::Grid::new(id)
+        .num_columns(2)
+        .spacing([10.0, 8.0])
+        .min_col_width(FORM_LABEL_W)
+        .min_row_height(ROW_H)
+        .show(ui, add);
 }
 
 fn form_combo(
@@ -561,24 +637,27 @@ fn form_combo(
     selected: impl Into<egui::WidgetText>,
     add_contents: impl FnOnce(&mut Ui),
 ) {
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
         ui.set_min_width(FORM_LABEL_W);
         ui.label(label);
     });
-    let w = ui.available_width().max(180.0);
     egui::ComboBox::from_id_salt(id)
-        .width(w)
+        .width(CONTROL_W)
         .selected_text(selected)
         .show_ui(ui, add_contents);
     ui.end_row();
 }
 
 fn form_line(ui: &mut Ui, label: String, val: &mut String) {
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
         ui.set_min_width(FORM_LABEL_W);
         ui.label(label);
     });
-    ui.add(egui::TextEdit::singleline(val).desired_width(ui.available_width()).min_size(egui::vec2(0.0, ROW_H)));
+    ui.add(
+        egui::TextEdit::singleline(val)
+            .desired_width(CONTROL_W)
+            .min_size(egui::vec2(CONTROL_W, ROW_H)),
+    );
     ui.end_row();
 }
 
@@ -588,12 +667,11 @@ fn form_slider<Num: egui::emath::Numeric>(
     val: &mut Num,
     range: std::ops::RangeInclusive<Num>,
 ) {
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
         ui.set_min_width(FORM_LABEL_W);
         ui.label(label);
     });
-    let w = ui.available_width().max(160.0);
-    ui.add_sized([w, ROW_H], egui::Slider::new(val, range));
+    ui.add_sized([CONTROL_W, ROW_H], egui::Slider::new(val, range));
     ui.end_row();
 }
 
@@ -602,40 +680,42 @@ mod tests {
     use super::*;
 
     #[test]
-    fn general_tab_is_landscape_compact() {
-        let sz = prefs_inner_size(0, false);
-        assert!(sz.x >= PREFS_MIN_W);
-        assert!(sz.y >= PREFS_MIN_H);
-        assert!(FORM_LABEL_W >= 120.0);
-        assert!(
-            sz.y <= 340.0,
-            "collapsed General should hug content, got h={}",
-            sz.y
-        );
-        assert!(
-            sz.x > sz.y,
-            "General collapsed must be landscape (Snipaste-like hug), got {:?}",
-            sz
-        );
-    }
-
-    #[test]
-    fn window_grows_for_advanced_and_hotkeys() {
-        let general = prefs_inner_size(0, false);
-        let advanced = prefs_inner_size(0, true);
-        let hotkeys = prefs_inner_size(1, false);
-        let output = prefs_inner_size(2, false);
-        assert!(advanced.y > general.y);
-        assert!(hotkeys.y > general.y);
-        assert!(output.y <= general.y);
-        assert!(advanced.y < 700.0);
-        assert_eq!(general.x, PREFS_W);
-        assert_eq!(hotkeys.x, PREFS_W);
+    fn prefs_window_is_landscape_like_snipaste() {
+        assert!(PREFS_W > PREFS_H);
+        assert!(PREFS_W >= 560.0);
+        assert!(PREFS_H >= 360.0);
+        assert!(PREFS_H <= 480.0);
+        assert_eq!(TABS.len(), 7);
+        assert_eq!(TABS[0], "General");
+        assert_eq!(TABS[5], "Control");
+        assert_eq!(TABS[6], "About");
     }
 
     #[test]
     fn form_label_column_is_aligned() {
-        assert_eq!(FORM_LABEL_W, 168.0);
-        assert!(ROW_H >= 24.0);
+        assert!(FORM_LABEL_W >= 100.0);
+        assert!(ROW_H >= 22.0);
+        assert!(CONTROL_W >= 180.0);
+    }
+
+    #[test]
+    fn restore_general_resets_language_and_login() {
+        let mut app = PrefsApp {
+            draft: Config {
+                language: "en".into(),
+                run_at_login: true,
+                start_minimized: false,
+                ..Config::default()
+            },
+            tab: 0,
+            group_sel: 0,
+            group_edit: String::new(),
+            status: String::new(),
+        };
+        app.restore_tab();
+        let d = Config::default();
+        assert_eq!(app.draft.language, d.language);
+        assert_eq!(app.draft.run_at_login, d.run_at_login);
+        assert_eq!(app.draft.start_minimized, d.start_minimized);
     }
 }

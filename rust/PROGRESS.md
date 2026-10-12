@@ -17,7 +17,7 @@ HEAD 在本轮 Snipaste 对齐：文字标注（点击落字、IME、光标、�
 | 面 | 状态 |
 |---|---|
 | 文字标注（对照 Snipaste） | **已修**：点击落字；CJK IME（整段编辑 ungrab）；闪烁 caret；选中文字工具再点可回编；滚轮/`1`/`2`/`[`/`]` 改号；拖角缩放；右键结束；Esc 取消文字不退出截图；中键/Ctrl+V 粘贴；默认无描边、界面字体 |
-| 设置窗（对照 Snipaste 版式） | **已修**：`--settings-window` egui 网格（标签列 168、16×10 间距、Apply/OK/Cancel）；CJK Noto/文泉驿/雅黑；不再在 GTK 线程上跑 eframe |
+| 设置窗（对照 Snipaste 版式） | **已修**：标签 General/Interface/Snip/Paste/Output/Control/About（无 Update）；每页恢复默认；底栏应用/确定/取消；CJK；不再在 GTK 线程上跑 eframe |
 | OCR（Snipaste 无结果窗） | **已修**：Linux 默认 ort + PP-OCRv5 det/cls/rec；`--ocr-window` 结果窗（可编辑/复制/翻译）；Windows `pinshot-ocr.exe` 仍走 `--features ocr` |
 | chrome 文字（芯片 / 菜单 / toast / prefs） | **已修**：平滑 AA；CJK 优先 Noto/Source Han/Droid/文泉驿，拉丁 Liberation |
 | 标注工具栏 / 子面板视觉 | 上轮：近白底、6px 圆角、阴影、分隔线、选中 `#3D8FD1` 描边；中文芯片 12px |
