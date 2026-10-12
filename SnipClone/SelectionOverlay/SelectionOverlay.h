@@ -41,6 +41,7 @@ public:
 
     static const SelectionModel& LastSelection();
     static const CaptureResult& LastCrop();
+    static const CaptureResult& LastFreeze();
 
 private:
     enum class Phase
@@ -120,6 +121,7 @@ private:
 
     static SelectionModel s_lastSelection;
     static CaptureResult s_lastCrop;
+    static CaptureResult s_lastFreeze;
 };
 
 } // namespace snip

@@ -11,6 +11,8 @@
 
 #include <windowsx.h>
 
+#include <algorithm>
+
 namespace snip
 {
 
@@ -32,16 +34,22 @@ POINT AnnotationOverlay::LastExportOrigin()
     return s_lastOrigin;
 }
 
-bool AnnotationOverlay::Start(HINSTANCE instance, HWND owner, CaptureResult image)
+bool AnnotationOverlay::Start(HINSTANCE instance, HWND owner, CaptureResult crop, CaptureResult freeze)
 {
-    if (m_hwnd || image.Empty())
+    if (m_hwnd || crop.Empty())
     {
         return false;
     }
 
     m_instance = instance;
     m_owner = owner;
-    m_base = std::move(image);
+    m_base = std::move(crop);
+    m_freeze = std::move(freeze);
+    if (m_freeze.Empty())
+    {
+        // Still allow annotate; crop refine (grow) needs freeze.
+        m_freeze = m_base;
+    }
 
     if (!m_renderer.Initialize())
     {
@@ -203,9 +211,10 @@ void AnnotationOverlay::OnTextEditorDone(bool committed, const std::wstring& tex
 
     if (committed)
     {
+        const DrawStyle style = m_ann.Style(ToolKind::Text);
         if (idx >= 0)
         {
-            m_ann.UpdateText(idx, text);
+            m_ann.UpdateText(idx, text, &style);
         }
         else
         {
@@ -224,21 +233,49 @@ LRESULT AnnotationOverlay::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
 {
     switch (msg)
     {
+    case WM_SETCURSOR:
+        if (LOWORD(lParam) == HTCLIENT)
+        {
+            POINT cursor{};
+            GetCursorPos(&cursor);
+            ScreenToClient(hwnd, &cursor);
+            const CropHit ch = HitCropHandle(cursor);
+            if (ch != CropHit::None)
+            {
+                UpdateCropCursor(ch);
+                return TRUE;
+            }
+        }
+        break;
+
     case WM_LBUTTONDOWN:
     {
+        const POINT client{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         const D2D1_POINT_2F pt = D2D1::Point2F(
-            static_cast<float>(GET_X_LPARAM(lParam)),
-            static_cast<float>(GET_Y_LPARAM(lParam)));
+            static_cast<float>(client.x),
+            static_cast<float>(client.y));
+
+        // Edge handles resize the crop against the retained freeze.
+        if (m_textEditor && m_textEditor->IsOpen())
+        {
+            m_textEditor->Close(true);
+            return 0;
+        }
+        const CropHit cropHit = HitCropHandle(client);
+        if (cropHit != CropHit::None)
+        {
+            SetCapture(hwnd);
+            m_cropDrag = cropHit;
+            m_cropDragStart = { m_base.screenRect.left + client.x, m_base.screenRect.top + client.y };
+            m_cropDragStartScreen = m_base.screenRect;
+            m_cropPreviewScreen = m_base.screenRect;
+            UpdateCropCursor(cropHit);
+            return 0;
+        }
 
         if (m_ann.Tool() == ToolKind::Text)
         {
             // PinShot: click existing text → re-edit; blank → place new.
-            // If editor already open, first commit then return (second click places new).
-            if (m_textEditor && m_textEditor->IsOpen())
-            {
-                m_textEditor->Close(true);
-                return 0;
-            }
             const int hit = m_ann.HitTest(pt);
             if (hit >= 0)
             {
@@ -261,22 +298,50 @@ LRESULT AnnotationOverlay::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         return 0;
     }
     case WM_MOUSEMOVE:
+    {
+        const POINT client{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        if (m_cropDrag != CropHit::None && GetCapture() == hwnd)
+        {
+            ApplyCropDrag(client);
+            return 0;
+        }
         if (GetCapture() == hwnd)
         {
-            m_ann.Move(D2D1::Point2F(
-                static_cast<float>(GET_X_LPARAM(lParam)),
-                static_cast<float>(GET_Y_LPARAM(lParam))));
+            m_ann.Move(D2D1::Point2F(static_cast<float>(client.x), static_cast<float>(client.y)));
+        }
+        else
+        {
+            const CropHit ch = HitCropHandle(client);
+            if (ch != CropHit::None)
+            {
+                UpdateCropCursor(ch);
+            }
         }
         return 0;
+    }
     case WM_LBUTTONUP:
+    {
+        const POINT client{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        if (m_cropDrag != CropHit::None)
+        {
+            if (GetCapture() == hwnd)
+            {
+                ReleaseCapture();
+            }
+            ApplyCropDrag(client);
+            const RECT commit = m_cropPreviewScreen;
+            m_cropDrag = CropHit::None;
+            m_cropPreviewScreen = {};
+            CommitCropRect(commit);
+            return 0;
+        }
         if (GetCapture() == hwnd)
         {
             ReleaseCapture();
         }
-        m_ann.Release(D2D1::Point2F(
-            static_cast<float>(GET_X_LPARAM(lParam)),
-            static_cast<float>(GET_Y_LPARAM(lParam))));
+        m_ann.Release(D2D1::Point2F(static_cast<float>(client.x), static_cast<float>(client.y)));
         return 0;
+    }
 
     case WM_LBUTTONDBLCLK:
     {
@@ -651,6 +716,229 @@ void AnnotationOverlay::DoPin()
     RequestClose();
 }
 
+AnnotationOverlay::CropHit AnnotationOverlay::HitCropHandle(POINT client) const
+{
+    if (m_w < 16 || m_h < 16)
+    {
+        return CropHit::None;
+    }
+    constexpr int kTol = 7;
+    const bool nearL = client.x >= 0 && client.x <= kTol;
+    const bool nearR = client.x >= m_w - kTol && client.x < m_w;
+    const bool nearT = client.y >= 0 && client.y <= kTol;
+    const bool nearB = client.y >= m_h - kTol && client.y < m_h;
+    if (nearT && nearL)
+        return CropHit::NW;
+    if (nearT && nearR)
+        return CropHit::NE;
+    if (nearB && nearL)
+        return CropHit::SW;
+    if (nearB && nearR)
+        return CropHit::SE;
+    if (nearT)
+        return CropHit::N;
+    if (nearB)
+        return CropHit::S;
+    if (nearL)
+        return CropHit::W;
+    if (nearR)
+        return CropHit::E;
+    return CropHit::None;
+}
+
+void AnnotationOverlay::UpdateCropCursor(CropHit hit)
+{
+    LPCWSTR id = IDC_ARROW;
+    switch (hit)
+    {
+    case CropHit::N:
+    case CropHit::S:
+        id = IDC_SIZENS;
+        break;
+    case CropHit::E:
+    case CropHit::W:
+        id = IDC_SIZEWE;
+        break;
+    case CropHit::NE:
+    case CropHit::SW:
+        id = IDC_SIZENESW;
+        break;
+    case CropHit::NW:
+    case CropHit::SE:
+        id = IDC_SIZENWSE;
+        break;
+    default:
+        break;
+    }
+    SetCursor(LoadCursorW(nullptr, id));
+}
+
+bool AnnotationOverlay::CommitCropRect(RECT newScreenRect)
+{
+    if (m_freeze.Empty())
+    {
+        return false;
+    }
+    // Clamp to freeze bounds.
+    newScreenRect.left = (std::max)(newScreenRect.left, m_freeze.screenRect.left);
+    newScreenRect.top = (std::max)(newScreenRect.top, m_freeze.screenRect.top);
+    newScreenRect.right = (std::min)(newScreenRect.right, m_freeze.screenRect.right);
+    newScreenRect.bottom = (std::min)(newScreenRect.bottom, m_freeze.screenRect.bottom);
+    if (newScreenRect.right - newScreenRect.left < 8 || newScreenRect.bottom - newScreenRect.top < 8)
+    {
+        return false;
+    }
+
+    auto cropped = m_freeze.CropToScreenRect(newScreenRect);
+    if (cropped.Empty())
+    {
+        return false;
+    }
+    if (cropped.screenRect.left == m_base.screenRect.left &&
+        cropped.screenRect.top == m_base.screenRect.top &&
+        cropped.screenRect.right == m_base.screenRect.right &&
+        cropped.screenRect.bottom == m_base.screenRect.bottom)
+    {
+        Present();
+        return true;
+    }
+
+    const float dx = static_cast<float>(cropped.screenRect.left - m_base.screenRect.left);
+    const float dy = static_cast<float>(cropped.screenRect.top - m_base.screenRect.top);
+    // Shapes are crop-local: shift when origin moves, then drop fully outside.
+    // Policy: fully outside → removed; partially outside → kept (may clip at edges).
+    m_ann.Finish();
+    m_ann.RemapForCrop(
+        -dx,
+        -dy,
+        0.f,
+        0.f,
+        static_cast<float>(cropped.width),
+        static_cast<float>(cropped.height));
+
+    m_base = std::move(cropped);
+    ReleaseSurface();
+    if (!EnsureSurface())
+    {
+        return false;
+    }
+    if (m_toolbar)
+    {
+        m_toolbar->PlaceBelow(m_base.screenRect);
+        m_toolbar->SyncFromAnnotator();
+    }
+    Present();
+    return true;
+}
+
+void AnnotationOverlay::ApplyCropDrag(POINT client)
+{
+    // Preview only while dragging; CommitCropRect runs on mouse-up (one undo).
+    RECT r = m_cropDragStartScreen;
+    const LONG ddx = (m_base.screenRect.left + client.x) - m_cropDragStart.x;
+    const LONG ddy = (m_base.screenRect.top + client.y) - m_cropDragStart.y;
+
+    switch (m_cropDrag)
+    {
+    case CropHit::N:
+        r.top += ddy;
+        break;
+    case CropHit::S:
+        r.bottom += ddy;
+        break;
+    case CropHit::W:
+        r.left += ddx;
+        break;
+    case CropHit::E:
+        r.right += ddx;
+        break;
+    case CropHit::NW:
+        r.left += ddx;
+        r.top += ddy;
+        break;
+    case CropHit::NE:
+        r.right += ddx;
+        r.top += ddy;
+        break;
+    case CropHit::SW:
+        r.left += ddx;
+        r.bottom += ddy;
+        break;
+    case CropHit::SE:
+        r.right += ddx;
+        r.bottom += ddy;
+        break;
+    default:
+        return;
+    }
+    if (r.right < r.left)
+    {
+        std::swap(r.left, r.right);
+    }
+    if (r.bottom < r.top)
+    {
+        std::swap(r.top, r.bottom);
+    }
+    if (r.left < m_freeze.screenRect.left)
+        r.left = m_freeze.screenRect.left;
+    if (r.top < m_freeze.screenRect.top)
+        r.top = m_freeze.screenRect.top;
+    if (r.right > m_freeze.screenRect.right)
+        r.right = m_freeze.screenRect.right;
+    if (r.bottom > m_freeze.screenRect.bottom)
+        r.bottom = m_freeze.screenRect.bottom;
+    m_cropPreviewScreen = r;
+    Present();
+}
+
+void AnnotationOverlay::PaintCropChrome()
+{
+    if (!m_memDc || m_w <= 0 || m_h <= 0)
+    {
+        return;
+    }
+    // Display-only chrome (not in ComposeExport).
+    int l = 0;
+    int t = 0;
+    int r = m_w;
+    int b = m_h;
+    if (m_cropDrag != CropHit::None)
+    {
+        l = m_cropPreviewScreen.left - m_base.screenRect.left;
+        t = m_cropPreviewScreen.top - m_base.screenRect.top;
+        r = m_cropPreviewScreen.right - m_base.screenRect.left;
+        b = m_cropPreviewScreen.bottom - m_base.screenRect.top;
+    }
+
+    HPEN pen = CreatePen(PS_SOLID, 1, RGB(40, 140, 255));
+    HGDIOBJ oldPen = SelectObject(m_memDc, pen);
+    HGDIOBJ oldBrush = SelectObject(m_memDc, GetStockObject(NULL_BRUSH));
+    Rectangle(m_memDc, l, t, r, b);
+
+    HBRUSH fill = CreateSolidBrush(RGB(40, 140, 255));
+    SelectObject(m_memDc, fill);
+    constexpr int hs = 6;
+    const POINT corners[] = {
+        { l, t },
+        { (l + r) / 2, t },
+        { r - 1, t },
+        { l, (t + b) / 2 },
+        { r - 1, (t + b) / 2 },
+        { l, b - 1 },
+        { (l + r) / 2, b - 1 },
+        { r - 1, b - 1 },
+    };
+    for (const auto& c : corners)
+    {
+        RECT rc{ c.x - hs / 2, c.y - hs / 2, c.x + hs / 2 + 1, c.y + hs / 2 + 1 };
+        FillRect(m_memDc, &rc, fill);
+    }
+    SelectObject(m_memDc, oldBrush);
+    SelectObject(m_memDc, oldPen);
+    DeleteObject(fill);
+    DeleteObject(pen);
+}
+
 void AnnotationOverlay::StampCaptureToDib(const CaptureResult& image)
 {
     if (!m_bits || image.Empty() || m_w <= 0 || m_h <= 0 || m_dibStride <= 0)
@@ -766,6 +1054,7 @@ void AnnotationOverlay::Present()
     {
         StampCaptureToDib(frame);
     }
+    PaintCropChrome(); // handles are display-only; ComposeExport never paints them
 
     // Keep window size in sync with capture pixels (DPI-safe).
     SetWindowPos(

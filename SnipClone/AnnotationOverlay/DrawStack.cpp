@@ -117,6 +117,63 @@ void DrawStack::TranslateShape(DrawCommand& cmd, float dx, float dy)
     }
 }
 
+namespace
+{
+float Dist2(D2D1_POINT_2F a, D2D1_POINT_2F b)
+{
+    const float dx = a.x - b.x;
+    const float dy = a.y - b.y;
+    return dx * dx + dy * dy;
+}
+
+float DistPointSeg(D2D1_POINT_2F p, D2D1_POINT_2F a, D2D1_POINT_2F b)
+{
+    const float dx = b.x - a.x;
+    const float dy = b.y - a.y;
+    const float len2 = dx * dx + dy * dy;
+    if (len2 < 1e-6f)
+    {
+        return std::sqrt(Dist2(p, a));
+    }
+    float t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2;
+    t = (std::max)(0.f, (std::min)(1.f, t));
+    return std::sqrt(Dist2(p, D2D1::Point2F(a.x + t * dx, a.y + t * dy)));
+}
+
+float DistPointPolyline(D2D1_POINT_2F p, const std::vector<D2D1_POINT_2F>& pts)
+{
+    if (pts.empty())
+    {
+        return 1e9f;
+    }
+    if (pts.size() == 1)
+    {
+        return std::sqrt(Dist2(p, pts[0]));
+    }
+    float best = 1e9f;
+    for (size_t i = 1; i < pts.size(); ++i)
+    {
+        best = (std::min)(best, DistPointSeg(p, pts[i - 1], pts[i]));
+    }
+    return best;
+}
+
+bool PointInEllipse(D2D1_POINT_2F p, D2D1_POINT_2F a, D2D1_POINT_2F b)
+{
+    const float cx = (a.x + b.x) * 0.5f;
+    const float cy = (a.y + b.y) * 0.5f;
+    const float rx = std::abs(b.x - a.x) * 0.5f;
+    const float ry = std::abs(b.y - a.y) * 0.5f;
+    if (rx < 1.f || ry < 1.f)
+    {
+        return DistPointSeg(p, a, b) <= 6.f;
+    }
+    const float nx = (p.x - cx) / rx;
+    const float ny = (p.y - cy) / ry;
+    return (nx * nx + ny * ny) <= 1.f;
+}
+} // namespace
+
 D2D1_RECT_F DrawStack::ApproxBounds(const DrawCommand& cmd) const
 {
     if (cmd.pts.empty())
@@ -125,8 +182,9 @@ D2D1_RECT_F DrawStack::ApproxBounds(const DrawCommand& cmd) const
     }
     if (cmd.kind == ToolKind::Text)
     {
-        const float w = (std::max)(40.f, cmd.style.fontSize * 0.6f * static_cast<float>(cmd.text.size() + 1));
-        const float h = cmd.style.fontSize * 1.4f;
+        // Prefer wider CJK-friendly estimate (~1em per glyph).
+        const float w = (std::max)(40.f, cmd.style.fontSize * 1.05f * static_cast<float>(cmd.text.size() + 1));
+        const float h = cmd.style.fontSize * 1.5f;
         return D2D1::RectF(cmd.pts[0].x, cmd.pts[0].y, cmd.pts[0].x + w, cmd.pts[0].y + h);
     }
     float minX = cmd.pts[0].x, maxX = cmd.pts[0].x;
@@ -142,20 +200,100 @@ D2D1_RECT_F DrawStack::ApproxBounds(const DrawCommand& cmd) const
     return D2D1::RectF(minX - pad, minY - pad, maxX + pad, maxY + pad);
 }
 
+bool DrawStack::HitShape(const DrawCommand& cmd, D2D1_POINT_2F pt) const
+{
+    if (cmd.pts.empty() || cmd.kind == ToolKind::Eraser)
+    {
+        return false;
+    }
+    const float tol = (std::max)(6.f, cmd.style.width * 0.5f + 4.f);
+
+    if (cmd.kind == ToolKind::Text)
+    {
+        const auto b = ApproxBounds(cmd);
+        return pt.x >= b.left && pt.x <= b.right && pt.y >= b.top && pt.y <= b.bottom;
+    }
+    if (cmd.kind == ToolKind::Pen || cmd.kind == ToolKind::Mosaic)
+    {
+        return DistPointPolyline(pt, cmd.pts) <= tol;
+    }
+    if (cmd.kind == ToolKind::Arrow && cmd.pts.size() >= 2)
+    {
+        return DistPointSeg(pt, cmd.pts.front(), cmd.pts.back()) <= tol;
+    }
+    if (cmd.kind == ToolKind::Rect && cmd.pts.size() >= 2)
+    {
+        const float l = (std::min)(cmd.pts[0].x, cmd.pts[1].x);
+        const float r = (std::max)(cmd.pts[0].x, cmd.pts[1].x);
+        const float t = (std::min)(cmd.pts[0].y, cmd.pts[1].y);
+        const float b = (std::max)(cmd.pts[0].y, cmd.pts[1].y);
+        if (cmd.style.filled)
+        {
+            return pt.x >= l && pt.x <= r && pt.y >= t && pt.y <= b;
+        }
+        const bool nearEdge =
+            (pt.x >= l - tol && pt.x <= r + tol && pt.y >= t - tol && pt.y <= t + tol) ||
+            (pt.x >= l - tol && pt.x <= r + tol && pt.y >= b - tol && pt.y <= b + tol) ||
+            (pt.y >= t - tol && pt.y <= b + tol && pt.x >= l - tol && pt.x <= l + tol) ||
+            (pt.y >= t - tol && pt.y <= b + tol && pt.x >= r - tol && pt.x <= r + tol);
+        return nearEdge;
+    }
+    if (cmd.kind == ToolKind::Ellipse && cmd.pts.size() >= 2)
+    {
+        if (cmd.style.filled)
+        {
+            return PointInEllipse(pt, cmd.pts[0], cmd.pts[1]);
+        }
+        // Ring hit: inside inflated ellipse, outside deflated.
+        const float cx = (cmd.pts[0].x + cmd.pts[1].x) * 0.5f;
+        const float cy = (cmd.pts[0].y + cmd.pts[1].y) * 0.5f;
+        float rx = std::abs(cmd.pts[1].x - cmd.pts[0].x) * 0.5f;
+        float ry = std::abs(cmd.pts[1].y - cmd.pts[0].y) * 0.5f;
+        if (rx < 1.f || ry < 1.f)
+        {
+            return DistPointSeg(pt, cmd.pts[0], cmd.pts[1]) <= tol;
+        }
+        const float nx = (pt.x - cx) / rx;
+        const float ny = (pt.y - cy) / ry;
+        const float d = std::sqrt(nx * nx + ny * ny);
+        const float band = tol / (std::min)(rx, ry);
+        return std::abs(d - 1.f) <= band;
+    }
+    const auto b = ApproxBounds(cmd);
+    return pt.x >= b.left && pt.x <= b.right && pt.y >= b.top && pt.y <= b.bottom;
+}
+
 int DrawStack::HitTest(D2D1_POINT_2F pt) const
 {
     for (int i = static_cast<int>(m_shapes.size()) - 1; i >= 0; --i)
     {
-        const auto& sh = m_shapes[static_cast<size_t>(i)];
-        if (sh.kind == ToolKind::Eraser)
-        {
-            continue; // eraser strokes are invisible restorations
-        }
-        const auto b = ApproxBounds(sh);
-        if (pt.x >= b.left && pt.x <= b.right && pt.y >= b.top && pt.y <= b.bottom)
+        if (HitShape(m_shapes[static_cast<size_t>(i)], pt))
         {
             return i;
         }
+    }
+    return -1;
+}
+
+int DrawStack::HitResizeHandle(int shapeIndex, D2D1_POINT_2F pt) const
+{
+    if (shapeIndex < 0 || shapeIndex >= static_cast<int>(m_shapes.size()))
+    {
+        return -1;
+    }
+    const auto& sh = m_shapes[static_cast<size_t>(shapeIndex)];
+    if (!IsTwoPointTool(sh.kind) || sh.pts.size() < 2)
+    {
+        return -1;
+    }
+    constexpr float kHandle = 8.f;
+    if (std::sqrt(Dist2(pt, sh.pts[0])) <= kHandle)
+    {
+        return 1;
+    }
+    if (std::sqrt(Dist2(pt, sh.pts[1])) <= kHandle)
+    {
+        return 2;
     }
     return -1;
 }
@@ -177,7 +315,7 @@ void DrawStack::AddText(D2D1_POINT_2F pt, const std::wstring& text)
     Notify();
 }
 
-void DrawStack::UpdateText(int index, const std::wstring& text)
+void DrawStack::UpdateText(int index, const std::wstring& text, const DrawStyle* style)
 {
     if (index < 0 || index >= static_cast<int>(m_shapes.size()))
     {
@@ -204,7 +342,48 @@ void DrawStack::UpdateText(int index, const std::wstring& text)
     }
     PushUndoSnapshot();
     m_shapes[static_cast<size_t>(index)].text = text;
+    if (style)
+    {
+        m_shapes[static_cast<size_t>(index)].style = *style;
+    }
     Notify();
+}
+
+void DrawStack::RemapForCrop(float dx, float dy, float left, float top, float right, float bottom)
+{
+    PushUndoSnapshot();
+    TranslateAll(dx, dy);
+    CullOutside(left, top, right, bottom);
+    Notify();
+}
+
+void DrawStack::TranslateAll(float dx, float dy)
+{
+    if (dx == 0.f && dy == 0.f)
+    {
+        return;
+    }
+    for (auto& sh : m_shapes)
+    {
+        TranslateShape(sh, dx, dy);
+    }
+}
+
+void DrawStack::CullOutside(float left, float top, float right, float bottom)
+{
+    std::vector<DrawCommand> kept;
+    kept.reserve(m_shapes.size());
+    for (auto& sh : m_shapes)
+    {
+        const auto b = ApproxBounds(sh);
+        const bool outside = b.right < left || b.left > right || b.bottom < top || b.top > bottom;
+        if (!outside)
+        {
+            kept.push_back(std::move(sh));
+        }
+    }
+    m_shapes = std::move(kept);
+    m_selected = -1;
 }
 
 const DrawCommand* DrawStack::ShapeAt(int index) const
@@ -277,6 +456,8 @@ void DrawStack::Finish()
     {
         m_dragging = false;
         m_movingSelection = false;
+        m_resizingSelection = false;
+        m_resizeHandle = 0;
         CommitLive();
         Notify();
     }
@@ -292,12 +473,39 @@ void DrawStack::Press(D2D1_POINT_2F pt)
     if (m_tool == ToolKind::Select)
     {
         Finish();
+        m_resizingSelection = false;
+        m_resizeHandle = 0;
+        m_moveUndoPushed = false;
+
+        // Prefer resize handles on the current selection.
+        if (m_selected >= 0)
+        {
+            const int handle = HitResizeHandle(m_selected, pt);
+            if (handle > 0)
+            {
+                m_resizingSelection = true;
+                m_resizeHandle = handle;
+                m_dragging = true;
+                m_moveOrigin = pt;
+                Notify();
+                return;
+            }
+        }
+
         const int hit = HitTest(pt);
         m_selected = hit;
-        m_moveUndoPushed = false;
         if (hit >= 0)
         {
-            m_movingSelection = true;
+            const int handle = HitResizeHandle(hit, pt);
+            if (handle > 0)
+            {
+                m_resizingSelection = true;
+                m_resizeHandle = handle;
+            }
+            else
+            {
+                m_movingSelection = true;
+            }
             m_dragging = true;
             m_moveOrigin = pt;
         }
@@ -320,6 +528,25 @@ void DrawStack::Move(D2D1_POINT_2F pt)
 {
     if (!m_dragging)
     {
+        return;
+    }
+
+    if (m_resizingSelection && m_selected >= 0 && m_selected < static_cast<int>(m_shapes.size()) &&
+        m_resizeHandle > 0)
+    {
+        auto& sh = m_shapes[static_cast<size_t>(m_selected)];
+        if (sh.pts.size() >= 2)
+        {
+            if (!m_moveUndoPushed)
+            {
+                PushUndoSnapshot();
+                m_moveUndoPushed = true;
+            }
+            const size_t idx = static_cast<size_t>(m_resizeHandle == 1 ? 0 : 1);
+            sh.pts[idx] = pt;
+            m_moveOrigin = pt;
+            Notify();
+        }
         return;
     }
 
@@ -371,10 +598,11 @@ void DrawStack::Release(D2D1_POINT_2F pt)
     }
     Move(pt);
     m_dragging = false;
-    if (m_movingSelection)
+    if (m_movingSelection || m_resizingSelection)
     {
         m_movingSelection = false;
-        // Drop no-op move undo: if last undo equals current, pop — skip for simplicity.
+        m_resizingSelection = false;
+        m_resizeHandle = 0;
         Notify();
         return;
     }

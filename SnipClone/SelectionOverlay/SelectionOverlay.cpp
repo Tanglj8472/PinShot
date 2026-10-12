@@ -23,6 +23,7 @@ namespace snip
 
 SelectionModel SelectionOverlay::s_lastSelection{};
 CaptureResult SelectionOverlay::s_lastCrop{};
+CaptureResult SelectionOverlay::s_lastFreeze{};
 
 namespace
 {
@@ -98,6 +99,11 @@ const CaptureResult& SelectionOverlay::LastCrop()
     return s_lastCrop;
 }
 
+const CaptureResult& SelectionOverlay::LastFreeze()
+{
+    return s_lastFreeze;
+}
+
 bool SelectionOverlay::Start(
     HINSTANCE instance,
     HWND owner,
@@ -155,12 +161,14 @@ void SelectionOverlay::Stop(bool confirmed)
     if (confirmed && m_model.hasSelection)
     {
         s_lastSelection = m_model;
+        s_lastFreeze = m_freeze;
         s_lastCrop = m_freeze.CropToScreenRect(m_model.screenRect);
     }
     else
     {
         m_model.Clear();
         s_lastCrop = {};
+        s_lastFreeze = {};
     }
 
     const HWND hwnd = m_hwnd;

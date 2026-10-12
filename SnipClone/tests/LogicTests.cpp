@@ -153,6 +153,79 @@ void TestDrawStackUndo()
     stack.Finish();
     Expect(stack.Live() == nullptr, "Finish clears live");
     Expect(stack.Shapes().size() == 1, "Finish commits live");
+
+    // Move selection = one undo.
+    stack.Clear();
+    stack.SetTool(snip::ToolKind::Rect);
+    stack.Press(D2D1::Point2F(10, 10));
+    stack.Move(D2D1::Point2F(30, 30));
+    stack.Release(D2D1::Point2F(30, 30));
+    stack.SetTool(snip::ToolKind::Select);
+    stack.Press(D2D1::Point2F(20, 20));
+    stack.Move(D2D1::Point2F(25, 25));
+    stack.Move(D2D1::Point2F(35, 35));
+    stack.Release(D2D1::Point2F(35, 35));
+    const int undosBefore = stack.CanUndo() ? 1 : 0;
+    Expect(stack.CanUndo(), "move creates undo");
+    stack.Undo(); // undo move
+    Expect(stack.CanUndo(), "draw still undoable");
+    (void)undosBefore;
+
+    // UpdateText keeps style when provided.
+    stack.Clear();
+    stack.AddText(D2D1::Point2F(2, 2), L"hi");
+    snip::DrawStyle st = stack.Style(snip::ToolKind::Text);
+    st.bold = true;
+    st.fontSize = 28.f;
+    stack.UpdateText(0, L"hello", &st);
+    Expect(stack.ShapeAt(0) && stack.ShapeAt(0)->style.bold && stack.ShapeAt(0)->style.fontSize == 28.f,
+           "UpdateText applies style");
+    Expect(stack.ShapeAt(0)->text == L"hello", "UpdateText replaces text");
+}
+
+void TestHitAccuracy()
+{
+    std::printf("HitTest\n");
+    snip::DrawStack stack;
+    stack.SetTool(snip::ToolKind::Arrow);
+    stack.Press(D2D1::Point2F(0, 0));
+    stack.Move(D2D1::Point2F(100, 0));
+    stack.Release(D2D1::Point2F(100, 0));
+    Expect(stack.HitTest(D2D1::Point2F(50, 0)) == 0, "arrow shaft hit");
+    Expect(stack.HitTest(D2D1::Point2F(50, 40)) < 0, "arrow empty corner miss");
+
+    stack.Clear();
+    stack.SetTool(snip::ToolKind::Pen);
+    stack.Press(D2D1::Point2F(0, 0));
+    stack.Move(D2D1::Point2F(20, 0));
+    stack.Move(D2D1::Point2F(40, 0));
+    stack.Release(D2D1::Point2F(40, 0));
+    Expect(stack.HitTest(D2D1::Point2F(20, 0)) == 0, "pen stroke hit");
+    Expect(stack.HitTest(D2D1::Point2F(20, 30)) < 0, "pen far miss");
+
+    stack.Clear();
+    stack.SetTool(snip::ToolKind::Rect);
+    stack.Press(D2D1::Point2F(10, 10));
+    stack.Move(D2D1::Point2F(50, 40));
+    stack.Release(D2D1::Point2F(50, 40));
+    stack.SetTool(snip::ToolKind::Select);
+    Expect(stack.HitResizeHandle(0, D2D1::Point2F(10, 10)) == 1, "resize handle p0");
+    Expect(stack.HitResizeHandle(0, D2D1::Point2F(50, 40)) == 2, "resize handle p1");
+}
+
+void TestRemapForCrop()
+{
+    std::printf("RemapForCrop\n");
+    snip::DrawStack stack;
+    stack.SetTool(snip::ToolKind::Rect);
+    stack.Press(D2D1::Point2F(5, 5));
+    stack.Move(D2D1::Point2F(15, 15));
+    stack.Release(D2D1::Point2F(15, 15));
+    stack.RemapForCrop(-10.f, -10.f, 0.f, 0.f, 100.f, 100.f);
+    Expect(stack.ShapeAt(0) && stack.ShapeAt(0)->pts[0].x == 15.f, "remap translates");
+    stack.RemapForCrop(0.f, 0.f, 50.f, 50.f, 100.f, 100.f);
+    Expect(stack.Shapes().empty(), "cull outside removes shape");
+    Expect(stack.CanUndo(), "remap pushes undo");
 }
 
 void TestComposeExportOmitsSelectionChrome()
@@ -204,6 +277,8 @@ int wmain()
     TestCropToScreenRect();
     TestRectsIntersect();
     TestDrawStackUndo();
+    TestHitAccuracy();
+    TestRemapForCrop();
     TestComposeExportOmitsSelectionChrome();
 
     std::printf("\n%d passed, %d failed\n", g_passed, g_failed);

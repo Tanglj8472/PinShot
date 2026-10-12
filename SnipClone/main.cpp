@@ -47,8 +47,10 @@ void BeginAnnotationFromSelection()
         return;
     }
 
+    // Keep full freeze so annotation can refine the crop (grow/shrink) later.
+    auto freeze = snip::SelectionOverlay::LastFreeze();
     g_annotation = std::make_unique<snip::AnnotationOverlay>();
-    if (!g_annotation->Start(g_instance, g_mainWnd, std::move(cropped)))
+    if (!g_annotation->Start(g_instance, g_mainWnd, std::move(cropped), std::move(freeze)))
     {
         g_annotation.reset();
         MessageBoxW(g_mainWnd, L"Failed to open annotation overlay.", L"SnipClone", MB_ICONERROR | MB_OK);

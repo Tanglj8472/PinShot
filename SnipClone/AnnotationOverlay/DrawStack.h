@@ -41,13 +41,21 @@ public:
     void Release(D2D1_POINT_2F pt);
     void Finish();
 
-    // Hit any shape (top-most). Text preferred when overlapping loosely via z-order.
+    // Hit any shape (top-most). Distance tests for pen/arrow; AABB/ellipse for fills.
     int HitTest(D2D1_POINT_2F pt) const;
+    // When a shape is selected: -1 none, 0 body/move, 1..n resize handles (two-point: 1=p0, 2=p1).
+    int HitResizeHandle(int shapeIndex, D2D1_POINT_2F pt) const;
     void AddText(D2D1_POINT_2F pt, const std::wstring& text);
-    void UpdateText(int index, const std::wstring& text);
+    // style: if non-null, replace shape style (re-edit / toolbar sync on commit).
+    void UpdateText(int index, const std::wstring& text, const DrawStyle* style = nullptr);
     const DrawCommand* ShapeAt(int index) const;
     bool DeleteSelected();
     bool DeleteAt(int index);
+
+    // Crop refine: one undo step — shift shapes with crop origin; drop fully outside.
+    void RemapForCrop(float dx, float dy, float left, float top, float right, float bottom);
+    void TranslateAll(float dx, float dy);
+    void CullOutside(float left, float top, float right, float bottom);
 
     void AdjustWidth(int delta);
     void AdjustFontSize(int delta);
@@ -75,6 +83,7 @@ private:
     void BeginLive(ToolKind kind, D2D1_POINT_2F pt);
     void CommitLive();
     D2D1_RECT_F ApproxBounds(const DrawCommand& cmd) const;
+    bool HitShape(const DrawCommand& cmd, D2D1_POINT_2F pt) const;
     void TranslateShape(DrawCommand& cmd, float dx, float dy);
 
     ToolKind m_tool = ToolKind::Pen;
@@ -93,6 +102,8 @@ private:
     int m_colorIndex = 0;
     int m_selected = -1;
     bool m_movingSelection = false;
+    bool m_resizingSelection = false;
+    int m_resizeHandle = 0; // 1 = first point / NW-ish, 2 = second point
     bool m_moveUndoPushed = false;
     D2D1_POINT_2F m_moveOrigin{};
     ChangedFn m_changed;

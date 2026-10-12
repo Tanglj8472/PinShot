@@ -40,6 +40,7 @@ public:
 
     HWND Host() const { return m_host; }
     HWND Edit() const { return m_edit; }
+    const DrawStyle& Style() const { return m_style; }
 
 private:
     static LRESULT CALLBACK HostProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -47,6 +48,10 @@ private:
 
     void ResizeToContent();
     HFONT MakeFont(const DrawStyle& style) const;
+    bool IsImeComposing() const;
+    void ScheduleBlurCommit();
+
+    static constexpr UINT WM_TE_BLUR_COMMIT = WM_APP + 0x71;
 
     HINSTANCE m_instance = nullptr;
     HWND m_owner = nullptr;

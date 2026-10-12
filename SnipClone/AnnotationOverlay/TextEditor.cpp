@@ -6,6 +6,7 @@
 #include "../Common/WinHelper.h"
 
 #include <commctrl.h>
+#include <imm.h>
 #include <windowsx.h>
 
 #include <algorithm>
@@ -13,6 +14,7 @@
 #include <string>
 
 #pragma comment(lib, "comctl32.lib")
+#pragma comment(lib, "imm32.lib")
 
 namespace snip
 {
@@ -179,6 +181,30 @@ void TextEditor::ResizeToContent()
     MoveWindow(m_edit, 2, 2, w - 4, h - 4, TRUE);
 }
 
+bool TextEditor::IsImeComposing() const
+{
+    if (!m_edit)
+    {
+        return false;
+    }
+    HIMC imc = ImmGetContext(m_edit);
+    if (!imc)
+    {
+        return false;
+    }
+    const LONG bytes = ImmGetCompositionStringW(imc, GCS_COMPSTR, nullptr, 0);
+    ImmReleaseContext(m_edit, imc);
+    return bytes > 0;
+}
+
+void TextEditor::ScheduleBlurCommit()
+{
+    if (m_host && !m_closing)
+    {
+        PostMessageW(m_host, WM_TE_BLUR_COMMIT, 0, 0);
+    }
+}
+
 void TextEditor::Close(bool commit)
 {
     if (m_closing || !m_host)
@@ -273,6 +299,23 @@ LRESULT CALLBACK TextEditor::HostProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
             self->ResizeToContent();
         }
         return 0;
+    case WM_TE_BLUR_COMMIT:
+        if (self && !self->m_closing)
+        {
+            HWND focus = GetFocus();
+            if (focus && (focus == self->m_edit || focus == self->m_host || IsChild(self->m_host, focus)))
+            {
+                return 0;
+            }
+            // Toolbar/StylePanel use WS_EX_NOACTIVATE — focus rarely moves there.
+            // If focus left the editor (canvas / other app), commit like PinShot blur.
+            if (self->IsImeComposing())
+            {
+                return 0;
+            }
+            self->Close(true);
+        }
+        return 0;
     case WM_PAINT:
     {
         PAINTSTRUCT ps{};
@@ -319,14 +362,27 @@ LRESULT CALLBACK TextEditor::EditSubclass(
     {
         if (wParam == VK_RETURN)
         {
+            // Let IME confirm candidate / finish composition first — do not submit snip text.
+            if (self->IsImeComposing())
+            {
+                return DefSubclassProc(hwnd, msg, wParam, lParam);
+            }
             self->Close(true);
             return 0;
         }
         if (wParam == VK_ESCAPE)
         {
+            if (self->IsImeComposing())
+            {
+                return DefSubclassProc(hwnd, msg, wParam, lParam);
+            }
             self->Close(false);
             return 0;
         }
+    }
+    if (msg == WM_KILLFOCUS)
+    {
+        self->ScheduleBlurCommit();
     }
     return DefSubclassProc(hwnd, msg, wParam, lParam);
 }

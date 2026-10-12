@@ -567,6 +567,18 @@ void AnnotationRenderer::DrawScene(
                     D2D1::RectF(minX - pad, minY - pad, maxX + pad, maxY + pad),
                     m_brush,
                     1.5f);
+                // Resize handles for two-point shapes (select tool).
+                if (IsTwoPointTool(sh->kind) && sh->pts.size() >= 2)
+                {
+                    const float hs = 4.f;
+                    for (size_t i = 0; i < 2; ++i)
+                    {
+                        const auto& hp = sh->pts[i];
+                        rt->FillRectangle(
+                            D2D1::RectF(hp.x - hs, hp.y - hs, hp.x + hs, hp.y + hs),
+                            m_brush);
+                    }
+                }
             }
         }
     }
