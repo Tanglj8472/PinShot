@@ -53,6 +53,11 @@ private:
         ID2D1Bitmap* baseBitmap,
         const CaptureResult* basePixels,
         const DrawCommand& cmd);
+    void DrawEraser(
+        ID2D1RenderTarget* rt,
+        ID2D1Bitmap* baseBitmap,
+        const CaptureResult* basePixels,
+        const DrawCommand& cmd);
 
     ID2D1Factory* m_factory = nullptr;
     IDWriteFactory* m_dwrite = nullptr;

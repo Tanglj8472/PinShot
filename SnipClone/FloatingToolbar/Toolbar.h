@@ -1,8 +1,8 @@
 //==============================================================================
 // SnipClone — floating toolbar（装配对齐 PinShot ToolDock）
 //
-// 布局：pen | rect | arrow | undo redo | close pin save copy
-// 与 Annotator 对话：SetTool；动作经回调交给 AnnotationOverlay 宿主。
+// 布局：sel/tools | w± fill 色板 B/I/OL | undo redo | close pin save copy
+// 与 Annotator 对话：SetTool / SetColor；动作经回调交给 AnnotationOverlay 宿主。
 //==============================================================================
 #pragma once
 

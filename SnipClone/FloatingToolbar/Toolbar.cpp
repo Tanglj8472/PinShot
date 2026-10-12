@@ -8,6 +8,8 @@
 
 #include <windowsx.h>
 
+#include <string>
+
 #pragma comment(lib, "d2d1.lib")
 #pragma comment(lib, "dwrite.lib")
 
@@ -118,17 +120,27 @@ void Toolbar::BuildButtons()
         m_buttons.push_back(b);
     };
 
-    // Order mirrors PinShot snip dock (subset):
-    // tools | style | undo redo | close pin save copy
+    // PinShot dock subset: select + draw tools | style | undo | finish
+    addTool(ToolKind::Select, L"sel", L"Select (S) — move / Del");
     addTool(ToolKind::Pen, L"pen", L"Pen (P)");
     addTool(ToolKind::Rect, L"rect", L"Rectangle (R)");
     addTool(ToolKind::Ellipse, L"ellip", L"Ellipse (E)");
     addTool(ToolKind::Arrow, L"arrow", L"Arrow (A)");
     addTool(ToolKind::Text, L"text", L"Text (X) — click to place, Enter commit");
     addTool(ToolKind::Mosaic, L"mos", L"Mosaic (M)");
+    addTool(ToolKind::Eraser, L"eras", L"Eraser (K) — restore original");
     addAct(ToolbarAction::WidthDec, L"w-", L"Thinner / smaller (1)");
     addAct(ToolbarAction::WidthInc, L"w+", L"Thicker / larger (2)");
-    addAct(ToolbarAction::ColorCycle, L"clr", L"Cycle color");
+    addAct(ToolbarAction::ToggleFill, L"fill", L"Toggle fill (F)");
+    for (int i = 0; i < kPaletteCount; ++i)
+    {
+        ToolButton b;
+        b.action = ToolbarAction::SetColor;
+        b.colorIndex = i;
+        b.id = L"c" + std::to_wstring(i);
+        b.tip = L"Color";
+        m_buttons.push_back(b);
+    }
     addAct(ToolbarAction::Bold, L"B", L"Bold");
     addAct(ToolbarAction::Italic, L"I", L"Italic");
     addAct(ToolbarAction::Outline, L"OL", L"Outline / glow");
@@ -145,14 +157,20 @@ void Toolbar::LayoutButtons()
     int x = kPad;
     for (auto& b : m_buttons)
     {
-        // Visual separators like PinShot: before style, undo, and close groups.
-        if (b.action == ToolbarAction::WidthDec || b.action == ToolbarAction::Undo ||
-            b.action == ToolbarAction::Close)
+        // Visual separators like PinShot: before style, palette, undo, close.
+        if (b.action == ToolbarAction::WidthDec || b.action == ToolbarAction::SetColor ||
+            b.action == ToolbarAction::Undo || b.action == ToolbarAction::Close)
         {
-            x += 8;
+            if (b.action != ToolbarAction::SetColor || b.colorIndex == 0)
+            {
+                x += 8;
+            }
         }
-        b.hit = { x, kPad, x + kBtn, kPad + kBtn };
-        x += kBtn + kGap;
+        const int bw = (b.action == ToolbarAction::SetColor) ? 18 : kBtn;
+        const int bh = (b.action == ToolbarAction::SetColor) ? 18 : kBtn;
+        const int y = kPad + (kBtn - bh) / 2;
+        b.hit = { x, y, x + bw, y + bh };
+        x += bw + ((b.action == ToolbarAction::SetColor) ? 3 : kGap);
     }
 }
 
@@ -192,11 +210,20 @@ void Toolbar::SyncFromAnnotator()
         return;
     }
     const auto& textStyle = m_ann->Style(ToolKind::Text);
+    const bool filled = m_ann->Style(ToolKind::Rect).filled;
     for (auto& b : m_buttons)
     {
         if (b.action == ToolbarAction::SetTool)
         {
             b.checked = (b.tool == m_ann->Tool());
+        }
+        else if (b.action == ToolbarAction::SetColor)
+        {
+            b.checked = (b.colorIndex == m_ann->ColorIndex());
+        }
+        else if (b.action == ToolbarAction::ToggleFill)
+        {
+            b.checked = filled;
         }
         else if (b.action == ToolbarAction::Bold)
         {
@@ -293,6 +320,11 @@ LRESULT Toolbar::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             {
                 // Toggle like PinShot: click active tool to clear.
                 m_ann->SetTool(m_ann->Tool() == b->tool ? ToolKind::None : b->tool);
+                SyncFromAnnotator();
+            }
+            else if (b->action == ToolbarAction::SetColor && m_ann)
+            {
+                m_ann->SetColorIndex(b->colorIndex);
                 SyncFromAnnotator();
             }
             if (m_onAction)
@@ -447,6 +479,19 @@ void Toolbar::Present()
             static_cast<float>(b.hit.top),
             static_cast<float>(b.hit.right),
             static_cast<float>(b.hit.bottom));
+
+        if (b.action == ToolbarAction::SetColor && b.colorIndex >= 0)
+        {
+            const auto c = DrawStack::PaletteColor(b.colorIndex);
+            m_brush->SetColor(c);
+            m_rt->FillRectangle(r, m_brush);
+            if (b.checked || b.hover)
+            {
+                m_brush->SetColor(D2D1::ColorF(1.f, 1.f, 1.f, 1.f));
+                m_rt->DrawRectangle(r, m_brush, b.checked ? 2.f : 1.f);
+            }
+            continue;
+        }
 
         if (b.checked)
         {

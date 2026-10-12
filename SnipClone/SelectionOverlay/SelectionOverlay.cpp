@@ -1,10 +1,5 @@
 //==============================================================================
-// SnipClone — fullscreen selection overlay on a frozen capture
-//
-// PinShot: capture virtual desktop first, paint that pixmap, dim outside the
-// selection (selection shows the freeze undimmed — not a live desktop hole).
-//
-// ZoomIt SelectRectangle: drag / ESC / topmost layered chrome (MIT patterns).
+// SnipClone — selection on frozen capture (PinShot refine + magnifier)
 //==============================================================================
 #include "SelectionOverlay.h"
 
@@ -13,6 +8,9 @@
 
 #include <windowsx.h>
 
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
 #include <cwchar>
 #include <vector>
 
@@ -28,7 +26,11 @@ CaptureResult SelectionOverlay::s_lastCrop{};
 namespace
 {
 constexpr wchar_t kClassName[] = L"SnipCloneSelectionOverlay";
-constexpr LONG kMinSelectionPx = 2;
+constexpr LONG kMinSelectionPx = 8;
+constexpr int kHandle = 6;
+constexpr int kBtn = 28;
+constexpr int kMagZoom = 8;
+constexpr int kMagSrc = 9; // odd
 
 ID2D1Bitmap* CreatePremulBitmap(ID2D1RenderTarget* rt, const CaptureResult& image)
 {
@@ -65,6 +67,11 @@ ID2D1Bitmap* CreatePremulBitmap(ID2D1RenderTarget* rt, const CaptureResult& imag
         props,
         &bmp);
     return bmp;
+}
+
+bool PtNear(POINT p, LONG x, LONG y, LONG tol)
+{
+    return std::abs(p.x - x) <= tol && std::abs(p.y - y) <= tol;
 }
 } // namespace
 
@@ -104,13 +111,15 @@ bool SelectionOverlay::Start(
     m_instance = instance;
     m_owner = owner;
     m_callback = std::move(callback);
-    m_dragging = false;
+    m_phase = Phase::Idle;
+    m_dragPart = HitPart::None;
     m_model.Clear();
     m_freeze = std::move(freezeFrame);
+    m_cursorValid = false;
 
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
-    wc.style = CS_HREDRAW | CS_VREDRAW;
+    wc.style = CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS;
     wc.lpfnWndProc = StaticWndProc;
     wc.hInstance = instance;
     wc.hCursor = LoadCursorW(nullptr, IDC_CROSS);
@@ -178,6 +187,182 @@ void SelectionOverlay::Stop(bool confirmed)
     }
 }
 
+RECT SelectionOverlay::LocalSelection() const
+{
+    RECT r = m_model.screenRect;
+    OffsetRect(&r, -m_screenOrigin.left, -m_screenOrigin.top);
+    return r;
+}
+
+void SelectionOverlay::SetSelectionFromLocal(const RECT& local)
+{
+    RECT clamped = ForceRectInBounds(local, m_clientBounds);
+    if (clamped.right - clamped.left < kMinSelectionPx)
+    {
+        clamped.right = clamped.left + kMinSelectionPx;
+    }
+    if (clamped.bottom - clamped.top < kMinSelectionPx)
+    {
+        clamped.bottom = clamped.top + kMinSelectionPx;
+    }
+    clamped = ForceRectInBounds(clamped, m_clientBounds);
+    RECT screen = clamped;
+    OffsetRect(&screen, m_screenOrigin.left, m_screenOrigin.top);
+    m_model.Set(screen);
+}
+
+void SelectionOverlay::SamplePixel(POINT client, COLORREF* outBgr, bool* ok) const
+{
+    *ok = false;
+    if (m_freeze.Empty())
+    {
+        return;
+    }
+    if (client.x < 0 || client.y < 0 || client.x >= m_freeze.width || client.y >= m_freeze.height)
+    {
+        return;
+    }
+    const auto* px = m_freeze.bgra.data() +
+                     static_cast<size_t>(client.y) * m_freeze.stride +
+                     static_cast<size_t>(client.x) * 4;
+    *outBgr = RGB(px[2], px[1], px[0]);
+    *ok = true;
+}
+
+SelectionOverlay::HitPart SelectionOverlay::HitTest(POINT client) const
+{
+    if (!m_model.hasSelection)
+    {
+        return HitPart::None;
+    }
+    const RECT sel = LocalSelection();
+    const LONG midX = (sel.left + sel.right) / 2;
+    const LONG midY = (sel.top + sel.bottom) / 2;
+    const LONG tol = ScaleForDpi(kHandle + 2, m_dpi);
+
+    // Confirm / Cancel buttons under selection.
+    const int btn = ScaleForDpi(kBtn, m_dpi);
+    const int gap = ScaleForDpi(8, m_dpi);
+    const LONG bx = sel.right - btn * 2 - gap;
+    const LONG by = sel.bottom + gap;
+    RECT confirm{ bx, by, bx + btn, by + btn };
+    RECT cancel{ bx + btn + gap, by, bx + btn * 2 + gap, by + btn };
+    if (PtInRect(&confirm, client))
+    {
+        return HitPart::Confirm;
+    }
+    if (PtInRect(&cancel, client))
+    {
+        return HitPart::Cancel;
+    }
+
+    if (PtNear(client, sel.left, sel.top, tol))
+        return HitPart::NW;
+    if (PtNear(client, sel.right, sel.top, tol))
+        return HitPart::NE;
+    if (PtNear(client, sel.left, sel.bottom, tol))
+        return HitPart::SW;
+    if (PtNear(client, sel.right, sel.bottom, tol))
+        return HitPart::SE;
+    if (PtNear(client, midX, sel.top, tol))
+        return HitPart::N;
+    if (PtNear(client, midX, sel.bottom, tol))
+        return HitPart::S;
+    if (PtNear(client, sel.left, midY, tol))
+        return HitPart::W;
+    if (PtNear(client, sel.right, midY, tol))
+        return HitPart::E;
+    if (PtInRect(&sel, client))
+        return HitPart::Body;
+    return HitPart::None;
+}
+
+void SelectionOverlay::UpdateCursor(HitPart hit)
+{
+    LPCWSTR id = IDC_CROSS;
+    switch (hit)
+    {
+    case HitPart::N:
+    case HitPart::S:
+        id = IDC_SIZENS;
+        break;
+    case HitPart::E:
+    case HitPart::W:
+        id = IDC_SIZEWE;
+        break;
+    case HitPart::NE:
+    case HitPart::SW:
+        id = IDC_SIZENESW;
+        break;
+    case HitPart::NW:
+    case HitPart::SE:
+        id = IDC_SIZENWSE;
+        break;
+    case HitPart::Body:
+        id = IDC_SIZEALL;
+        break;
+    case HitPart::Confirm:
+    case HitPart::Cancel:
+        id = IDC_HAND;
+        break;
+    default:
+        break;
+    }
+    SetCursor(LoadCursorW(nullptr, id));
+}
+
+void SelectionOverlay::ApplyHandleDrag(HitPart part, POINT client)
+{
+    RECT r = m_dragStartSel;
+    const LONG dx = client.x - m_ptStart.x;
+    const LONG dy = client.y - m_ptStart.y;
+    switch (part)
+    {
+    case HitPart::Body:
+        OffsetRect(&r, dx, dy);
+        break;
+    case HitPart::N:
+        r.top += dy;
+        break;
+    case HitPart::S:
+        r.bottom += dy;
+        break;
+    case HitPart::W:
+        r.left += dx;
+        break;
+    case HitPart::E:
+        r.right += dx;
+        break;
+    case HitPart::NW:
+        r.left += dx;
+        r.top += dy;
+        break;
+    case HitPart::NE:
+        r.right += dx;
+        r.top += dy;
+        break;
+    case HitPart::SW:
+        r.left += dx;
+        r.bottom += dy;
+        break;
+    case HitPart::SE:
+        r.right += dx;
+        r.bottom += dy;
+        break;
+    default:
+        break;
+    }
+    if (r.right < r.left)
+    {
+        std::swap(r.left, r.right);
+    }
+    if (r.bottom < r.top)
+    {
+        std::swap(r.top, r.bottom);
+    }
+    SetSelectionFromLocal(r);
+}
+
 LRESULT CALLBACK SelectionOverlay::StaticWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     if (msg == WM_NCCREATE)
@@ -210,57 +395,114 @@ LRESULT SelectionOverlay::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
         return 0;
     }
 
+    case WM_SETCURSOR:
+        if (LOWORD(lParam) == HTCLIENT)
+        {
+            POINT pt{};
+            GetCursorPos(&pt);
+            ScreenToClient(hwnd, &pt);
+            UpdateCursor(m_phase == Phase::Creating ? HitPart::None : HitTest(pt));
+            return TRUE;
+        }
+        break;
+
     case WM_LBUTTONDOWN:
     {
+        POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        if (m_phase == Phase::Adjusting && m_model.hasSelection)
+        {
+            const HitPart hit = HitTest(pt);
+            if (hit == HitPart::Confirm)
+            {
+                Stop(true);
+                return 0;
+            }
+            if (hit == HitPart::Cancel)
+            {
+                Stop(false);
+                return 0;
+            }
+            if (hit != HitPart::None)
+            {
+                SetCapture(hwnd);
+                m_dragPart = hit;
+                m_ptStart = pt;
+                m_dragStartSel = LocalSelection();
+                return 0;
+            }
+        }
+
         SetCapture(hwnd);
-        m_dragging = true;
-        m_ptStart = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-        m_ptCurrent = m_ptStart;
+        m_phase = Phase::Creating;
+        m_dragPart = HitPart::None;
+        m_ptStart = pt;
+        m_ptCurrent = pt;
         Present();
         return 0;
     }
 
     case WM_MOUSEMOVE:
-        if (m_dragging && GetCapture() == hwnd)
-        {
-            m_ptCurrent = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-            RECT local = RectFromPointsMinSize(m_ptStart, m_ptCurrent, kMinSelectionPx);
-            local = ForceRectInBounds(local, m_clientBounds);
+    {
+        POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        m_cursor = pt;
+        m_cursorValid = true;
 
-            RECT screen = local;
-            OffsetRect(&screen, m_screenOrigin.left, m_screenOrigin.top);
-            m_model.Set(screen);
+        if (m_phase == Phase::Creating && GetCapture() == hwnd)
+        {
+            m_ptCurrent = pt;
+            RECT local = RectFromPointsMinSize(m_ptStart, m_ptCurrent, kMinSelectionPx);
+            SetSelectionFromLocal(local);
             Present();
+            return 0;
         }
+        if (m_dragPart != HitPart::None && GetCapture() == hwnd)
+        {
+            ApplyHandleDrag(m_dragPart, pt);
+            Present();
+            return 0;
+        }
+        Present();
         return 0;
+    }
 
     case WM_LBUTTONUP:
     {
-        if (!m_dragging)
-        {
-            return 0;
-        }
-        m_dragging = false;
         if (GetCapture() == hwnd)
         {
             ReleaseCapture();
         }
-
-        m_ptCurrent = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-        RECT local = RectFromPointsMinSize(m_ptStart, m_ptCurrent, kMinSelectionPx);
-        local = ForceRectInBounds(local, m_clientBounds);
-        RECT screen = local;
-        OffsetRect(&screen, m_screenOrigin.left, m_screenOrigin.top);
-        m_model.Set(screen);
-
-        Stop(m_model.hasSelection);
+        if (m_phase == Phase::Creating)
+        {
+            POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            m_ptCurrent = pt;
+            RECT local = RectFromPointsMinSize(m_ptStart, m_ptCurrent, kMinSelectionPx);
+            SetSelectionFromLocal(local);
+            m_phase = m_model.hasSelection ? Phase::Adjusting : Phase::Idle;
+            Present();
+            return 0;
+        }
+        m_dragPart = HitPart::None;
+        Present();
         return 0;
     }
+
+    case WM_LBUTTONDBLCLK:
+        if (m_phase == Phase::Adjusting && m_model.hasSelection)
+        {
+            Stop(true);
+            return 0;
+        }
+        break;
 
     case WM_KEYDOWN:
         if (wParam == VK_ESCAPE)
         {
             Stop(false);
+            return 0;
+        }
+        if ((wParam == VK_RETURN || wParam == VK_SPACE) && m_model.hasSelection)
+        {
+            Stop(true);
             return 0;
         }
         break;
@@ -358,14 +600,14 @@ bool SelectionOverlay::EnsureRenderResources(int width, int height)
                 DWRITE_FONT_WEIGHT_SEMI_BOLD,
                 DWRITE_FONT_STYLE_NORMAL,
                 DWRITE_FONT_STRETCH_NORMAL,
-                14.0f,
+                13.0f,
                 L"en-us",
                 &m_textFormat)))
         {
             return false;
         }
         m_textFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-        m_textFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+        m_textFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
     }
 
     m_screenDc = GetDC(nullptr);
@@ -374,7 +616,7 @@ bool SelectionOverlay::EnsureRenderResources(int width, int height)
     BITMAPINFO bmi{};
     bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
     bmi.bmiHeader.biWidth = width;
-    bmi.bmiHeader.biHeight = -height; // top-down
+    bmi.bmiHeader.biHeight = -height;
     bmi.bmiHeader.biPlanes = 1;
     bmi.bmiHeader.biBitCount = 32;
     bmi.bmiHeader.biCompression = BI_RGB;
@@ -410,6 +652,7 @@ bool SelectionOverlay::EnsureRenderResources(int width, int height)
 
     m_rt->CreateSolidColorBrush(D2D1::ColorF(1.f, 1.f, 1.f, 1.f), &m_brushWhite);
     m_rt->CreateSolidColorBrush(D2D1::ColorF(0.f, 0.f, 0.f, 0.45f), &m_brushDim);
+    m_rt->CreateSolidColorBrush(D2D1::ColorF(0.15f, 0.55f, 1.f, 1.f), &m_brushAccent);
 
     m_bitmapW = width;
     m_bitmapH = height;
@@ -419,7 +662,7 @@ bool SelectionOverlay::EnsureRenderResources(int width, int height)
         ReleaseSurfaceResources();
         return false;
     }
-    return m_brushWhite && m_brushDim;
+    return m_brushWhite && m_brushDim && m_brushAccent;
 }
 
 void SelectionOverlay::ReleaseSurfaceResources()
@@ -439,12 +682,16 @@ void SelectionOverlay::ReleaseSurfaceResources()
         m_brushDim->Release();
         m_brushDim = nullptr;
     }
+    if (m_brushAccent)
+    {
+        m_brushAccent->Release();
+        m_brushAccent = nullptr;
+    }
     if (m_rt)
     {
         m_rt->Release();
         m_rt = nullptr;
     }
-
     if (m_memDc)
     {
         if (m_oldBitmap)
@@ -473,7 +720,6 @@ void SelectionOverlay::ReleaseSurfaceResources()
 void SelectionOverlay::ReleaseAllResources()
 {
     ReleaseSurfaceResources();
-
     if (m_textFormat)
     {
         m_textFormat->Release();
@@ -504,59 +750,58 @@ void SelectionOverlay::RenderToBitmap()
 
     m_rt->BeginDraw();
     m_rt->Clear(D2D1::ColorF(0, 0, 0, 0));
-
-    // Frozen desktop (PinShot paintEvent: drawPixmap(shot)).
     m_rt->DrawBitmap(m_freezeBmp, D2D1::RectF(0, 0, w, h));
 
     if (m_model.hasSelection)
     {
-        const float l = static_cast<float>(m_model.screenRect.left - m_screenOrigin.left);
-        const float t = static_cast<float>(m_model.screenRect.top - m_screenOrigin.top);
-        const float r = static_cast<float>(m_model.screenRect.right - m_screenOrigin.left);
-        const float b = static_cast<float>(m_model.screenRect.bottom - m_screenOrigin.top);
+        const RECT sel = LocalSelection();
+        const float l = static_cast<float>(sel.left);
+        const float t = static_cast<float>(sel.top);
+        const float r = static_cast<float>(sel.right);
+        const float b = static_cast<float>(sel.bottom);
 
-        // Dim outside selection — keep freeze visible inside (no transparent hole).
         if (t > 0.f)
-        {
             m_rt->FillRectangle(D2D1::RectF(0, 0, w, t), m_brushDim);
-        }
         if (b < h)
-        {
             m_rt->FillRectangle(D2D1::RectF(0, b, w, h), m_brushDim);
-        }
         if (l > 0.f && b > t)
-        {
             m_rt->FillRectangle(D2D1::RectF(0, t, l, b), m_brushDim);
-        }
         if (r < w && b > t)
-        {
             m_rt->FillRectangle(D2D1::RectF(r, t, w, b), m_brushDim);
-        }
 
         const float stroke = static_cast<float>(ScaleForDpi(2, m_dpi));
         m_rt->DrawRectangle(D2D1::RectF(l, t, r, b), m_brushWhite, stroke);
 
-        const float tick = static_cast<float>(ScaleForDpi(8, m_dpi));
-        m_rt->DrawLine(D2D1::Point2F(l, t), D2D1::Point2F(l + tick, t), m_brushWhite, stroke);
-        m_rt->DrawLine(D2D1::Point2F(l, t), D2D1::Point2F(l, t + tick), m_brushWhite, stroke);
-        m_rt->DrawLine(D2D1::Point2F(r, t), D2D1::Point2F(r - tick, t), m_brushWhite, stroke);
-        m_rt->DrawLine(D2D1::Point2F(r, t), D2D1::Point2F(r, t + tick), m_brushWhite, stroke);
-        m_rt->DrawLine(D2D1::Point2F(l, b), D2D1::Point2F(l + tick, b), m_brushWhite, stroke);
-        m_rt->DrawLine(D2D1::Point2F(l, b), D2D1::Point2F(l, b - tick), m_brushWhite, stroke);
-        m_rt->DrawLine(D2D1::Point2F(r, b), D2D1::Point2F(r - tick, b), m_brushWhite, stroke);
-        m_rt->DrawLine(D2D1::Point2F(r, b), D2D1::Point2F(r, b - tick), m_brushWhite, stroke);
+        // 8 handles
+        const float hs = static_cast<float>(ScaleForDpi(kHandle, m_dpi));
+        const float midx = (l + r) * 0.5f;
+        const float midy = (t + b) * 0.5f;
+        const D2D1_POINT_2F handles[] = {
+            { l, t }, { midx, t }, { r, t }, { r, midy }, { r, b }, { midx, b }, { l, b }, { l, midy }
+        };
+        for (const auto& hp : handles)
+        {
+            m_rt->FillRectangle(
+                D2D1::RectF(hp.x - hs, hp.y - hs, hp.x + hs, hp.y + hs),
+                m_brushAccent);
+            m_rt->DrawRectangle(
+                D2D1::RectF(hp.x - hs, hp.y - hs, hp.x + hs, hp.y + hs),
+                m_brushWhite,
+                1.f);
+        }
 
+        // Size label
         if (m_textFormat)
         {
-            wchar_t label[64]{};
-            swprintf_s(label, L"%ld × %ld", m_model.Width(), m_model.Height());
-
+            wchar_t label[96]{};
+            swprintf_s(
+                label,
+                L"%ld × %ld   Enter确认  Esc取消",
+                m_model.Width(),
+                m_model.Height());
             ID2D1SolidColorBrush* bg = nullptr;
-            ID2D1SolidColorBrush* fg = nullptr;
-            m_rt->CreateSolidColorBrush(D2D1::ColorF(0.f, 0.f, 0.f, 0.7f), &bg);
-            m_rt->CreateSolidColorBrush(D2D1::ColorF(1.f, 1.f, 1.f, 1.f), &fg);
-
-            const float labelW = 120.f;
+            m_rt->CreateSolidColorBrush(D2D1::ColorF(0.f, 0.f, 0.f, 0.75f), &bg);
+            const float labelW = 260.f;
             const float labelH = 22.f;
             float lx = l;
             float ly = t - labelH - 6.f;
@@ -564,35 +809,134 @@ void SelectionOverlay::RenderToBitmap()
             {
                 ly = t + 6.f;
             }
-            if (lx + labelW > w)
-            {
-                lx = w - labelW - 4.f;
-            }
-
-            if (bg && fg)
+            if (bg)
             {
                 m_rt->FillRectangle(D2D1::RectF(lx, ly, lx + labelW, ly + labelH), bg);
                 m_rt->DrawText(
                     label,
                     static_cast<UINT32>(wcslen(label)),
                     m_textFormat,
-                    D2D1::RectF(lx + 8.f, ly + 2.f, lx + labelW, ly + labelH),
-                    fg);
-            }
-            if (bg)
-            {
+                    D2D1::RectF(lx + 8.f, ly, lx + labelW, ly + labelH),
+                    m_brushWhite);
                 bg->Release();
             }
-            if (fg)
+        }
+
+        // Confirm / Cancel buttons
+        if (m_phase == Phase::Adjusting)
+        {
+            const float btn = static_cast<float>(ScaleForDpi(kBtn, m_dpi));
+            const float gap = static_cast<float>(ScaleForDpi(8, m_dpi));
+            const float bx = r - btn * 2.f - gap;
+            const float by = b + gap;
+            m_rt->FillRectangle(D2D1::RectF(bx, by, bx + btn, by + btn), m_brushAccent);
+            m_rt->FillRectangle(
+                D2D1::RectF(bx + btn + gap, by, bx + btn * 2.f + gap, by + btn),
+                m_brushDim);
+            if (m_textFormat)
             {
-                fg->Release();
+                m_rt->DrawText(
+                    L"OK",
+                    2,
+                    m_textFormat,
+                    D2D1::RectF(bx, by, bx + btn, by + btn),
+                    m_brushWhite);
+                m_rt->DrawText(
+                    L"X",
+                    1,
+                    m_textFormat,
+                    D2D1::RectF(bx + btn + gap, by, bx + btn * 2.f + gap, by + btn),
+                    m_brushWhite);
             }
         }
     }
     else
     {
-        // No selection yet: full dim over freeze (PinShot idle).
         m_rt->FillRectangle(D2D1::RectF(0, 0, w, h), m_brushDim);
+    }
+
+    // Magnifier + HEX
+    if (m_cursorValid && m_phase != Phase::Creating)
+    {
+        COLORREF bgr{};
+        bool ok = false;
+        SamplePixel(m_cursor, &bgr, &ok);
+        const float mag = static_cast<float>(kMagSrc * kMagZoom);
+        float mx = static_cast<float>(m_cursor.x) + 24.f;
+        float my = static_cast<float>(m_cursor.y) + 24.f;
+        if (mx + mag + 8.f > w)
+        {
+            mx = static_cast<float>(m_cursor.x) - mag - 24.f;
+        }
+        if (my + mag + 28.f > h)
+        {
+            my = static_cast<float>(m_cursor.y) - mag - 40.f;
+        }
+
+        // Build magnified patch from freeze CPU buffer.
+        const int half = kMagSrc / 2;
+        std::vector<std::uint8_t> patch(static_cast<size_t>(kMagSrc * kMagSrc * 4));
+        for (int y = 0; y < kMagSrc; ++y)
+        {
+            for (int x = 0; x < kMagSrc; ++x)
+            {
+                int sx = m_cursor.x - half + x;
+                int sy = m_cursor.y - half + y;
+                sx = (std::max)(0, (std::min)(m_freeze.width - 1, sx));
+                sy = (std::max)(0, (std::min)(m_freeze.height - 1, sy));
+                const auto* src = m_freeze.bgra.data() +
+                                  static_cast<size_t>(sy) * m_freeze.stride +
+                                  static_cast<size_t>(sx) * 4;
+                auto* dst = patch.data() + static_cast<size_t>((y * kMagSrc + x) * 4);
+                dst[0] = src[0];
+                dst[1] = src[1];
+                dst[2] = src[2];
+                dst[3] = 255;
+            }
+        }
+        D2D1_BITMAP_PROPERTIES props = D2D1::BitmapProperties(
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+        ID2D1Bitmap* magBmp = nullptr;
+        m_rt->CreateBitmap(
+            D2D1::SizeU(kMagSrc, kMagSrc),
+            patch.data(),
+            static_cast<UINT32>(kMagSrc * 4),
+            props,
+            &magBmp);
+        if (magBmp)
+        {
+            m_rt->DrawBitmap(
+                magBmp,
+                D2D1::RectF(mx, my, mx + mag, my + mag),
+                1.f,
+                D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
+            magBmp->Release();
+        }
+        m_rt->DrawRectangle(D2D1::RectF(mx, my, mx + mag, my + mag), m_brushWhite, 1.f);
+        // Crosshair center
+        const float cx = mx + mag * 0.5f;
+        const float cy = my + mag * 0.5f;
+        m_rt->DrawLine(D2D1::Point2F(cx - 6, cy), D2D1::Point2F(cx + 6, cy), m_brushAccent, 1.f);
+        m_rt->DrawLine(D2D1::Point2F(cx, cy - 6), D2D1::Point2F(cx, cy + 6), m_brushAccent, 1.f);
+
+        if (ok && m_textFormat)
+        {
+            wchar_t hex[32]{};
+            swprintf_s(hex, L"#%02X%02X%02X", GetRValue(bgr), GetGValue(bgr), GetBValue(bgr));
+            ID2D1SolidColorBrush* bg = nullptr;
+            m_rt->CreateSolidColorBrush(D2D1::ColorF(0, 0, 0, 0.8f), &bg);
+            if (bg)
+            {
+                m_rt->FillRectangle(D2D1::RectF(mx, my + mag + 2.f, mx + mag, my + mag + 22.f), bg);
+                bg->Release();
+            }
+            m_rt->DrawText(
+                hex,
+                static_cast<UINT32>(wcslen(hex)),
+                m_textFormat,
+                D2D1::RectF(mx + 6.f, my + mag + 2.f, mx + mag, my + mag + 22.f),
+                m_brushWhite);
+        }
     }
 
     HRESULT hr = m_rt->EndDraw();

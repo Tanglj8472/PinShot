@@ -1,10 +1,8 @@
 //==============================================================================
-// SnipClone — fullscreen selection overlay
+// SnipClone — fullscreen selection overlay on a frozen capture
 //
-// PinShot assembly: paint a frozen virtual-desktop capture, dim outside the
-// selection (do NOT punch through to the live desktop), border + size label.
-//
-// Interaction drag/ESC inspired by PowerToys ZoomIt SelectRectangle (MIT).
+// PinShot: paint freeze, refine selection with handles, Enter/✓ confirm.
+// Magnifier + HEX readout while hovering.
 //==============================================================================
 #pragma once
 
@@ -21,7 +19,6 @@
 namespace snip
 {
 
-// Posted to owner when overlay closes. wParam: 1=confirmed, 0=cancelled.
 inline constexpr UINT WM_SNIP_SELECTION_DONE = WM_APP + 0x51;
 
 class SelectionOverlay
@@ -35,7 +32,6 @@ public:
     SelectionOverlay(const SelectionOverlay&) = delete;
     SelectionOverlay& operator=(const SelectionOverlay&) = delete;
 
-    // freezeFrame: full virtual-desktop capture taken BEFORE this overlay shows.
     bool Start(HINSTANCE instance, HWND owner, CaptureResult freezeFrame, DoneCallback callback = {});
     void Stop(bool confirmed);
 
@@ -44,10 +40,32 @@ public:
     const SelectionModel& Model() const { return m_model; }
 
     static const SelectionModel& LastSelection();
-    // Crop of the freeze frame for the last confirmed selection.
     static const CaptureResult& LastCrop();
 
 private:
+    enum class Phase
+    {
+        Idle,
+        Creating,
+        Adjusting,
+    };
+
+    enum class HitPart
+    {
+        None,
+        Body,
+        N,
+        S,
+        E,
+        W,
+        NE,
+        NW,
+        SE,
+        SW,
+        Confirm,
+        Cancel,
+    };
+
     static LRESULT CALLBACK StaticWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
     LRESULT WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -57,19 +75,29 @@ private:
     void ReleaseAllResources();
     void Present();
     void RenderToBitmap();
+    void UpdateCursor(HitPart hit);
+    HitPart HitTest(POINT client) const;
+    RECT LocalSelection() const;
+    void SetSelectionFromLocal(const RECT& local);
+    void ApplyHandleDrag(HitPart part, POINT client);
+    void SamplePixel(POINT client, COLORREF* outBgr, bool* ok) const;
 
     HWND m_hwnd = nullptr;
     HWND m_owner = nullptr;
     HINSTANCE m_instance = nullptr;
     DoneCallback m_callback;
 
-    bool m_dragging = false;
+    Phase m_phase = Phase::Idle;
+    HitPart m_dragPart = HitPart::None;
     POINT m_ptStart{};
     POINT m_ptCurrent{};
+    RECT m_dragStartSel{};
     RECT m_clientBounds{};
     RECT m_screenOrigin{};
     UINT m_dpi = 96;
     SelectionModel m_model;
+    POINT m_cursor{};
+    bool m_cursorValid = false;
 
     CaptureResult m_freeze;
     ID2D1Bitmap* m_freezeBmp = nullptr;
@@ -78,6 +106,7 @@ private:
     ID2D1DCRenderTarget* m_rt = nullptr;
     ID2D1SolidColorBrush* m_brushWhite = nullptr;
     ID2D1SolidColorBrush* m_brushDim = nullptr;
+    ID2D1SolidColorBrush* m_brushAccent = nullptr;
     IDWriteFactory* m_dwrite = nullptr;
     IDWriteTextFormat* m_textFormat = nullptr;
 

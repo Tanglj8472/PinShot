@@ -249,15 +249,13 @@ LRESULT AnnotationOverlay::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             const int hit = m_ann.HitTest(pt);
             if (hit >= 0)
             {
-                if (const auto* sh = m_ann.ShapeAt(hit))
+                if (const auto* sh = m_ann.ShapeAt(hit); sh && sh->kind == ToolKind::Text)
                 {
                     OpenTextEditorAt(sh->pts[0], hit);
+                    return 0;
                 }
             }
-            else
-            {
-                OpenTextEditorAt(pt, -1);
-            }
+            OpenTextEditorAt(pt, -1);
             return 0;
         }
 
@@ -296,7 +294,7 @@ LRESULT AnnotationOverlay::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         const int hit = m_ann.HitTest(pt);
         if (hit >= 0)
         {
-            if (const auto* sh = m_ann.ShapeAt(hit))
+            if (const auto* sh = m_ann.ShapeAt(hit); sh && sh->kind == ToolKind::Text)
             {
                 m_ann.SetTool(ToolKind::Text);
                 if (m_toolbar)
@@ -304,8 +302,8 @@ LRESULT AnnotationOverlay::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
                     m_toolbar->SyncFromAnnotator();
                 }
                 OpenTextEditorAt(sh->pts[0], hit);
+                return 0;
             }
-            return 0;
         }
         break;
     }
@@ -323,6 +321,17 @@ LRESULT AnnotationOverlay::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         if (wParam == VK_ESCAPE)
         {
             RequestClose();
+            return 0;
+        }
+        if (wParam == VK_DELETE || wParam == VK_BACK)
+        {
+            if (m_ann.DeleteSelected())
+            {
+                if (m_toolbar)
+                {
+                    m_toolbar->SyncFromAnnotator();
+                }
+            }
             return 0;
         }
         if (wParam == 'Z' && (GetKeyState(VK_CONTROL) & 0x8000))
@@ -365,6 +374,9 @@ LRESULT AnnotationOverlay::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             };
             switch (wParam)
             {
+            case 'S':
+                setTool(ToolKind::Select);
+                return 0;
             case 'P':
                 setTool(ToolKind::Pen);
                 return 0;
@@ -382,6 +394,16 @@ LRESULT AnnotationOverlay::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
                 return 0;
             case 'M':
                 setTool(ToolKind::Mosaic);
+                return 0;
+            case 'K':
+                setTool(ToolKind::Eraser);
+                return 0;
+            case 'F':
+                m_ann.ToggleFilled();
+                if (m_toolbar)
+                {
+                    m_toolbar->SyncFromAnnotator();
+                }
                 return 0;
             case '1':
                 if (m_ann.Tool() == ToolKind::Text)
@@ -489,6 +511,20 @@ void AnnotationOverlay::OnToolbarAction(ToolbarAction action, ToolKind /*tool*/)
         if (m_textEditor && m_textEditor->IsOpen())
         {
             m_textEditor->ApplyStyle(m_ann.Style(ToolKind::Text));
+        }
+        if (m_toolbar)
+        {
+            m_toolbar->SyncFromAnnotator();
+        }
+        break;
+    case ToolbarAction::SetColor:
+        // color index delivered via Sync / handled in Toolbar click below — see WndProc path
+        break;
+    case ToolbarAction::ToggleFill:
+        m_ann.ToggleFilled();
+        if (m_toolbar)
+        {
+            m_toolbar->SyncFromAnnotator();
         }
         break;
     case ToolbarAction::Bold:

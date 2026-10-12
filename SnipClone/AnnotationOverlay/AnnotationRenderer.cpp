@@ -206,6 +206,90 @@ void AnnotationRenderer::DrawTextCmd(ID2D1RenderTarget* rt, const DrawCommand& c
     format->Release();
 }
 
+void AnnotationRenderer::DrawEraser(
+    ID2D1RenderTarget* rt,
+    ID2D1Bitmap* baseBitmap,
+    const CaptureResult* basePixels,
+    const DrawCommand& cmd)
+{
+    if (cmd.pts.empty() || !basePixels || basePixels->Empty())
+    {
+        UNREFERENCED_PARAMETER(baseBitmap);
+        return;
+    }
+
+    // Brush eraser: stamp original freeze pixels along the stroke (PinShot restore).
+    const int rad = (std::max)(2, static_cast<int>(std::lround(cmd.style.width * 0.5f)));
+    const int dia = rad * 2 + 1;
+    std::vector<std::uint8_t> stamp(static_cast<size_t>(dia * dia * 4));
+
+    D2D1_BITMAP_PROPERTIES props = D2D1::BitmapProperties(
+        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+
+    auto stampAt = [&](float fx, float fy) {
+        const int cx = static_cast<int>(std::lround(fx));
+        const int cy = static_cast<int>(std::lround(fy));
+        for (int y = 0; y < dia; ++y)
+        {
+            for (int x = 0; x < dia; ++x)
+            {
+                const int dx = x - rad;
+                const int dy = y - rad;
+                auto* dst = stamp.data() + static_cast<size_t>((y * dia + x) * 4);
+                if (dx * dx + dy * dy > rad * rad)
+                {
+                    dst[0] = dst[1] = dst[2] = dst[3] = 0;
+                    continue;
+                }
+                const int sx = cx + dx;
+                const int sy = cy + dy;
+                if (sx < 0 || sy < 0 || sx >= basePixels->width || sy >= basePixels->height)
+                {
+                    dst[0] = dst[1] = dst[2] = dst[3] = 0;
+                    continue;
+                }
+                const auto* src = basePixels->bgra.data() +
+                                  static_cast<size_t>(sy) * basePixels->stride +
+                                  static_cast<size_t>(sx) * 4;
+                dst[0] = src[0];
+                dst[1] = src[1];
+                dst[2] = src[2];
+                dst[3] = 255;
+            }
+        }
+        ID2D1Bitmap* bmp = nullptr;
+        rt->CreateBitmap(
+            D2D1::SizeU(static_cast<UINT32>(dia), static_cast<UINT32>(dia)),
+            stamp.data(),
+            static_cast<UINT32>(dia * 4),
+            props,
+            &bmp);
+        if (bmp)
+        {
+            const float l = static_cast<float>(cx - rad);
+            const float t = static_cast<float>(cy - rad);
+            rt->DrawBitmap(bmp, D2D1::RectF(l, t, l + dia, t + dia));
+            bmp->Release();
+        }
+    };
+
+    // Subsample dense strokes for performance.
+    float distAccum = 0.f;
+    const float step = (std::max)(1.f, cmd.style.width * 0.35f);
+    stampAt(cmd.pts[0].x, cmd.pts[0].y);
+    for (size_t i = 1; i < cmd.pts.size(); ++i)
+    {
+        const float dx = cmd.pts[i].x - cmd.pts[i - 1].x;
+        const float dy = cmd.pts[i].y - cmd.pts[i - 1].y;
+        distAccum += std::sqrt(dx * dx + dy * dy);
+        if (distAccum >= step || i + 1 == cmd.pts.size())
+        {
+            stampAt(cmd.pts[i].x, cmd.pts[i].y);
+            distAccum = 0.f;
+        }
+    }
+}
+
 void AnnotationRenderer::DrawMosaic(
     ID2D1RenderTarget* rt,
     ID2D1Bitmap* baseBitmap,
@@ -396,6 +480,18 @@ void AnnotationRenderer::DrawCommandOn(
                 1.f);
         }
         break;
+    case ToolKind::Eraser:
+        DrawEraser(rt, baseBitmap, basePixels, cmd);
+        if (preview)
+        {
+            m_brush->SetColor(D2D1::ColorF(1, 1, 1, 0.35f));
+            const float rad = (std::max)(2.f, cmd.style.width * 0.5f);
+            for (const auto& p : cmd.pts)
+            {
+                rt->FillEllipse(D2D1::Ellipse(p, rad, rad), m_brush);
+            }
+        }
+        break;
     default:
         break;
     }
@@ -433,6 +529,36 @@ void AnnotationRenderer::DrawScene(
     if (const auto* live = stack.Live())
     {
         DrawCommandOn(rt, baseBitmap, basePixels, *live, true);
+    }
+    // Selection outline (PinShot select tool).
+    if (stack.SelectedIndex() >= 0)
+    {
+        if (const auto* sh = stack.ShapeAt(stack.SelectedIndex()))
+        {
+            if (!sh->pts.empty())
+            {
+                float minX = sh->pts[0].x, maxX = sh->pts[0].x;
+                float minY = sh->pts[0].y, maxY = sh->pts[0].y;
+                for (const auto& p : sh->pts)
+                {
+                    minX = (std::min)(minX, p.x);
+                    maxX = (std::max)(maxX, p.x);
+                    minY = (std::min)(minY, p.y);
+                    maxY = (std::max)(maxY, p.y);
+                }
+                if (sh->kind == ToolKind::Text)
+                {
+                    maxX = minX + (std::max)(40.f, sh->style.fontSize * 0.6f * static_cast<float>(sh->text.size() + 1));
+                    maxY = minY + sh->style.fontSize * 1.4f;
+                }
+                const float pad = sh->style.width + 3.f;
+                m_brush->SetColor(D2D1::ColorF(0.12f, 0.56f, 1.f, 0.95f));
+                rt->DrawRectangle(
+                    D2D1::RectF(minX - pad, minY - pad, maxX + pad, maxY + pad),
+                    m_brush,
+                    1.5f);
+            }
+        }
     }
 }
 

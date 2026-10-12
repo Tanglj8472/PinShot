@@ -7,45 +7,58 @@
 
 装配对照见 [`docs/ASSEMBLY.md`](docs/ASSEMBLY.md)。
 
-## 当前进度（V0–V4 切片）
+## 当前进度
 
 | 能力 | 状态 |
 |------|------|
 | 全局热键 `Ctrl+Shift+S` | ✅ |
-| 框选 Overlay + 尺寸 | ✅ |
-| 选区 GDI 捕获（ZoomIt 风格 BitBlt） | ✅ |
-| Annotator：笔 / 矩形 / 椭圆 / 箭头 / 文字 / 马赛克 + undo/redo | ✅ |
-| 悬浮工具栏 + 线宽/颜色调节（PinShot 装配子集） | ✅ |
+| 冻结虚拟桌面 → 框选（手柄/移动/Enter·OK 确认） | ✅ |
+| 选区放大镜 + HEX | ✅ |
+| Annotator：选中/笔/矩形/椭圆/箭头/文字/马赛克/橡皮 + undo/redo | ✅ |
+| 色板 + 填充切换 + 线宽 | ✅ |
 | 复制剪贴板 / 保存 PNG / 贴图 Pin | ✅ |
-| GraphicsCapture / 样式子面板 / 完整图标 / 橡皮擦 | ❌ 后续 |
+| GraphicsCapture / 完整图标 / 窗口探测 | ❌ 后续 |
 
 ## 使用
 
 1. VS2022 打开 `SnipClone.sln`，`Release|x64` 生成（或 `.\build.ps1`）
 2. 运行 EXE，按 `Ctrl+Shift+S`
-3. 拖拽框选 → 松手进入批注
-4. 工具栏：`pen rect ellip arrow text mos | w- w+ clr | undo redo | close pin save copy`
-5. **文字（Snipaste 目标）**：点击落点 → 浮动输入框（支持中文 IME）→ Enter 提交 / Esc 取消；双击可重编；`B/I/OL` 粗体斜体描边
-6. 贴图窗口可拖拽；双击关闭
-7. 快捷键：`P/R/E/A/X/M` 切工具，`1/2` 调粗细/字号/马赛克块
+3. 拖拽框选 → **松手后可调手柄** → `Enter` / 双击 / `OK` 进入批注（`Esc` 取消）
+4. 工具栏：`sel pen rect ellip arrow text mos eras | w- w+ fill | 色板 | B I OL | undo redo | close pin save copy`
+5. **文字**：点击落点 → 浮动输入框（中文 IME）→ Enter 提交 / Esc 取消；双击重编
+6. **选择工具**：点选图形后拖动；`Del` 删除
+7. **橡皮**：沿路径恢复冻结底图像素
+8. 贴图窗口可拖拽；双击关闭
 
 文字交互细节见 [`docs/TEXT_ANNOTATION.md`](docs/TEXT_ANNOTATION.md)。
 
 ## 状态机
 
 ```
-Idle → SelectionOverlay → ScreenCapture(region)
-     → AnnotationOverlay(DrawStack + Toolbar)
+Idle → CaptureVirtualScreen(freeze)
+     → SelectionOverlay（调整选区）
+     → Crop → AnnotationOverlay(DrawStack + Toolbar)
      → Copy / Save / Pin / Esc → Idle
 ```
+
+## 快捷键（批注）
+
+| 键 | 作用 |
+|----|------|
+| S / P / R / E / A / X / M / K | 选择 / 笔 / 矩形 / 椭圆 / 箭头 / 文字 / 马赛克 / 橡皮 |
+| F | 矩形/椭圆填充开关 |
+| 1 / 2 | 线宽、字号或马赛克块减小/增大 |
+| Del | 删除选中图形 |
+| Ctrl+Z / Y | 撤销 / 重做 |
+| Ctrl+C / S / T | 复制 / 保存 / 贴图 |
 
 ## 目录
 
 ```
 SnipClone/
 ├─ Common/              DpiHelper · WinHelper · ImageUtil
-├─ Capture/             ScreenCapture（GDI 区域捕获）
-├─ SelectionOverlay/    框选
+├─ Capture/             ScreenCapture（GDI 冻结捕获）
+├─ SelectionOverlay/    框选 + 手柄 + 放大镜
 ├─ AnnotationOverlay/   宿主 + DrawStack + D2D Renderer
 ├─ FloatingToolbar/     工具栏（对齐 PinShot 装配）
 ├─ PinWindow/           贴图

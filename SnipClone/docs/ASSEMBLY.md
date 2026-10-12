@@ -29,11 +29,12 @@
 ```
 Ctrl+Shift+S
   → ScreenCapture::CaptureVirtualScreen()     // 先冻结（PinShot）
-  → SelectionOverlay 画冻结图 + 区外变暗 + 选框
+  → SelectionOverlay 冻结图 + 区外变暗 + 手柄调整 + 放大镜
+       Enter / 双击 / OK → crop；Esc / X → 取消
   → freeze.CropToScreenRect(selection)
   → AnnotationOverlay 拥有 crop 位图
-       ├─ DrawStack（笔/矩形/椭圆/箭头/文字/马赛克 + undo）
-       ├─ Toolbar（工具 + w-/w+/clr + undo/redo + close/pin/save/copy）
+       ├─ DrawStack（选中/笔/形/箭头/文字/马赛克/橡皮 + undo）
+       ├─ Toolbar（工具 + 线宽/填充/色板 + undo + close/pin/save/copy）
        └─ Compose → ImageUtil 剪贴板/PNG 或 PinManager::CreatePin
 ```
 
@@ -41,8 +42,10 @@ Ctrl+Shift+S
 
 | 键 | 作用 |
 |----|------|
-| P / R / E / A / X / M | 笔 / 矩形 / 椭圆 / 箭头 / 文字 / 马赛克 |
+| S / P / R / E / A / X / M / K | 选择 / 笔 / 矩形 / 椭圆 / 箭头 / 文字 / 马赛克 / 橡皮 |
+| F | 填充开关 |
 | 1 / 2 | 线宽、字号或马赛克块减小/增大 |
+| Del | 删除选中图形 |
 | 文字工具单击落点 | 浮动 EDIT 输入（中文 IME）；Enter 提交 / Esc 取消；双击重编 |
 | Ctrl+Z / Y | 撤销 / 重做 |
 | Ctrl+C / S / T | 复制 / 保存 / 贴图 |

@@ -21,6 +21,8 @@ enum class ToolbarAction
     WidthDec,
     WidthInc,
     ColorCycle,
+    SetColor,
+    ToggleFill,
     Bold,
     Italic,
     Outline,
@@ -34,6 +36,7 @@ struct ToolButton
 {
     ToolbarAction action = ToolbarAction::None;
     ToolKind tool = ToolKind::None; // when action == SetTool
+    int colorIndex = -1;            // when action == SetColor
     std::wstring id;                // "pen" / "undo" / ...
     std::wstring tip;
     RECT hit{};                     // local to toolbar window
