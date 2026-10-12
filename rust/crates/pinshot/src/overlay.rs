@@ -35,7 +35,7 @@ pub enum OverlayResult {
     Copy(Raster, Rect),
     Pin(Raster, Rect, (i32, i32)),
     Save(Raster),
-    Ocr(Raster, bool),
+    Ocr(Raster, bool, (i32, i32)),
     Cancel,
     /// Esc then F1 (or F1 while the overlay still holds the grab): start a new snip.
     Resnip,
@@ -479,8 +479,14 @@ impl Overlay {
         }
         let img = self.capture.composed.crop(self.sel.normalized());
         self.remember();
+        let (vx, vy) = self.capture.virtual_origin;
+        let r = self.sel.normalized();
         self.release_grab();
-        self.result = Some(OverlayResult::Ocr(img, translate));
+        self.result = Some(OverlayResult::Ocr(
+            img,
+            translate,
+            (vx + r.x as i32, vy + r.y as i32),
+        ));
         self.window.set_visible(false);
     }
 

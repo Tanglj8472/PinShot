@@ -1,7 +1,8 @@
-//! PP-OCRv5 model layout, DBNet box extraction, and CTC greedy decode.
-//! Inference lives in the host (`--features ocr` / Linux).
+//! PP-OCRv5 model layout and in-place OCR tokens (boxes from paddle-ocr-rs).
 
 use std::path::{Path, PathBuf};
+
+use crate::geom::{Point, Rect};
 
 pub const MODEL_DIR_NAME: &str = "ocr-models";
 
@@ -24,7 +25,7 @@ pub const REC_URLS: &[&str] = &[
 ];
 pub const CLS_URLS: &[&str] = &[
     "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv5/cls/ch_PP-LCNet_x0_25_textline_ori_cls_mobile.onnx",
-    "https://huggingface.co/RapidAI/RapidOCR/resolve/main/onnx/PP-OCRv5/cls/ch_PP-LCNet_x0_25_textline_ori_cls_mobile.onnx",
+    "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv5/cls/ch_PP-LCNet_x0_25_textline_ori_cls_mobile.onnx",
 ];
 pub const KEYS_URLS: &[&str] = &[
     "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/paddle/PP-OCRv5/rec/ch_PP-OCRv5_rec_mobile/ppocrv5_dict.txt",
@@ -54,7 +55,7 @@ impl ModelPaths {
     }
 
     pub fn ready(&self) -> bool {
-        self.det.is_file() && self.rec.is_file() && self.keys.is_file()
+        self.det.is_file() && self.rec.is_file() && self.cls.is_file()
     }
 
     pub fn downloads(&self) -> Vec<(Vec<&'static str>, PathBuf)> {
@@ -71,793 +72,282 @@ pub fn model_dir(data: &Path) -> PathBuf {
     data.join(MODEL_DIR_NAME)
 }
 
-/// Axis-aligned text box in source-image pixels.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct TextBox {
-    pub x: u32,
-    pub y: u32,
-    pub w: u32,
-    pub h: u32,
-    pub score: f32,
+/// One selectable unit mapped onto the source image.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OcrToken {
+    pub rect: Rect,
+    pub text: String,
+    pub line: usize,
 }
 
-/// RapidOCR rec canvas: height 48, keep the crop aspect, pad right to ≥320.
-pub const REC_H: u32 = 48;
-pub const REC_MIN_W: u32 = 320;
-/// Long Wikipedia lines are ~900×16 → width 2700 at H=48. 1280 would squash.
-pub const REC_MAX_W: u32 = 4096;
+/// Recognized page: reading-order tokens plus joined plain text.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct OcrPage {
+    pub tokens: Vec<OcrToken>,
+    pub text: String,
+}
 
-/// `(resized_w, canvas_w)` for a rec crop. Stretching the line to an 8-aligned
-/// width smears `l`/`i`; pad zeros on the right instead (RapidOCR).
-pub fn rec_resize_spec(src_w: u32, src_h: u32) -> (u32, u32) {
-    let src_h = src_h.max(1) as f32;
-    let src_w = src_w.max(1) as f32;
-    let ratio = src_w / src_h;
-    let max_wh = (REC_MIN_W as f32 / REC_H as f32).max(ratio);
-    // RapidOCR: `imgW = int(imgH * max_wh_ratio)` (truncate, not round).
-    let mut canvas_w = ((REC_H as f32) * max_wh) as u32;
-    canvas_w = canvas_w.clamp(REC_MIN_W, REC_MAX_W);
-    let mut resized_w = ((REC_H as f32) * ratio).ceil() as u32;
-    if resized_w > canvas_w {
-        resized_w = canvas_w;
+pub fn is_cjk(c: char) -> bool {
+    matches!(
+        c,
+        '\u{3400}'..='\u{4DBF}'
+            | '\u{4E00}'..='\u{9FFF}'
+            | '\u{F900}'..='\u{FAFF}'
+            | '\u{3000}'..='\u{303F}'
+            | '\u{3040}'..='\u{30FF}'
+            | '\u{AC00}'..='\u{D7AF}'
+            | '\u{FF00}'..='\u{FFEF}'
+    )
+}
+
+pub fn aabb_from_quad(pts: &[(u32, u32)]) -> Rect {
+    if pts.is_empty() {
+        return Rect::EMPTY;
     }
-    (resized_w.max(1), canvas_w.max(REC_H))
+    let mut min_x = u32::MAX;
+    let mut min_y = u32::MAX;
+    let mut max_x = 0u32;
+    let mut max_y = 0u32;
+    for &(x, y) in pts {
+        min_x = min_x.min(x);
+        min_y = min_y.min(y);
+        max_x = max_x.max(x);
+        max_y = max_y.max(y);
+    }
+    if max_x <= min_x || max_y <= min_y {
+        return Rect::EMPTY;
+    }
+    Rect::new(
+        min_x as f32,
+        min_y as f32,
+        (max_x - min_x) as f32,
+        (max_y - min_y) as f32,
+    )
 }
 
-/// Image-space margin around a DBNet AABB. RapidOCR polygon unclip is looser
-/// than connected-component boxes, which otherwise clip `I`/`l`/`f`.
-/// Keep Y pad small: extra height shrinks glyphs on the H=48 rec canvas.
-pub fn text_crop_pad(box_h: u32) -> (i32, i32) {
-    let h = box_h.max(1) as i32;
-    ((h / 3).max(8), (h / 10).max(3))
-}
-
-/// DBNet probability map → boxes. `prob` is the first channel of the det
-/// output, sized `dw × dh` (model input). Mapped back with
-/// `x * img_w / dw` (RapidOCR stretch-to-32, no letterbox).
-pub fn db_boxes(
-    prob: &[f32],
-    dw: u32,
-    dh: u32,
-    img_w: u32,
-    img_h: u32,
-) -> Vec<TextBox> {
-    let dw = dw.max(1) as usize;
-    let dh = dh.max(1) as usize;
-    if prob.len() < dw * dh {
+/// Split a line box into CJK characters / Latin words, mapped by character width.
+pub fn tokenize_line(line: usize, text: &str, box_rect: Rect) -> Vec<OcrToken> {
+    let text = text.trim();
+    if text.is_empty() || box_rect.w <= 0.0 || box_rect.h <= 0.0 {
         return Vec::new();
     }
-    const BIN: f32 = 0.3;
-    const MIN_SCORE: f32 = 0.5;
-    // RapidOCR config.yaml: unclip_ratio 1.6, use_dilation true (2×2).
-    const UNCLIP: f32 = 1.6;
-    let mut mask = vec![false; dw * dh];
-    for y in 0..dh {
-        for x in 0..dw {
-            if prob[y * dw + x] < BIN {
-                continue;
+    let mut units: Vec<String> = Vec::new();
+    let mut buf = String::new();
+    for c in text.chars() {
+        if c.is_whitespace() {
+            if !buf.is_empty() {
+                units.push(std::mem::take(&mut buf));
             }
-            for dy in 0..2usize {
-                for dx in 0..2usize {
-                    let nx = x + dx;
-                    let ny = y + dy;
-                    if nx < dw && ny < dh {
-                        mask[ny * dw + nx] = true;
-                    }
-                }
+            continue;
+        }
+        if is_cjk(c) {
+            if !buf.is_empty() {
+                units.push(std::mem::take(&mut buf));
             }
+            units.push(c.to_string());
+        } else {
+            buf.push(c);
         }
     }
-    let mut seen = vec![false; dw * dh];
-    let mut boxes = Vec::new();
-    let mut stack = Vec::new();
-    for y0 in 0..dh {
-        for x0 in 0..dw {
-            let i0 = y0 * dw + x0;
-            if seen[i0] || !mask[i0] {
-                continue;
-            }
-            stack.clear();
-            stack.push((x0, y0));
-            seen[i0] = true;
-            let mut minx = x0;
-            let mut maxx = x0;
-            let mut miny = y0;
-            let mut maxy = y0;
-            let mut sum = 0.0f32;
-            let mut n = 0u32;
-            while let Some((x, y)) = stack.pop() {
-                let i = y * dw + x;
-                if prob[i] >= BIN {
-                    sum += prob[i];
-                    n += 1;
-                }
-                minx = minx.min(x);
-                maxx = maxx.max(x);
-                miny = miny.min(y);
-                maxy = maxy.max(y);
-                for (nx, ny) in [
-                    (x.wrapping_sub(1), y),
-                    (x + 1, y),
-                    (x, y.wrapping_sub(1)),
-                    (x, y + 1),
-                ] {
-                    if nx >= dw || ny >= dh {
-                        continue;
-                    }
-                    let ni = ny * dw + nx;
-                    if seen[ni] || !mask[ni] {
-                        continue;
-                    }
-                    seen[ni] = true;
-                    stack.push((nx, ny));
-                }
-            }
-            // RapidOCR `min_size` is 3; 8 dropped isolated thin stems (`I`, `l`).
-            if n < 3 {
-                continue;
-            }
-            let score = sum / n as f32;
-            if score < MIN_SCORE {
-                continue;
-            }
-            let bw = (maxx - minx + 1) as f32;
-            let bh = (maxy - miny + 1) as f32;
-            let peri = (2.0 * (bw + bh)).max(1.0);
-            let d = (UNCLIP * (n as f32) / peri).ceil().max(2.0);
-            let x1 = (minx as f32 - d).max(0.0);
-            let y1 = (miny as f32 - d).max(0.0);
-            let x2 = (maxx as f32 + 1.0 + d).min(dw as f32);
-            let y2 = (maxy as f32 + 1.0 + d).min(dh as f32);
-            let sx = ((x1 / dw as f32) * img_w as f32).floor().max(0.0) as u32;
-            let sy = ((y1 / dh as f32) * img_h as f32).floor().max(0.0) as u32;
-            let ex = ((x2 / dw as f32) * img_w as f32).ceil().min(img_w as f32) as u32;
-            let ey = ((y2 / dh as f32) * img_h as f32).ceil().min(img_h as f32) as u32;
-            if ex <= sx + 2 || ey <= sy + 2 {
-                continue;
-            }
-            boxes.push(TextBox {
-                x: sx,
-                y: sy,
-                w: ex - sx,
-                h: ey - sy,
-                score,
-            });
-        }
+    if !buf.is_empty() {
+        units.push(buf);
     }
-    boxes.sort_by(|a, b| {
-        let ya = a.y + a.h / 2;
-        let yb = b.y + b.h / 2;
-        ya.cmp(&yb).then(a.x.cmp(&b.x))
-    });
-    merge_line_boxes(&boxes)
-}
-
-/// Join boxes that sit on the same text line (RapidOCR-style).
-fn merge_line_boxes(boxes: &[TextBox]) -> Vec<TextBox> {
-    if boxes.is_empty() {
+    if units.is_empty() {
         return Vec::new();
     }
-    let mut out: Vec<TextBox> = Vec::new();
-    for b in boxes {
-        if let Some(last) = out.last_mut() {
-            let same_line = {
-                let cy = b.y + b.h / 2;
-                let ly = last.y + last.h / 2;
-                (cy as i32 - ly as i32).unsigned_abs() < last.h.max(b.h) / 2 + 4
-            };
-            let gap = b.x.saturating_sub(last.x + last.w);
-            // Only glue touching glyphs (CJK). English word gaps stay separate so
-            // we can insert ASCII spaces when joining.
-            let glue = last.h.min(b.h).max(6) / 5;
-            if same_line && gap <= glue {
-                let x2 = (last.x + last.w).max(b.x + b.w);
-                let y2 = (last.y + last.h).max(b.y + b.h);
-                last.x = last.x.min(b.x);
-                last.y = last.y.min(b.y);
-                last.w = x2 - last.x;
-                last.h = y2 - last.y;
-                last.score = last.score.max(b.score);
-                continue;
-            }
-        }
-        out.push(*b);
-    }
-    out
-}
-
-/// CTC greedy decode: skip blanks (`0`) and consecutive repeats.
-pub fn ctc_greedy(indices: &[usize], alphabet: &[String]) -> String {
-    ctc_greedy_blank(indices, alphabet, 0)
-}
-
-/// `blank` is the CTC blank class. When blank is 0, alphabet[i-1] is the glyph
-/// (PP-OCR). When blank is last, alphabet[i] is the glyph.
-///
-/// Chinese mobile rec rarely emits the space class. Word gaps are a *longer*
-/// CTC blank run than the inter-letter blanks; insert ASCII space there.
-pub fn ctc_greedy_blank(indices: &[usize], alphabet: &[String], blank: usize) -> String {
-    ctc_decode_fracs(indices, alphabet, blank).0
-}
-
-struct CtcGlyph {
-    class: usize,
-    blanks_before: usize,
-    timestep: usize,
-}
-
-pub fn ctc_gap_stats(indices: &[usize], blank: usize) -> (usize, usize, usize, usize) {
-    let glyphs = ctc_glyphs(indices, blank);
-    let gaps: Vec<usize> = glyphs.iter().skip(1).map(|g| g.blanks_before).collect();
-    let min = gaps.iter().copied().min().unwrap_or(0);
-    let max = gaps.iter().copied().max().unwrap_or(0);
-    let mut sorted = gaps;
-    sorted.sort_unstable();
-    let med = if sorted.is_empty() {
-        0
-    } else {
-        sorted[sorted.len() / 2]
-    };
-    (glyphs.len(), min, med, max)
-}
-
-fn ctc_glyphs(indices: &[usize], blank: usize) -> Vec<CtcGlyph> {
-    let mut out = Vec::new();
-    let mut prev = usize::MAX;
-    let mut blanks = 0usize;
-    for (t, &i) in indices.iter().enumerate() {
-        if i == blank {
-            blanks += 1;
-            prev = i;
-            continue;
-        }
-        if i == prev {
-            continue;
-        }
-        out.push(CtcGlyph {
-            class: i,
-            blanks_before: blanks,
-            timestep: t,
+    let total: f32 = units.iter().map(|u| u.chars().count().max(1) as f32).sum();
+    let mut x = box_rect.x;
+    let mut out = Vec::with_capacity(units.len());
+    for u in units {
+        let w = box_rect.w * (u.chars().count().max(1) as f32 / total);
+        out.push(OcrToken {
+            rect: Rect::new(x, box_rect.y, w.max(1.0), box_rect.h.max(1.0)),
+            text: u,
+            line,
         });
-        prev = i;
-        blanks = 0;
+        x += w;
+    }
+    if let Some(last) = out.last_mut() {
+        last.rect.w = (box_rect.right() - last.rect.x).max(1.0);
     }
     out
 }
 
-/// CTC decode plus each glyph's horizontal fraction along the rec window.
-pub fn ctc_decode_fracs(
-    indices: &[usize],
-    alphabet: &[String],
-    blank: usize,
-) -> (String, Vec<f32>) {
-    let glyphs = ctc_glyphs(indices, blank);
-    let mut gaps: Vec<usize> = glyphs.iter().skip(1).map(|g| g.blanks_before).collect();
-    gaps.sort_unstable();
-    let median = if gaps.is_empty() {
-        0
-    } else {
-        gaps[gaps.len() / 2]
-    };
-    let word_gap = (median * 2 + 2).max(4);
-    let tlen = indices.len().max(1) as f32;
-    let mut out = String::new();
-    let mut fracs = Vec::new();
-    for (n, g) in glyphs.iter().enumerate() {
-        // PP-OCR / RapidOCR: class 0 is CTC blank, alphabet[i-1] is the glyph,
-        // and the extra trailing class (keys.len()+1) is the space token from
-        // `use_space_char`. That token is the primary English word space.
-        let ch = ctc_class_glyph(g.class, alphabet, blank);
-        if n > 0 && g.blanks_before >= word_gap && !out.ends_with(' ') {
-            let next_cjk = ch.and_then(|s| s.chars().next()).is_some_and(is_cjk);
-            let prev_cjk = out.chars().last().is_some_and(is_cjk);
-            if !(prev_cjk && next_cjk) {
-                out.push(' ');
-                fracs.push(g.timestep as f32 / tlen);
-            }
+fn join_line_parts(parts: &[String]) -> String {
+    let mut s = String::new();
+    for p in parts {
+        if s.is_empty() {
+            s.push_str(p);
+            continue;
         }
-        if let Some(ch) = ch {
-            if ch == " " && out.ends_with(' ') {
-                continue;
-            }
-            let frac = g.timestep as f32 / tlen;
-            for _ in ch.chars() {
-                fracs.push(frac);
-            }
-            out.push_str(ch);
+        if needs_space(s.chars().last(), p.chars().next()) {
+            s.push(' ');
         }
+        s.push_str(p);
     }
-    (out, fracs)
+    s
 }
 
-/// Map a CTC class to a dict glyph. Out-of-range is the rec model's space class.
-fn ctc_class_glyph(class: usize, alphabet: &[String], blank: usize) -> Option<&str> {
-    if class == blank {
-        return None;
-    }
-    if blank == 0 {
-        match alphabet.get(class.saturating_sub(1)) {
-            Some(s) => Some(s.as_str()),
-            None => Some(" "),
+fn needs_space(prev: Option<char>, next: Option<char>) -> bool {
+    match (prev, next) {
+        (Some(a), Some(b))
+            if !a.is_whitespace()
+                && !b.is_whitespace()
+                && !is_cjk(a)
+                && !is_cjk(b)
+                && (a.is_ascii_alphanumeric() || b.is_ascii_alphanumeric()) =>
+        {
+            true
         }
-    } else {
-        match alphabet.get(class) {
-            Some(s) => Some(s.as_str()),
-            None => Some(" "),
-        }
+        _ => false,
     }
 }
 
-pub fn load_keys(text: &str) -> Vec<String> {
-    // Paddle/RapidOCR dicts use a blank (or space-only) first line for ' '.
-    // Dropping it shifts every class and the rec stage emits garbage / nothing.
-    text.lines()
-        .map(|l| {
-            let l = l.trim_end_matches('\r');
-            if l.is_empty() || l == "\u{3000}" || l == "\u{00a0}" {
-                " ".to_string()
+/// Build a page from detector quadrilaterals + recognized line strings.
+pub fn page_from_blocks(blocks: Vec<(Vec<(u32, u32)>, String)>) -> OcrPage {
+    let mut items: Vec<(Rect, String)> = blocks
+        .into_iter()
+        .filter_map(|(pts, text)| {
+            let r = aabb_from_quad(&pts);
+            let t = text.trim().to_string();
+            if t.is_empty() || r.is_empty() {
+                None
             } else {
-                l.to_string()
+                Some((r, t))
             }
         })
-        .collect()
+        .collect();
+    items.sort_by(|a, b| {
+        a.0.y
+            .partial_cmp(&b.0.y)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.0.x.partial_cmp(&b.0.x).unwrap_or(std::cmp::Ordering::Equal))
+    });
+
+    let mut tokens = Vec::new();
+    let mut lines: Vec<String> = Vec::new();
+    let mut line_i = 0usize;
+    let mut prev_mid = None::<f32>;
+    let mut prev_h = 0f32;
+    let mut line_parts: Vec<String> = Vec::new();
+
+    for (rect, text) in items {
+        let mid = rect.y + rect.h * 0.5;
+        let new_line = match prev_mid {
+            None => false,
+            Some(py) => (mid - py).abs() > prev_h.max(rect.h) * 0.6,
+        };
+        if new_line {
+            if !line_parts.is_empty() {
+                lines.push(join_line_parts(&line_parts));
+                line_parts.clear();
+                line_i += 1;
+            }
+        }
+        prev_mid = Some(mid);
+        prev_h = rect.h;
+        tokens.extend(tokenize_line(line_i, &text, rect));
+        line_parts.push(text);
+    }
+    if !line_parts.is_empty() {
+        lines.push(join_line_parts(&line_parts));
+    }
+    OcrPage {
+        tokens,
+        text: lines.join("\n"),
+    }
 }
 
-pub fn join_lines(lines: &[String]) -> String {
-    lines
+/// Cover an image with one line of tokens (Windows F5 copied text, tests).
+pub fn page_from_plain(text: &str, width: u32, height: u32) -> OcrPage {
+    let t = text.trim();
+    if t.is_empty() {
+        return OcrPage::default();
+    }
+    let pad = 8.0;
+    let rect = Rect::new(
+        pad,
+        pad,
+        (width as f32 - pad * 2.0).max(8.0),
+        (height as f32 - pad * 2.0).max(8.0),
+    );
+    let tokens = tokenize_line(0, t, rect);
+    OcrPage {
+        text: t.to_string(),
+        tokens,
+    }
+}
+
+pub fn hit_token(tokens: &[OcrToken], p: Point) -> Option<usize> {
+    tokens
         .iter()
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n")
+        .position(|t| t.rect.contains(p))
+        .or_else(|| {
+            tokens
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| t.rect.inflated(8.0).contains(p))
+                .min_by(|a, b| {
+                    a.1.rect
+                        .center()
+                        .distance(p)
+                        .partial_cmp(&b.1.rect.center().distance(p))
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .map(|(i, _)| i)
+        })
 }
 
-/// Join recognized snippets using box layout: space between words on the
-/// same line, and space (not a mid-sentence newline) between stacked lines
-/// of one paragraph.
-pub fn join_ocr_parts(parts: &[(TextBox, String)]) -> String {
-    let mut out = String::new();
-    let mut prev: Option<(TextBox, String)> = None;
-    for (b, raw) in parts {
-        let t = raw.trim();
-        if t.is_empty() {
-            continue;
-        }
-        if let Some((p, ref prev_t)) = prev {
-            let cy = b.y + b.h / 2;
-            let py = p.y + p.h / 2;
-            let same_line = (cy as i32 - py as i32).unsigned_abs() < p.h.max(b.h) / 2 + 4;
-            if same_line {
-                let gap = b.x.saturating_sub(p.x + p.w);
-                if gap > p.h.max(b.h).max(8) / 5 && !out.ends_with(' ') {
-                    out.push(' ');
-                }
-            } else {
-                let stack_gap = b.y.saturating_sub(p.y + p.h);
-                let close = stack_gap <= p.h.max(b.h).saturating_mul(3) / 2 + 4;
-                if close && !ends_sentence(prev_t) {
-                    if out.ends_with('-') {
-                        out.pop();
-                    } else if !out.ends_with(' ') {
-                        out.push(' ');
-                    }
-                } else {
-                    out.push('\n');
-                }
+/// Token nearest the pointer in reading order (used while dragging off a glyph).
+pub fn nearest_token(tokens: &[OcrToken], p: Point) -> Option<usize> {
+    if let Some(i) = hit_token(tokens, p) {
+        return Some(i);
+    }
+    if tokens.is_empty() {
+        return None;
+    }
+    tokens
+        .iter()
+        .enumerate()
+        .min_by(|a, b| {
+            let da = token_drag_dist(&a.1.rect, p);
+            let db = token_drag_dist(&b.1.rect, p);
+            da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(i, _)| i)
+}
+
+fn token_drag_dist(r: &Rect, p: Point) -> f32 {
+    let cx = p.x.clamp(r.x, r.right());
+    let cy = p.y.clamp(r.y, r.bottom());
+    Point::new(cx, cy).distance(p) + (r.center().y - p.y).abs() * 0.25
+}
+
+pub fn selected_text(tokens: &[OcrToken], a: usize, b: usize) -> String {
+    if tokens.is_empty() {
+        return String::new();
+    }
+    let lo = a.min(b).min(tokens.len() - 1);
+    let hi = a.max(b).min(tokens.len() - 1);
+    let mut s = String::new();
+    let mut prev_line = None;
+    for t in &tokens[lo..=hi] {
+        if let Some(pl) = prev_line {
+            if t.line != pl {
+                s.push('\n');
+            } else if needs_space(s.chars().last(), t.text.chars().next()) {
+                s.push(' ');
             }
         }
-        out.push_str(t);
-        prev = Some((*b, t.to_string()));
+        s.push_str(&t.text);
+        prev_line = Some(t.line);
     }
-    out
-}
-
-fn ends_sentence(s: &str) -> bool {
-    s.trim_end()
-        .chars()
-        .last()
-        .is_some_and(|c| ".!?。！？…".contains(c))
-}
-
-fn is_cjk(c: char) -> bool {
-    ('\u{4e00}'..='\u{9fff}').contains(&c)
-        || ('\u{3400}'..='\u{4dbf}').contains(&c)
-        || ('\u{3040}'..='\u{30ff}').contains(&c)
-}
-
-/// PP-OCRv5 often emits `In2009,Mozilla` with no ASCII spaces. Restore the
-/// obvious Latin boundaries without splitting `i.e.` / `2010s`.
-pub fn latin_space_tweak(s: &str) -> String {
-    let chars: Vec<char> = s.chars().collect();
-    let mut out = String::with_capacity(s.len() + 8);
-    for (i, &b) in chars.iter().enumerate() {
-        if i > 0 {
-            let a = chars[i - 1];
-            if !a.is_whitespace() && !b.is_whitespace() {
-                let punct_word = match a {
-                    ',' | ';' | ':' => b.is_ascii_alphabetic(),
-                    '.' | '!' | '?' => b.is_ascii_uppercase(),
-                    ')' | ']' => b.is_ascii_alphanumeric(),
-                    _ => false,
-                };
-                let letter_digit = a.is_ascii_alphabetic() && b.is_ascii_digit();
-                let digit_letter = a.is_ascii_digit()
-                    && b.is_ascii_alphabetic()
-                    && !matches!(b, 's' | 'S');
-                if punct_word || letter_digit || digit_letter {
-                    out.push(' ');
-                }
-            }
-        }
-        out.push(b);
-    }
-    out
-}
-
-/// Column ink (count of dark pixels per x). Gaps narrower than ~0.35 of a
-/// typical glyph are treated as letter spacing, not word spaces.
-pub fn word_gap_fracs(ink: &[u32], _height: u32) -> Vec<f32> {
-    let w = ink.len() as u32;
-    if w < 8 {
-        return Vec::new();
-    }
-    let peak = ink.iter().copied().max().unwrap_or(0);
-    if peak < 2 {
-        return Vec::new();
-    }
-    let empty_max = (peak / 6).max(1);
-    let mut raw: Vec<(u32, u32)> = Vec::new();
-    let mut x = 0u32;
-    while x < w {
-        while x < w && ink[x as usize] <= empty_max {
-            x += 1;
-        }
-        if x >= w {
-            break;
-        }
-        let start = x;
-        while x < w && ink[x as usize] > empty_max {
-            x += 1;
-        }
-        if x > start + 1 {
-            raw.push((start, x));
-        }
-    }
-    if raw.len() < 2 {
-        return Vec::new();
-    }
-    let mut widths: Vec<u32> = raw.iter().map(|(s, e)| e.saturating_sub(*s)).collect();
-    widths.sort_unstable();
-    let letter_w = widths[widths.len() / 2].max(4);
-    let min_gap = ((letter_w as f32) * 0.38).round().clamp(3.0, 28.0) as u32;
-    let mut spans: Vec<(u32, u32)> = Vec::new();
-    for (s, e) in raw {
-        if let Some(last) = spans.last_mut() {
-            if s.saturating_sub(last.1) < min_gap {
-                last.1 = e;
-                continue;
-            }
-        }
-        spans.push((s, e));
-    }
-    if spans.len() < 2 {
-        return Vec::new();
-    }
-    let width = w.max(1) as f32;
-    spans
-        .windows(2)
-        .map(|w| ((w[0].1 + w[1].0) as f32 * 0.5) / width)
-        .collect()
-}
-
-/// Insert ASCII spaces where ink gaps fall between CTC glyphs (or, if glyph
-/// fractions are missing, by proportional character index).
-pub fn insert_spaces_aligned(text: &str, glyph_fracs: &[f32], gap_fracs: &[f32]) -> String {
-    let chars: Vec<char> = text.chars().collect();
-    let n = chars.len();
-    if n == 0 || gap_fracs.is_empty() {
-        return text.to_string();
-    }
-    // Letter-level cuts (more gaps than ~¼ of the glyphs) are tracking, not words.
-    if gap_fracs.len() > (n / 4).max(2) {
-        return text.to_string();
-    }
-    let fracs: Vec<f32> = if glyph_fracs.len() == n {
-        glyph_fracs.to_vec()
-    } else {
-        (0..n).map(|i| (i as f32 + 0.5) / n as f32).collect()
-    };
-    let mut cut = vec![false; n];
-    for &g in gap_fracs {
-        let mut i = 1usize;
-        while i < n && fracs[i] < g {
-            i += 1;
-        }
-        if i == 0 || i >= n {
-            continue;
-        }
-        if is_cjk(chars[i - 1]) && is_cjk(chars[i]) {
-            continue;
-        }
-        if chars[i - 1].is_whitespace() || chars[i].is_whitespace() {
-            continue;
-        }
-        cut[i] = true;
-    }
-    let mut out = String::with_capacity(n + gap_fracs.len());
-    for (i, &ch) in chars.iter().enumerate() {
-        if cut[i] && !out.ends_with(' ') {
-            out.push(' ');
-        }
-        out.push(ch);
-    }
-    out
-}
-
-/// Keep the rec model's space token / CTC blank-run spaces. Only restore the
-/// obvious Latin letter↔digit and punctuation boundaries — geometric ink
-/// gaps and a greedy English dictionary split letters inside real words.
-pub fn restore_english_spaces(text: &str, _glyph_fracs: &[f32], _gap_fracs: &[f32]) -> String {
-    latin_space_tweak(text)
-}
-
-/// Common English tokens, longest first. Used only on long letter-runs that
-/// PP-OCRv5 emitted without spaces (`Mozillaofficiallysponsoredtheproject`).
-const EN_WORDS: &[&str] = &[
-    "officially",
-    "sponsored",
-    "wikipedia",
-    "something",
-    "together",
-    "project",
-    "mozilla",
-    "through",
-    "between",
-    "because",
-    "without",
-    "another",
-    "against",
-    "however",
-    "welcome",
-    "example",
-    "english",
-    "chinese",
-    "version",
-    "release",
-    "license",
-    "source",
-    "public",
-    "number",
-    "people",
-    "should",
-    "before",
-    "change",
-    "system",
-    "during",
-    "around",
-    "always",
-    "really",
-    "please",
-    "thanks",
-    "update",
-    "create",
-    "search",
-    "result",
-    "window",
-    "screen",
-    "hello",
-    "world",
-    "about",
-    "after",
-    "first",
-    "their",
-    "there",
-    "which",
-    "would",
-    "other",
-    "these",
-    "those",
-    "could",
-    "where",
-    "under",
-    "using",
-    "still",
-    "every",
-    "never",
-    "right",
-    "small",
-    "large",
-    "start",
-    "close",
-    "image",
-    "click",
-    "input",
-    "text",
-    "from",
-    "this",
-    "that",
-    "with",
-    "have",
-    "been",
-    "were",
-    "will",
-    "when",
-    "what",
-    "your",
-    "them",
-    "then",
-    "than",
-    "also",
-    "into",
-    "over",
-    "only",
-    "some",
-    "more",
-    "most",
-    "such",
-    "make",
-    "like",
-    "time",
-    "year",
-    "used",
-    "file",
-    "open",
-    "save",
-    "copy",
-    "edit",
-    "page",
-    "line",
-    "code",
-    "data",
-    "name",
-    "next",
-    "last",
-    "both",
-    "each",
-    "many",
-    "well",
-    "just",
-    "very",
-    "back",
-    "good",
-    "work",
-    "the",
-    "and",
-    "for",
-    "are",
-    "but",
-    "not",
-    "you",
-    "all",
-    "can",
-    "had",
-    "her",
-    "was",
-    "one",
-    "our",
-    "out",
-    "has",
-    "his",
-    "how",
-    "its",
-    "may",
-    "new",
-    "now",
-    "old",
-    "see",
-    "two",
-    "way",
-    "who",
-    "did",
-    "get",
-    "got",
-    "let",
-    "put",
-    "say",
-    "she",
-    "too",
-    "use",
-];
-
-fn dict_match_at(lower: &str, i: usize) -> Option<usize> {
-    let rest = &lower[i..];
-    for w in EN_WORDS {
-        if rest.starts_with(w) {
-            return Some(w.len());
-        }
-    }
-    None
-}
-
-/// Break a long `[A-Za-z]+` run with a greedy longest-dictionary match,
-/// keeping unknown prefixes (`Mozilla` + `officially` …).
-pub fn break_latin_run(run: &str) -> String {
-    if run.len() < 12 {
-        return run.to_string();
-    }
-    let lower = run.to_ascii_lowercase();
-    let bytes = run.as_bytes();
-    let mut i = 0usize;
-    let mut parts: Vec<&str> = Vec::new();
-    while i < bytes.len() {
-        if let Some(n) = dict_match_at(&lower, i) {
-            parts.push(&run[i..i + n]);
-            i += n;
-            continue;
-        }
-        let mut j = i + 1;
-        while j < bytes.len() && dict_match_at(&lower, j).is_none() {
-            j += 1;
-        }
-        parts.push(&run[i..j]);
-        i = j;
-    }
-    parts.join(" ")
-}
-
-pub fn segment_glued_latin(s: &str) -> String {
-    let chars: Vec<char> = s.chars().collect();
-    let mut out = String::with_capacity(s.len() + 8);
-    let mut i = 0usize;
-    while i < chars.len() {
-        if !chars[i].is_ascii_alphabetic() {
-            out.push(chars[i]);
-            i += 1;
-            continue;
-        }
-        let start = i;
-        while i < chars.len() && chars[i].is_ascii_alphabetic() {
-            i += 1;
-        }
-        let run: String = chars[start..i].iter().collect();
-        out.push_str(&break_latin_run(&run));
-    }
-    out
+    s
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn ctc_skips_blank_and_repeats() {
-        let alpha = vec!["你".into(), "好".into(), "啊".into()];
-        assert_eq!(ctc_greedy(&[0, 1, 1, 0, 2, 2, 0], &alpha), "你好");
-    }
-
-    #[test]
-    fn ctc_inserts_space_on_blank_runs() {
-        let alpha = vec!["I".into(), "n".into(), "2".into(), "0".into(), "9".into()];
-        // In ··· 2009  (two+ blanks between words)
-        let idx = [0, 1, 2, 0, 0, 0, 0, 3, 4, 0, 4, 5];
-        assert_eq!(ctc_greedy(&idx, &alpha), "In 2009");
-        // CJK with a single blank between glyphs stays unspaced.
-        let zh = vec!["你".into(), "好".into()];
-        assert_eq!(ctc_greedy(&[0, 1, 0, 2, 0], &zh), "你好");
-    }
-
-    #[test]
-    fn ctc_trailing_class_is_the_space_token() {
-        // RapidOCR: classes = keys + 2 (blank + trailing ' ').
-        let alpha = vec!["H".into(), "i".into(), "t".into()];
-        // H · space-class · i t
-        let space = alpha.len() + 1;
-        let idx = [0, 1, space, 2, 3];
-        assert_eq!(ctc_greedy(&idx, &alpha), "H it");
-        assert_eq!(
-            restore_english_spaces("officially", &[], &[]),
-            "officially",
-            "must not split inside words"
-        );
-        assert_eq!(
-            restore_english_spaces("contributors", &[], &[]),
-            "contributors"
-        );
-        assert_eq!(
-            restore_english_spaces("In2009,Mozilla", &[], &[]),
-            "In 2009, Mozilla"
-        );
-    }
 
     #[test]
     fn model_paths_under_data() {
@@ -867,168 +357,51 @@ mod tests {
     }
 
     #[test]
-    fn join_filters_blank() {
-        assert_eq!(join_lines(&[" a ".into(), "".into(), "b".into()]), "a\nb");
+    fn tokenize_splits_latin_words_and_cjk_chars() {
+        let r = Rect::new(0.0, 0.0, 120.0, 16.0);
+        let toks = tokenize_line(0, "Hello 你好 PinShot", r);
+        let texts: Vec<&str> = toks.iter().map(|t| t.text.as_str()).collect();
+        assert_eq!(texts, ["Hello", "你", "好", "PinShot"]);
+        assert!(toks[0].rect.w > toks[1].rect.w);
+        assert!((toks.last().unwrap().rect.right() - r.right()).abs() < 0.01);
     }
 
     #[test]
-    fn load_keys_keeps_blank_as_space() {
-        let keys = load_keys("\n你\n好\n \nA\n");
-        assert_eq!(keys[0], " ");
-        assert_eq!(keys[1], "你");
-        assert_eq!(keys[3], " ");
-        assert_eq!(keys[4], "A");
-        let ideo = load_keys("\u{3000}\n你\n");
-        assert_eq!(ideo[0], " ");
-        assert_eq!(ideo[1], "你");
-    }
-
-    #[test]
-    fn join_ocr_parts_inserts_english_spaces() {
-        let a = TextBox {
-            x: 0,
-            y: 0,
-            w: 40,
-            h: 20,
-            score: 1.0,
-        };
-        let b = TextBox {
-            x: 55,
-            y: 1,
-            w: 50,
-            h: 20,
-            score: 1.0,
-        };
-        let c = TextBox {
-            x: 0,
-            y: 30,
-            w: 80,
-            h: 20,
-            score: 1.0,
-        };
-        let s = join_ocr_parts(&[
-            (a, "In2009".into()),
+    fn page_from_blocks_joins_same_line_and_breaks_next() {
+        let a = vec![(0, 0), (40, 0), (40, 16), (0, 16)];
+        let b = vec![(50, 1), (100, 1), (100, 17), (50, 17)];
+        let c = vec![(0, 40), (80, 40), (80, 56), (0, 56)];
+        let page = page_from_blocks(vec![
+            (a, "In 2009".into()),
             (b, "Mozilla".into()),
             (c, "sponsored".into()),
         ]);
-        assert_eq!(s, "In2009 Mozilla sponsored");
-        let d = TextBox {
-            x: 0,
-            y: 80,
-            w: 80,
-            h: 20,
-            score: 1.0,
-        };
-        let para = join_ocr_parts(&[
-            (a, "Hello.".into()),
-            (d, "Next paragraph".into()),
-        ]);
-        assert_eq!(para, "Hello.\nNext paragraph");
+        assert_eq!(page.text, "In 2009 Mozilla\nsponsored");
+        assert!(page.tokens.len() >= 3);
+        let hit = hit_token(&page.tokens, Point::new(10.0, 8.0));
+        assert!(hit.is_some());
+        let end = page.tokens.len() - 1;
+        let sel = selected_text(&page.tokens, 0, end);
+        assert!(sel.contains("Mozilla"));
+        assert!(sel.contains('\n'));
     }
 
     #[test]
-    fn latin_space_tweak_splits_digit_and_punct() {
+    fn selected_text_range_keeps_spaces() {
+        let r = Rect::new(0.0, 0.0, 200.0, 16.0);
+        let toks = tokenize_line(0, "Mozilla officially sponsored", r);
         assert_eq!(
-            latin_space_tweak("In2009,Mozilla"),
-            "In 2009, Mozilla"
+            selected_text(&toks, 0, toks.len() - 1),
+            "Mozilla officially sponsored"
         );
-        assert_eq!(latin_space_tweak("你好PinShot"), "你好PinShot");
-        assert_eq!(latin_space_tweak("Hello world"), "Hello world");
-        assert_eq!(latin_space_tweak("i.e.,"), "i.e.,");
-        assert_eq!(latin_space_tweak("2010s"), "2010s");
-        assert_eq!(latin_space_tweak("[21]A"), "[21] A");
-        assert_eq!(
-            latin_space_tweak("end.Next"),
-            "end. Next"
-        );
+        assert_eq!(selected_text(&toks, 1, 1), "officially");
     }
 
     #[test]
-    fn rec_resize_spec_keeps_aspect_and_pads() {
-        let (rw, cw) = rec_resize_spec(80, 16);
-        assert_eq!(rw, 240);
-        assert_eq!(cw, 320, "short lines pad to RapidOCR rec_img_shape width");
-        let (rw, cw) = rec_resize_spec(400, 16);
-        assert_eq!(rw, 1200);
-        assert_eq!(cw, 1200);
-        let (rw, cw) = rec_resize_spec(16, 16);
-        assert_eq!(rw, 48);
-        assert_eq!(cw, 320);
-        let (rw, cw) = rec_resize_spec(900, 16);
-        assert_eq!(rw, 2700);
-        assert_eq!(cw, 2700, "long lines keep aspect; do not squash to 1280");
-        assert_eq!(text_crop_pad(16), (8, 3));
-        assert_eq!(text_crop_pad(30), (10, 3));
-    }
-
-    #[test]
-    fn insert_spaces_aligned_uses_gap_fracs() {
-        let text = "Mozillaofficiallysponsored";
-        let n = text.chars().count();
-        let fracs: Vec<f32> = (0..n).map(|i| (i as f32 + 0.5) / n as f32).collect();
-        // Gaps at Mozilla|officially and officially|sponsored
-        let moz = "Mozilla".chars().count() as f32 / n as f32;
-        let off = "Mozillaofficially".chars().count() as f32 / n as f32;
-        let s = insert_spaces_aligned(text, &fracs, &[moz, off]);
-        assert_eq!(s, "Mozilla officially sponsored");
-        assert_eq!(
-            restore_english_spaces("In2009,Mozillaofficially", &[], &[]),
-            "In 2009, Mozillaofficially"
-        );
-        assert_eq!(
-            segment_glued_latin("Mozillaofficiallysponsoredtheproject."),
-            "Mozilla officially sponsored the project."
-        );
-        let glued = "In2009,Hozillaofficiallysponsoredtheproject.";
-        let too_many: Vec<f32> = (0..23).map(|i| (i as f32 + 1.0) / 24.0).collect();
-        let restored = restore_english_spaces(glued, &[], &too_many);
-        assert!(
-            restored.contains("officially") && !restored.contains("o f f"),
-            "{restored:?}"
-        );
-        assert!(
-            !restored.contains("all y") && !restored.contains("but or"),
-            "dictionary must not split inside words: {restored:?}"
-        );
-    }
-
-    #[test]
-    fn word_gap_fracs_finds_wide_columns() {
-        // 8px words with a 6px hole: #####......#####
-        let mut ink = vec![0u32; 24];
-        for x in 0..8 {
-            ink[x] = 10;
-        }
-        for x in 14..22 {
-            ink[x] = 10;
-        }
-        let gaps = word_gap_fracs(&ink, 12);
-        assert_eq!(gaps.len(), 1);
-        assert!((gaps[0] - 0.458).abs() < 0.08, "{gaps:?}");
-    }
-
-    #[test]
-    fn db_boxes_finds_two_bands() {
-        let dw = 32u32;
-        let dh = 32u32;
-        let mut prob = vec![0.0f32; (dw * dh) as usize];
-        for y in 4..10 {
-            for x in 2..28 {
-                prob[(y * dw + x) as usize] = 0.9;
-            }
-        }
-        for y in 18..24 {
-            for x in 4..20 {
-                prob[(y * dw + x) as usize] = 0.85;
-            }
-        }
-        let boxes = db_boxes(&prob, dw, dh, 320, 320);
-        assert!(
-            boxes.len() >= 2,
-            "expected two text bands, got {:?}",
-            boxes
-        );
-        assert!(boxes[0].y < boxes[1].y);
-        assert!(boxes.iter().all(|b| b.w > 10 && b.h > 4));
+    fn page_from_plain_covers_image() {
+        let page = page_from_plain("Hello world", 100, 40);
+        assert_eq!(page.text, "Hello world");
+        assert_eq!(page.tokens.len(), 2);
+        assert!(hit_token(&page.tokens, Point::new(20.0, 20.0)).is_some());
     }
 }

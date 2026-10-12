@@ -384,7 +384,14 @@ impl App {
                     }
                 }
             }
-            OverlayResult::Ocr(img, translate) => self.spawn_ocr(img, translate),
+            OverlayResult::Ocr(img, translate, pos) => {
+                self.spawn_pin(event_loop, img.clone(), Some(pos), None);
+                if let Some(p) = self.pins.last_mut() {
+                    p.toast(tr("Recognizing…"));
+                    let id = p.window_id();
+                    self.spawn_ocr(id, img, translate);
+                }
+            }
             OverlayResult::Cancel => {}
             OverlayResult::Resnip => {}
         }
@@ -395,7 +402,7 @@ impl App {
         }
     }
 
-    fn spawn_ocr(&self, img: Raster, translate: bool) {
+    fn spawn_ocr(&self, pin: winit::window::WindowId, img: Raster, translate: bool) {
         crate::logutil::log(&format!(
             "ocr start {}x{} translate={translate}",
             img.width, img.height
@@ -407,10 +414,29 @@ impl App {
                 e
             });
             match &result {
-                Ok(text) => crate::logutil::log(&format!("ocr done {} chars", text.chars().count())),
+                Ok(page) => crate::logutil::log(&format!(
+                    "ocr done {} chars",
+                    page.text.chars().count()
+                )),
                 Err(e) => crate::logutil::log(&format!("ocr empty: {e}")),
             }
-            let _ = proxy.send_event(AppEvent::OcrDone(result, translate));
+            let _ = proxy.send_event(AppEvent::OcrDone {
+                pin,
+                result,
+                translate,
+            });
+        });
+    }
+
+    fn spawn_translate(&self, pin: winit::window::WindowId, text: String) {
+        let proxy = self.proxy.clone();
+        let target = crate::translate_run::default_target().to_string();
+        std::thread::spawn(move || {
+            let result = crate::translate_run::translate(&text, &target).map_err(|e| {
+                crate::logutil::log(&format!("translate fail: {e}"));
+                e
+            });
+            let _ = proxy.send_event(AppEvent::TranslateDone { pin, result });
         });
     }
 
@@ -458,8 +484,7 @@ impl App {
     fn selection_translate(&self) {
         #[cfg(not(windows))]
         {
-            let msg = tr("Select-text translate is only available here.");
-            crate::result_win::open(msg, false);
+            eprintln!("{}", tr("Select-text translate is only available here."));
             return;
         }
         #[cfg(windows)]
@@ -467,11 +492,10 @@ impl App {
             let proxy = self.proxy.clone();
             std::thread::spawn(move || {
                 let backup = clipboard::read_best();
-                if crate::result_win::send_ctrl_c().is_err() {
-                    let _ = proxy.send_event(AppEvent::OcrDone(
-                        Err(tr("Could not copy selected text.")),
-                        true,
-                    ));
+                if crate::win32::send_ctrl_c().is_err() {
+                    let _ = proxy.send_event(AppEvent::SelectionText(Err(tr(
+                        "Could not copy selected text.",
+                    ))));
                     return;
                 }
                 std::thread::sleep(Duration::from_millis(80));
@@ -479,7 +503,6 @@ impl App {
                     ClipContent::Text(t) => t,
                     _ => String::new(),
                 };
-                // restore image if we stole it
                 if let ClipContent::Image(img) = backup {
                     let _ = clipboard::write_image(&img);
                 }
@@ -488,7 +511,7 @@ impl App {
                 } else {
                     Ok(text)
                 };
-                let _ = proxy.send_event(AppEvent::OcrDone(result, true));
+                let _ = proxy.send_event(AppEvent::SelectionText(result));
             });
         }
     }
@@ -936,9 +959,55 @@ impl ApplicationHandler<AppEvent> for App {
                 }
             }
             AppEvent::Ipc(_) => {}
-            AppEvent::OcrDone(result, translate) => match result {
-                Ok(text) => crate::result_win::open(text, translate),
-                Err(err) => crate::result_win::open_error(err),
+            AppEvent::OcrDone {
+                pin,
+                result,
+                translate,
+            } => {
+                let mut follow = None;
+                if let Some(p) = self.pins.iter_mut().find(|p| p.window_id() == pin) {
+                    match result {
+                        Ok(page) => {
+                            let text = page.text.clone();
+                            p.attach_ocr(page);
+                            if translate && !text.trim().is_empty() {
+                                p.set_translating(true);
+                                follow = Some(text);
+                            }
+                        }
+                        Err(err) => p.toast(tr(&err)),
+                    }
+                }
+                if let Some(text) = follow {
+                    self.spawn_translate(pin, text);
+                }
+            }
+            AppEvent::TranslateDone { pin, result } => {
+                if let Some(p) = self.pins.iter_mut().find(|p| p.window_id() == pin) {
+                    match result {
+                        Ok(text) => p.set_translation(text),
+                        Err(err) => {
+                            p.set_translating(false);
+                            p.toast(tr(&err));
+                        }
+                    }
+                }
+            }
+            AppEvent::SelectionText(result) => match result {
+                Ok(text) => {
+                    let img = clipboard::text_card(&text, 280, 120);
+                    let page = pinshot_core::ocr::page_from_plain(&text, img.width, img.height);
+                    self.spawn_pin(event_loop, img, None, None);
+                    let pin_id = self.pins.last().map(|p| p.window_id());
+                    if let Some(p) = self.pins.last_mut() {
+                        p.attach_ocr(page);
+                        p.set_translating(true);
+                    }
+                    if let Some(id) = pin_id {
+                        self.spawn_translate(id, text);
+                    }
+                }
+                Err(err) => eprintln!("{}", tr(&err)),
             },
         }
     }
@@ -1025,6 +1094,7 @@ impl ApplicationHandler<AppEvent> for App {
         }
         let mut open_menu = None;
         let mut close_menu = false;
+        let mut ocr_job = None;
         let swallow_keys = self.pin_esc_guarded();
         let menu_open = self.pin_menu.is_some();
         for p in &mut self.pins {
@@ -1076,12 +1146,19 @@ impl ApplicationHandler<AppEvent> for App {
                 } else {
                     p.handle(&event);
                 }
+                if p.take_pending_ocr() {
+                    p.toast(tr("Recognizing…"));
+                    ocr_job = Some(p.rendered());
+                }
                 if p.pending_menu {
                     p.pending_menu = false;
                     open_menu = Some(id);
                 }
                 break;
             }
+        }
+        if let Some(img) = ocr_job {
+            self.spawn_ocr(id, img, false);
         }
         if close_menu {
             self.dismiss_pin_menu();
@@ -1092,7 +1169,6 @@ impl ApplicationHandler<AppEvent> for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        crate::result_win::reap_child();
         event_loop.set_control_flow(ControlFlow::Wait);
         if self.hotkeys.is_none() {
             if let Ok(h) = native::install_hotkeys(self.proxy.clone(), &self.cfg) {
@@ -1170,7 +1246,5 @@ impl ApplicationHandler<AppEvent> for App {
         if persist || self.pins.len() != before {
             self.persist_session();
         }
-        #[cfg(windows)]
-        crate::result_win::raise_above_pins();
     }
 }

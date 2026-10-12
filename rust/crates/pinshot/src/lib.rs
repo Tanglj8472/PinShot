@@ -8,6 +8,7 @@ mod clipboard;
 mod draw;
 mod ocr_run;
 mod overlay;
+mod translate_run;
 mod pin;
 mod pin_menu;
 mod prefs;
@@ -56,15 +57,8 @@ mod ipc;
 #[path = "ipc_unix.rs"]
 mod ipc;
 
-#[cfg(windows)]
-mod result_win;
-#[cfg(unix)]
-#[path = "result_win_unix.rs"]
-mod result_win;
-
 pub use app::run;
 pub use prefs::run_preferences;
-pub use result_win::run_ocr_window;
 
 pub fn logutil_ensure() {
     crate::logutil::ensure_stdio();
