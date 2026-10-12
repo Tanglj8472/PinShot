@@ -6,8 +6,8 @@ use std::path::Path;
 
 use pinshot_core::config::data_dir;
 use pinshot_core::ocr::{
-    ctc_greedy, ctc_greedy_blank, db_boxes, join_ocr_parts, load_keys, model_dir, ModelPaths,
-    TextBox,
+    ctc_decode_fracs, db_boxes, join_ocr_parts, load_keys, model_dir, restore_english_spaces,
+    word_gap_fracs, ModelPaths, TextBox,
 };
 use pinshot_core::raster::Raster;
 
@@ -147,44 +147,18 @@ fn infer(image: &Raster, paths: &ModelPaths) -> Result<String, String> {
                 crop = crop.rotate90(2);
             }
         }
-        let words = split_word_crops(&crop);
-        crate::logutil::log(&format!("ocr box words {}", words.len()));
-        let full = rec_line(&mut rec, &crop, &keys).unwrap_or_default();
-        let mut word_parts: Vec<(TextBox, String)> = Vec::new();
-        if words.len() > 1 {
-            for (dx, word) in words {
-                if let Ok(text) = rec_line(&mut rec, &word, &keys) {
-                    if text.trim().is_empty() {
-                        continue;
-                    }
-                    word_parts.push((
-                        TextBox {
-                            x: b.x.saturating_add(dx),
-                            y: b.y,
-                            w: word.width,
-                            h: word.height,
-                            score: b.score,
-                        },
-                        text,
-                    ));
-                }
-            }
-        }
-        let word_join = word_parts
-            .iter()
-            .map(|(_, t)| t.as_str())
-            .collect::<Vec<_>>()
-            .join(" ");
-        let use_words = !word_parts.is_empty()
-            && word_join.contains(' ')
-            && compact_ocr(&word_join).chars().count() * 10
-                >= compact_ocr(&full).chars().count() * 7;
-        if use_words {
-            crate::logutil::log(&format!("ocr words {:?}", word_join));
-            parts.extend(word_parts);
-        } else if !full.trim().is_empty() {
-            crate::logutil::log(&format!("ocr line {:?}", full));
-            parts.push((b, full));
+        let (full, fracs) = rec_line_ex(&mut rec, &crop, &keys).unwrap_or_default();
+        let ink = crop_ink_columns(&crop);
+        let gaps = word_gap_fracs(&ink, crop.height);
+        let spaced = restore_english_spaces(&full, &fracs, &gaps);
+        crate::logutil::log(&format!(
+            "ocr line gaps={} raw={:?} spaced={:?}",
+            gaps.len(),
+            full,
+            spaced
+        ));
+        if !spaced.trim().is_empty() {
+            parts.push((b, spaced));
         } else {
             crate::logutil::log("ocr rec empty");
         }
@@ -318,11 +292,11 @@ fn pack_rec(crop: &Raster) -> Result<ort::value::Value, String> {
 }
 
 #[cfg(any(feature = "ocr", unix))]
-fn rec_line(
+fn rec_line_ex(
     session: &mut ort::session::Session,
     crop: &Raster,
     keys: &[String],
-) -> Result<String, String> {
+) -> Result<(String, Vec<f32>), String> {
     let t = pack_rec(crop)?;
     let outputs = session.run(ort::inputs![t]).map_err(|e| e.to_string())?;
     if outputs.len() == 0 {
@@ -367,8 +341,8 @@ fn rec_line(
         }
         idx.push(best);
     }
-    let decoded = decode_ctc(&idx, keys, classes);
-    if !decoded.trim().is_empty() {
+    let decoded = decode_ctc_ex(&idx, keys, classes);
+    if !decoded.0.trim().is_empty() {
         return Ok(decoded);
     }
     drop(outputs);
@@ -379,8 +353,8 @@ fn rec_line(
                 if let Ok((shape, data)) = outputs[0].try_extract_tensor::<f32>() {
                     let dims: Vec<i64> = shape.iter().copied().collect();
                     if let Ok(idx) = rec_argmax(&dims, data, keys.len()) {
-                        let alt = decode_ctc(&idx, keys, keys.len().max(2));
-                        if !alt.trim().is_empty() {
+                        let alt = decode_ctc_ex(&idx, keys, keys.len().max(2));
+                        if !alt.0.trim().is_empty() {
                             return Ok(alt);
                         }
                     }
@@ -392,17 +366,19 @@ fn rec_line(
 }
 
 #[cfg(any(feature = "ocr", unix))]
-fn decode_ctc(idx: &[usize], keys: &[String], classes: usize) -> String {
+fn decode_ctc_ex(idx: &[usize], keys: &[String], classes: usize) -> (String, Vec<f32>) {
     let norm = |s: String| s.replace('\u{3000}', " ").replace('\u{00a0}', " ");
-    let standard = norm(ctc_greedy(idx, keys));
+    let (standard, fracs) = ctc_decode_fracs(idx, keys, 0);
+    let standard = norm(standard);
     if !standard.trim().is_empty() {
-        return standard;
+        return (standard, fracs);
     }
-    let alt = norm(ctc_greedy_blank(idx, keys, classes.saturating_sub(1)));
+    let (alt, alt_fracs) = ctc_decode_fracs(idx, keys, classes.saturating_sub(1));
+    let alt = norm(alt);
     if alt.trim().is_empty() {
-        standard
+        (standard, fracs)
     } else {
-        alt
+        (alt, alt_fracs)
     }
 }
 
@@ -463,18 +439,9 @@ fn pack_rec_bgr(crop: &Raster) -> Result<ort::value::Value, String> {
 }
 
 #[cfg(any(feature = "ocr", unix))]
-fn compact_ocr(s: &str) -> String {
-    s.chars().filter(|c| !c.is_whitespace()).collect()
-}
-
-/// Split a line crop on wide whitespace columns so English words rec separately.
-#[cfg(any(feature = "ocr", unix))]
-fn split_word_crops(crop: &Raster) -> Vec<(u32, Raster)> {
+fn crop_ink_columns(crop: &Raster) -> Vec<u32> {
     let w = crop.width;
     let h = crop.height;
-    if w < 16 || h < 8 {
-        return vec![(0, crop.clone())];
-    }
     let mut ink = vec![0u32; w as usize];
     for x in 0..w {
         for y in 0..h {
@@ -486,76 +453,7 @@ fn split_word_crops(crop: &Raster) -> Vec<(u32, Raster)> {
             }
         }
     }
-    let empty_max = (h / 10).max(1);
-    let mut ink_top = h;
-    let mut ink_bot = 0u32;
-    for x in 0..w {
-        if ink[x as usize] <= empty_max {
-            continue;
-        }
-        for y in 0..h {
-            let Some(c) = crop.get(x as i32, y as i32) else {
-                continue;
-            };
-            if (c.r as u16) + (c.g as u16) + (c.b as u16) < 620 {
-                ink_top = ink_top.min(y);
-                ink_bot = ink_bot.max(y + 1);
-            }
-        }
-    }
-    let ink_h = ink_bot.saturating_sub(ink_top).max(8);
-    let mut raw: Vec<(u32, u32)> = Vec::new();
-    let mut x = 0u32;
-    while x < w {
-        while x < w && ink[x as usize] <= empty_max {
-            x += 1;
-        }
-        if x >= w {
-            break;
-        }
-        let start = x;
-        while x < w && ink[x as usize] > empty_max {
-            x += 1;
-        }
-        if x > start + 1 {
-            raw.push((start, x));
-        }
-    }
-    if raw.is_empty() {
-        return vec![(0, crop.clone())];
-    }
-    let min_gap = ((ink_h as f32 * 0.28).round() as u32).clamp(4, 28);
-    let mut spans: Vec<(u32, u32)> = Vec::new();
-    for (s, e) in raw {
-        if let Some(last) = spans.last_mut() {
-            if s.saturating_sub(last.1) < min_gap {
-                last.1 = e;
-                continue;
-            }
-        }
-        spans.push((s, e));
-    }
-    if spans.len() <= 1 {
-        return vec![(0, crop.clone())];
-    }
-    spans
-        .into_iter()
-        .filter_map(|(x0, x1)| {
-            let pad = 1u32;
-            let sx = x0.saturating_sub(pad);
-            let ex = (x1 + pad).min(w);
-            if ex <= sx + 2 {
-                return None;
-            }
-            let piece = crop.crop(pinshot_core::geom::Rect::from_i32(
-                sx as i32,
-                0,
-                (ex - sx) as i32,
-                h as i32,
-            ));
-            Some((sx, piece))
-        })
-        .collect()
+    ink
 }
 
 #[cfg(any(feature = "ocr", unix))]
@@ -646,6 +544,19 @@ mod tests {
         assert!(
             text.contains(' '),
             "expected ASCII spaces between English words, got {text:?}"
+        );
+        let words = lower
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|w| !w.is_empty())
+            .collect::<Vec<_>>();
+        assert!(
+            words.iter().any(|w| *w == "in" || *w == "2009")
+                && words.iter().any(|w| *w == "project" || *w == "mozilla" || *w == "sponsored"),
+            "expected separated English tokens, got {text:?} tokens={words:?}"
+        );
+        assert!(
+            text.chars().filter(|c| *c == ' ').count() >= 3,
+            "expected several English word spaces, got {text:?}"
         );
     }
 }

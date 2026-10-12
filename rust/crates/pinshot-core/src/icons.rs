@@ -333,21 +333,21 @@ pub fn draw_icon(pixmap: &mut Pixmap, kind: IconKind, cell: Rect, color: Option<
             }
         }
         IconKind::Translate => {
-            // Latin A + CJK 口, not a T (was confused with the Text tool).
-            if let Some(path) = line_path((4.0, 14.0), (7.0, 5.0)) {
-                pixmap.stroke_path(&path, &p, &stroke(1.6), t, None);
+            // Latin A + CJK 口 — a two-script mark, never a T (Text) or Tₓ.
+            if let Some(path) = line_path((3.5, 15.0), (7.0, 4.5)) {
+                pixmap.stroke_path(&path, &p, &stroke(1.7), t, None);
             }
-            if let Some(path) = line_path((7.0, 5.0), (10.0, 14.0)) {
-                pixmap.stroke_path(&path, &p, &stroke(1.6), t, None);
+            if let Some(path) = line_path((7.0, 4.5), (10.5, 15.0)) {
+                pixmap.stroke_path(&path, &p, &stroke(1.7), t, None);
             }
-            if let Some(path) = line_path((5.2, 11.0), (8.8, 11.0)) {
+            if let Some(path) = line_path((5.0, 11.2), (8.8, 11.2)) {
+                pixmap.stroke_path(&path, &p, &stroke(1.4), t, None);
+            }
+            if let Some(r) = tiny_skia::Rect::from_xywh(11.0, 5.5, 6.5, 10.0) {
+                pixmap.stroke_path(&PathBuilder::from_rect(r), &p, &stroke(1.5), t, None);
+            }
+            if let Some(path) = line_path((11.0, 10.5), (17.5, 10.5)) {
                 pixmap.stroke_path(&path, &p, &stroke(1.3), t, None);
-            }
-            if let Some(r) = tiny_skia::Rect::from_xywh(11.0, 6.0, 6.0, 9.0) {
-                pixmap.stroke_path(&PathBuilder::from_rect(r), &p, &st, t, None);
-            }
-            if let Some(path) = line_path((11.0, 10.5), (17.0, 10.5)) {
-                pixmap.stroke_path(&path, &p, &stroke(1.2), t, None);
             }
         }
         IconKind::Fill => {

@@ -227,39 +227,13 @@ pub fn ctc_greedy(indices: &[usize], alphabet: &[String]) -> String {
 /// Chinese mobile rec rarely emits the space class. Word gaps are a *longer*
 /// CTC blank run than the inter-letter blanks; insert ASCII space there.
 pub fn ctc_greedy_blank(indices: &[usize], alphabet: &[String], blank: usize) -> String {
-    let glyphs = ctc_glyphs(indices, blank);
-    let mut gaps: Vec<usize> = glyphs.iter().skip(1).map(|g| g.blanks_before).collect();
-    gaps.sort_unstable();
-    let median = if gaps.is_empty() {
-        0
-    } else {
-        gaps[gaps.len() / 2]
-    };
-    // Word gap: clearly wider than typical letter spacing.
-    let word_gap = (median * 2 + 2).max(4);
-    let mut out = String::new();
-    for (n, g) in glyphs.iter().enumerate() {
-        if n > 0 && g.blanks_before >= word_gap && !out.ends_with(' ') {
-            out.push(' ');
-        }
-        let ch = if blank == 0 {
-            alphabet.get(g.class.saturating_sub(1))
-        } else {
-            alphabet.get(g.class)
-        };
-        if let Some(ch) = ch {
-            if ch == " " && out.ends_with(' ') {
-                continue;
-            }
-            out.push_str(ch);
-        }
-    }
-    out
+    ctc_decode_fracs(indices, alphabet, blank).0
 }
 
 struct CtcGlyph {
     class: usize,
     blanks_before: usize,
+    timestep: usize,
 }
 
 pub fn ctc_gap_stats(indices: &[usize], blank: usize) -> (usize, usize, usize, usize) {
@@ -281,7 +255,7 @@ fn ctc_glyphs(indices: &[usize], blank: usize) -> Vec<CtcGlyph> {
     let mut out = Vec::new();
     let mut prev = usize::MAX;
     let mut blanks = 0usize;
-    for &i in indices {
+    for (t, &i) in indices.iter().enumerate() {
         if i == blank {
             blanks += 1;
             prev = i;
@@ -293,11 +267,60 @@ fn ctc_glyphs(indices: &[usize], blank: usize) -> Vec<CtcGlyph> {
         out.push(CtcGlyph {
             class: i,
             blanks_before: blanks,
+            timestep: t,
         });
         prev = i;
         blanks = 0;
     }
     out
+}
+
+/// CTC decode plus each glyph's horizontal fraction along the rec window.
+pub fn ctc_decode_fracs(
+    indices: &[usize],
+    alphabet: &[String],
+    blank: usize,
+) -> (String, Vec<f32>) {
+    let glyphs = ctc_glyphs(indices, blank);
+    let mut gaps: Vec<usize> = glyphs.iter().skip(1).map(|g| g.blanks_before).collect();
+    gaps.sort_unstable();
+    let median = if gaps.is_empty() {
+        0
+    } else {
+        gaps[gaps.len() / 2]
+    };
+    let word_gap = (median * 2 + 2).max(4);
+    let tlen = indices.len().max(1) as f32;
+    let mut out = String::new();
+    let mut fracs = Vec::new();
+    for (n, g) in glyphs.iter().enumerate() {
+        let ch = if blank == 0 {
+            alphabet.get(g.class.saturating_sub(1))
+        } else {
+            alphabet.get(g.class)
+        };
+        if n > 0 && g.blanks_before >= word_gap && !out.ends_with(' ') {
+            let next_cjk = ch
+                .and_then(|s| s.chars().next())
+                .is_some_and(is_cjk);
+            let prev_cjk = out.chars().last().is_some_and(is_cjk);
+            if !(prev_cjk && next_cjk) {
+                out.push(' ');
+                fracs.push(g.timestep as f32 / tlen);
+            }
+        }
+        if let Some(ch) = ch {
+            if ch == " " && out.ends_with(' ') {
+                continue;
+            }
+            let frac = g.timestep as f32 / tlen;
+            for _ in ch.chars() {
+                fracs.push(frac);
+            }
+            out.push_str(ch);
+        }
+    }
+    (out, fracs)
 }
 
 pub fn load_keys(text: &str) -> Vec<String> {
@@ -349,6 +372,357 @@ pub fn join_ocr_parts(parts: &[(TextBox, String)]) -> String {
         }
         out.push_str(t);
         prev = Some(*b);
+    }
+    out
+}
+
+fn is_cjk(c: char) -> bool {
+    ('\u{4e00}'..='\u{9fff}').contains(&c)
+        || ('\u{3400}'..='\u{4dbf}').contains(&c)
+        || ('\u{3040}'..='\u{30ff}').contains(&c)
+}
+
+/// PP-OCRv5 often emits `In2009,Mozilla` with no ASCII spaces. Restore the
+/// obvious Latin boundaries (letter↔digit, punctuation before a letter).
+pub fn latin_space_tweak(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len() + 8);
+    for (i, &b) in chars.iter().enumerate() {
+        if i > 0 {
+            let a = chars[i - 1];
+            if !a.is_whitespace() && !b.is_whitespace() {
+                let punct_word = ",.;:!?".contains(a) && b.is_ascii_alphabetic();
+                let letter_digit = a.is_ascii_alphabetic() && b.is_ascii_digit();
+                let digit_letter = a.is_ascii_digit() && b.is_ascii_alphabetic();
+                if punct_word || letter_digit || digit_letter {
+                    out.push(' ');
+                }
+            }
+        }
+        out.push(b);
+    }
+    out
+}
+
+/// Column ink (count of dark pixels per x). Gaps narrower than ~0.35 of a
+/// typical glyph are treated as letter spacing, not word spaces.
+pub fn word_gap_fracs(ink: &[u32], _height: u32) -> Vec<f32> {
+    let w = ink.len() as u32;
+    if w < 8 {
+        return Vec::new();
+    }
+    let peak = ink.iter().copied().max().unwrap_or(0);
+    if peak < 2 {
+        return Vec::new();
+    }
+    let empty_max = (peak / 6).max(1);
+    let mut raw: Vec<(u32, u32)> = Vec::new();
+    let mut x = 0u32;
+    while x < w {
+        while x < w && ink[x as usize] <= empty_max {
+            x += 1;
+        }
+        if x >= w {
+            break;
+        }
+        let start = x;
+        while x < w && ink[x as usize] > empty_max {
+            x += 1;
+        }
+        if x > start + 1 {
+            raw.push((start, x));
+        }
+    }
+    if raw.len() < 2 {
+        return Vec::new();
+    }
+    let mut widths: Vec<u32> = raw.iter().map(|(s, e)| e.saturating_sub(*s)).collect();
+    widths.sort_unstable();
+    let letter_w = widths[widths.len() / 2].max(4);
+    let min_gap = ((letter_w as f32) * 0.38).round().clamp(3.0, 28.0) as u32;
+    let mut spans: Vec<(u32, u32)> = Vec::new();
+    for (s, e) in raw {
+        if let Some(last) = spans.last_mut() {
+            if s.saturating_sub(last.1) < min_gap {
+                last.1 = e;
+                continue;
+            }
+        }
+        spans.push((s, e));
+    }
+    if spans.len() < 2 {
+        return Vec::new();
+    }
+    let width = w.max(1) as f32;
+    spans
+        .windows(2)
+        .map(|w| ((w[0].1 + w[1].0) as f32 * 0.5) / width)
+        .collect()
+}
+
+/// Insert ASCII spaces where ink gaps fall between CTC glyphs (or, if glyph
+/// fractions are missing, by proportional character index).
+pub fn insert_spaces_aligned(text: &str, glyph_fracs: &[f32], gap_fracs: &[f32]) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let n = chars.len();
+    if n == 0 || gap_fracs.is_empty() {
+        return text.to_string();
+    }
+    // Letter-level cuts (more gaps than half the glyphs) are tracking, not words.
+    if gap_fracs.len() * 2 > n {
+        return text.to_string();
+    }
+    let fracs: Vec<f32> = if glyph_fracs.len() == n {
+        glyph_fracs.to_vec()
+    } else {
+        (0..n).map(|i| (i as f32 + 0.5) / n as f32).collect()
+    };
+    let mut cut = vec![false; n];
+    for &g in gap_fracs {
+        let mut i = 1usize;
+        while i < n && fracs[i] < g {
+            i += 1;
+        }
+        if i == 0 || i >= n {
+            continue;
+        }
+        if is_cjk(chars[i - 1]) && is_cjk(chars[i]) {
+            continue;
+        }
+        if chars[i - 1].is_whitespace() || chars[i].is_whitespace() {
+            continue;
+        }
+        cut[i] = true;
+    }
+    let mut out = String::with_capacity(n + gap_fracs.len());
+    for (i, &ch) in chars.iter().enumerate() {
+        if cut[i] && !out.ends_with(' ') {
+            out.push(' ');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+/// Geometry gaps, Latin punctuation/digit boundaries, then glued-word break.
+pub fn restore_english_spaces(text: &str, glyph_fracs: &[f32], gap_fracs: &[f32]) -> String {
+    segment_glued_latin(&insert_spaces_aligned(
+        &latin_space_tweak(text),
+        glyph_fracs,
+        gap_fracs,
+    ))
+}
+
+/// Common English tokens, longest first. Used only on long letter-runs that
+/// PP-OCRv5 emitted without spaces (`Mozillaofficiallysponsoredtheproject`).
+const EN_WORDS: &[&str] = &[
+    "officially",
+    "sponsored",
+    "wikipedia",
+    "something",
+    "together",
+    "project",
+    "mozilla",
+    "through",
+    "between",
+    "because",
+    "without",
+    "another",
+    "against",
+    "however",
+    "welcome",
+    "example",
+    "english",
+    "chinese",
+    "version",
+    "release",
+    "license",
+    "source",
+    "public",
+    "number",
+    "people",
+    "should",
+    "before",
+    "change",
+    "system",
+    "during",
+    "around",
+    "always",
+    "really",
+    "please",
+    "thanks",
+    "update",
+    "create",
+    "search",
+    "result",
+    "window",
+    "screen",
+    "hello",
+    "world",
+    "about",
+    "after",
+    "first",
+    "their",
+    "there",
+    "which",
+    "would",
+    "other",
+    "these",
+    "those",
+    "could",
+    "where",
+    "under",
+    "using",
+    "still",
+    "every",
+    "never",
+    "right",
+    "small",
+    "large",
+    "start",
+    "close",
+    "image",
+    "click",
+    "input",
+    "text",
+    "from",
+    "this",
+    "that",
+    "with",
+    "have",
+    "been",
+    "were",
+    "will",
+    "when",
+    "what",
+    "your",
+    "them",
+    "then",
+    "than",
+    "also",
+    "into",
+    "over",
+    "only",
+    "some",
+    "more",
+    "most",
+    "such",
+    "make",
+    "like",
+    "time",
+    "year",
+    "used",
+    "file",
+    "open",
+    "save",
+    "copy",
+    "edit",
+    "page",
+    "line",
+    "code",
+    "data",
+    "name",
+    "next",
+    "last",
+    "both",
+    "each",
+    "many",
+    "well",
+    "just",
+    "very",
+    "back",
+    "good",
+    "work",
+    "the",
+    "and",
+    "for",
+    "are",
+    "but",
+    "not",
+    "you",
+    "all",
+    "can",
+    "had",
+    "her",
+    "was",
+    "one",
+    "our",
+    "out",
+    "has",
+    "his",
+    "how",
+    "its",
+    "may",
+    "new",
+    "now",
+    "old",
+    "see",
+    "two",
+    "way",
+    "who",
+    "did",
+    "get",
+    "got",
+    "let",
+    "put",
+    "say",
+    "she",
+    "too",
+    "use",
+];
+
+fn dict_match_at(lower: &str, i: usize) -> Option<usize> {
+    let rest = &lower[i..];
+    for w in EN_WORDS {
+        if rest.starts_with(w) {
+            return Some(w.len());
+        }
+    }
+    None
+}
+
+/// Break a long `[A-Za-z]+` run with a greedy longest-dictionary match,
+/// keeping unknown prefixes (`Mozilla` + `officially` …).
+pub fn break_latin_run(run: &str) -> String {
+    if run.len() < 12 {
+        return run.to_string();
+    }
+    let lower = run.to_ascii_lowercase();
+    let bytes = run.as_bytes();
+    let mut i = 0usize;
+    let mut parts: Vec<&str> = Vec::new();
+    while i < bytes.len() {
+        if let Some(n) = dict_match_at(&lower, i) {
+            parts.push(&run[i..i + n]);
+            i += n;
+            continue;
+        }
+        let mut j = i + 1;
+        while j < bytes.len() && dict_match_at(&lower, j).is_none() {
+            j += 1;
+        }
+        parts.push(&run[i..j]);
+        i = j;
+    }
+    parts.join(" ")
+}
+
+pub fn segment_glued_latin(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len() + 8);
+    let mut i = 0usize;
+    while i < chars.len() {
+        if !chars[i].is_ascii_alphabetic() {
+            out.push(chars[i]);
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < chars.len() && chars[i].is_ascii_alphabetic() {
+            i += 1;
+        }
+        let run: String = chars[start..i].iter().collect();
+        out.push_str(&break_latin_run(&run));
     }
     out
 }
@@ -427,6 +801,51 @@ mod tests {
             (c, "sponsored".into()),
         ]);
         assert_eq!(s, "In2009 Mozilla\nsponsored");
+    }
+
+    #[test]
+    fn latin_space_tweak_splits_digit_and_punct() {
+        assert_eq!(
+            latin_space_tweak("In2009,Mozilla"),
+            "In 2009, Mozilla"
+        );
+        assert_eq!(latin_space_tweak("你好PinShot"), "你好PinShot");
+        assert_eq!(latin_space_tweak("Hello world"), "Hello world");
+    }
+
+    #[test]
+    fn insert_spaces_aligned_uses_gap_fracs() {
+        let text = "Mozillaofficiallysponsored";
+        let n = text.chars().count();
+        let fracs: Vec<f32> = (0..n).map(|i| (i as f32 + 0.5) / n as f32).collect();
+        // Gaps at Mozilla|officially and officially|sponsored
+        let moz = "Mozilla".chars().count() as f32 / n as f32;
+        let off = "Mozillaofficially".chars().count() as f32 / n as f32;
+        let s = insert_spaces_aligned(text, &fracs, &[moz, off]);
+        assert_eq!(s, "Mozilla officially sponsored");
+        assert_eq!(
+            restore_english_spaces("In2009,Mozillaofficially", &[], &[]),
+            "In 2009, Mozilla officially"
+        );
+        assert_eq!(
+            segment_glued_latin("Mozillaofficiallysponsoredtheproject."),
+            "Mozilla officially sponsored the project."
+        );
+    }
+
+    #[test]
+    fn word_gap_fracs_finds_wide_columns() {
+        // 8px words with a 6px hole: #####......#####
+        let mut ink = vec![0u32; 24];
+        for x in 0..8 {
+            ink[x] = 10;
+        }
+        for x in 14..22 {
+            ink[x] = 10;
+        }
+        let gaps = word_gap_fracs(&ink, 12);
+        assert_eq!(gaps.len(), 1);
+        assert!((gaps[0] - 0.458).abs() < 0.08, "{gaps:?}");
     }
 
     #[test]

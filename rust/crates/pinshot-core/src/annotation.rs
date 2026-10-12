@@ -567,6 +567,7 @@ impl Annotator {
                     if idx < self.shapes.len() {
                         self.push_edit();
                         self.shapes[idx].text = ed.text;
+                        self.shapes[idx].pts = vec![ed.img_pt];
                     }
                 } else {
                     let mut sh =
@@ -1027,6 +1028,22 @@ impl Annotator {
                 if let Some(r) = self.text_edit_rect() {
                     if r.contains(img_pt) {
                         self.set_caret_at_x(img_pt.x);
+                        // Drag the box (Snipaste: grab text/border to move) even
+                        // while the caret is already in this editor.
+                        if let Some(i) = self.text_edit.as_ref().and_then(|e| e.existing) {
+                            if i < self.shapes.len() {
+                                self.selected = Some(i);
+                                self.sel_mode = Some(SelMode::Move);
+                                self.sel_origin = img_pt;
+                                self.sel_dirty = false;
+                                self.sel_pts0 = self.shapes[i].pts.clone();
+                                self.pending_text_click = Some(img_pt);
+                            }
+                        } else {
+                            self.pending_text_click = Some(img_pt);
+                            self.sel_origin = img_pt;
+                            self.sel_dirty = false;
+                        }
                         return true;
                     }
                 }
@@ -1338,9 +1355,29 @@ impl Annotator {
                 SelMode::Move => {
                     let d = img_pt.sub(self.sel_origin);
                     self.shapes[idx].pts = self.sel_pts0.iter().map(|p| p.add(d)).collect();
+                    if let Some(ed) = self.text_edit.as_mut() {
+                        if ed.existing == Some(idx) {
+                            if let Some(p) = self.shapes[idx].pts.first() {
+                                ed.img_pt = *p;
+                            }
+                        }
+                    }
                 }
                 SelMode::Handle(h) => self.resize_selected(idx, h, img_pt),
             }
+            return true;
+        }
+        if self.pending_text_click.is_some() && self.text_edit.is_some() && self.selected.is_none()
+        {
+            if img_pt.manhattan(self.sel_origin) <= 0.5 {
+                return true;
+            }
+            let d = img_pt.sub(self.sel_origin);
+            if let Some(ed) = self.text_edit.as_mut() {
+                ed.img_pt = ed.img_pt.add(d);
+            }
+            self.sel_origin = img_pt;
+            self.sel_dirty = true;
             return true;
         }
         let Some(sh) = self.live.as_mut() else {
@@ -1436,15 +1473,25 @@ impl Annotator {
             // Fast drags may skip CursorMoved; still treat a moved pointer as move.
             let dragged = self.sel_dirty || img_pt.manhattan(self.sel_origin) > 5.0;
             let idx = self.selected;
+            let editing = self.text_edit.is_some();
             if dragged {
                 if !self.sel_dirty {
+                    let d = img_pt.sub(self.sel_origin);
                     if let Some(i) = idx {
                         if i < self.shapes.len() && !self.sel_pts0.is_empty() {
                             self.push_edit();
-                            let d = img_pt.sub(self.sel_origin);
                             self.shapes[i].pts =
                                 self.sel_pts0.iter().map(|p| p.add(d)).collect();
+                            if let Some(ed) = self.text_edit.as_mut() {
+                                if ed.existing == Some(i) {
+                                    if let Some(p) = self.shapes[i].pts.first() {
+                                        ed.img_pt = *p;
+                                    }
+                                }
+                            }
                         }
+                    } else if let Some(ed) = self.text_edit.as_mut() {
+                        ed.img_pt = ed.img_pt.add(d);
                     }
                 }
                 self.sel_mode = None;
@@ -1454,6 +1501,11 @@ impl Annotator {
             }
             self.sel_mode = None;
             self.sel_pts0.clear();
+            self.selected = None;
+            if editing {
+                // Caret was already placed on press.
+                return true;
+            }
             if let Some(i) = idx {
                 if self.shapes.get(i).map(|s| s.kind) == Some(Tool::Text) {
                     self.begin_edit_text(i);
@@ -1960,6 +2012,28 @@ mod tests {
         assert_eq!(a.shapes.len(), 1);
         assert_eq!(a.shapes[0].text, "Hi");
         assert!((a.shapes[0].pts[0].x - 38.0).abs() < 0.5);
+    }
+
+    #[test]
+    fn text_drag_while_editing_moves_editor() {
+        let mut a = Annotator::new();
+        a.set_tool(Some(Tool::Text));
+        a.press(Point::new(8.0, 8.0), false);
+        a.insert_str("Hi");
+        a.commit_text(false);
+        a.press(Point::new(10.0, 10.0), false);
+        a.release(Point::new(10.0, 10.0));
+        assert!(a.text_edit.is_some());
+        let before = a.text_edit.as_ref().unwrap().img_pt;
+        a.press(Point::new(12.0, 12.0), false);
+        a.move_to(Point::new(42.0, 32.0), false);
+        a.release(Point::new(42.0, 32.0));
+        assert!(a.text_edit.is_some(), "stay in edit after drag");
+        assert_eq!(a.shapes.len(), 1);
+        let ed = a.text_edit.as_ref().unwrap();
+        assert!((ed.img_pt.x - (before.x + 30.0)).abs() < 0.5);
+        assert_eq!(a.shapes[0].pts[0], ed.img_pt);
+        assert!(a.selected.is_none());
     }
 
     #[test]
