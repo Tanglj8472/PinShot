@@ -427,21 +427,19 @@ void DrawStack::SetColorIndex(int index)
         return;
     }
     m_colorIndex = index;
-    auto* st = ActiveStyle();
-    if (!st || m_tool == ToolKind::Mosaic || m_tool == ToolKind::Eraser)
+    SetColorRgb(kPalette[index].r, kPalette[index].g, kPalette[index].b);
+}
+
+void DrawStack::SetColorRgb(float r, float g, float b)
+{
+    const D2D1_COLOR_F c = D2D1::ColorF(r, g, b, 1.f);
+    for (ToolKind k : { ToolKind::Pen, ToolKind::Rect, ToolKind::Ellipse, ToolKind::Arrow, ToolKind::Text })
     {
-        // Still apply to pen/text/rect styles commonly used.
-        for (ToolKind k : { ToolKind::Pen, ToolKind::Rect, ToolKind::Ellipse, ToolKind::Arrow, ToolKind::Text })
-        {
-            MutableStyle(k).color = kPalette[m_colorIndex];
-        }
-        Notify();
-        return;
+        MutableStyle(k).color = c;
     }
-    st->color = kPalette[m_colorIndex];
-    if (m_live.has)
+    if (m_live.has && ToolUsesColor(m_live.cmd.kind))
     {
-        m_live.cmd.style.color = st->color;
+        m_live.cmd.style.color = c;
     }
     Notify();
 }

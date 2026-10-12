@@ -15,16 +15,16 @@
 | 冻结虚拟桌面 → 框选（手柄/移动/Enter·OK 确认） | ✅ |
 | 选区放大镜 + HEX | ✅ |
 | Annotator：选中/笔/矩形/椭圆/箭头/文字/马赛克/橡皮 + undo/redo | ✅ |
-| 色板 + 填充切换 + 线宽 | ✅ |
+| 工具栏图标 + 样式子面板（色板/线宽/填充/文字/自定义色） | ✅ |
 | 复制剪贴板 / 保存 PNG / 贴图 Pin | ✅ |
-| GraphicsCapture / 完整图标 / 窗口探测 | ❌ 后续 |
+| GraphicsCapture / 窗口探测 | ❌ 后续 |
 
 ## 使用
 
 1. VS2022 打开 `SnipClone.sln`，`Release|x64` 生成（或 `.\build.ps1`）
 2. 运行 EXE，按 `Ctrl+Shift+S`
 3. 拖拽框选 → **松手后可调手柄** → `Enter` / 双击 / `OK` 进入批注（`Esc` 取消）
-4. 工具栏：`sel pen rect ellip arrow text mos eras | w- w+ fill | 色板 | B I OL | undo redo | close pin save copy`
+4. 工具栏：主栏图标（选/笔/形/…）+ 下方样式子面板（线宽/填充/色板/B·I·OL；可点当前色自定义）
 5. **文字**：点击落点 → 浮动输入框（中文 IME）→ Enter 提交 / Esc 取消；双击重编
 6. **选择工具**：点选图形后拖动；`Del` 删除
 7. **橡皮**：沿路径恢复冻结底图像素

@@ -54,6 +54,7 @@ public:
     void AdjustMosaicSize(int delta);
     void CycleColor();
     void SetColorIndex(int index);
+    void SetColorRgb(float r, float g, float b);
     int ColorIndex() const { return m_colorIndex; }
     static D2D1_COLOR_F PaletteColor(int index);
     void ToggleBold();

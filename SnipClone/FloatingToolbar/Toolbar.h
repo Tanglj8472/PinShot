@@ -1,11 +1,12 @@
 //==============================================================================
 // SnipClone — floating toolbar（装配对齐 PinShot ToolDock）
 //
-// 布局：sel/tools | w± fill 色板 B/I/OL | undo redo | close pin save copy
-// 与 Annotator 对话：SetTool / SetColor；动作经回调交给 AnnotationOverlay 宿主。
+// 主栏：工具图标 | undo redo | close pin save copy
+// 样式：独立 StylePanel（线宽/填充/色板/文字样式）
 //==============================================================================
 #pragma once
 
+#include "StylePanel.h"
 #include "ToolButton.h"
 #include "../AnnotationOverlay/DrawStack.h"
 #include "../Common/WinCompat.h"
@@ -14,6 +15,7 @@
 #include <dwrite.h>
 
 #include <functional>
+#include <memory>
 #include <vector>
 
 namespace snip
@@ -44,6 +46,7 @@ private:
     bool EnsureSurface(int w, int h);
     void ReleaseSurface();
     ToolButton* HitTest(POINT client);
+    void SyncStylePanel();
 
     HWND m_hwnd = nullptr;
     HWND m_owner = nullptr;
@@ -51,6 +54,8 @@ private:
     DrawStack* m_ann = nullptr;
     ActionFn m_onAction;
     std::vector<ToolButton> m_buttons;
+    std::unique_ptr<StylePanel> m_stylePanel;
+    ToolKind m_panelTool = ToolKind::Count; // force rebuild sentinel
 
     ID2D1Factory* m_factory = nullptr;
     ID2D1DCRenderTarget* m_rt = nullptr;

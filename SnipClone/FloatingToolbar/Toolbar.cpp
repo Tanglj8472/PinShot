@@ -1,8 +1,9 @@
 //==============================================================================
-// SnipClone — floating toolbar
+// SnipClone — floating toolbar (PinShot ToolDock main bar)
 //==============================================================================
 #include "Toolbar.h"
 
+#include "ToolIcons.h"
 #include "../Common/DpiHelper.h"
 #include "../Common/WinHelper.h"
 
@@ -18,9 +19,17 @@ namespace snip
 namespace
 {
 constexpr wchar_t kClass[] = L"SnipCloneToolbar";
-constexpr int kBtn = 36;
-constexpr int kPad = 6;
-constexpr int kGap = 4;
+constexpr int kBtn = 34;
+constexpr int kPad = 5;
+constexpr int kGap = 2;
+constexpr int kSep = 8;
+
+constexpr D2D1_COLOR_F kBg = { 0.97f, 0.97f, 0.97f, 0.96f };
+constexpr D2D1_COLOR_F kBorder = { 0.60f, 0.60f, 0.60f, 1.f };
+constexpr D2D1_COLOR_F kHover = { 0.87f, 0.91f, 0.96f, 1.f };
+constexpr D2D1_COLOR_F kChecked = { 0.77f, 0.85f, 0.95f, 1.f };
+constexpr D2D1_COLOR_F kFg = { 0.20f, 0.20f, 0.20f, 1.f };
+constexpr D2D1_COLOR_F kSepColor = { 0.78f, 0.78f, 0.78f, 1.f };
 }
 
 Toolbar::~Toolbar()
@@ -72,12 +81,22 @@ bool Toolbar::Create(HINSTANCE instance, HWND owner, DrawStack* annotator, Actio
     }
 
     SetWindowDisplayAffinity(m_hwnd, WDA_EXCLUDEFROMCAPTURE);
+
+    m_stylePanel = std::make_unique<StylePanel>();
+    m_stylePanel->Create(instance, owner, annotator, m_onAction);
+
     Present();
+    SyncStylePanel();
     return true;
 }
 
 void Toolbar::Destroy()
 {
+    if (m_stylePanel)
+    {
+        m_stylePanel->Destroy();
+        m_stylePanel.reset();
+    }
     if (m_hwnd)
     {
         DestroyWindow(m_hwnd);
@@ -104,11 +123,11 @@ void Toolbar::Destroy()
 void Toolbar::BuildButtons()
 {
     m_buttons.clear();
-    auto addTool = [&](ToolKind k, const wchar_t* id, const wchar_t* tip) {
+    auto addTool = [&](ToolKind k, const wchar_t* tip) {
         ToolButton b;
         b.action = ToolbarAction::SetTool;
         b.tool = k;
-        b.id = id;
+        b.id = ToolKindName(k);
         b.tip = tip;
         m_buttons.push_back(b);
     };
@@ -120,36 +139,21 @@ void Toolbar::BuildButtons()
         m_buttons.push_back(b);
     };
 
-    // PinShot dock subset: select + draw tools | style | undo | finish
-    addTool(ToolKind::Select, L"sel", L"Select (S) — move / Del");
-    addTool(ToolKind::Pen, L"pen", L"Pen (P)");
-    addTool(ToolKind::Rect, L"rect", L"Rectangle (R)");
-    addTool(ToolKind::Ellipse, L"ellip", L"Ellipse (E)");
-    addTool(ToolKind::Arrow, L"arrow", L"Arrow (A)");
-    addTool(ToolKind::Text, L"text", L"Text (X) — click to place, Enter commit");
-    addTool(ToolKind::Mosaic, L"mos", L"Mosaic (M)");
-    addTool(ToolKind::Eraser, L"eras", L"Eraser (K) — restore original");
-    addAct(ToolbarAction::WidthDec, L"w-", L"Thinner / smaller (1)");
-    addAct(ToolbarAction::WidthInc, L"w+", L"Thicker / larger (2)");
-    addAct(ToolbarAction::ToggleFill, L"fill", L"Toggle fill (F)");
-    for (int i = 0; i < kPaletteCount; ++i)
-    {
-        ToolButton b;
-        b.action = ToolbarAction::SetColor;
-        b.colorIndex = i;
-        b.id = L"c" + std::to_wstring(i);
-        b.tip = L"Color";
-        m_buttons.push_back(b);
-    }
-    addAct(ToolbarAction::Bold, L"B", L"Bold");
-    addAct(ToolbarAction::Italic, L"I", L"Italic");
-    addAct(ToolbarAction::Outline, L"OL", L"Outline / glow");
-    addAct(ToolbarAction::Undo, L"undo", L"Undo");
-    addAct(ToolbarAction::Redo, L"redo", L"Redo");
-    addAct(ToolbarAction::Close, L"close", L"Cancel");
-    addAct(ToolbarAction::Pin, L"pin", L"Pin");
-    addAct(ToolbarAction::Save, L"save", L"Save");
-    addAct(ToolbarAction::Copy, L"copy", L"Copy");
+    // Main bar mirrors PinShot: tools | undo redo | finish
+    addTool(ToolKind::Select, L"Select (S)");
+    addTool(ToolKind::Pen, L"Pen (P)");
+    addTool(ToolKind::Rect, L"Rectangle (R)");
+    addTool(ToolKind::Ellipse, L"Ellipse (E)");
+    addTool(ToolKind::Arrow, L"Arrow (A)");
+    addTool(ToolKind::Text, L"Text (X)");
+    addTool(ToolKind::Mosaic, L"Mosaic (M)");
+    addTool(ToolKind::Eraser, L"Eraser (K)");
+    addAct(ToolbarAction::Undo, L"undo", L"Undo (Ctrl+Z)");
+    addAct(ToolbarAction::Redo, L"redo", L"Redo (Ctrl+Y)");
+    addAct(ToolbarAction::Close, L"close", L"Cancel (Esc)");
+    addAct(ToolbarAction::Pin, L"pin", L"Pin (Ctrl+T)");
+    addAct(ToolbarAction::Save, L"save", L"Save (Ctrl+S)");
+    addAct(ToolbarAction::Copy, L"copy", L"Copy (Ctrl+C)");
 }
 
 void Toolbar::LayoutButtons()
@@ -157,20 +161,39 @@ void Toolbar::LayoutButtons()
     int x = kPad;
     for (auto& b : m_buttons)
     {
-        // Visual separators like PinShot: before style, palette, undo, close.
-        if (b.action == ToolbarAction::WidthDec || b.action == ToolbarAction::SetColor ||
-            b.action == ToolbarAction::Undo || b.action == ToolbarAction::Close)
+        if (b.action == ToolbarAction::Undo || b.action == ToolbarAction::Close)
         {
-            if (b.action != ToolbarAction::SetColor || b.colorIndex == 0)
-            {
-                x += 8;
-            }
+            x += kSep;
         }
-        const int bw = (b.action == ToolbarAction::SetColor) ? 18 : kBtn;
-        const int bh = (b.action == ToolbarAction::SetColor) ? 18 : kBtn;
-        const int y = kPad + (kBtn - bh) / 2;
-        b.hit = { x, y, x + bw, y + bh };
-        x += bw + ((b.action == ToolbarAction::SetColor) ? 3 : kGap);
+        b.hit = { x, kPad, x + kBtn, kPad + kBtn };
+        x += kBtn + kGap;
+    }
+}
+
+void Toolbar::SyncStylePanel()
+{
+    if (!m_stylePanel || !m_ann)
+    {
+        return;
+    }
+    const ToolKind t = m_ann->Tool();
+    if (t != m_panelTool)
+    {
+        m_panelTool = t;
+        m_stylePanel->RebuildForTool(t);
+    }
+    else
+    {
+        m_stylePanel->SyncFromAnnotator();
+    }
+
+    if (t == ToolKind::None)
+    {
+        m_stylePanel->Show(false);
+    }
+    else
+    {
+        m_stylePanel->PlaceUnder(m_hwnd);
     }
 }
 
@@ -192,15 +215,20 @@ void Toolbar::PlaceBelow(const RECT& annotationScreenRect)
         x = annotationScreenRect.left;
     }
 
-    // Flip above if near virtual screen bottom (PinShot _place_dock).
     const RECT vs = GetVirtualScreenRect();
-    if (y + th > vs.bottom)
+    // Reserve room for style panel (~40px) under the bar when possible.
+    if (y + th + 44 > vs.bottom)
     {
-        y = annotationScreenRect.top - th - 8;
+        y = annotationScreenRect.top - th - 52;
+        if (y < vs.top)
+        {
+            y = annotationScreenRect.top - th - 8;
+        }
     }
 
     SetWindowPos(m_hwnd, HWND_TOPMOST, x, y, tw, th, SWP_SHOWWINDOW | SWP_NOACTIVATE);
     Present();
+    SyncStylePanel();
 }
 
 void Toolbar::SyncFromAnnotator()
@@ -209,33 +237,11 @@ void Toolbar::SyncFromAnnotator()
     {
         return;
     }
-    const auto& textStyle = m_ann->Style(ToolKind::Text);
-    const bool filled = m_ann->Style(ToolKind::Rect).filled;
     for (auto& b : m_buttons)
     {
         if (b.action == ToolbarAction::SetTool)
         {
             b.checked = (b.tool == m_ann->Tool());
-        }
-        else if (b.action == ToolbarAction::SetColor)
-        {
-            b.checked = (b.colorIndex == m_ann->ColorIndex());
-        }
-        else if (b.action == ToolbarAction::ToggleFill)
-        {
-            b.checked = filled;
-        }
-        else if (b.action == ToolbarAction::Bold)
-        {
-            b.checked = textStyle.bold;
-        }
-        else if (b.action == ToolbarAction::Italic)
-        {
-            b.checked = textStyle.italic;
-        }
-        else if (b.action == ToolbarAction::Outline)
-        {
-            b.checked = textStyle.outline;
         }
         else
         {
@@ -243,6 +249,7 @@ void Toolbar::SyncFromAnnotator()
         }
     }
     Present();
+    SyncStylePanel();
 }
 
 void Toolbar::Show(bool visible)
@@ -250,6 +257,17 @@ void Toolbar::Show(bool visible)
     if (m_hwnd)
     {
         ShowWindow(m_hwnd, visible ? SW_SHOWNA : SW_HIDE);
+    }
+    if (m_stylePanel)
+    {
+        if (!visible)
+        {
+            m_stylePanel->Show(false);
+        }
+        else
+        {
+            SyncStylePanel();
+        }
     }
 }
 
@@ -296,6 +314,11 @@ LRESULT Toolbar::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                 changed = true;
             }
         }
+        // Tooltip via window title (lightweight).
+        if (auto* b = HitTest(pt))
+        {
+            SetWindowTextW(hwnd, b->tip.c_str());
+        }
         TRACKMOUSEEVENT tme{ sizeof(tme), TME_LEAVE, hwnd, 0 };
         TrackMouseEvent(&tme);
         if (changed)
@@ -318,13 +341,7 @@ LRESULT Toolbar::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         {
             if (b->action == ToolbarAction::SetTool && m_ann)
             {
-                // Toggle like PinShot: click active tool to clear.
                 m_ann->SetTool(m_ann->Tool() == b->tool ? ToolKind::None : b->tool);
-                SyncFromAnnotator();
-            }
-            else if (b->action == ToolbarAction::SetColor && m_ann)
-            {
-                m_ann->SetColorIndex(b->colorIndex);
                 SyncFromAnnotator();
             }
             if (m_onAction)
@@ -403,14 +420,16 @@ bool Toolbar::EnsureSurface(int w, int h)
 
     D2D1_RENDER_TARGET_PROPERTIES props = D2D1::RenderTargetProperties(
         D2D1_RENDER_TARGET_TYPE_DEFAULT,
-        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED),
+        96.f,
+        96.f);
     if (FAILED(m_factory->CreateDCRenderTarget(&props, &m_rt)))
     {
         return false;
     }
     RECT bind{ 0, 0, w, h };
     m_rt->BindDC(m_memDc, &bind);
-    m_rt->CreateSolidColorBrush(D2D1::ColorF(1, 1, 1), &m_brush);
+    m_rt->CreateSolidColorBrush(kFg, &m_brush);
     m_w = w;
     m_h = h;
     return true;
@@ -470,7 +489,24 @@ void Toolbar::Present()
     RECT bind{ 0, 0, w, h };
     m_rt->BindDC(m_memDc, &bind);
     m_rt->BeginDraw();
-    m_rt->Clear(D2D1::ColorF(0.12f, 0.12f, 0.14f, 0.92f));
+    m_rt->Clear(kBg);
+    m_brush->SetColor(kBorder);
+    m_rt->DrawRectangle(D2D1::RectF(0.5f, 0.5f, w - 0.5f, h - 0.5f), m_brush, 1.f);
+
+    // Separators before undo and close groups.
+    for (const auto& b : m_buttons)
+    {
+        if (b.action == ToolbarAction::Undo || b.action == ToolbarAction::Close)
+        {
+            const float sx = static_cast<float>(b.hit.left) - kSep * 0.5f;
+            m_brush->SetColor(kSepColor);
+            m_rt->DrawLine(
+                D2D1::Point2F(sx, static_cast<float>(kPad + 4)),
+                D2D1::Point2F(sx, static_cast<float>(kPad + kBtn - 4)),
+                m_brush,
+                1.f);
+        }
+    }
 
     for (const auto& b : m_buttons)
     {
@@ -480,40 +516,20 @@ void Toolbar::Present()
             static_cast<float>(b.hit.right),
             static_cast<float>(b.hit.bottom));
 
-        if (b.action == ToolbarAction::SetColor && b.colorIndex >= 0)
-        {
-            const auto c = DrawStack::PaletteColor(b.colorIndex);
-            m_brush->SetColor(c);
-            m_rt->FillRectangle(r, m_brush);
-            if (b.checked || b.hover)
-            {
-                m_brush->SetColor(D2D1::ColorF(1.f, 1.f, 1.f, 1.f));
-                m_rt->DrawRectangle(r, m_brush, b.checked ? 2.f : 1.f);
-            }
-            continue;
-        }
-
         if (b.checked)
         {
-            m_brush->SetColor(D2D1::ColorF(0.20f, 0.45f, 0.85f, 1.f));
+            m_brush->SetColor(kChecked);
             m_rt->FillRectangle(r, m_brush);
         }
         else if (b.hover)
         {
-            m_brush->SetColor(D2D1::ColorF(1.f, 1.f, 1.f, 0.18f));
+            m_brush->SetColor(kHover);
             m_rt->FillRectangle(r, m_brush);
         }
 
-        m_brush->SetColor(D2D1::ColorF(1.f, 1.f, 1.f, 1.f));
-        if (m_text)
-        {
-            m_rt->DrawText(
-                b.id.c_str(),
-                static_cast<UINT32>(b.id.size()),
-                m_text,
-                r,
-                m_brush);
-        }
+        m_brush->SetColor(kFg);
+        DrawToolbarIcon(m_rt, m_brush, r, b.action, b.tool);
+        m_brush->SetColor(kFg);
     }
 
     m_rt->EndDraw();

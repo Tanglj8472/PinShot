@@ -188,6 +188,8 @@
     <ClCompile Include="AnnotationOverlay\AnnotationOverlay.cpp" />
     <ClCompile Include="AnnotationOverlay\TextEditor.cpp" />
     <ClCompile Include="FloatingToolbar\Toolbar.cpp" />
+    <ClCompile Include="FloatingToolbar\StylePanel.cpp" />
+    <ClCompile Include="FloatingToolbar\ToolIcons.cpp" />
     <ClCompile Include="PinWindow\PinWindow.cpp" />
     <ClCompile Include="PinWindow\PinManager.cpp" />
   </ItemGroup>
@@ -207,6 +209,8 @@
     <ClInclude Include="AnnotationOverlay\AnnotationOverlay.h" />
     <ClInclude Include="AnnotationOverlay\TextEditor.h" />
     <ClInclude Include="FloatingToolbar\ToolButton.h" />
+    <ClInclude Include="FloatingToolbar\ToolIcons.h" />
+    <ClInclude Include="FloatingToolbar\StylePanel.h" />
     <ClInclude Include="FloatingToolbar\Toolbar.h" />
     <ClInclude Include="PinWindow\PinWindow.h" />
     <ClInclude Include="PinWindow\PinManager.h" />
