@@ -2,13 +2,13 @@
 
 对照源：`main` 上的 Python/PySide6 PinShot。Rust 在 `rust/`，分支 `rust`。Python 源码不改。
 
-最后更新：2026-10-12（0ff0169 实机两项：刚画完的形状出手柄；pin 去顶/左边暗条）。
+最后更新：2026-10-12（`23335a9`：刚画完的形状出手柄；pin 去顶/左边暗条。Xvfb `:24` + picom 11/11）。
 
 ---
 
 ## 当前进度
 
-HEAD 在 `rust`（用户提交 `ed59e0f` 之后本轮继续）。对照 Python/`main`，**先 Linux X11**（Xfce / xfwm4，1920×1200），再 Windows。Python 源码不改。用户提交（`a6d6765` / `7c406a6` / `ed59e0f` 共享 `toggle_tool`、Windows prefs 循环、语言标签测试）保留。
+HEAD 在 `rust` **`23335a9`**（用户提交 `ed59e0f` 之后本轮继续）。对照 Python/`main`，**先 Linux X11**（Xfce / xfwm4，1920×1200），再 Windows。Python 源码不改。用户提交（`a6d6765` / `7c406a6` / `ed59e0f` 共享 `toggle_tool`、Windows prefs 循环、语言标签测试）保留。
 
 | 面 | 状态 |
 |---|---|
@@ -148,7 +148,7 @@ HEAD 在 `rust`（用户提交 `ed59e0f` 之后本轮继续）。对照 Python/`
 | `a6d6765` | 用户：Windows 设置事件循环 + 截图焦点 |
 | `7d5ebb7` / `c344764` / `6edae0a` | `WheelGate` 去双倍滚轮；Fill/Dash/Dot 子面板；overlay 内 ConfirmAbort；pin 阴影/缩略；zenity 自定义色（已被本轮内置取色替换）；画笔 8ms poll |
 | `f32767c` / `da81652` / `0ff0169` | A–F：选区移动带标注；内置 HSV 取色；透明度写到 frame；Ctrl 滚轮读 QueryPointer；prefs ABOVE；矩形 Dash/Dot；双击复制同点才触发 |
-| （本轮） | `0ff0169` 实机两项：`add` 选中刚画的形状（手柄可见，Solid/色仍改它）；pin 按 Python 图+2M / ARGB / 发丝边，去掉顶左边暗条 |
+| `23335a9` | `0ff0169` 实机两项：`add` 选中刚画的形状（手柄可见，Solid/色仍改它）；pin 按 Python 图+2M / ARGB / 发丝边，去掉顶左边暗条 |
 
 ### `7ef18fe` 实机（Xfce/xfwm4，2026-10-12 08:33 UTC+8）
 
@@ -295,7 +295,7 @@ HEAD 在 `rust`（用户提交 `ed59e0f` 之后本轮继续）。对照 Python/`
 
 验证约定：Linux 改动必须在 **Xvfb + xfwm4 + xdotool**（以及有桌面时的 `:1` Xfce）上做焦点/按键/菜单回归。本轮用 `type --delay 20`、两步快拖、连续滚轮格（间隔 80ms > 门控 40ms）。
 
-### 0ff0169 实机两项（本轮）
+### 0ff0169 实机两项（本轮，`23335a9`）
 
 实机 A–F 全过（picom 下 pin 半透明）。两项对齐 Python：
 
@@ -303,6 +303,21 @@ HEAD 在 `rust`（用户提交 `ed59e0f` 之后本轮继续）。对照 Python/`
 |---|---|---|---|
 | 1 | Solid/取色也改刚画的矩形，但看不见选中 | 已修 | Python `add` 只设 `width_target`，`option_target` 仍改该形状。保留该语义，并设 `selected`/`edit_target`，按 `option_target` 画 8 手柄 |
 | 2 | pin 顶/左边一条暗带（阴影偏移 / 1px 边） | 已修 | 窗按 Python 图+2M、原点图−M、`with_transparent` + `present_argb`；先阴影再贴图；发丝边 `adjusted(-0.5,-0.5,-0.5,-0.5)`；圆角阴影 |
+
+### Xvfb `23335a9` 两项（`:24` 1920×1200 + xfwm4 + picom）
+
+脚本 `/tmp/pinshot-findings-verify.sh`。`pass=11 fail=0`。
+
+| 检查 | 结果 |
+|---|---|
+| picom `_NET_WM_CM_S0` | PASS |
+| Dot 画矩形后 `selected=Some(0)` | PASS（`annot Rect 260x220 selected=Some(0)`） |
+| 8 手柄可见 | PASS（8/8 点到 `(30,144,255)`） |
+| Solid 改刚画的矩形 | PASS（顶边由虚线变为两段连续红 116px；手柄仍 8/8） |
+| pin 窗=图+2M | PASS（`pin create 584x484 at 348,228 margin=12 transparent=true`；选区 560×460 @360,240） |
+| 照片顶/左无暗带 | PASS（图内 y/x≥12 为白；y=11 发丝蓝；y=0–10 为外边距阴影） |
+
+工件：`/opt/cursor/artifacts/findings-verify/`。
 
 ### Xvfb `da81652` A–F（`:23` 1920×1200 + xfwm4，实机节拍）
 
