@@ -21,6 +21,18 @@ use pinshot_core::color::Rgba;
 const ROW_H: f32 = 22.0;
 const MENU_W: f32 = 268.0;
 const PAD: f32 = 6.0;
+const PROMPT_H: u32 = 96;
+
+#[derive(Clone, Copy)]
+enum PromptKind {
+    New,
+    Rename,
+}
+
+struct Prompt {
+    kind: PromptKind,
+    buf: String,
+}
 
 #[derive(Clone)]
 enum Row {
@@ -55,6 +67,9 @@ pub struct PinMenuWin {
     dirty: bool,
     pub closed: bool,
     born: Instant,
+    prompt: Option<Prompt>,
+    group: String,
+    ime_preedit: bool,
 }
 
 impl PinMenuWin {
@@ -97,6 +112,9 @@ impl PinMenuWin {
             dirty: true,
             closed: false,
             born: Instant::now(),
+            prompt: None,
+            group: state.group.clone(),
+            ime_preedit: false,
         };
         m.redraw();
         Ok(m)
@@ -123,23 +141,83 @@ impl PinMenuWin {
                 ..
             } => {
                 crate::native::focus_window(&self.window);
-                if let Some(a) = self.hit() {
-                    self.close();
-                    return Some(a);
+                if self.prompt.is_some() {
+                    // clicks stay in the name field
+                } else if let Some(a) = self.hit() {
+                    match a {
+                        PinMenuAction::NewGroup => self.begin_prompt(PromptKind::New),
+                        PinMenuAction::RenameGroup => self.begin_prompt(PromptKind::Rename),
+                        other => {
+                            self.close();
+                            return Some(other);
+                        }
+                    }
+                }
+            }
+            WindowEvent::Ime(ime) => {
+                if self.prompt.is_some() {
+                    match ime {
+                        winit::event::Ime::Commit(s) => {
+                            if let Some(p) = self.prompt.as_mut() {
+                                p.buf.push_str(s);
+                            }
+                            self.ime_preedit = false;
+                            self.dirty = true;
+                        }
+                        winit::event::Ime::Enabled | winit::event::Ime::Preedit(_, _) => {
+                            self.ime_preedit = true;
+                        }
+                        winit::event::Ime::Disabled => self.ime_preedit = false,
+                    }
                 }
             }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
-                match &event.logical_key {
-                    Key::Named(NamedKey::Escape) => {
-                        self.close();
-                    }
-                    Key::Named(NamedKey::Enter) => {
-                        if let Some(a) = self.hit() {
-                            self.close();
-                            return Some(a);
+                if self.prompt.is_some() {
+                    match &event.logical_key {
+                        Key::Named(NamedKey::Escape) => self.close(),
+                        Key::Named(NamedKey::Enter) => return self.submit_prompt(),
+                        Key::Named(NamedKey::Backspace) => {
+                            if let Some(p) = self.prompt.as_mut() {
+                                p.buf.pop();
+                            }
+                            self.dirty = true;
+                        }
+                        _ => {
+                            if !self.ime_preedit {
+                                if let Some(t) = event.text.as_deref() {
+                                    for ch in t.chars() {
+                                        if !ch.is_control() {
+                                            if let Some(p) = self.prompt.as_mut() {
+                                                p.buf.push(ch);
+                                            }
+                                        }
+                                    }
+                                    self.dirty = true;
+                                }
+                            }
                         }
                     }
-                    _ => {}
+                } else {
+                    match &event.logical_key {
+                        Key::Named(NamedKey::Escape) => {
+                            self.close();
+                        }
+                        Key::Named(NamedKey::Enter) => {
+                            if let Some(a) = self.hit() {
+                                match a {
+                                    PinMenuAction::NewGroup => self.begin_prompt(PromptKind::New),
+                                    PinMenuAction::RenameGroup => {
+                                        self.begin_prompt(PromptKind::Rename)
+                                    }
+                                    other => {
+                                        self.close();
+                                        return Some(other);
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
                 }
             }
             WindowEvent::Focused(false) if self.born.elapsed().as_millis() > 250 => self.close(),
@@ -151,6 +229,38 @@ impl PinMenuWin {
             self.window.request_redraw();
         }
         None
+    }
+
+    fn begin_prompt(&mut self, kind: PromptKind) {
+        let buf = match kind {
+            PromptKind::New => String::new(),
+            PromptKind::Rename => groups::label(&self.group),
+        };
+        self.prompt = Some(Prompt { kind, buf });
+        self.window.set_ime_allowed(true);
+        let _ = self
+            .window
+            .request_inner_size(PhysicalSize::new(MENU_W as u32, PROMPT_H));
+        self.dirty = true;
+        crate::logutil::log(match kind {
+            PromptKind::New => "pin menu prompt new group",
+            PromptKind::Rename => "pin menu prompt rename group",
+        });
+    }
+
+    fn submit_prompt(&mut self) -> Option<PinMenuAction> {
+        let Some(p) = self.prompt.take() else {
+            return None;
+        };
+        let name = p.buf.trim().to_string();
+        self.close();
+        if name.is_empty() {
+            return None;
+        }
+        Some(match p.kind {
+            PromptKind::New => PinMenuAction::NewGroupNamed(name),
+            PromptKind::Rename => PinMenuAction::RenameGroupNamed(name),
+        })
     }
 
     fn hit(&self) -> Option<PinMenuAction> {
@@ -191,6 +301,49 @@ impl PinMenuWin {
             Rgba::rgb(154, 154, 154),
             1.0,
         );
+        if let Some(p) = &self.prompt {
+            let title = match p.kind {
+                PromptKind::New => tr("New group"),
+                PromptKind::Rename => tr("Rename group"),
+            };
+            crate::text::blit_into_pm(&mut pm, &title, 12.0, 10.0, 13, Rgba::rgb(20, 20, 20), true);
+            crate::text::blit_into_pm(
+                &mut pm,
+                &tr("Name:"),
+                12.0,
+                36.0,
+                12,
+                Rgba::rgb(90, 90, 90),
+                false,
+            );
+            fill_rect(&mut pm, Rect::new(12.0, 56.0, MENU_W - 24.0, 26.0), Rgba::WHITE);
+            stroke_rect(
+                &mut pm,
+                Rect::new(12.0, 56.0, MENU_W - 24.0, 26.0),
+                Rgba::rgb(20, 20, 20),
+                1.0,
+            );
+            let shown = if p.buf.is_empty() {
+                String::new()
+            } else {
+                p.buf.clone()
+            };
+            crate::text::blit_into_pm(
+                &mut pm,
+                &format!("{shown}|"),
+                16.0,
+                60.0,
+                13,
+                Rgba::rgb(20, 20, 20),
+                false,
+            );
+            if let Ok(mut buf) = self.surface.buffer_mut() {
+                present(&mut buf, &pm);
+                let _ = buf.present();
+            }
+            self.dirty = false;
+            return;
+        }
         for (r, row) in &self.rows {
             match row {
                 Row::Sep => {
@@ -332,6 +485,12 @@ fn build_rows(state: &PinMenuState) -> Vec<Row> {
         ));
     }
     rows.push(item(tr("New group…"), PinMenuAction::NewGroup, false, true));
+    rows.push(item(
+        tr("Rename group…"),
+        PinMenuAction::RenameGroup,
+        false,
+        true,
+    ));
     rows.push(Row::Sep);
     rows.push(item(
         tr("View in folder"),
@@ -492,5 +651,19 @@ mod tests {
             .ceil()
             .max(40.0) as u32;
         assert_eq!(h, expected);
+        assert!(rows.iter().any(|r| matches!(
+            r,
+            Row::Item {
+                action: PinMenuAction::NewGroup,
+                ..
+            }
+        )));
+        assert!(rows.iter().any(|r| matches!(
+            r,
+            Row::Item {
+                action: PinMenuAction::RenameGroup,
+                ..
+            }
+        )));
     }
 }

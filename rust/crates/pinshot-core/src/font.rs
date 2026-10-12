@@ -4,8 +4,19 @@
 use crate::color::Rgba;
 use crate::geom::Rect;
 use crate::raster::Raster;
-use std::sync::OnceLock;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use tiny_skia::{Pixmap, PremultipliedColorU8};
+
+/// Toolbar chips (Python `QFontComboBox` is the full list; these cover the
+/// families we can resolve from system files / fontconfig).
+pub const FAMILY_PRESETS: &[(&str, &str)] = &[
+    ("", "Default"),
+    ("Sans", "Sans"),
+    ("Serif", "Serif"),
+    ("Mono", "Mono"),
+];
 
 fn candidates() -> Vec<std::path::PathBuf> {
     let mut out = Vec::new();
@@ -31,25 +42,244 @@ fn candidates() -> Vec<std::path::PathBuf> {
     out
 }
 
-fn font() -> Option<&'static fontdue::Font> {
-    static FONT: OnceLock<Option<fontdue::Font>> = OnceLock::new();
+struct LoadedFont {
+    font: fontdue::Font,
+    path: PathBuf,
+}
+
+fn load_font(path: &Path) -> Option<fontdue::Font> {
+    let bytes = std::fs::read(path).ok()?;
+    let settings = fontdue::FontSettings {
+        collection_index: 0,
+        scale: 40.0,
+        ..Default::default()
+    };
+    fontdue::Font::from_bytes(bytes, settings).ok()
+}
+
+fn loaded_default() -> Option<&'static LoadedFont> {
+    static FONT: OnceLock<Option<LoadedFont>> = OnceLock::new();
     FONT.get_or_init(|| {
-        let settings = fontdue::FontSettings {
-            collection_index: 0,
-            scale: 40.0,
-            ..Default::default()
-        };
         for p in candidates() {
-            let Ok(bytes) = std::fs::read(&p) else {
-                continue;
-            };
-            if let Ok(f) = fontdue::Font::from_bytes(bytes, settings) {
-                return Some(f);
+            if let Some(font) = load_font(&p) {
+                return Some(LoadedFont { font, path: p });
             }
         }
         None
     })
     .as_ref()
+}
+
+fn font() -> Option<&'static fontdue::Font> {
+    loaded_default().map(|l| &l.font)
+}
+
+fn family_needles(family: &str) -> Vec<String> {
+    let f = family.trim();
+    if f.is_empty() {
+        return Vec::new();
+    }
+    match f.to_ascii_lowercase().as_str() {
+        "sans" => [
+            "notosans",
+            "dejavusans",
+            "liberationsans",
+            "wqy-microhei",
+            "wqymicrohei",
+            "msyh",
+            "segoeui",
+            "arial",
+            "freesans",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect(),
+        "serif" => [
+            "notoserif",
+            "dejavuserif",
+            "liberationserif",
+            "times",
+            "georgia",
+            "nimbusroman",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect(),
+        "mono" | "monospace" => [
+            "dejavusansmono",
+            "liberationmono",
+            "notosansmono",
+            "consola",
+            "cour",
+            "freemono",
+            "nimbusmono",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect(),
+        other => vec![other.replace([' ', '-'], "")],
+    }
+}
+
+fn style_rank(name: &str, bold: bool, italic: bool) -> i32 {
+    let n = name.to_ascii_lowercase();
+    let is_bold = n.contains("bold")
+        || n.contains("heavy")
+        || n.contains("black")
+        || n.contains("semibold")
+        || n.contains("bd.")
+        || n.ends_with("bd");
+    let is_italic = n.contains("italic") || n.contains("oblique") || n.contains("it.");
+    let mut score = 0;
+    if is_bold == bold {
+        score += 3;
+    } else {
+        score -= 3;
+    }
+    if is_italic == italic {
+        score += 3;
+    } else {
+        score -= 3;
+    }
+    if !bold && !italic && (n.contains("regular") || n.contains("medium")) {
+        score += 1;
+    }
+    score
+}
+
+fn font_files() -> &'static [PathBuf] {
+    static FILES: OnceLock<Vec<PathBuf>> = OnceLock::new();
+    FILES.get_or_init(|| {
+        let mut out = candidates();
+        let mut dirs = vec![
+            PathBuf::from("/usr/share/fonts"),
+            PathBuf::from("/usr/local/share/fonts"),
+            PathBuf::from("C:\\Windows\\Fonts"),
+        ];
+        if let Some(home) = std::env::var_os("HOME") {
+            dirs.push(PathBuf::from(home).join(".local/share/fonts"));
+        }
+        for dir in dirs {
+            walk_fonts(&dir, 0, 3, &mut out);
+        }
+        if let Ok(fc) = std::process::Command::new("fc-list")
+            .args([":", "file"])
+            .output()
+        {
+            if fc.status.success() {
+                for line in String::from_utf8_lossy(&fc.stdout).lines() {
+                    let path = line.split(':').next().unwrap_or("").trim();
+                    if path.is_empty() {
+                        continue;
+                    }
+                    let p = PathBuf::from(path);
+                    if p.is_file() {
+                        out.push(p);
+                    }
+                }
+            }
+        }
+        out.sort();
+        out.dedup();
+        out
+    })
+}
+
+fn walk_fonts(dir: &Path, depth: u32, max: u32, out: &mut Vec<PathBuf>) {
+    if depth > max {
+        return;
+    }
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for ent in rd.flatten() {
+        let p = ent.path();
+        if p.is_dir() {
+            walk_fonts(&p, depth + 1, max, out);
+        } else if matches!(
+            p.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref(),
+            Some("ttf" | "ttc" | "otf")
+        ) {
+            out.push(p);
+        }
+    }
+}
+
+fn sibling_variant(path: &Path, bold: bool, italic: bool) -> Option<PathBuf> {
+    if !bold && !italic {
+        return Some(path.to_path_buf());
+    }
+    let parent = path.parent()?;
+    let stem = path.file_stem()?.to_string_lossy();
+    let stem = stem
+        .trim_end_matches("-Regular")
+        .trim_end_matches("Regular")
+        .to_string();
+    let suffixes: &[&str] = match (bold, italic) {
+        (true, true) => &["-BoldItalic", "BoldItalic", "-BoldOblique", "bi"],
+        (true, false) => &["-Bold", "Bold", "bd", "-Semibold"],
+        (false, true) => &["-Italic", "Italic", "-Oblique", "Oblique"],
+        (false, false) => return Some(path.to_path_buf()),
+    };
+    for ext in ["ttf", "ttc", "otf"] {
+        for s in suffixes {
+            let p = parent.join(format!("{stem}{s}.{ext}"));
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+    }
+    None
+}
+
+fn find_family_file(family: &str, bold: bool, italic: bool) -> Option<PathBuf> {
+    let needles = family_needles(family);
+    if needles.is_empty() {
+        let def = loaded_default()?.path.clone();
+        return sibling_variant(&def, bold, italic).or(Some(def));
+    }
+    let mut best: Option<(i32, PathBuf)> = None;
+    for p in font_files() {
+        let name = p.to_string_lossy().to_ascii_lowercase();
+        let compact = name.replace([' ', '-', '_'], "");
+        if !needles.iter().any(|n| compact.contains(n)) {
+            continue;
+        }
+        let rank = style_rank(&name, bold, italic);
+        if best.as_ref().map(|(r, _)| rank > *r).unwrap_or(true) {
+            best = Some((rank, p.clone()));
+        }
+    }
+    best.map(|(_, p)| p)
+}
+
+fn font_ex(family: &str, bold: bool, italic: bool) -> Option<&'static fontdue::Font> {
+    if family.is_empty() && !bold && !italic {
+        return font();
+    }
+    static CACHE: OnceLock<Mutex<HashMap<(String, bool, bool), Option<&'static fontdue::Font>>>> =
+        OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let key = (family.to_string(), bold, italic);
+    if let Ok(g) = cache.lock() {
+        if let Some(hit) = g.get(&key) {
+            return *hit;
+        }
+    }
+    let found = find_family_file(family, bold, italic).and_then(|p| load_font(&p));
+    let leaked = match found {
+        Some(f) => Some(&*Box::leak(Box::new(f))),
+        None => font(),
+    };
+    if let Ok(mut g) = cache.lock() {
+        g.insert(key, leaked);
+    }
+    leaked
+}
+
+/// Families we can offer in the toolbar (presets that resolve on this machine).
+pub fn available_families() -> Vec<&'static str> {
+    FAMILY_PRESETS.iter().map(|(id, _)| *id).collect()
 }
 
 pub fn available() -> bool {
@@ -110,6 +340,25 @@ pub fn blit_rgba(
     let Some(font) = font() else {
         return;
     };
+    blit_rgba_font(
+        font, pixels, stride_px, dest_w, dest_h, text, x, y, px, color, outline, false,
+    );
+}
+
+fn blit_rgba_font(
+    font: &fontdue::Font,
+    pixels: &mut [u8],
+    stride_px: u32,
+    dest_w: u32,
+    dest_h: u32,
+    text: &str,
+    x: f32,
+    y: f32,
+    px: f32,
+    color: Rgba,
+    outline: bool,
+    fake_bold: bool,
+) {
     let px = px.max(8.0);
     let line_h = px * 1.25;
     for (li, line) in text.lines().enumerate() {
@@ -144,6 +393,13 @@ pub fn blit_rgba(
                         }
                     }
                     blend(pixels, di, color.r, color.g, color.b, a);
+                    if fake_bold {
+                        let dx2 = dx + 1;
+                        if dx2 >= 0 && dx2 < dest_w as i32 {
+                            let di2 = (dy as u32 * stride_px + dx2 as u32) as usize * 4;
+                            blend(pixels, di2, color.r, color.g, color.b, a);
+                        }
+                    }
                 }
             }
             pen_x += metrics.advance_width;
@@ -152,14 +408,46 @@ pub fn blit_rgba(
 }
 
 pub fn blit_pixmap(pm: &mut Pixmap, text: &str, x: f32, y: f32, px: f32, color: Rgba, outline: bool) {
+    blit_pixmap_ex(pm, text, x, y, px, color, outline, "", false, false);
+}
+
+pub fn blit_pixmap_ex(
+    pm: &mut Pixmap,
+    text: &str,
+    x: f32,
+    y: f32,
+    px: f32,
+    color: Rgba,
+    outline: bool,
+    family: &str,
+    bold: bool,
+    italic: bool,
+) {
     if text.is_empty() {
         return;
     }
+    let Some(font) = font_ex(family, bold, italic).or_else(font) else {
+        return;
+    };
+    let fake_bold = bold && family.is_empty() && find_family_file("", true, italic).is_none();
     let (tw, th) = measure(text, px);
     let tw = (tw.ceil() as u32 + 8).max(1);
     let th = (th.ceil() as u32 + 8).max(1);
     let mut rgba = vec![0u8; tw as usize * th as usize * 4];
-    blit_rgba(&mut rgba, tw, tw, th, text, 2.0, 2.0, px, color, outline);
+    blit_rgba_font(
+        font,
+        &mut rgba,
+        tw,
+        tw,
+        th,
+        text,
+        2.0,
+        2.0,
+        px,
+        color,
+        outline,
+        fake_bold,
+    );
     let Some(mut src) = Pixmap::new(tw, th) else {
         return;
     };
@@ -301,5 +589,25 @@ mod tests {
         let t = text_card("hello pinshot", 320);
         assert!(t.width >= 80);
         assert!(t.height >= 36);
+    }
+
+    #[test]
+    fn blit_pixmap_ex_paints_and_presets_exist() {
+        assert!(FAMILY_PRESETS.iter().any(|(id, _)| id.is_empty()));
+        assert!(available_families().contains(&"Sans"));
+        let mut pm = Pixmap::new(80, 40).unwrap();
+        blit_pixmap_ex(
+            &mut pm,
+            "Hi",
+            2.0,
+            2.0,
+            16.0,
+            Rgba::RED,
+            false,
+            "Sans",
+            true,
+            false,
+        );
+        assert!(pm.pixels().iter().any(|p| p.alpha() > 0));
     }
 }

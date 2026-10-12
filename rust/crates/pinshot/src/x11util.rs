@@ -98,33 +98,160 @@ pub fn apply_pin_style(window: &Window) {
     set_wm_input_hint(window, true);
 }
 
-pub fn raise_on_top(window: &Window) {
-    ewmh_state(window, true, &["_NET_WM_STATE_ABOVE"]);
-    let Some(xid) = xid_of(window) else {
-        return;
-    };
+fn intern(c: &x11rb::rust_connection::RustConnection, name: &[u8]) -> Option<u32> {
+    c.intern_atom(false, name)
+        .ok()
+        .and_then(|c| c.reply().ok())
+        .map(|a| a.atom)
+}
+
+fn send_client(
+    c: &x11rb::rust_connection::RustConnection,
+    root: u32,
+    xid: u32,
+    atom: u32,
+    data: [u32; 5],
+) {
+    let ev = ClientMessageEvent::new(32, xid, atom, data);
+    let _ = c.send_event(
+        false,
+        root,
+        EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY,
+        ev,
+    );
+}
+
+/// Python `x11raise.raise_on_top`: lower `lower` via `_NET_RESTACK_WINDOW`
+/// Below, then ABOVE + restack Above + `_NET_ACTIVE_WINDOW` on `xid`.
+pub fn raise_xid_above(xid: u32, lower: &[u32]) {
     let Ok((c, screen)) = conn() else {
         return;
     };
     let root = c.setup().roots[screen].root;
+    let restack = intern(&c, b"_NET_RESTACK_WINDOW");
+    let state = intern(&c, b"_NET_WM_STATE");
+    let above = intern(&c, b"_NET_WM_STATE_ABOVE");
+    let active = intern(&c, b"_NET_ACTIVE_WINDOW");
+    for &low in lower {
+        if low == 0 || low == xid {
+            continue;
+        }
+        if let Some(rs) = restack {
+            // X.Below = 1
+            send_client(&c, root, low, rs, [2, 0, 1, 0, 0]);
+        }
+        let _ = c.configure_window(
+            low,
+            &x11rb::protocol::xproto::ConfigureWindowAux::new()
+                .stack_mode(x11rb::protocol::xproto::StackMode::BELOW),
+        );
+    }
+    if let (Some(st), Some(ab)) = (state, above) {
+        send_client(&c, root, xid, st, [1, ab, 0, 2, 0]);
+    }
+    if let Some(rs) = restack {
+        // X.Above = 0
+        send_client(&c, root, xid, rs, [2, 0, 0, 0, 0]);
+    }
+    if let Some(act) = active {
+        send_client(&c, root, xid, act, [2, x11rb::CURRENT_TIME, 0, 0, 0]);
+    }
     let _ = c.configure_window(
         xid,
         &x11rb::protocol::xproto::ConfigureWindowAux::new()
             .stack_mode(x11rb::protocol::xproto::StackMode::ABOVE),
     );
-    if let Ok(active) = c.intern_atom(false, b"_NET_ACTIVE_WINDOW") {
-        if let Ok(reply) = active.reply() {
-            let ev =
-                ClientMessageEvent::new(32, xid, reply.atom, [2, x11rb::CURRENT_TIME, 0, 0, 0]);
-            let _ = c.send_event(
-                false,
-                root,
-                EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY,
-                ev,
-            );
+    let _ = c.flush();
+}
+
+fn window_title(c: &x11rb::rust_connection::RustConnection, wid: u32) -> String {
+    let name = intern(c, b"_NET_WM_NAME");
+    let utf8 = intern(c, b"UTF8_STRING");
+    if let (Some(na), Some(ut)) = (name, utf8) {
+        if let Ok(p) = c.get_property(false, wid, na, ut, 0, 256) {
+            if let Ok(r) = p.reply() {
+                if !r.value.is_empty() {
+                    return String::from_utf8_lossy(&r.value).into_owned();
+                }
+            }
+        }
+        if let Ok(p) = c.get_property(false, wid, na, AtomEnum::STRING, 0, 256) {
+            if let Ok(r) = p.reply() {
+                if !r.value.is_empty() {
+                    return String::from_utf8_lossy(&r.value).into_owned();
+                }
+            }
         }
     }
-    let _ = c.flush();
+    if let Ok(p) = c.get_property(false, wid, AtomEnum::WM_NAME, AtomEnum::STRING, 0, 256) {
+        if let Ok(r) = p.reply() {
+            return String::from_utf8_lossy(&r.value).into_owned();
+        }
+    }
+    String::new()
+}
+
+fn client_list(c: &x11rb::rust_connection::RustConnection, root: u32) -> Vec<u32> {
+    for atom_name in [b"_NET_CLIENT_LIST_STACKING".as_slice(), b"_NET_CLIENT_LIST".as_slice()] {
+        if let Some(atom) = intern(c, atom_name) {
+            if let Ok(p) = c.get_property(false, root, atom, AtomEnum::WINDOW, 0, 4096) {
+                if let Ok(r) = p.reply() {
+                    if !r.value.is_empty() {
+                        return r
+                            .value
+                            .chunks_exact(4)
+                            .map(|c| u32::from_ne_bytes([c[0], c[1], c[2], c[3]]))
+                            .collect();
+                    }
+                }
+            }
+        }
+    }
+    Vec::new()
+}
+
+pub fn titled_top_levels() -> Vec<(u32, String)> {
+    let Ok((c, screen)) = conn() else {
+        return Vec::new();
+    };
+    let root = c.setup().roots[screen].root;
+    client_list(&c, root)
+        .into_iter()
+        .filter_map(|wid| {
+            let title = window_title(&c, wid);
+            if title.is_empty() {
+                None
+            } else {
+                Some((wid, title))
+            }
+        })
+        .collect()
+}
+
+/// Push "PinShot Pin" windows below the OCR result (Python `windows_to_lower`).
+pub fn raise_ocr_above_pins() {
+    let wins = titled_top_levels();
+    let pins: Vec<u32> = wins
+        .iter()
+        .filter(|(_, t)| t == "PinShot Pin")
+        .map(|(id, _)| *id)
+        .collect();
+    let Some(&(ocr, _)) = wins
+        .iter()
+        .find(|(_, t)| t == "PinShot OCR" || t.contains("PinShot OCR"))
+    else {
+        return;
+    };
+    crate::logutil::log(&format!("ocr raise above {} pins xid={ocr:#x}", pins.len()));
+    raise_xid_above(ocr, &pins);
+}
+
+pub fn raise_on_top(window: &Window) {
+    if let Some(xid) = xid_of(window) {
+        raise_xid_above(xid, &[]);
+        return;
+    }
+    ewmh_state(window, true, &["_NET_WM_STATE_ABOVE"]);
 }
 
 fn set_window_type(window: &Window, typ: &[u8]) {

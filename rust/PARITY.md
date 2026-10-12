@@ -17,11 +17,11 @@ Counts at the bottom. Python sources are not modified.
 | `input_hold` / `capture.InputHold` | `x11util::InputHold` | done | Grab pointer+keyboard on root during capture |
 | `exclude_from_capture` | — | impossible | Windows 10 2004+ WDA only |
 | `install_hotkeys` | `native::install_hotkeys` | done | Win32 `RegisterHotKey` / X11 `XGrabKey` |
-| `raise_on_top` / `x11raise.py` | `x11util::raise_on_top` | partial | EWMH ABOVE + restack; Linux prefs `AlwaysOnTop` + raise; OCR window uses egui always-on-top |
+| `raise_on_top` / `x11raise.py` | `x11util::raise_xid_above` | done | `_NET_RESTACK_WINDOW` Below on `lower`, then ABOVE + restack Above + `_NET_ACTIVE_WINDOW`. OCR raises above `PinShot Pin` at 0/60/250 ms (not every app tick) |
 | `set_skip_taskbar` | `apply_pin_style` `_NET_WM_STATE_SKIP_TASKBAR` | done | |
 | `x11pass.set_input_passthrough` | `x11util::set_click_through` XShape Input | done | |
 | `winlist.window_rects` | `detect_x11::window_rects` | done | `_NET_CLIENT_LIST_STACKING` + frame extents |
-| `winlist.element_rects` | `detect_x11::collect_elements` | partial | X11 viewable client children + AT-SPI extents via subprocess when the a11y bus is up |
+| `winlist.element_rects` | `detect_x11::collect_elements` | done | X11 walk depth 4; AT-SPI `{role}:{name}` + `exclude_pids` (self); X11 children still fill apps without a11y |
 | `winlist.atspi_available` | `detect_x11::atspi_available` | done | Same subprocess safety rule |
 | `x11clip.read` | `arboard` + process-lifetime owner + `xclip -t image/png` handoff | done | Overlay close leaves CLIPBOARD; Xvfb `xclip TARGETS` shows `image/png` |
 | `autostart.py` XDG desktop | `autostart_xdg.rs` | done | `~/.config/autostart/pinshot.desktop` |
@@ -42,7 +42,7 @@ Counts at the bottom. Python sources are not modified.
 | `_on_ipc` snip/pin/pins/prefs/quit/translate/selection/raise | `ipc.rs` / `ipc_unix.rs` | done |
 | `snip` + `snip_delay` countdown | `request_snip` + `countdown.rs` | done | Fallback hidden 150 ms before grab (Python same) |
 | `_countdown_snip` QLabel | `countdown.rs` | done | 140×140 always-on-top numeral |
-| `capture_translate` / `selection_translate` | overlay translate flag / F5 | partial | F5 Linux: message (Python also Windows-only) |
+| `capture_translate` / `selection_translate` | overlay translate flag / F5 | done | F6 toast “Select text, then release”; F5 Linux: message (Python also Windows-only) |
 | `pin_clipboard` image / color / text card | `clipboard` + `font::color_card` / `text_card` | done |
 | `toggle_pins` / `toggle_clickthrough` / `restore_closed` | `app.rs` | done |
 | `open_prefs` / `quit` / `_notify` | prefs thread / exit / log | done |
@@ -95,10 +95,10 @@ Counts at the bottom. Python sources are not modified.
 | `render` mosaic/blur/eraser | `render.rs` | done |
 | Text glyphs / number digits | `font.rs` fontdue | done |
 | Dash/dot line, fill, arrow, marker alpha | `render.rs` | done |
-| Property panel (bold/italic/family/mode/effect) | B/I/Outline + mosaic mode/effect; no font combo | partial |
+| Property panel (bold/italic/family/mode/effect) | B/I/Outline + family chips + mosaic mode/effect | done | Family is Default/Sans/Serif/Mono (not QFontComboBox). B/I pick Bold/Italic files or fake-bold |
 | Custom QColorDialog | in-overlay / in-pin HSV + palette picker | done | No zenity; grab stays on the freeze |
 | Brush cursor poll timer | QueryPointer 8ms while brush live | done |
-| Pixel-perfect hit via 3×3 paint | geometry hit | partial |
+| Pixel-perfect hit via 3×3 paint | `shape_paints_at` 3×3 paint | done | Translate so `pt` is pixel (1,1); alpha>16. Mosaic/eraser stay path-contains |
 
 ## Toolbar (`toolbar.py`)
 
@@ -108,7 +108,7 @@ Counts at the bottom. Python sources are not modified.
 | OCR / Translate / Undo Redo Close Pin Save Copy | done |
 | Pin Check (done) | `TbAction::Check` | done |
 | Palette 20 + width −/+ | done | Panel shows `option_width` (selected/live), not the tool default |
-| Per-tool panel (filled, dash, blur, font…) | Fill/Dash/Dot on Rect+Ellipse+Line; mode/effect chips | partial | No QFontComboBox |
+| Per-tool panel (filled, dash, blur, font…) | Fill/Dash/Dot; mode/effect; B/I/Outline; family chips | done | Mosaic/text −/+ show `size` / `font_size` via `option_width` |
 | Tips / i18n keys | `Tool::tip` + `tr` | done |
 
 ## Pin window (`pin_window.py`)
@@ -126,7 +126,7 @@ Counts at the bottom. Python sources are not modified.
 | Rotate / flip / paste / replace file | done |
 | Shadow / thumb | `shadow` + Shift+dblclick 72px thumb | done | Default on when `_NET_WM_CM_Sn` is owned; persisted. Widget is image+2M, photo at (M,M), `WA_TranslucentBackground` + premultiplied ARGB present; hairline `QRectF(r).adjusted(-0.5,-0.5,-0.5,-0.5)`; session stores image origin |
 | Click-through XShape / WS_EX_TRANSPARENT | done |
-| Groups move / new / rename | tray groups; pin menu partial | partial |
+| Groups move / new / rename | tray groups; pin menu New/Rename prompt | done | In-process name field (Enter/Esc/IME). Default cannot be renamed |
 | Glow fade-in | `tick_glow` | done |
 
 ## Prefs / settings / theme / i18n
@@ -164,7 +164,7 @@ Counts at the bottom. Python sources are not modified.
 |---|---|---|
 | `parse_seq` | `parse_hotkey` | done |
 | `X11Hotkeys` GrabKey + Lock/NumLock variants | `x11util::HotkeyHost` | done |
-| `PynputHotkeys` | — | missing | XGrabKey is the Linux path |
+| `PynputHotkeys` | `x11util::HotkeyHost` (XGrabKey) | done | Python tries pynput then X11Hotkeys; Rust ships the XGrabKey fallback (typical when pynput/evdev is absent) |
 | `WinHotkeys` | `win32::HotkeyHost` | done |
 
 ## Icons / session / groups / history
@@ -194,10 +194,10 @@ Rust config default `language = "zh_CN"` (Phase 1) vs Python QSettings default `
 
 | Status | Rows |
 |---|---|
-| done | 103 |
-| partial | 10 |
-| missing | 1 |
+| done | 111 |
+| partial | 1 |
+| missing | 0 |
 | impossible | 6 |
-| **total** | **120** |
+| **total** | **118** |
 
-Partial/missing that still need Windows or Xfce hands-on: font family combo, pixel-perfect hit, AT-SPI when the a11y bus is down, pin group rename, PynputHotkeys. Custom color is in-process (no zenity).
+Remaining partial: RapidOCR band detector (full DBNet is large). Hands-on still wanted: F6 toast, font chips + B/I paint, pin-menu rename/IME, OCR-above-pins restack, AT-SPI `{role}:{name}` on a live a11y bus, 3×3 hit feel vs geometry slop. Custom color is in-process (no zenity).

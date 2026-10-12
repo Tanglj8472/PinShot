@@ -162,6 +162,9 @@ impl Overlay {
         };
         s.window.set_visible(true);
         native::focus_window(&s.window);
+        if s.translate_on_select {
+            s.show_toast(tr("Select text, then release"));
+        }
         #[cfg(unix)]
         {
             // Release InputHold *before* the exclusive overlay grab, otherwise
@@ -480,6 +483,7 @@ impl Overlay {
             TbAction::Bold(on) => self.style_tool(|s| s.bold = on),
             TbAction::Italic(on) => self.style_tool(|s| s.italic = on),
             TbAction::Outline(on) => self.style_tool(|s| s.outline = on),
+            TbAction::Family(fam) => self.style_tool(|s| s.family = fam.to_string()),
         }
         crate::logutil::log(&format!("tb {a:?}"));
         self.relayout_toolbar();

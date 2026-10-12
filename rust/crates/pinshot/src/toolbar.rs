@@ -42,6 +42,7 @@ pub enum TbAction {
     Bold(bool),
     Italic(bool),
     Outline(bool),
+    Family(&'static str),
     Ocr,
     Translate,
     Check,
@@ -240,6 +241,28 @@ impl Toolbar {
                         push_chip(&mut extras, &mut chip_x, chip_y, 22.0, "B".into(), TbAction::Bold(!st.bold), st.bold);
                         push_chip(&mut extras, &mut chip_x, chip_y, 22.0, "I".into(), TbAction::Italic(!st.italic), st.italic);
                         push_chip(&mut extras, &mut chip_x, chip_y, 58.0, tr("Outline"), TbAction::Outline(!st.outline), st.outline);
+                        for (fam, label) in pinshot_core::font::FAMILY_PRESETS {
+                            let on = if fam.is_empty() {
+                                st.family.is_empty()
+                            } else {
+                                st.family.eq_ignore_ascii_case(fam)
+                            };
+                            let w = match *fam {
+                                "" => 58.0,
+                                "Sans" => 44.0,
+                                "Serif" => 46.0,
+                                _ => 46.0,
+                            };
+                            push_chip(
+                                &mut extras,
+                                &mut chip_x,
+                                chip_y,
+                                w,
+                                tr(label),
+                                TbAction::Family(*fam),
+                                on,
+                            );
+                        }
                     }
                     Some(Tool::Number) => {
                         push_chip(&mut extras, &mut chip_x, chip_y, 52.0, tr("Filled"), TbAction::Fill(true), st.filled);
@@ -420,5 +443,19 @@ mod tests {
         let tb = Toolbar::layout(sel, over, Some(Tool::Line), false, Some(&st));
         assert!(tb.extras.iter().any(|e| e.action == TbAction::LineStyle(LineStyleKind::Dash)));
         assert!(tb.extras.iter().any(|e| e.action == TbAction::LineStyle(LineStyleKind::Dot)));
+    }
+
+    #[test]
+    fn text_panel_has_family_chips() {
+        let sel = Rect::new(100.0, 100.0, 400.0, 240.0);
+        let over = Rect::new(0.0, 0.0, 1920.0, 1200.0);
+        let st = Style::for_tool(Tool::Text);
+        let tb = Toolbar::layout(sel, over, Some(Tool::Text), false, Some(&st));
+        assert!(tb.extras.iter().any(|e| e.action == TbAction::Family("")));
+        assert!(tb.extras.iter().any(|e| e.action == TbAction::Family("Sans")));
+        assert!(tb.extras.iter().any(|e| e.action == TbAction::Family("Serif")));
+        assert!(tb.extras.iter().any(|e| e.action == TbAction::Family("Mono")));
+        let sans = tb.extras.iter().find(|e| e.action == TbAction::Family("Sans")).unwrap();
+        assert_eq!(tb.hit(sans.rect.center()), Some(TbAction::Family("Sans")));
     }
 }

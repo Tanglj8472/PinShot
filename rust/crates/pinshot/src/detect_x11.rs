@@ -8,6 +8,9 @@ use x11rb::protocol::xproto::{AtomEnum, ConnectionExt, QueryTreeReply};
 
 static LAST_SOURCE: AtomicU8 = AtomicU8::new(0);
 
+/// Python `winlist._walk_x(..., max_depth=4)` includes depths 0..=4.
+const X11_ELEM_MAX_DEPTH: u32 = 4;
+
 pub fn window_rects() -> Vec<(Rect, String)> {
     let Ok((c, screen)) = x11rb::connect(None) else {
         return Vec::new();
@@ -205,7 +208,7 @@ fn child_rects() -> Vec<(Rect, String)> {
                 }
             }
         }
-        walk_viewable(&c, root, wid, 0, 6, &mut out);
+        walk_viewable(&c, root, wid, 0, X11_ELEM_MAX_DEPTH, &mut out);
     }
     out.sort_by(|a, b| {
         a.0.area()
@@ -256,9 +259,36 @@ fn walk_viewable(
     }
 }
 
-fn atspi_rects() -> Vec<(Rect, String)> {
-    const PY: &str = r#"
+fn parse_atspi_line(line: &str) -> Option<(Rect, String)> {
+    let line = line.trim();
+    if line.is_empty() {
+        return None;
+    }
+    let (coords, label) = match line.split_once('\t') {
+        Some((c, l)) => (c, l.to_string()),
+        None => (line, "atspi".into()),
+    };
+    let parts: Vec<&str> = coords.split(',').collect();
+    if parts.len() != 4 {
+        return None;
+    }
+    let xs: Result<Vec<i32>, _> = parts.iter().map(|s| s.trim().parse::<i32>()).collect();
+    let Ok(xs) = xs else {
+        return None;
+    };
+    Some((Rect::from_i32(xs[0], xs[1], xs[2], xs[3]), label))
+}
+
+fn atspi_rects(exclude_pids: &[u32]) -> Vec<(Rect, String)> {
+    let exclude = exclude_pids
+        .iter()
+        .map(|p| p.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let py = format!(
+        r#"
 import time
+EXCLUDE = {{int(x) for x in "{exclude}".split(",") if x.strip()}}
 try:
     import gi
     gi.require_version('Atspi','2.0')
@@ -266,10 +296,9 @@ try:
     Atspi.init()
 except Exception:
     raise SystemExit(0)
-SKIP = {'application','redundant object','unknown','invalid'}
+SKIP = {{'application','redundant object','unknown','invalid'}}
 SHOWING = Atspi.StateType.SHOWING
 t_end = time.monotonic() + 0.6
-out = []
 def walk(acc, depth):
     if acc is None or depth > 12 or time.monotonic() > t_end: return
     try:
@@ -280,43 +309,38 @@ def walk(acc, depth):
             if comp:
                 e = comp.get_extents(Atspi.CoordType.SCREEN)
                 if e.width > 3 and e.height > 3 and e.width < 20000:
-                    print(f"{e.x},{e.y},{e.width},{e.height}")
+                    name = (acc.get_name() or '').replace('\n',' ').replace('\t',' ')
+                    print(f"{{e.x}},{{e.y}},{{e.width}},{{e.height}}\t{{role}}:{{name}}")
         for i in range(min(acc.get_child_count(), 400)):
             walk(acc.get_child_at_index(i), depth+1)
     except Exception:
         return
 d = Atspi.get_desktop(0)
 for i in range(max(0, d.get_child_count())):
-    walk(d.get_child_at_index(i), 0)
-"#;
+    app = d.get_child_at_index(i)
+    try:
+        if app.get_process_id() in EXCLUDE: continue
+    except Exception:
+        pass
+    walk(app, 0)
+"#
+    );
     let Ok(out) = std::process::Command::new("python3")
-        .args(["-c", PY])
+        .args(["-c", &py])
         .output()
     else {
         return Vec::new();
     };
-    let mut rects = Vec::new();
-    for line in String::from_utf8_lossy(&out.stdout).lines() {
-        let parts: Vec<&str> = line.split(',').collect();
-        if parts.len() != 4 {
-            continue;
-        }
-        let Ok(xs) = parts
-            .iter()
-            .map(|s| s.trim().parse::<i32>())
-            .collect::<Result<Vec<_>, _>>()
-        else {
-            continue;
-        };
-        rects.push((Rect::from_i32(xs[0], xs[1], xs[2], xs[3]), "atspi".into()));
-    }
-    rects
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(parse_atspi_line)
+        .collect()
 }
 
 pub fn collect_elements() -> Vec<(Rect, String)> {
     let x11 = child_rects();
     if atspi_available() {
-        let acc = atspi_rects();
+        let acc = atspi_rects(&[std::process::id()]);
         if !acc.is_empty() {
             LAST_SOURCE.store(1, Ordering::Relaxed);
             let mut all = acc;
@@ -373,4 +397,24 @@ print('ATSPI_OK', d.get_child_count())
 
 pub fn warm_element_backend() {
     let _ = atspi_available();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn x11_element_walk_matches_python_depth() {
+        assert_eq!(X11_ELEM_MAX_DEPTH, 4);
+    }
+
+    #[test]
+    fn atspi_line_keeps_role_name() {
+        let (r, label) = parse_atspi_line("10,20,30,40\tpush button:OK").unwrap();
+        assert_eq!((r.x as i32, r.y as i32, r.w as i32, r.h as i32), (10, 20, 30, 40));
+        assert_eq!(label, "push button:OK");
+        let (_, fallback) = parse_atspi_line("1,2,3,4").unwrap();
+        assert_eq!(fallback, "atspi");
+        assert!(parse_atspi_line("nope").is_none());
+    }
 }

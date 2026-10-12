@@ -617,17 +617,22 @@ impl Annotator {
     }
 
     /// Width shown in the toolbar panel: live / selected shape, else the tool default.
+    /// Mosaic uses `size`; text uses `font_size` (Python panel spins).
     pub fn option_width(&self) -> i32 {
-        if let Some(live) = &self.live {
-            return live.style.width;
+        let (kind, st) = if let Some(live) = &self.live {
+            (live.kind, &live.style)
+        } else if let Some(i) = self.option_target() {
+            (self.shapes[i].kind, &self.shapes[i].style)
+        } else if let Some(t) = self.tool.filter(|t| *t != Tool::Select) {
+            (t, self.style(t))
+        } else {
+            return 0;
+        };
+        match kind {
+            Tool::Text => st.font_size,
+            Tool::Mosaic => st.size,
+            _ => st.width,
         }
-        if let Some(i) = self.option_target() {
-            return self.shapes[i].style.width;
-        }
-        if let Some(t) = self.tool.filter(|t| *t != Tool::Select) {
-            return self.style(t).width;
-        }
-        0
     }
 
     pub fn adjust_width(&mut self, delta: i32) -> bool {
@@ -708,38 +713,18 @@ impl Annotator {
 
     fn hits_shape(&self, sh: &Shape, p: Point) -> bool {
         let b = sh.bounds();
-        let margin = (sh.style.width as f32 / 2.0)
+        let mut margin = (sh.style.width as f32 / 2.0)
             .max(sh.style.font_size as f32 / 7.0)
             .max(sh.style.size as f32 * 3.0)
             + 2.0;
+        if sh.kind == Tool::Line && sh.style.arrow {
+            margin = margin.max(12.0 + sh.style.width as f32 * 2.0);
+        }
         let expanded = b.adjusted(-margin, -margin, margin, margin);
-        if !expanded.contains(p) && sh.kind != Tool::Line {
-            if !matches!(sh.kind, Tool::Pen | Tool::Marker) {
-                return false;
-            }
+        if !expanded.contains(p) {
+            return false;
         }
         match sh.kind {
-            Tool::Rect => {
-                if sh.style.filled {
-                    b.contains(p)
-                } else {
-                    near_rect_edge(p, b, (sh.style.width as f32 / 2.0).max(6.0))
-                }
-            }
-            Tool::Ellipse => {
-                if sh.style.filled {
-                    point_in_ellipse(p, b)
-                } else {
-                    let inside = point_in_ellipse(p, b);
-                    let shrink = b.adjusted(4.0, 4.0, -4.0, -4.0);
-                    inside && !point_in_ellipse(p, shrink)
-                }
-            }
-            Tool::Line | Tool::Pen | Tool::Marker => {
-                dist_to_polyline(p, &sh.pts) <= (sh.style.width as f32 / 2.0).max(8.0)
-            }
-            Tool::Number => b.contains(p),
-            Tool::Text => b.contains(p),
             Tool::Mosaic => {
                 if sh.style.mode == DrawMode::Brush {
                     dist_to_polyline(p, &sh.pts) <= (sh.style.size as f32 * 3.0).max(4.0)
@@ -755,6 +740,7 @@ impl Annotator {
                 }
             }
             Tool::Select => false,
+            _ => crate::render::shape_paints_at(sh, p),
         }
     }
 
@@ -1280,6 +1266,17 @@ mod tests {
         a.adjust_width(2);
         assert_eq!(a.live.as_ref().unwrap().style.width, 5);
         assert_eq!(a.option_width(), 5);
+    }
+
+    #[test]
+    fn option_width_text_uses_font_size_mosaic_uses_size() {
+        let mut a = Annotator::new();
+        a.set_tool(Some(Tool::Text));
+        assert_eq!(a.option_width(), a.style(Tool::Text).font_size);
+        a.set_tool(Some(Tool::Mosaic));
+        assert_eq!(a.option_width(), a.style(Tool::Mosaic).size);
+        a.set_tool(Some(Tool::Rect));
+        assert_eq!(a.option_width(), a.style(Tool::Rect).width);
     }
 
     #[test]

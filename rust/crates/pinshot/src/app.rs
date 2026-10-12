@@ -700,9 +700,11 @@ impl App {
         let Some(pid) = self.menu_pin else {
             return;
         };
-        if matches!(action, PinMenuAction::NewGroup) {
-            let name = next_group_name(&self.cfg.groups);
-            let name = pinshot_core::groups::ensure(&mut self.cfg.groups, &name);
+        if matches!(action, PinMenuAction::NewGroup | PinMenuAction::RenameGroup) {
+            return;
+        }
+        if let PinMenuAction::NewGroupNamed(ref name) = action {
+            let name = pinshot_core::groups::ensure(&mut self.cfg.groups, name);
             self.group_vis.entry(name.clone()).or_insert(true);
             if let Some(p) = self.pins.iter_mut().find(|p| p.window_id() == pid) {
                 p.group = name;
@@ -710,6 +712,45 @@ impl App {
             }
             let _ = pinshot_core::config::save(&self.cfg);
             self.rebuild_tray();
+            crate::logutil::log("pin menu new group named");
+            return;
+        }
+        if let PinMenuAction::RenameGroupNamed(ref name) = action {
+            let old = self
+                .pins
+                .iter()
+                .find(|p| p.window_id() == pid)
+                .map(|p| p.group.clone())
+                .unwrap_or_else(|| pinshot_core::groups::DEFAULT.into());
+            if old.eq_ignore_ascii_case(pinshot_core::groups::DEFAULT) {
+                crate::logutil::log("pin menu rename skipped (Default)");
+                return;
+            }
+            match pinshot_core::groups::rename(&mut self.cfg.groups, &old, name) {
+                Ok(new) => {
+                    let key = self
+                        .group_vis
+                        .keys()
+                        .find(|k| k.eq_ignore_ascii_case(&old))
+                        .cloned();
+                    if let Some(k) = key {
+                        let vis = self.group_vis.remove(&k).unwrap_or(true);
+                        self.group_vis.insert(new.clone(), vis);
+                    } else {
+                        self.group_vis.entry(new.clone()).or_insert(true);
+                    }
+                    for p in &mut self.pins {
+                        if p.group.eq_ignore_ascii_case(&old) {
+                            p.group = new.clone();
+                            p.persist_needed = true;
+                        }
+                    }
+                    let _ = pinshot_core::config::save(&self.cfg);
+                    self.rebuild_tray();
+                    crate::logutil::log(&format!("pin menu rename {old} -> {new}"));
+                }
+                Err(e) => crate::logutil::log(&format!("pin menu rename rejected: {e}")),
+            }
             return;
         }
         if let PinMenuAction::MoveGroup(ref g) = action {
@@ -726,16 +767,6 @@ impl App {
             p.apply_menu(action);
         }
     }
-}
-
-fn next_group_name(groups: &[String]) -> String {
-    for i in 1..99 {
-        let n = format!("Group {i}");
-        if pinshot_core::groups::find(groups, &n).is_none() {
-            return n;
-        }
-    }
-    "Group".into()
 }
 
 fn encode_png(img: &Raster) -> Vec<u8> {
@@ -1091,6 +1122,7 @@ impl ApplicationHandler<AppEvent> for App {
         if persist || self.pins.len() != before {
             self.persist_session();
         }
+        #[cfg(windows)]
         crate::result_win::raise_above_pins();
     }
 }

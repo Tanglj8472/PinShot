@@ -163,8 +163,34 @@ fn stroke_shape(sh: &Shape, w: u32, h: u32) -> Option<Pixmap> {
     Some(pm)
 }
 
+/// Python `hit_test` 3×3 paint: translate so `pt` lands at pixel (1,1).
+pub fn shape_paints_at(sh: &Shape, pt: Point) -> bool {
+    if matches!(sh.kind, Tool::Mosaic | Tool::Eraser) {
+        return false;
+    }
+    let Some(mut pm) = Pixmap::new(3, 3) else {
+        return false;
+    };
+    draw_shape_t(
+        &mut pm,
+        sh,
+        Transform::from_translate(1.0 - pt.x, 1.0 - pt.y),
+    );
+    for y in 0..3 {
+        for x in 0..3 {
+            if pm.pixel(x, y).map(|p| p.alpha() > 16).unwrap_or(false) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn draw_shape(pm: &mut Pixmap, sh: &Shape) {
-    let t = Transform::identity();
+    draw_shape_t(pm, sh, Transform::identity());
+}
+
+fn draw_shape_t(pm: &mut Pixmap, sh: &Shape, t: Transform) {
     let b = sh.bounds();
     match sh.kind {
         Tool::Rect => {
@@ -258,8 +284,8 @@ fn draw_shape(pm: &mut Pixmap, sh: &Shape) {
                     crate::font::blit_pixmap(
                         pm,
                         &label,
-                        c.x - tw / 2.0,
-                        c.y - th / 2.0,
+                        c.x - tw / 2.0 + t.tx,
+                        c.y - th / 2.0 + t.ty,
                         fs,
                         if sh.style.filled {
                             Rgba::WHITE
@@ -277,14 +303,17 @@ fn draw_shape(pm: &mut Pixmap, sh: &Shape) {
                     pm.fill_rect(r, &paint(sh.style.color), t, None);
                 }
             } else {
-                crate::font::blit_pixmap(
+                crate::font::blit_pixmap_ex(
                     pm,
                     &sh.text,
-                    sh.pts[0].x,
-                    sh.pts[0].y,
+                    sh.pts[0].x + t.tx,
+                    sh.pts[0].y + t.ty,
                     sh.style.font_size.max(8) as f32,
                     sh.style.color,
                     sh.style.outline,
+                    &sh.style.family,
+                    sh.style.bold,
+                    sh.style.italic,
                 );
             }
         }
@@ -427,5 +456,33 @@ mod tests {
     #[test]
     fn line_tool_default_has_no_arrow() {
         assert!(!Style::for_tool(Tool::Line).arrow);
+    }
+
+    #[test]
+    fn pixel_hit_follows_stroke_not_bbox_slop() {
+        let sh = Shape::new(
+            Tool::Line,
+            vec![Point::new(10.0, 20.0), Point::new(50.0, 20.0)],
+            Style {
+                width: 2,
+                arrow: false,
+                color: Rgba::RED,
+                ..Style::default()
+            },
+        );
+        assert!(shape_paints_at(&sh, Point::new(30.0, 20.0)));
+        assert!(!shape_paints_at(&sh, Point::new(30.0, 32.0)));
+        let hollow = Shape::new(
+            Tool::Rect,
+            vec![Point::new(8.0, 8.0), Point::new(40.0, 30.0)],
+            Style {
+                width: 2,
+                filled: false,
+                color: Rgba::RED,
+                ..Style::default()
+            },
+        );
+        assert!(shape_paints_at(&hollow, Point::new(8.0, 18.0)));
+        assert!(!shape_paints_at(&hollow, Point::new(24.0, 19.0)));
     }
 }

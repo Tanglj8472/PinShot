@@ -1,6 +1,7 @@
 //! OCR / translation result window (egui, always-on-top).
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use eframe::egui;
 use pinshot_core::i18n::tr;
@@ -10,6 +11,22 @@ use crate::clipboard;
 
 static OPEN: AtomicBool = AtomicBool::new(false);
 
+fn schedule_raises() {
+    let _ = std::thread::Builder::new()
+        .name("pinshot-ocr-raise".into())
+        .spawn(|| {
+            for ms in [0u64, 60, 250] {
+                if ms > 0 {
+                    std::thread::sleep(Duration::from_millis(ms));
+                }
+                if !OPEN.load(Ordering::SeqCst) {
+                    return;
+                }
+                raise_above_pins();
+            }
+        });
+}
+
 pub fn open(text: String, auto_translate: bool) {
     if OPEN.swap(true, Ordering::SeqCst) {
         return;
@@ -17,6 +34,7 @@ pub fn open(text: String, auto_translate: bool) {
     let _ = std::thread::Builder::new()
         .name("pinshot-ocr-win".into())
         .spawn(move || {
+            schedule_raises();
             let opts = eframe::NativeOptions {
                 viewport: egui::ViewportBuilder::default()
                     .with_title(tr("PinShot OCR"))
@@ -39,6 +57,7 @@ pub fn open(text: String, auto_translate: bool) {
                         },
                         auto: auto_translate,
                         busy: auto_translate,
+                        raised: false,
                     }))
                 }),
             );
@@ -46,7 +65,9 @@ pub fn open(text: String, auto_translate: bool) {
         });
 }
 
-pub fn raise_above_pins() {}
+pub fn raise_above_pins() {
+    crate::x11util::raise_ocr_above_pins();
+}
 
 struct OcrWin {
     orig: String,
@@ -55,10 +76,15 @@ struct OcrWin {
     status: String,
     auto: bool,
     busy: bool,
+    raised: bool,
 }
 
 impl eframe::App for OcrWin {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if !self.raised {
+            self.raised = true;
+            raise_above_pins();
+        }
         if self.auto && !self.orig.trim().is_empty() {
             self.auto = false;
             self.busy = true;

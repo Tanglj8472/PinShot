@@ -471,6 +471,9 @@ impl PinWin {
             TbAction::Outline(on) => {
                 self.annot.set_style_value(Tool::Text, |s| s.outline = on);
             }
+            TbAction::Family(fam) => {
+                self.annot.set_style_value(Tool::Text, |s| s.family = fam.to_string());
+            }
             TbAction::Ocr | TbAction::Translate | TbAction::Pin => {}
         }
         if self.annotating {
@@ -897,7 +900,10 @@ impl PinWin {
                 self.group = g;
                 self.persist_needed = true;
             }
-            PinMenuAction::NewGroup => {}
+            PinMenuAction::NewGroup
+            | PinMenuAction::RenameGroup
+            | PinMenuAction::NewGroupNamed(_)
+            | PinMenuAction::RenameGroupNamed(_) => {}
             PinMenuAction::ViewInFolder => self.view_in_folder(),
             PinMenuAction::Close => self.close(),
             PinMenuAction::Destroy => self.destroy_pin(),

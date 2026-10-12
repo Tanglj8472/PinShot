@@ -2,13 +2,13 @@
 
 对照源：`main` 上的 Python/PySide6 PinShot。Rust 在 `rust/`，分支 `rust`。Python 源码不改。
 
-最后更新：2026-10-12（`23335a9`：刚画完的形状出手柄；pin 去顶/左边暗条。Xvfb `:24` + picom 11/11）。
+最后更新：2026-10-12（PARITY 剩余项：3×3 hit、F6 toast、字体芯片、pin 分组改名、AT-SPI exclude、OCR 置顶 restack）。
 
 ---
 
 ## 当前进度
 
-HEAD 在 `rust` **`23335a9`**（用户提交 `ed59e0f` 之后本轮继续）。对照 Python/`main`，**先 Linux X11**（Xfce / xfwm4，1920×1200），再 Windows。Python 源码不改。用户提交（`a6d6765` / `7c406a6` / `ed59e0f` 共享 `toggle_tool`、Windows prefs 循环、语言标签测试）保留。
+HEAD 在 `rust`（本轮 PARITY 剩余项）。对照 Python/`main`，**先 Linux X11**（Xfce / xfwm4，1920×1200），再 Windows。Python 源码不改。用户提交（`a6d6765` / `7c406a6` / `ed59e0f` 共享 `toggle_tool`、Windows prefs 循环、语言标签测试）保留。
 
 | 面 | 状态 |
 |---|---|
@@ -17,14 +17,14 @@ HEAD 在 `rust` **`23335a9`**（用户提交 `ed59e0f` 之后本轮继续）。�
 | 重启后 R 套在**当前截图**的上次选区、Tab 不漏到 Chrome | 实机过 |
 | pin 光标锚缩放（不切工作区）、菜单高度、Esc 只关菜单、穿透勾选 | 实机过 |
 | Linux 滚轮每格两次 | **已修**（Xvfb `:22` 15/15）：3 格 → 3 次 `overlay wheel`，线宽 3→6；4 格缩放 → 4 次 `pin zoom`（不再 8 步） |
-| 工具栏子面板 | Fill/Outline、Solid/Dash/Dot（矩形/椭圆/直线）、B/I/Outline、马赛克 Brush/Rect/Blur；当前色块 → overlay/pin 内 HSV 取色（无 zenity）；刚画完的形状保持 `option_target` 并画出 8 手柄 |
+| 工具栏子面板 | Fill/Outline、Solid/Dash/Dot、B/I/Outline、Default/Sans/Serif/Mono、马赛克 Brush/Rect/Blur；`option_width` 对文字=字号、马赛克=size；当前色块 → overlay/pin 内 HSV 取色（无 zenity）；刚画完的形状保持 `option_target` 并画出 8 手柄 |
 | Esc 放弃确认 | overlay 内 Y/N /「不再提示」（不再 zenity 抢抓键） |
 | pin 阴影 / 缩略图 | 合成器在则默认阴影 M=12；窗=图+2M、图在 (M,M)、ARGB 阴影；菜单可勾 Shadow；Shift+双击 72px 中心裁切；session 存图原点 |
 | 画笔采样 | 活笔时 QueryPointer 8ms（Python 8ms timer） |
 | Windows 实机 | **未关**：Linux-first 改动后尚未在真 Windows 上复测（CI 绿） |
 | AT-SPI / IME / 合成器 | 限制同前，见「已知限制」 |
 
-`PARITY.md`：done 103 / partial 10 / missing 1 / impossible 6（合计 120）。
+`PARITY.md`：done 111 / partial 1 / missing 0 / impossible 6（合计 118）。剩余 partial：RapidOCR 条带检测（非完整 DBNet）。
 
 ---
 
@@ -278,7 +278,7 @@ HEAD 在 `rust` **`23335a9`**（用户提交 `ed59e0f` 之后本轮继续）。�
 ## 下一步（按优先级）
 
 1. **Windows 实机 + 放出 exe**：在真机复测 overlay/pin/热键/剪贴板，CI 已绿的 `pinshot.exe` 再打一版。
-2. **PARITY 剩余**：字体家族下拉、像素级 hit、无 a11y 时控件框、pin 分组改名。
+2. **PARITY 剩余**：RapidOCR 完整 DBNet（条带检测已能出字）。本轮已关：3×3 hit、F6 toast、字体芯片、pin 分组 New/Rename、AT-SPI exclude/`role:name`、OCR `_NET_RESTACK_WINDOW`。
 
 ### 6edae0a 实机 OPEN A–F（本轮）
 
@@ -318,6 +318,24 @@ HEAD 在 `rust` **`23335a9`**（用户提交 `ed59e0f` 之后本轮继续）。�
 | 照片顶/左无暗带 | PASS（图内 y/x≥12 为白；y=11 发丝蓝；y=0–10 为外边距阴影） |
 
 工件：`/opt/cursor/artifacts/findings-verify/`。
+
+### PARITY 剩余项（本轮，Linux-first）
+
+对照 `2d2a328` 表里 8 个 partial + 1 个 missing（页脚 10/1 是旧计数）。
+
+| 项 | 状态 | 修法 |
+|---|---|---|
+| 3×3 像素 hit | **done** | `shape_paints_at`：3×3 pixmap，平移使点落在 (1,1)，alpha>16。箭头 margin 仍先做 bbox。马赛克/橡皮保持 path-contains |
+| `option_width` 文字/马赛克 | **done** | 文字显示 `font_size`，马赛克显示 `size`（Python 面板转盘） |
+| 字体家族 + B/I 进渲染 | **done** | 工具栏 Default/Sans/Serif/Mono；`blit_pixmap_ex` 按 family/bold/italic 选文件，缺 Bold 时假粗 |
+| F6 toast | **done** | `translate_on_select` 开 overlay 时 toast「框选文字后松开」 |
+| AT-SPI / X11 子窗 | **done** | 行走深度 4；AT-SPI 标 `{role}:{name}` 并排除本进程 pid |
+| `raise_on_top` / OCR 压过 pin | **done** | `_NET_RESTACK_WINDOW` Below `lower`，再 ABOVE+Above+ACTIVE。OCR 在 0/60/250ms 抬，不再每 tick 查 X |
+| pin 分组 New/Rename | **done** | 菜单内名称框（Enter/Esc/IME）；Default 不能改名 |
+| `PynputHotkeys` | **done** | 按 Python 在无 pynput/evdev 时的 XGrabKey 回退 |
+| RapidOCR DBNet | **partial** | 仍用条带检测，完整 DB 太大 |
+
+单元测试：`cargo test --workspace --offline --lib` → pinshot-core 120 + pinshot 19。Windows 交叉编译在本环境缺 SDK（`ring`/`assert.h`），以 CI 为准。
 
 ### Xvfb `da81652` A–F（`:23` 1920×1200 + xfwm4，实机节拍）
 
