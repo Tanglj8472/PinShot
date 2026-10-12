@@ -20,6 +20,13 @@ pub const DET_BOX_SCORE: f32 = 0.5;
 pub const DET_BOX_THRESH: f32 = 0.3;
 pub const DET_UNCLIP: f32 = 1.6;
 
+/// RapidOCR uses 50px pad, but a 2-line 58px crop would become mostly pad
+/// and drop the first line. Keep the default on article-sized clips.
+pub fn det_padding(width: u32, height: u32) -> u32 {
+    let side = width.min(height).max(8);
+    DET_PADDING.min(side / 4).max(8)
+}
+
 /// RapidOCR / PaddleOCR v5 server ONNX. First URL is ModelScope v3.9.2.
 pub const DET_URLS: &[&str] = &[
     "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv5/det/ch_PP-OCRv5_det_server.onnx",
@@ -417,6 +424,13 @@ mod tests {
         let p = ModelPaths::in_dir("/tmp/ocr-models");
         assert!(p.det.ends_with(DET_FILE));
         assert_eq!(p.downloads().len(), 4);
+    }
+
+    #[test]
+    fn det_padding_shrinks_on_thin_clips() {
+        assert_eq!(det_padding(1295, 58), 14);
+        assert_eq!(det_padding(1100, 400), 50);
+        assert_eq!(det_padding(8, 8), 8);
     }
 
     #[test]

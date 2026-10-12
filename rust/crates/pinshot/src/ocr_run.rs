@@ -5,8 +5,8 @@ use std::io::Read;
 use std::path::Path;
 
 use pinshot_core::ocr::{
-    model_dir, page_from_blocks, ModelPaths, OcrPage, DET_BOX_SCORE, DET_BOX_THRESH, DET_MAX_SIDE,
-    DET_PADDING, DET_UNCLIP,
+    det_padding, model_dir, page_from_blocks, ModelPaths, OcrPage, DET_BOX_SCORE, DET_BOX_THRESH,
+    DET_MAX_SIDE, DET_UNCLIP,
 };
 use pinshot_core::raster::Raster;
 
@@ -135,7 +135,7 @@ fn infer(image: &Raster, paths: &ModelPaths) -> Result<OcrPage, String> {
             // 1920 so Wikipedia-sized crops do not drop lines to 960.
             .detect(
                 &rgb,
-                DET_PADDING,
+                det_padding(image.width, image.height),
                 DET_MAX_SIDE,
                 DET_BOX_SCORE,
                 DET_BOX_THRESH,

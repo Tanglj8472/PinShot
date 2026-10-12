@@ -720,6 +720,13 @@ impl Overlay {
         let guides = self.snap_guides();
         self.sel
             .release_snapped(pt, self.hover, self.bounds(), Some(&guides));
+        if self.sel.has_sel() {
+            let r = self.sel.normalized();
+            crate::logutil::log(&format!(
+                "sel done {:.0}x{:.0} at {:.0},{:.0}",
+                r.w, r.h, r.x, r.y
+            ));
+        }
         self.log_sel_translate();
         self.relayout_toolbar();
         self.log_tb_chrome();
