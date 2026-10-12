@@ -215,12 +215,19 @@ void TestRemapForCrop()
 {
     std::printf("RemapForCrop\n");
     snip::DrawStack stack;
-    stack.SetTool(snip::ToolKind::Rect);
-    stack.Press(D2D1::Point2F(5, 5));
-    stack.Move(D2D1::Point2F(15, 15));
-    stack.Release(D2D1::Point2F(15, 15));
-    stack.RemapForCrop(-10.f, -10.f, 0.f, 0.f, 100.f, 100.f);
-    Expect(stack.ShapeAt(0) && stack.ShapeAt(0)->pts[0].x == 15.f, "remap translates");
+    // Use text (single anchor) to avoid two-point ordering ambiguity in asserts.
+    stack.AddText(D2D1::Point2F(5.f, 5.f), L"a");
+    Expect(stack.Shapes().size() == 1, "seed shape");
+    Expect(stack.ShapeAt(0) && stack.ShapeAt(0)->pts.size() == 1, "text has one point");
+    Expect(stack.ShapeAt(0)->pts[0].x == 5.f && stack.ShapeAt(0)->pts[0].y == 5.f, "seed at 5,5");
+
+    // RemapForCrop applies TranslateAll(dx,dy) literally (caller negates crop delta).
+    stack.RemapForCrop(10.f, 10.f, 0.f, 0.f, 200.f, 200.f);
+    Expect(stack.Shapes().size() == 1, "remap keeps in-bounds shape");
+    const auto* moved = stack.ShapeAt(0);
+    Expect(moved && moved->pts[0].x == 15.f && moved->pts[0].y == 15.f, "remap translates");
+
+    // Fully above the cull rect → removed.
     stack.RemapForCrop(0.f, 0.f, 50.f, 50.f, 100.f, 100.f);
     Expect(stack.Shapes().empty(), "cull outside removes shape");
     Expect(stack.CanUndo(), "remap pushes undo");
