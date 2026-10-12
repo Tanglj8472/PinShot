@@ -181,6 +181,11 @@ impl PinMenuWin {
         self.window.id()
     }
 
+    pub fn restack_above(&self, pin: &Window) {
+        crate::native::raise_above(&self.window, Some(pin));
+        crate::native::focus_window(&self.window);
+    }
+
     pub fn close(&mut self) {
         self.closed = true;
         self.window.set_visible(false);

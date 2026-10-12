@@ -92,6 +92,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         pin_menu: None,
         menu_pin: None,
         menu_esc_until: None,
+        menu_raise_until: None,
         #[cfg(unix)]
         input_hold: None,
     };
@@ -129,6 +130,8 @@ struct App {
     /// Swallow Escape on pins after the menu closes so the still-held Esc
     /// does not close the pin (and persist/reap must not drop the others).
     menu_esc_until: Option<Instant>,
+    /// Keep restacking the menu above the pin (and its F5 strip) briefly.
+    menu_raise_until: Option<Instant>,
     #[cfg(unix)]
     input_hold: Option<crate::x11util::InputHold>,
 }
@@ -791,9 +794,13 @@ impl App {
         );
         match crate::pin_menu::PinMenuWin::create(event_loop, (mx, my), state) {
             Ok(m) => {
+                if let Some(p) = self.pins.iter().find(|p| p.window_id() == pid) {
+                    m.restack_above(p.window());
+                }
                 self.menu_pin = Some(pid);
                 self.pin_menu = Some(m);
                 self.menu_esc_until = None;
+                self.menu_raise_until = Some(Instant::now() + Duration::from_millis(300));
             }
             Err(e) => crate::logutil::log(&format!("pin menu: {e}")),
         }
@@ -804,6 +811,7 @@ impl App {
             m.close();
         }
         self.pin_menu = None;
+        self.menu_raise_until = None;
         self.menu_esc_until = Some(Instant::now() + Duration::from_millis(450));
     }
 
@@ -1333,6 +1341,19 @@ impl ApplicationHandler<AppEvent> for App {
             if p.persist_needed {
                 p.persist_needed = false;
                 persist = true;
+            }
+        }
+        if let Some(until) = self.menu_raise_until {
+            if Instant::now() < until {
+                if let (Some(m), Some(pid)) = (&self.pin_menu, self.menu_pin) {
+                    if let Some(p) = self.pins.iter().find(|p| p.window_id() == pid) {
+                        m.restack_above(p.window());
+                    }
+                }
+                let next = Instant::now() + Duration::from_millis(50);
+                event_loop.set_control_flow(ControlFlow::WaitUntil(next.min(until)));
+            } else {
+                self.menu_raise_until = None;
             }
         }
         if self.pin_menu.as_ref().map(|m| m.closed).unwrap_or(false) {

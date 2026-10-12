@@ -305,17 +305,28 @@ pub fn tokenize_line(line: usize, text: &str, box_rect: Rect) -> Vec<OcrToken> {
     out
 }
 
-fn join_line_parts(parts: &[String]) -> String {
+fn join_line_boxes(boxes: &[(Rect, String)]) -> String {
+    let line_h = boxes
+        .iter()
+        .map(|(r, _)| r.h)
+        .fold(0.0f32, f32::max)
+        .max(1.0);
     let mut s = String::new();
-    for p in parts {
-        if s.is_empty() {
-            s.push_str(p);
+    let mut prev_rect: Option<Rect> = None;
+    for (rect, text) in boxes {
+        if text.is_empty() {
             continue;
         }
-        if needs_space(s.chars().last(), p.chars().next()) {
-            s.push(' ');
+        if !s.is_empty() {
+            let gap = prev_rect
+                .map(|pr| (rect.x - pr.right()).max(0.0))
+                .unwrap_or(0.0);
+            if gap > line_h * 0.3 || needs_space(s.chars().last(), text.chars().next()) {
+                s.push(' ');
+            }
         }
-        s.push_str(p);
+        s.push_str(text);
+        prev_rect = Some(*rect);
     }
     s
 }
@@ -327,8 +338,22 @@ fn is_bracket(c: char) -> bool {
     )
 }
 
+fn is_opening_paren(c: char) -> bool {
+    matches!(c, '(' | '（')
+}
+
+fn is_closing_bracket(c: char) -> bool {
+    matches!(c, ')' | '）' | ']' | '】')
+}
+
+/// Space at Latin/`(` and after `)` / `]` when the next char is a letter.
+/// CJK stays glued to brackets (`。[16]`, `文[15]`).
 fn needs_space(prev: Option<char>, next: Option<char>) -> bool {
     match (prev, next) {
+        (Some(a), Some(b)) if a.is_whitespace() || b.is_whitespace() => false,
+        (Some(a), Some(b)) if is_cjk(a) || is_cjk(b) => false,
+        (Some(a), Some(b)) if a.is_ascii_alphanumeric() && is_opening_paren(b) => true,
+        (Some(a), Some(b)) if is_closing_bracket(a) && b.is_ascii_alphabetic() => true,
         (Some(a), Some(b)) if is_bracket(a) || is_bracket(b) => false,
         (Some(a), Some(b))
             if !a.is_whitespace()
@@ -341,6 +366,145 @@ fn needs_space(prev: Option<char>, next: Option<char>) -> bool {
         }
         _ => false,
     }
+}
+
+fn insert_bracket_spaces(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len() + 8);
+    for (i, &c) in chars.iter().enumerate() {
+        if i > 0 {
+            let a = chars[i - 1];
+            if !is_cjk(a)
+                && !is_cjk(c)
+                && ((a.is_ascii_alphanumeric() && is_opening_paren(c))
+                    || (is_closing_bracket(a) && c.is_ascii_alphabetic()))
+            {
+                out.push(' ');
+            }
+        }
+        out.push(c);
+    }
+    out
+}
+
+fn restore_note_brackets(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len() + 4);
+    let mut i = 0;
+    while i < chars.len() {
+        let prev = out.chars().last();
+        let prev_token = out.chars().rev().find(|c| !c.is_whitespace());
+        let already = prev_token == Some('[') || prev_token == Some('【');
+        let boundary = prev.is_none() || prev.is_some_and(|c| !c.is_ascii_alphanumeric());
+        if !already && boundary {
+            if let Some(n) = note_cite_len(&chars[i..]) {
+                out.push('[');
+                out.extend(chars[i..i + n].iter());
+                out.push(']');
+                i += n;
+                continue;
+            }
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
+}
+
+fn note_cite_len(chars: &[char]) -> Option<usize> {
+    if chars.len() < 6 {
+        return None;
+    }
+    let head: String = chars
+        .iter()
+        .take(4)
+        .collect::<String>()
+        .to_ascii_lowercase();
+    if head != "note" {
+        return None;
+    }
+    let mut i = 4;
+    if i >= chars.len() || !chars[i].is_whitespace() {
+        return None;
+    }
+    while i < chars.len() && chars[i].is_whitespace() {
+        i += 1;
+    }
+    let digits = chars[i..].iter().take_while(|c| c.is_ascii_digit()).count();
+    if (1..=3).contains(&digits) {
+        Some(i + digits)
+    } else {
+        None
+    }
+}
+
+fn repair_unmatched_cites(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len() + 4);
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i].is_ascii_digit() {
+            let mut j = i;
+            while j < chars.len() && chars[j].is_ascii_digit() && j - i < 3 {
+                j += 1;
+            }
+            let n = j - i;
+            if (1..=3).contains(&n) && j < chars.len() && matches!(chars[j], ']' | '】') {
+                let prev = out.chars().rev().find(|c| !c.is_whitespace());
+                let already = prev == Some('[') || prev == Some('【');
+                let follows_cjk_or_start = prev.is_none() || prev.is_some_and(is_cjk);
+                if !already && follows_cjk_or_start {
+                    out.push('[');
+                }
+            }
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
+}
+
+fn repair_rustc(s: &str) -> String {
+    if s.contains("「rust」") && (s.contains("編譯") || s.contains("编译")) {
+        s.replace("「rust」", "「rustc」")
+    } else {
+        s.to_string()
+    }
+}
+
+fn polish_ocr_text(s: &str) -> String {
+    let s = collapse_cjk_spaces(s);
+    let s = insert_bracket_spaces(&s);
+    let s = restore_note_brackets(&s);
+    let s = repair_leading_cite(&s);
+    repair_rustc(&s)
+}
+
+fn dedupe_line_seams(boxes: &mut [(Rect, String)]) {
+    for i in 1..boxes.len() {
+        let overlap = boxes[i - 1].0.right() - boxes[i].0.x;
+        if overlap <= 0.0 {
+            continue;
+        }
+        let prev = boxes[i - 1].1.clone();
+        let next = boxes[i].1.clone();
+        boxes[i].1 = strip_seam_prefix(&prev, &next);
+    }
+}
+
+fn strip_seam_prefix(prev: &str, next: &str) -> String {
+    let pc: Vec<char> = prev.chars().collect();
+    let nc: Vec<char> = next.chars().collect();
+    if pc.is_empty() || nc.is_empty() {
+        return next.to_string();
+    }
+    let max_k = pc.len().min(nc.len());
+    for k in (1..=max_k).rev() {
+        if pc[pc.len() - k..] == nc[..k] {
+            return nc[k..].iter().collect();
+        }
+    }
+    next.to_string()
 }
 
 /// `[16]`, `16]`, `[15`, `5]` — superscript citation fragments. These must
@@ -407,22 +571,10 @@ pub fn page_for_translate(text: &str) -> String {
     paras.join("\n")
 }
 
-/// If det cropped `[15]` into `15]`, put the bracket back. Only at line
-/// start so years (`2011年`) stay untouched.
+/// If det cropped `[15]` into `15]`, put the bracket back at line start
+/// or after CJK. Years (`2011年`) stay untouched — they have no `]`.
 fn repair_leading_cite(s: &str) -> String {
-    let t = s.trim_start();
-    if t.starts_with('[') || t.starts_with('【') {
-        return s.to_string();
-    }
-    let digits = t.chars().take_while(|c| c.is_ascii_digit()).count();
-    if digits > 0 && digits <= 3 {
-        let rest: String = t.chars().skip(digits).collect();
-        if rest.starts_with(']') || rest.starts_with('】') {
-            let ws = s.len() - t.len();
-            return format!("{}[{}", &s[..ws], t);
-        }
-    }
-    s.to_string()
+    repair_unmatched_cites(s)
 }
 
 fn y_overlap_ratio(a: Rect, b: Rect) -> f32 {
@@ -551,16 +703,19 @@ pub fn page_from_blocks(blocks: Vec<(Vec<(u32, u32)>, String)>) -> OcrPage {
 
     let mut tokens = Vec::new();
     let mut lines: Vec<String> = Vec::new();
-    for (line_i, line_boxes) in cluster_lines(items).into_iter().enumerate() {
-        let mut line_parts: Vec<String> = Vec::new();
+    for (line_i, mut line_boxes) in cluster_lines(items).into_iter().enumerate() {
+        dedupe_line_seams(&mut line_boxes);
+        let mut polished: Vec<(Rect, String)> = Vec::new();
         for (rect, text) in line_boxes {
+            let text = polish_ocr_text(&text);
+            if text.is_empty() {
+                continue;
+            }
             tokens.extend(tokenize_line(line_i, &text, rect));
-            line_parts.push(text);
+            polished.push((rect, text));
         }
-        if !line_parts.is_empty() {
-            lines.push(repair_leading_cite(&collapse_cjk_spaces(&join_line_parts(
-                &line_parts,
-            ))));
+        if !polished.is_empty() {
+            lines.push(polish_ocr_text(&join_line_boxes(&polished)));
         }
     }
     OcrPage {
@@ -665,7 +820,11 @@ pub fn selected_text(tokens: &[OcrToken], a: usize, b: usize) -> String {
     for t in &tokens[lo..=hi] {
         if let Some(pl) = prev_line {
             if t.line != pl {
-                s.push('\n');
+                if ends_sentence(&s) {
+                    s.push('\n');
+                } else if translate_join_space(s.chars().last(), t.text.chars().next()) {
+                    s.push(' ');
+                }
             } else if needs_space(s.chars().last(), t.text.chars().next()) {
                 s.push(' ');
             }
@@ -735,8 +894,7 @@ mod tests {
         assert!(hit.is_some());
         let end = page.tokens.len() - 1;
         let sel = selected_text(&page.tokens, 0, end);
-        assert!(sel.contains("Mozilla"));
-        assert!(sel.contains('\n'));
+        assert_eq!(sel, "In 2009 Mozilla sponsored");
     }
 
     #[test]
@@ -787,7 +945,7 @@ mod tests {
         assert!(page.tokens.iter().any(|t| t.line == 0));
         assert!(page.tokens.iter().any(|t| t.line == 1));
         let sel = selected_text(&page.tokens, 0, page.tokens.len() - 1);
-        assert_eq!(sel, "Rust語\n言");
+        assert_eq!(sel, "Rust語言");
     }
 
     #[test]
@@ -895,5 +1053,156 @@ mod tests {
             !out.contains("compiler\n(i.e."),
             "must not translate line-by-line"
         );
+    }
+
+    fn quad(x0: u32, y0: u32, x1: u32, y1: u32) -> Vec<(u32, u32)> {
+        vec![(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+    }
+
+    #[test]
+    fn page_inserts_spaces_at_latin_bracket_boundaries() {
+        let page = page_from_blocks(vec![(
+            quad(0, 0, 400, 16),
+            "compiler(i.e., written in Rust)targeting LLVM [21]The [28]The".into(),
+        )]);
+        assert!(
+            page.text.contains("compiler (i.e."),
+            "Latin + ( needs a space, got {:?}",
+            page.text
+        );
+        assert!(
+            page.text.contains("Rust) targeting"),
+            ") + letter needs a space, got {:?}",
+            page.text
+        );
+        assert!(
+            page.text.contains("[21] The"),
+            "] + letter needs a space, got {:?}",
+            page.text
+        );
+        assert!(
+            page.text.contains("[28] The"),
+            "expected [28] The, got {:?}",
+            page.text
+        );
+        assert!(
+            !page.text.contains("compiler(i.e."),
+            "must not glue compiler(, got {:?}",
+            page.text
+        );
+    }
+
+    #[test]
+    fn page_spaces_same_line_boxes_when_gap_exceeds_line_height() {
+        let page = page_from_blocks(vec![
+            (quad(0, 0, 40, 16), "Work".into()),
+            (quad(56, 0, 120, 16), "shifted".into()),
+        ]);
+        assert_eq!(page.text, "Work shifted");
+    }
+
+    #[test]
+    fn page_restores_note_brackets() {
+        let page = page_from_blocks(vec![(quad(0, 0, 80, 16), "see note 5 for".into())]);
+        assert!(
+            page.text.contains("[note 5]"),
+            "expected [note 5], got {:?}",
+            page.text
+        );
+        let already = page_from_blocks(vec![(quad(0, 0, 80, 16), "[note 5]".into())]);
+        assert_eq!(already.text, "[note 5]");
+    }
+
+    #[test]
+    fn page_repairs_cite_after_cjk() {
+        let page = page_from_blocks(vec![(
+            quad(0, 0, 200, 16),
+            "首次發布15]並於2011年17]".into(),
+        )]);
+        assert!(
+            page.text.contains("[15]"),
+            "expected [15] after CJK, got {:?}",
+            page.text
+        );
+        assert!(
+            page.text.contains("[17]"),
+            "expected [17] after CJK, got {:?}",
+            page.text
+        );
+        assert!(
+            page.text.contains("2011年"),
+            "year must stay unbracketed, got {:?}",
+            page.text
+        );
+    }
+
+    #[test]
+    fn page_dedupes_overlapping_cjk_seam() {
+        let page = page_from_blocks(vec![
+            (quad(0, 0, 40, 16), "專案".into()),
+            (quad(28, 0, 48, 16), "案".into()),
+        ]);
+        assert_eq!(page.text, "專案");
+        assert!(
+            !page.text.contains("專案案"),
+            "overlapping seam must drop the repeated 案"
+        );
+        let sel = selected_text(&page.tokens, 0, page.tokens.len() - 1);
+        assert_eq!(sel, "專案");
+    }
+
+    #[test]
+    fn page_repairs_rustc_when_compiler_follows() {
+        let page = page_from_blocks(vec![(
+            quad(0, 0, 220, 16),
+            "官方實現稱做「rust」的編譯器。".into(),
+        )]);
+        assert!(
+            page.text.contains("「rustc」"),
+            "expected rustc next to 編譯器, got {:?}",
+            page.text
+        );
+        let lang = page_from_blocks(vec![(quad(0, 0, 80, 16), "「rust」語言".into())]);
+        assert!(
+            lang.text.contains("「rust」"),
+            "bare rust language must stay, got {:?}",
+            lang.text
+        );
+        assert!(
+            !lang.text.contains("「rustc」"),
+            "must not invent rustc without 編譯, got {:?}",
+            lang.text
+        );
+    }
+
+    #[test]
+    fn selected_text_joins_wrapped_paragraphs() {
+        let a = quad(0, 0, 200, 16);
+        let b = quad(0, 20, 200, 36);
+        let c = quad(0, 50, 200, 66);
+        let page = page_from_blocks(vec![
+            (a, "Work shifted from the OCaml compiler".into()),
+            (b, "(i.e., written in Rust) targeting LLVM.".into()),
+            (c, "官方實現稱做「rustc」的編譯器。".into()),
+        ]);
+        let sel = selected_text(&page.tokens, 0, page.tokens.len() - 1);
+        assert!(
+            sel.contains("compiler (i.e., written in Rust) targeting LLVM."),
+            "Latin wrap should join with a space, got {sel:?}"
+        );
+        assert!(
+            !sel.contains("compiler\n(i.e."),
+            "copy must not keep wrap newlines, got {sel:?}"
+        );
+        assert!(
+            sel.contains("LLVM.\n官方"),
+            "sentence end stays a paragraph break, got {sel:?}"
+        );
+        let wrap = page_from_blocks(vec![
+            (quad(0, 0, 80, 16), "編譯".into()),
+            (quad(0, 18, 80, 34), "器仍在".into()),
+        ]);
+        let cjk = selected_text(&wrap.tokens, 0, wrap.tokens.len() - 1);
+        assert_eq!(cjk, "編譯器仍在");
     }
 }

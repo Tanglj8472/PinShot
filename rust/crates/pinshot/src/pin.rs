@@ -116,6 +116,7 @@ pub struct PinWin {
     /// Sticky banner (download / recognize). Unlike toast it does not expire.
     status: Option<String>,
     ocr_flash_until: Option<Instant>,
+    hovered: bool,
 }
 
 impl PinWin {
@@ -190,6 +191,7 @@ impl PinWin {
             pending_translate: false,
             status: None,
             ocr_flash_until: None,
+            hovered: false,
         };
         pin.redraw();
         crate::logutil::log(&format!(
@@ -204,6 +206,10 @@ impl PinWin {
 
     pub fn window_id(&self) -> WindowId {
         self.window.id()
+    }
+
+    pub fn window(&self) -> &Window {
+        &self.window
     }
 
     #[cfg(windows)]
@@ -506,6 +512,32 @@ impl PinWin {
         self.toolbar = Some(tb);
     }
 
+    fn relayout_hover_tb(&mut self) {
+        let m = self.margin() as f32;
+        let (iw, ih) = self.img_px();
+        let (ww, hh) = self.win_px();
+        let sel = Rect::new(m, m, iw as f32, ih as f32);
+        let over = Rect::new(0.0, 0.0, ww as f32, hh as f32);
+        self.toolbar = Some(Toolbar::layout_pin_hover(sel, over));
+    }
+
+    fn show_hover_tb(&mut self, on: bool) {
+        if self.annotating || self.thumb {
+            return;
+        }
+        if on {
+            if !self.hovered {
+                self.hovered = true;
+                self.relayout_hover_tb();
+                self.dirty = true;
+            }
+        } else if self.hovered {
+            self.hovered = false;
+            self.toolbar = None;
+            self.dirty = true;
+        }
+    }
+
     fn margin(&self) -> i32 {
         if self.shadow {
             crate::draw::PIN_SHADOW_M as i32
@@ -650,12 +682,17 @@ impl PinWin {
             let over_img = p.x >= m && p.y >= m && p.x <= m + iw as f32 && p.y <= m + ih as f32;
             let over_text =
                 (self.ocr.is_some() && !self.thumb && over_img) || self.ocr_over_strip(p);
+            let over_chrome = self.color_picker.is_some()
+                || self
+                    .toolbar
+                    .as_ref()
+                    .is_some_and(|t| t.contains(self.last_cursor));
             crate::cursor::apply(
                 &self.window,
                 cursor_for(pinshot_core::CursorHint {
-                    pin_idle: !over_text,
-                    editing_text: over_text,
-                    over_chrome: self.color_picker.is_some(),
+                    pin_idle: !over_text && !over_chrome,
+                    editing_text: over_text && !over_chrome,
+                    over_chrome,
                     ..Default::default()
                 }),
             );
@@ -751,6 +788,8 @@ impl PinWin {
         }
         if self.annotating {
             self.relayout_tb();
+        } else if self.hovered {
+            self.relayout_hover_tb();
         }
         self.persist_needed = true;
         self.dirty = true;
@@ -844,6 +883,12 @@ impl PinWin {
             return;
         }
         match event {
+            WindowEvent::CursorEntered { .. } => {
+                self.show_hover_tb(true);
+            }
+            WindowEvent::CursorLeft { .. } => {
+                self.show_hover_tb(false);
+            }
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x as f32, position.y as f32);
                 let was_over_tb = self
@@ -852,6 +897,13 @@ impl PinWin {
                     .map(|t| t.contains(self.last_cursor))
                     .unwrap_or(false);
                 self.last_cursor = p;
+                if !self.annotating && !self.thumb {
+                    let show = self.drag.is_none() && self.ocr_gesture.is_none();
+                    self.show_hover_tb(show);
+                    if show {
+                        self.dirty = true;
+                    }
+                }
                 if self.annotating
                     && (self.annot.is_brush_live()
                         || self.annot.is_selecting()
@@ -896,7 +948,7 @@ impl PinWin {
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => {
-                if *state == ElementState::Pressed {
+                if *state == ElementState::Pressed && *button != MouseButton::Right {
                     native::focus_window(&self.window);
                     native::raise_on_top(&self.window);
                 }
@@ -941,7 +993,13 @@ impl PinWin {
                             self.dirty = true;
                             return;
                         }
-                    } else if self.ocr.is_some() && !self.thumb {
+                    } else if let Some(tb) = &self.toolbar {
+                        if let Some(a) = tb.hit(p) {
+                            self.apply_tb(a);
+                            return;
+                        }
+                    }
+                    if !self.annotating && self.ocr.is_some() && !self.thumb {
                         if self.ocr_over_strip(p) {
                             return;
                         }
@@ -1579,6 +1637,13 @@ impl PinWin {
                         );
                     }
                 }
+            }
+        } else if self.hovered && !self.thumb {
+            if self.toolbar.is_none() {
+                self.relayout_hover_tb();
+            }
+            if let Some(tb) = &self.toolbar {
+                paint_toolbar(&mut pm, tb, Some(self.last_cursor));
             }
         }
         if let Some(i) = self.annot.selected {

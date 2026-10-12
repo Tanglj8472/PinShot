@@ -141,6 +141,7 @@ impl Toolbar {
         ];
         let acts: Vec<(IconKind, TbAction, &'static str)> = if for_pin {
             vec![
+                (IconKind::Ocr, TbAction::Ocr, "Recognize text"),
                 (IconKind::Undo, TbAction::Undo, "Undo (Ctrl+Z)"),
                 (IconKind::Redo, TbAction::Redo, "Redo (Ctrl+Y)"),
                 (IconKind::Check, TbAction::Check, "Show toolbar"),
@@ -365,6 +366,59 @@ impl Toolbar {
         }
     }
 
+    /// Compact Snipaste-style hover strip on an idle pin (OCR / save / copy / close).
+    pub fn layout_pin_hover(sel: Rect, overlay: Rect) -> Self {
+        let acts = [
+            (IconKind::Ocr, TbAction::Ocr, "Recognize text"),
+            (IconKind::Save, TbAction::Save, "Save as… (Ctrl+S)"),
+            (IconKind::Copy, TbAction::Copy, "Copy (Ctrl+C / Enter)"),
+            (IconKind::Close, TbAction::Close, "Close"),
+        ];
+        let n_acts = acts.len() as f32;
+        let w = PAD * 2.0 + n_acts * CELL;
+        let h = CELL + PAD * 2.0;
+        let mut x = sel.right() - w - 4.0;
+        let mut y = sel.bottom() - h - 4.0;
+        if y < sel.y {
+            y = sel.y + 4.0;
+        }
+        x = clamp_f32(
+            x,
+            overlay.x.max(sel.x),
+            overlay.right().min(sel.right()) - w,
+        );
+        let bar = Rect::new(x, y, w, h);
+        let mut buttons = Vec::new();
+        let mut cx = x + PAD;
+        for (icon, action, tip) in acts {
+            buttons.push(TbButton {
+                rect: Rect::new(cx, y + PAD, CELL, CELL),
+                icon,
+                action,
+                tip,
+                checked: false,
+            });
+            cx += CELL;
+        }
+        Self {
+            bar,
+            panel: None,
+            buttons,
+            extras: Vec::new(),
+            swatches: Vec::new(),
+            visible: true,
+            width_minus: Rect::EMPTY,
+            width_plus: Rect::EMPTY,
+            width_label: Rect::EMPTY,
+            width_value: 0,
+            custom_color: Rect::EMPTY,
+            custom_value: Rgba::RED,
+            slider: Rect::EMPTY,
+            slider_min: 1,
+            slider_max: 30,
+        }
+    }
+
     pub fn set_width_value(&mut self, w: i32) {
         self.width_value = w;
     }
@@ -529,6 +583,32 @@ mod tests {
         assert!(
             !tb.custom_color.is_empty(),
             "pen sub-panel hugs a colour swatch"
+        );
+        assert!(
+            tb.buttons.iter().any(|b| b.action == TbAction::Ocr),
+            "pin annotation toolbar must expose OCR"
+        );
+    }
+
+    #[test]
+    fn pin_hover_bar_has_ocr() {
+        let sel = Rect::new(0.0, 0.0, 240.0, 120.0);
+        let over = Rect::new(0.0, 0.0, 240.0, 120.0);
+        let tb = Toolbar::layout_pin_hover(sel, over);
+        let ocr = tb
+            .buttons
+            .iter()
+            .find(|b| b.action == TbAction::Ocr)
+            .expect("hover OCR");
+        assert_eq!(ocr.icon, IconKind::Ocr);
+        assert_eq!(tb.hit(ocr.rect.center()), Some(TbAction::Ocr));
+        assert!(tb.buttons.iter().any(|b| b.action == TbAction::Copy));
+        assert!(tb.buttons.iter().any(|b| b.action == TbAction::Close));
+        assert!(
+            tb.buttons
+                .iter()
+                .all(|b| !matches!(b.action, TbAction::Tool(_))),
+            "idle hover bar is actions only"
         );
     }
 
