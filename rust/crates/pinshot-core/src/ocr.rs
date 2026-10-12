@@ -6,30 +6,36 @@ use crate::geom::{Point, Rect};
 
 pub const MODEL_DIR_NAME: &str = "ocr-models";
 
-pub const DET_FILE: &str = "ch_PP-OCRv5_mobile_det.onnx";
-pub const REC_FILE: &str = "ch_PP-OCRv5_mobile_rec.onnx";
+/// RapidOCR PP-OCRv5 *server* ONNX (ModelScope v3.9.2). Better Traditional
+/// Chinese / small browser type than the mobile pair.
+pub const DET_FILE: &str = "ch_PP-OCRv5_server_det.onnx";
+pub const REC_FILE: &str = "ch_PP-OCRv5_server_rec.onnx";
 pub const CLS_FILE: &str = "ch_PP-LCNet_x0_25_textline_ori.onnx";
 pub const KEYS_FILE: &str = "ppocr_keys_v5.txt";
 
-/// RapidOCR / PaddleOCR mobile v5 ONNX. First URL is ModelScope v3.9.2
-/// (`default_models.yaml`); local dest names stay stable so existing caches hit.
+/// RapidOCR defaults: padding, max side, box_score_thresh, box_thresh, unclip.
+pub const DET_PADDING: u32 = 50;
+pub const DET_MAX_SIDE: u32 = 1920;
+pub const DET_BOX_SCORE: f32 = 0.5;
+pub const DET_BOX_THRESH: f32 = 0.3;
+pub const DET_UNCLIP: f32 = 1.6;
+
+/// RapidOCR / PaddleOCR v5 server ONNX. First URL is ModelScope v3.9.2.
 pub const DET_URLS: &[&str] = &[
-    "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv5/det/ch_PP-OCRv5_det_mobile.onnx",
-    "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.2.0/onnx/PP-OCRv5/det/ch_PP-OCRv5_mobile_det.onnx",
-    "https://huggingface.co/RapidAI/RapidOCR/resolve/main/onnx/PP-OCRv5/det/ch_PP-OCRv5_det_mobile.onnx",
+    "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv5/det/ch_PP-OCRv5_det_server.onnx",
+    "https://huggingface.co/RapidAI/RapidOCR/resolve/main/onnx/PP-OCRv5/det/ch_PP-OCRv5_det_server.onnx",
 ];
 pub const REC_URLS: &[&str] = &[
-    "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv5/rec/ch_PP-OCRv5_rec_mobile.onnx",
-    "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.2.0/onnx/PP-OCRv5/rec/ch_PP-OCRv5_mobile_rec.onnx",
-    "https://huggingface.co/RapidAI/RapidOCR/resolve/main/onnx/PP-OCRv5/rec/ch_PP-OCRv5_rec_mobile.onnx",
+    "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv5/rec/ch_PP-OCRv5_rec_server.onnx",
+    "https://huggingface.co/RapidAI/RapidOCR/resolve/main/onnx/PP-OCRv5/rec/ch_PP-OCRv5_rec_server.onnx",
 ];
 pub const CLS_URLS: &[&str] = &[
     "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv5/cls/ch_PP-LCNet_x0_25_textline_ori_cls_mobile.onnx",
-    "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv5/cls/ch_PP-LCNet_x0_25_textline_ori_cls_mobile.onnx",
+    "https://huggingface.co/RapidAI/RapidOCR/resolve/main/onnx/PP-OCRv5/cls/ch_PP-LCNet_x0_25_textline_ori_cls_mobile.onnx",
 ];
 pub const KEYS_URLS: &[&str] = &[
+    "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/paddle/PP-OCRv5/rec/ch_PP-OCRv5_rec_server/ppocrv5_dict.txt",
     "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/paddle/PP-OCRv5/rec/ch_PP-OCRv5_rec_mobile/ppocrv5_dict.txt",
-    "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.2.0/onnx/PP-OCRv5/rec/ppocrv5_dict.txt",
     "https://huggingface.co/RapidAI/RapidOCR/resolve/main/onnx/PP-OCRv5/rec/ppocrv5_dict.txt",
 ];
 

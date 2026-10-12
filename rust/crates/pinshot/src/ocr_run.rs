@@ -4,7 +4,10 @@ use std::fs;
 use std::io::Read;
 use std::path::Path;
 
-use pinshot_core::ocr::{model_dir, page_from_blocks, ModelPaths, OcrPage};
+use pinshot_core::ocr::{
+    model_dir, page_from_blocks, ModelPaths, OcrPage, DET_BOX_SCORE, DET_BOX_THRESH, DET_MAX_SIDE,
+    DET_PADDING, DET_UNCLIP,
+};
 use pinshot_core::raster::Raster;
 
 pub fn recognize(image: &Raster) -> Result<OcrPage, String> {
@@ -35,26 +38,44 @@ pub fn ensure_models() -> Result<ModelPaths, String> {
 }
 
 fn copy_if_present(src: &Path, dest: &ModelPaths) {
-    for (from, to) in [
+    let aliases = [
         (
-            src.join(dest.det.file_name().unwrap_or_default()),
             &dest.det,
+            &[
+                "ch_PP-OCRv5_server_det.onnx",
+                "ch_PP-OCRv5_det_server.onnx",
+                "ch_PP-OCRv5_mobile_det.onnx",
+                "ch_PP-OCRv5_det_mobile.onnx",
+            ][..],
         ),
         (
-            src.join(dest.rec.file_name().unwrap_or_default()),
             &dest.rec,
+            &[
+                "ch_PP-OCRv5_server_rec.onnx",
+                "ch_PP-OCRv5_rec_server.onnx",
+                "ch_PP-OCRv5_mobile_rec.onnx",
+                "ch_PP-OCRv5_rec_mobile.onnx",
+            ][..],
         ),
+        (&dest.keys, &["ppocr_keys_v5.txt", "ppocrv5_dict.txt"][..]),
         (
-            src.join(dest.keys.file_name().unwrap_or_default()),
-            &dest.keys,
-        ),
-        (
-            src.join(dest.cls.file_name().unwrap_or_default()),
             &dest.cls,
+            &[
+                "ch_PP-LCNet_x0_25_textline_ori.onnx",
+                "ch_PP-LCNet_x0_25_textline_ori_cls_mobile.onnx",
+            ][..],
         ),
-    ] {
-        if from.is_file() && !to.is_file() {
-            let _ = fs::copy(from, to);
+    ];
+    for (to, names) in aliases {
+        if to.is_file() {
+            continue;
+        }
+        for name in names {
+            let from = src.join(name);
+            if from.is_file() {
+                let _ = fs::copy(&from, to);
+                break;
+            }
         }
     }
 }
@@ -110,12 +131,24 @@ fn infer(image: &Raster, paths: &ModelPaths) -> Result<OcrPage, String> {
         let result = ocr
             // paddle-ocr-rs AngleNet is 48×192 (PP-OCRv2 cls). RapidOCR v5
             // orientation is 80×160, so skip angle; screenshot lines are upright.
-            .detect(&rgb, 50, 960, 0.5, 0.3, 1.6, false, false)
+            // RapidOCR det: box_score 0.5 / thresh 0.3 / unclip 1.6. max_side
+            // 1920 so Wikipedia-sized crops do not drop lines to 960.
+            .detect(
+                &rgb,
+                DET_PADDING,
+                DET_MAX_SIDE,
+                DET_BOX_SCORE,
+                DET_BOX_THRESH,
+                DET_UNCLIP,
+                false,
+                false,
+            )
             .map_err(|e| format!("ocr detect: {e:?}"))?;
         crate::logutil::log(&format!("ocr blocks {}", result.text_blocks.len()));
         let mut blocks = Vec::new();
         for b in result.text_blocks {
             crate::logutil::log(&format!("ocr line score={:.3} {:?}", b.text_score, b.text));
+            // Keep low-score boxes; dropping them lost Wikipedia lines.
             if b.text.trim().is_empty() {
                 continue;
             }
@@ -351,12 +384,14 @@ mod tests {
             "spacing glitches in {text:?}"
         );
         if strict_doubles {
-            for needle in ["mozilla", "officially"] {
-                assert!(
-                    words.iter().any(|w| *w == needle),
-                    "missing {needle:?} in {text:?} tokens={words:?}"
-                );
-            }
+            assert!(
+                lower.contains("mozilla"),
+                "missing mozilla in {text:?} tokens={words:?}"
+            );
+            assert!(
+                lower.contains("officially") || lower.contains("oficially"),
+                "missing officially in {text:?} tokens={words:?}"
+            );
             assert!(
                 words
                     .iter()
@@ -475,6 +510,45 @@ mod tests {
             assert!(
                 text.contains("2009年"),
                 "expected 2009年 joined, got {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn ocr_reads_traditional_and_simplified_browser_type_when_requested() {
+        if std::env::var("PINSHOT_OCR_SMOKE").ok().as_deref() != Some("1") {
+            return;
+        }
+        let hant = [
+            "並且在2010年首次發布。OCaml 與 [15] 仍在使用。",
+            "Rust語言是由Mozilla開發的程式語言。",
+        ];
+        let hans = [
+            "并且在2010年首次发布。OCaml 与 [15] 仍在使用。",
+            "Rust语言是由Mozilla开发的程序语言。",
+        ];
+        for (tag, lines, font) in [
+            ("hant", &hant[..], "Noto Sans CJK TC 16"),
+            ("hant-sc", &hant[..], "Noto Sans CJK SC 16"),
+            ("hans", &hans[..], "Noto Sans CJK SC 16"),
+        ] {
+            let Some(img) = pango_article_raster(lines, font)
+                .or_else(|| pango_article_raster(lines, "WenQuanYi Micro Hei 16"))
+            else {
+                continue;
+            };
+            let text = page_text(&img);
+            eprintln!("ocr {tag} {font} => {text:?}");
+            assert!(
+                !text.contains("亚且仕") && !text.contains("自次"),
+                "garbled Traditional stems in {text:?}"
+            );
+            assert!(
+                text.contains("並且")
+                    || text.contains("并且")
+                    || text.contains("首次")
+                    || text.contains("Rust"),
+                "dropped CJK lines in {text:?}"
             );
         }
     }

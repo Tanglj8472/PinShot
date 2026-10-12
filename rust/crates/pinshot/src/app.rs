@@ -200,6 +200,24 @@ impl App {
     }
 
     fn request_snip(&mut self, event_loop: &ActiveEventLoop, translate: bool) {
+        if self.overlay.is_some() {
+            let closing_resnip = self
+                .overlay
+                .as_ref()
+                .and_then(|o| o.peek_result())
+                .is_some_and(|r| matches!(r, OverlayResult::Resnip));
+            let closing = self
+                .overlay
+                .as_ref()
+                .is_some_and(|o| o.peek_result().is_some());
+            if !closing {
+                return;
+            }
+            self.finish_overlay(event_loop);
+            if closing_resnip {
+                return;
+            }
+        }
         if self.overlay.is_some() || self.snip_at.is_some() || self.countdown.is_some() {
             return;
         }
@@ -414,10 +432,9 @@ impl App {
                 e
             });
             match &result {
-                Ok(page) => crate::logutil::log(&format!(
-                    "ocr done {} chars",
-                    page.text.chars().count()
-                )),
+                Ok(page) => {
+                    crate::logutil::log(&format!("ocr done {} chars", page.text.chars().count()))
+                }
                 Err(e) => crate::logutil::log(&format!("ocr empty: {e}")),
             }
             let _ = proxy.send_event(AppEvent::OcrDone {
@@ -430,7 +447,7 @@ impl App {
 
     fn spawn_translate(&self, pin: winit::window::WindowId, text: String) {
         let proxy = self.proxy.clone();
-        let target = crate::translate_run::default_target().to_string();
+        let target = crate::translate_run::default_target();
         std::thread::spawn(move || {
             let result = crate::translate_run::translate(&text, &target).map_err(|e| {
                 crate::logutil::log(&format!("translate fail: {e}"));
@@ -944,15 +961,17 @@ impl ApplicationHandler<AppEvent> for App {
                 if let Some(ov) = self.overlay.as_mut() {
                     ov.handle_x11_key(keysym, mods, pressed);
                     self.finish_overlay(event_loop);
+                } else if pressed && keysym == 0xffbe {
+                    // Esc already closed the overlay; the grab loop still
+                    // saw F1 and forwarded it as X11Key. Do not drop it.
+                    self.request_snip(event_loop, false);
                 }
             }
             AppEvent::PinMenu(action) => self.apply_pin_menu(action),
-            AppEvent::Ipc(cmd) if cmd == "reload-settings" => {
-                match config::load() {
-                    Ok(cfg) => self.apply_cfg(cfg),
-                    Err(e) => crate::logutil::log(&format!("reload settings: {e}")),
-                }
-            }
+            AppEvent::Ipc(cmd) if cmd == "reload-settings" => match config::load() {
+                Ok(cfg) => self.apply_cfg(cfg),
+                Err(e) => crate::logutil::log(&format!("reload settings: {e}")),
+            },
             AppEvent::Ipc(cmd) if cmd == "raise" => {
                 if let Some(fb) = &self.fallback {
                     fb.show();
@@ -1106,10 +1125,7 @@ impl ApplicationHandler<AppEvent> for App {
                 } = &event
                 {
                     let now = Instant::now();
-                    let pt = Point::new(
-                        p.last_cursor_i32().0 as f32,
-                        p.last_cursor_i32().1 as f32,
-                    );
+                    let pt = Point::new(p.last_cursor_i32().0 as f32, p.last_cursor_i32().1 as f32);
                     if let Some((wid, t, prev)) = self.last_click {
                         if wid == id
                             && now.duration_since(t).as_millis() < 350
@@ -1209,6 +1225,7 @@ impl ApplicationHandler<AppEvent> for App {
         if let Some(ov) = &mut self.overlay {
             ov.pump_redraw();
         }
+        self.finish_overlay(event_loop);
         if self.overlay.is_some() {
             // Poll while the overlay is up so QueryPointer can adopt a
             // Button1 that XTEST / a pre-map drag never delivered to winit.

@@ -79,6 +79,9 @@ pub struct Overlay {
     /// QueryPointer sample from the Button1 rising edge. A late winit press
     /// (XGrab) must not start a text box at the drop point.
     pending_press: Option<Point>,
+    /// Last QueryPointer sample while Button1 was up. A 2-point handle drag
+    /// can skip the press pixel; this is the real corner.
+    last_idle_pointer: Option<Point>,
     wheel: WheelGate,
     confirm: Option<ConfirmAbort>,
     color_picker: Option<ColorPicker>,
@@ -169,6 +172,7 @@ impl Overlay {
             held_btn1: false,
             btn1_up_streak: 0,
             pending_press: None,
+            last_idle_pointer: None,
             wheel: WheelGate::new(),
             confirm: None,
             color_picker: None,
@@ -314,6 +318,10 @@ impl Overlay {
 
     pub fn take_result(&mut self) -> Option<OverlayResult> {
         self.result.take()
+    }
+
+    pub fn peek_result(&self) -> Option<&OverlayResult> {
+        self.result.as_ref()
     }
 
     fn bounds(&self) -> Rect {
@@ -890,16 +898,24 @@ impl Overlay {
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => {
-                let pending = self.pending_press.take();
-                // Rising-edge snapshot is only for a *new* rectangle: XGrab
-                // drops CursorMoved, so Create must start at the real press.
-                // Handle / move presses use the current point — otherwise a
-                // stale origin (~13px off) misses the handle and becomes Move.
+                let live_sel = matches!(
+                    self.sel.state,
+                    SelState::Creating | SelState::Moving | SelState::Resizing
+                );
+                // Consume the rising-edge snapshot only on press. A leftover
+                // release used to clear it so the next drag started at motion.
+                let pending = if *state == ElementState::Pressed {
+                    self.pending_press.take()
+                } else {
+                    None
+                };
                 let pt = if *state == ElementState::Pressed {
-                    if self.sel.has_sel() || pending.is_none() {
+                    if live_sel {
                         self.sync_pointer();
+                        self.cursor
+                    } else {
+                        gesture_origin(pending, self.last_idle_pointer, self.cursor)
                     }
-                    press_from_pending(self.sel.has_sel(), pending, self.cursor)
                 } else {
                     self.sync_pointer();
                     self.cursor
@@ -919,19 +935,39 @@ impl Overlay {
                             return;
                         }
                     }
+                    if live_sel {
+                        self.sync_pointer();
+                        self.apply_sel_motion(self.cursor);
+                        self.dirty = true;
+                        return;
+                    }
                     if self.sel.has_sel() && self.annot.press(self.img_pt(pt), false) {
                         self.sync_ime();
                         self.relayout_toolbar();
                         self.mark_dirty();
                         return;
                     }
-                    match self.sel.press(pt, self.bounds(), self.annot.tool.is_some()) {
+                    let mut kind = self.sel.press(pt, self.bounds(), self.annot.tool.is_some());
+                    if kind == PressKind::Ignore && self.sel.has_sel() {
+                        self.sync_pointer();
+                        kind =
+                            self.sel
+                                .press(self.cursor, self.bounds(), self.annot.tool.is_some());
+                    }
+                    match kind {
                         PressKind::Ignore => {}
                         PressKind::Move => {
                             self.sel_move0 = Some(self.sel.normalized());
                             self.toolbar = None;
                         }
                         _ => self.toolbar = None,
+                    }
+                    self.sync_pointer();
+                    if matches!(
+                        self.sel.state,
+                        SelState::Creating | SelState::Moving | SelState::Resizing
+                    ) {
+                        self.apply_sel_motion(self.cursor);
                     }
                     self.dirty = true;
                 } else if *state == ElementState::Pressed && *button == MouseButton::Middle {
@@ -1094,6 +1130,10 @@ impl Overlay {
             match key {
                 Key::Named(NamedKey::Enter) => self.confirm_yes(),
                 Key::Named(NamedKey::Escape) => self.confirm_no(),
+                Key::Named(NamedKey::F1) => {
+                    self.confirm = None;
+                    self.resnip();
+                }
                 Key::Character(c) if c.eq_ignore_ascii_case("y") => self.confirm_yes(),
                 Key::Character(c) if c.eq_ignore_ascii_case("n") => self.confirm_no(),
                 _ => {}
@@ -1423,10 +1463,11 @@ impl Overlay {
     /// recover only continues or commits a stroke that already has extent.
     ///
     /// QueryPointer often reports a single false Button1-up during XGrab.
-    /// Finishing Creating on that sample looks like a click and adopts the
-    /// hovered window (Snipaste only does that on a real click). Debounce
-    /// two consecutive ups, and never adopt hover from recover — only a
-    /// drag that already produced a rectangle, or a winit release.
+    /// Debounce two consecutive ups. A fast click that winit missed still
+    /// window-adopts after those two ups. Do not freeze the cursor at the
+    /// rising-edge snapshot while Creating/Moving/Resizing — that made
+    /// handle drags snap back to the press point. Start Create/Resize from
+    /// `last_idle_pointer` so a 2-point jump still grabs the corner.
     fn recover_pointer_drag(&mut self) {
         if self.confirm.is_some() || self.color_picker.is_some() {
             return;
@@ -1446,20 +1487,19 @@ impl Overlay {
             || self.annot.is_selecting()
             || self.annot.is_dragging_text()
             || self.annot.is_brush_live();
-        // Snapshot the first QueryPointer sample after Button1 went down.
-        // Later samples are the drag; a late winit press must use this origin.
+        let live_sel = matches!(
+            self.sel.state,
+            SelState::Creating | SelState::Moving | SelState::Resizing
+        );
+        if !down {
+            self.last_idle_pointer = Some(pt);
+        }
+        // Rising-edge snapshot: last idle pixel, not the (already moved)
+        // QueryPointer sample. Used for Create origin and 2-point handles.
         if down && !self.held_btn1 && self.pending_press.is_none() {
-            self.pending_press = Some(pt);
+            self.pending_press = self.last_idle_pointer.or(Some(pt));
         }
-        if down && !drawing {
-            if let Some(p) = self.pending_press {
-                self.cursor = p;
-            } else {
-                self.cursor = pt;
-            }
-        } else {
-            self.cursor = pt;
-        }
+        self.cursor = pt;
         let over_tb = self
             .toolbar
             .as_ref()
@@ -1488,36 +1528,68 @@ impl Overlay {
                 "recover Button1 drag ({:.0},{:.0})",
                 origin.x, origin.y
             ));
-            self.dirty = true;
-        } else if down
-            && matches!(
-                self.sel.state,
-                SelState::Creating | SelState::Moving | SelState::Resizing
-            )
-        {
             self.apply_sel_motion(pt);
             self.dirty = true;
-        } else if recover_should_commit_sel(
-            down,
-            self.btn1_up_streak,
-            self.sel.state,
-            self.sel.has_sel(),
-        ) {
+        } else if down
+            && self.sel.state == SelState::Idle
+            && self.sel.has_sel()
+            && self.annot.tool.is_none()
+            && !over_tb
+        {
+            let origin = self.pending_press.unwrap_or(pt);
+            let mut kind = self.sel.press(origin, self.bounds(), false);
+            if kind == PressKind::Ignore {
+                kind = self.sel.press(pt, self.bounds(), false);
+            }
+            match kind {
+                PressKind::Ignore => {}
+                PressKind::Move => {
+                    self.sel_move0 = Some(self.sel.normalized());
+                    self.toolbar = None;
+                    crate::logutil::log(&format!(
+                        "recover Button1 move ({:.0},{:.0})",
+                        origin.x, origin.y
+                    ));
+                }
+                PressKind::Resize(h) => {
+                    self.toolbar = None;
+                    crate::logutil::log(&format!(
+                        "recover Button1 resize {} ({:.0},{:.0})",
+                        h.name(),
+                        origin.x,
+                        origin.y
+                    ));
+                }
+                PressKind::Create => self.toolbar = None,
+            }
+            if matches!(
+                self.sel.state,
+                SelState::Creating | SelState::Moving | SelState::Resizing
+            ) {
+                self.apply_sel_motion(pt);
+            }
+            self.dirty = true;
+        } else if down && live_sel {
+            self.apply_sel_motion(pt);
+            self.dirty = true;
+        } else if recover_should_commit_sel(down, self.btn1_up_streak, self.sel.state) {
+            self.apply_sel_motion(pt);
             self.finish_sel_drag(pt);
             if self.sel.has_sel() {
                 let r = self.sel.normalized();
                 crate::logutil::log(&format!("recover release sel {:.0}x{:.0}", r.w, r.h));
             }
+            self.pending_press = None;
             self.dirty = true;
         }
-        if !down {
+        if !down && self.btn1_up_streak >= 2 && !live_sel && self.sel.state != SelState::Creating {
             self.pending_press = None;
         }
         self.held_btn1 = down;
     }
 
     pub fn next_wake(&self) -> Option<Instant> {
-        let ms = if self.annot.is_brush_live() { 8 } else { 16 };
+        let ms = 8;
         let poll = Instant::now() + Duration::from_millis(ms);
         match self.toast_until {
             Some(t) => Some(if t < poll { t } else { poll }),
@@ -1533,31 +1605,22 @@ enum RecoverStroke {
     Release,
 }
 
-/// Prefer the Button1 rising-edge snapshot. QueryPointer is only the fallback
-/// when recover has not seen the press yet (timely winit ButtonPress).
-/// Once a selection exists, ignore the snapshot so handle/move clicks use the
-/// real press point (a stale origin ~13px off misses the handle).
-fn press_from_pending(has_sel: bool, pending: Option<Point>, fallback: Point) -> Point {
-    if has_sel {
-        fallback
-    } else {
-        pending.unwrap_or(fallback)
-    }
+/// Prefer the Button1 rising-edge snapshot, then the last idle pixel, then
+/// the event point. A 2-point xdotool drag reports the drop as `fallback`.
+fn gesture_origin(pending: Option<Point>, last_idle: Option<Point>, fallback: Point) -> Point {
+    pending.or(last_idle).unwrap_or(fallback)
 }
 
-/// Recover must not treat a click-sized Creating as a window adopt: Snipaste
-/// window-detect is click-only, and a false QueryPointer up would snap the
-/// whole window. Two consecutive ups, and only a drag that already has a rect
-/// (or move/resize), may commit from recover.
-fn recover_should_commit_sel(down: bool, up_streak: u8, state: SelState, has_sel: bool) -> bool {
+/// Two consecutive QueryPointer ups commit Creating (window-adopt if the
+/// span is a click), Moving, and Resizing. A single false up is ignored.
+fn recover_should_commit_sel(down: bool, up_streak: u8, state: SelState) -> bool {
     if down || up_streak < 2 {
         return false;
     }
-    match state {
-        SelState::Moving | SelState::Resizing => true,
-        SelState::Creating => has_sel,
-        _ => false,
-    }
+    matches!(
+        state,
+        SelState::Creating | SelState::Moving | SelState::Resizing
+    )
 }
 
 /// Recover continues a live stroke; it never starts one (see `recover_pointer_drag`).
@@ -1656,7 +1719,7 @@ fn keysym_to_winit(keysym: u32) -> Option<(Key, Option<String>)> {
 mod keysym_tests {
     use super::keysym_to_winit;
     use super::{
-        annot_stroke_extent, press_from_pending, recover_should_commit_sel, recover_stroke_action,
+        annot_stroke_extent, gesture_origin, recover_should_commit_sel, recover_stroke_action,
         RecoverStroke,
     };
     use pinshot_core::annotation::{Annotator, Tool};
@@ -1721,48 +1784,25 @@ mod keysym_tests {
     fn late_press_uses_rising_edge_not_drop_point() {
         let origin = Point::new(40.0, 80.0);
         let drop = Point::new(120.0, 140.0);
-        assert_eq!(press_from_pending(false, Some(origin), drop), origin);
-        assert_eq!(press_from_pending(false, None, drop), drop);
+        assert_eq!(gesture_origin(Some(origin), None, drop), origin);
+        assert_eq!(gesture_origin(None, Some(origin), drop), origin);
+        assert_eq!(gesture_origin(None, None, drop), drop);
     }
 
     #[test]
-    fn handle_press_ignores_pending_origin() {
-        let origin = Point::new(40.0, 80.0);
-        let handle = Point::new(1900.0, 1060.0);
-        assert_eq!(press_from_pending(true, Some(origin), handle), handle);
+    fn two_point_handle_uses_idle_pixel_not_drop() {
+        let handle = Point::new(300.0, 200.0);
+        let drop = Point::new(380.0, 250.0);
+        assert_eq!(gesture_origin(None, Some(handle), drop), handle);
+        assert_eq!(gesture_origin(Some(handle), Some(drop), drop), handle);
     }
 
     #[test]
     fn recover_does_not_commit_click_or_single_up() {
-        assert!(!recover_should_commit_sel(
-            false,
-            1,
-            SelState::Creating,
-            false
-        ));
-        assert!(!recover_should_commit_sel(
-            false,
-            2,
-            SelState::Creating,
-            false
-        ));
-        assert!(recover_should_commit_sel(
-            false,
-            2,
-            SelState::Creating,
-            true
-        ));
-        assert!(recover_should_commit_sel(
-            false,
-            2,
-            SelState::Resizing,
-            true
-        ));
-        assert!(!recover_should_commit_sel(
-            true,
-            2,
-            SelState::Creating,
-            true
-        ));
+        assert!(!recover_should_commit_sel(false, 1, SelState::Creating));
+        assert!(recover_should_commit_sel(false, 2, SelState::Creating));
+        assert!(recover_should_commit_sel(false, 2, SelState::Resizing));
+        assert!(!recover_should_commit_sel(true, 2, SelState::Creating));
+        assert!(!recover_should_commit_sel(false, 2, SelState::Selected));
     }
 }

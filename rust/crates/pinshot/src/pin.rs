@@ -50,7 +50,10 @@ const ID_Z150: usize = 14;
 const ID_Z200: usize = 15;
 const ID_Z400: usize = 16;
 const ID_TOOLBAR: usize = 5;
-const OCR_STRIP_H: u32 = 40;
+const OCR_STRIP_MIN_H: u32 = 40;
+const OCR_STRIP_LINE: f32 = 18.0;
+const OCR_STRIP_PAD: f32 = 8.0;
+const OCR_STRIP_MAX_H: u32 = 160;
 
 struct OcrOverlay {
     page: OcrPage,
@@ -486,9 +489,30 @@ impl PinWin {
         (w, h)
     }
 
+    fn strip_lines(&self) -> Vec<String> {
+        let Some(ocr) = &self.ocr else {
+            return Vec::new();
+        };
+        let msg = if ocr.translating {
+            tr("Translating…")
+        } else {
+            ocr.translation.clone().unwrap_or_default()
+        };
+        if msg.is_empty() && !ocr.translating {
+            return Vec::new();
+        }
+        let (iw, _) = self.img_px();
+        let max_w = (iw as f32 - OCR_STRIP_PAD * 2.0).max(24.0);
+        pinshot_core::font::wrap_chrome(&msg, 14.0, max_w)
+    }
+
     fn strip_h(&self) -> u32 {
         match &self.ocr {
-            Some(o) if o.translation.is_some() || o.translating => OCR_STRIP_H,
+            Some(o) if o.translation.is_some() || o.translating => {
+                let n = self.strip_lines().len().max(1) as f32;
+                let h = (OCR_STRIP_PAD * 2.0 + n * OCR_STRIP_LINE).ceil() as u32;
+                h.clamp(OCR_STRIP_MIN_H, OCR_STRIP_MAX_H)
+            }
             _ => 0,
         }
     }
@@ -1436,20 +1460,25 @@ impl PinWin {
             if let Some(sr) = self.strip_rect() {
                 fill_rect(&mut pm, sr, Rgba::rgba(252, 252, 253, 230));
                 stroke_rect(&mut pm, sr, Rgba::rgba(206, 208, 214, 255), 1.0);
-                let msg = if ocr.translating {
-                    tr("Translating…")
-                } else {
-                    ocr.translation.clone().unwrap_or_default()
-                };
-                pinshot_core::font::blit_pixmap(
-                    &mut pm,
-                    &msg,
-                    sr.x + 8.0,
-                    sr.y + 8.0,
-                    14.0,
-                    Rgba::rgb(36, 36, 40),
-                    false,
-                );
+                let lines = self.strip_lines();
+                for (i, line) in lines.iter().enumerate() {
+                    if line.is_empty() {
+                        continue;
+                    }
+                    let y = sr.y + OCR_STRIP_PAD + i as f32 * OCR_STRIP_LINE;
+                    if y + OCR_STRIP_LINE > sr.bottom() + 1.0 {
+                        break;
+                    }
+                    pinshot_core::font::blit_pixmap(
+                        &mut pm,
+                        line,
+                        sr.x + OCR_STRIP_PAD,
+                        y,
+                        14.0,
+                        Rgba::rgb(36, 36, 40),
+                        false,
+                    );
+                }
             }
         }
         if self.annotating {

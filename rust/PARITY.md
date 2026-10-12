@@ -164,8 +164,8 @@ window but styles it like Snipaste prefs (egui, CJK, always-on-top).
 
 | Python | Rust | Status |
 |---|---|---|
-| `translation.recognize` RapidOCR | Linux always / `--features ocr` paddle-ocr-rs PP-OCRv5 | done | In-place on the pin: drag-select text, C copies. CJK wrap spaces collapsed (`編譯器`, `2009年`); wrapped CJK lines share `line_i`. No result window, Ctrl+A, or region boxes. |
-| Edge `translatetext` | `translate_run.rs` | done | Overlay F5 pins + OCR + a 40px translation strip. |
+| `translation.recognize` RapidOCR | Linux always / `--features ocr` paddle-ocr-rs PP-OCRv5 **server** | done | In-place on the pin: drag-select text, C copies. Server det+rec + v5 dict; RapidOCR box_score 0.5 / thresh 0.3 / unclip 1.6; max_side 1920 so lines are not dropped. CJK wrap spaces collapsed. |
+| Edge `translatetext` | `translate_run.rs` | done | Overlay F5 pins + OCR + a wrapping translation strip. Target follows UI language; if source is already that language, swap to English (or zh-Hans). |
 | `ResultWindow` above pins | in-place pin overlay | done | `--ocr-window` / egui result window removed. |
 | `selection_text.send_copy` | `win32::send_ctrl_c` | done (Windows) / impossible (Linux; Python same) |
 

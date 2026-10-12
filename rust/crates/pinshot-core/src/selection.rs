@@ -60,8 +60,16 @@ impl Selection {
 
     /// Left press. `tool_active` means the annotator should own the click.
     pub fn press(&mut self, pt: Point, bounds: Rect, tool_active: bool) -> PressKind {
+        // A recover-started gesture must not be restarted by a late winit
+        // press at the (already moved) cursor — that drops the handle.
         if self.state == SelState::Creating {
             return PressKind::Create;
+        }
+        if self.state == SelState::Moving {
+            return PressKind::Move;
+        }
+        if self.state == SelState::Resizing {
+            return PressKind::Resize(self.handle.unwrap_or(Handle::Br));
         }
         if self.has_sel() && !tool_active {
             if let Some(h) = hit_sel_handle(self.normalized(), pt) {
@@ -325,6 +333,44 @@ mod tests {
             "corner drag must resize, got {r:?} before={before:?}"
         );
         assert!((r.x - before.x).abs() < 1.0 && (r.y - before.y).abs() < 1.0);
+    }
+
+    #[test]
+    fn two_point_handle_drag_resizes() {
+        let mut s = Selection::new();
+        s.set_rect(Rect::new(100.0, 80.0, 200.0, 120.0), bounds());
+        let br = s.normalized().bottom_right();
+        assert_eq!(
+            s.press(Point::new(br.x + 1.0, br.y + 1.0), bounds(), false),
+            PressKind::Resize(Handle::Br)
+        );
+        s.motion(Point::new(br.x + 80.0, br.y + 50.0), bounds());
+        s.release(Point::new(br.x + 80.0, br.y + 50.0), Rect::EMPTY, bounds());
+        let r = s.normalized();
+        assert!(
+            (r.w - 280.0).abs() < 2.0 && (r.h - 170.0).abs() < 2.0,
+            "2-point handle drag must apply the full delta, got {r:?}"
+        );
+    }
+
+    #[test]
+    fn late_press_does_not_restart_live_resize() {
+        let mut s = Selection::new();
+        s.set_rect(Rect::new(100.0, 80.0, 200.0, 120.0), bounds());
+        let br = s.normalized().bottom_right();
+        assert_eq!(
+            s.press(Point::new(br.x, br.y), bounds(), false),
+            PressKind::Resize(Handle::Br)
+        );
+        let far = Point::new(br.x + 80.0, br.y + 50.0);
+        assert_eq!(s.press(far, bounds(), false), PressKind::Resize(Handle::Br));
+        s.motion(far, bounds());
+        s.release(far, Rect::EMPTY, bounds());
+        let r = s.normalized();
+        assert!(
+            (r.w - 280.0).abs() < 2.0 && (r.h - 170.0).abs() < 2.0,
+            "late press at the drop point must not steal the handle, got {r:?}"
+        );
     }
 
     #[test]

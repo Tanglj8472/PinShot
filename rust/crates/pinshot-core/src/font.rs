@@ -706,6 +706,87 @@ pub fn measure_chrome(text: &str, px: f32) -> (f32, f32) {
     measure_picked(text, px, pick_chrome)
 }
 
+fn is_cjk_wrap(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{3400}'..='\u{4DBF}'
+            | '\u{4E00}'..='\u{9FFF}'
+            | '\u{F900}'..='\u{FAFF}'
+            | '\u{3000}'..='\u{303F}'
+            | '\u{3040}'..='\u{30FF}'
+            | '\u{FF00}'..='\u{FFEF}'
+    )
+}
+
+/// Wrap chrome text to `max_w` (CJK per character, Latin on spaces).
+pub fn wrap_chrome(text: &str, px: f32, max_w: f32) -> Vec<String> {
+    let max_w = max_w.max(px);
+    let mut out = Vec::new();
+    for para in text.split('\n') {
+        if para.is_empty() {
+            out.push(String::new());
+            continue;
+        }
+        let mut line = String::new();
+        let mut line_w = 0.0_f32;
+        let mut word = String::new();
+        let mut word_w = 0.0_f32;
+        let flush_word = |line: &mut String,
+                          line_w: &mut f32,
+                          word: &mut String,
+                          word_w: &mut f32,
+                          out: &mut Vec<String>| {
+            if word.is_empty() {
+                return;
+            }
+            if *line_w > 0.0 && *line_w + *word_w > max_w {
+                out.push(std::mem::take(line));
+                *line_w = 0.0;
+            }
+            line.push_str(word);
+            *line_w += *word_w;
+            word.clear();
+            *word_w = 0.0;
+        };
+        for ch in para.chars() {
+            let cw = measure_chrome(&ch.to_string(), px).0.max(1.0);
+            if is_cjk_wrap(ch) {
+                flush_word(&mut line, &mut line_w, &mut word, &mut word_w, &mut out);
+                if line_w > 0.0 && line_w + cw > max_w {
+                    out.push(std::mem::take(&mut line));
+                    line_w = 0.0;
+                }
+                line.push(ch);
+                line_w += cw;
+            } else if ch.is_whitespace() {
+                flush_word(&mut line, &mut line_w, &mut word, &mut word_w, &mut out);
+                if line_w > 0.0 && line_w + cw > max_w {
+                    out.push(std::mem::take(&mut line));
+                    line_w = 0.0;
+                } else {
+                    line.push(ch);
+                    line_w += cw;
+                }
+            } else {
+                if !word.is_empty() && line_w == 0.0 && word_w + cw > max_w {
+                    out.push(std::mem::take(&mut word));
+                    word_w = 0.0;
+                }
+                word.push(ch);
+                word_w += cw;
+            }
+        }
+        flush_word(&mut line, &mut line_w, &mut word, &mut word_w, &mut out);
+        if !line.is_empty() || out.is_empty() {
+            out.push(line);
+        }
+    }
+    if out.is_empty() {
+        out.push(String::new());
+    }
+    out
+}
+
 /// Straight-alpha source-over. Destination may be transparent (temp glyph
 /// buffers) or already opaque (cards painted in-place).
 fn blend(dst: &mut [u8], i: usize, r: u8, g: u8, b: u8, a: u8) {
@@ -1126,6 +1207,24 @@ mod tests {
         let (w, h) = measure("Hi", 20.0);
         assert!(w > 4.0);
         assert!(h >= 20.0);
+    }
+
+    #[test]
+    fn wrap_chrome_breaks_long_cjk_and_latin() {
+        let lines = wrap_chrome(
+            "並且在2010年首次發布編譯器來自該專案並且繼續發展。",
+            14.0,
+            120.0,
+        );
+        assert!(lines.len() >= 2, "expected wrap, got {lines:?}");
+        let joined: String = lines.concat();
+        assert!(joined.contains("並且在") && joined.contains("編譯器"));
+        let en = wrap_chrome(
+            "In 2009 Mozilla officially sponsored the project with full-time engineers.",
+            14.0,
+            160.0,
+        );
+        assert!(en.len() >= 2, "expected English wrap, got {en:?}");
     }
 
     #[test]
