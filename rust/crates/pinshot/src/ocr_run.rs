@@ -147,13 +147,46 @@ fn infer(image: &Raster, paths: &ModelPaths) -> Result<String, String> {
                 crop = crop.rotate90(2);
             }
         }
-        match rec_line(&mut rec, &crop, &keys) {
-            Ok(text) if !text.trim().is_empty() => {
-                crate::logutil::log(&format!("ocr line {:?}", text));
-                parts.push((b, text));
+        let words = split_word_crops(&crop);
+        crate::logutil::log(&format!("ocr box words {}", words.len()));
+        let full = rec_line(&mut rec, &crop, &keys).unwrap_or_default();
+        let mut word_parts: Vec<(TextBox, String)> = Vec::new();
+        if words.len() > 1 {
+            for (dx, word) in words {
+                if let Ok(text) = rec_line(&mut rec, &word, &keys) {
+                    if text.trim().is_empty() {
+                        continue;
+                    }
+                    word_parts.push((
+                        TextBox {
+                            x: b.x.saturating_add(dx),
+                            y: b.y,
+                            w: word.width,
+                            h: word.height,
+                            score: b.score,
+                        },
+                        text,
+                    ));
+                }
             }
-            Ok(_) => {}
-            Err(e) => crate::logutil::log(&format!("ocr rec: {e}")),
+        }
+        let word_join = word_parts
+            .iter()
+            .map(|(_, t)| t.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let use_words = !word_parts.is_empty()
+            && word_join.contains(' ')
+            && compact_ocr(&word_join).chars().count() * 10
+                >= compact_ocr(&full).chars().count() * 7;
+        if use_words {
+            crate::logutil::log(&format!("ocr words {:?}", word_join));
+            parts.extend(word_parts);
+        } else if !full.trim().is_empty() {
+            crate::logutil::log(&format!("ocr line {:?}", full));
+            parts.push((b, full));
+        } else {
+            crate::logutil::log("ocr rec empty");
         }
     }
     let joined = join_ocr_parts(&parts);
@@ -430,6 +463,102 @@ fn pack_rec_bgr(crop: &Raster) -> Result<ort::value::Value, String> {
 }
 
 #[cfg(any(feature = "ocr", unix))]
+fn compact_ocr(s: &str) -> String {
+    s.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+/// Split a line crop on wide whitespace columns so English words rec separately.
+#[cfg(any(feature = "ocr", unix))]
+fn split_word_crops(crop: &Raster) -> Vec<(u32, Raster)> {
+    let w = crop.width;
+    let h = crop.height;
+    if w < 16 || h < 8 {
+        return vec![(0, crop.clone())];
+    }
+    let mut ink = vec![0u32; w as usize];
+    for x in 0..w {
+        for y in 0..h {
+            let Some(c) = crop.get(x as i32, y as i32) else {
+                continue;
+            };
+            if (c.r as u16) + (c.g as u16) + (c.b as u16) < 620 {
+                ink[x as usize] += 1;
+            }
+        }
+    }
+    let empty_max = (h / 10).max(1);
+    let mut ink_top = h;
+    let mut ink_bot = 0u32;
+    for x in 0..w {
+        if ink[x as usize] <= empty_max {
+            continue;
+        }
+        for y in 0..h {
+            let Some(c) = crop.get(x as i32, y as i32) else {
+                continue;
+            };
+            if (c.r as u16) + (c.g as u16) + (c.b as u16) < 620 {
+                ink_top = ink_top.min(y);
+                ink_bot = ink_bot.max(y + 1);
+            }
+        }
+    }
+    let ink_h = ink_bot.saturating_sub(ink_top).max(8);
+    let mut raw: Vec<(u32, u32)> = Vec::new();
+    let mut x = 0u32;
+    while x < w {
+        while x < w && ink[x as usize] <= empty_max {
+            x += 1;
+        }
+        if x >= w {
+            break;
+        }
+        let start = x;
+        while x < w && ink[x as usize] > empty_max {
+            x += 1;
+        }
+        if x > start + 1 {
+            raw.push((start, x));
+        }
+    }
+    if raw.is_empty() {
+        return vec![(0, crop.clone())];
+    }
+    let min_gap = ((ink_h as f32 * 0.28).round() as u32).clamp(4, 28);
+    let mut spans: Vec<(u32, u32)> = Vec::new();
+    for (s, e) in raw {
+        if let Some(last) = spans.last_mut() {
+            if s.saturating_sub(last.1) < min_gap {
+                last.1 = e;
+                continue;
+            }
+        }
+        spans.push((s, e));
+    }
+    if spans.len() <= 1 {
+        return vec![(0, crop.clone())];
+    }
+    spans
+        .into_iter()
+        .filter_map(|(x0, x1)| {
+            let pad = 1u32;
+            let sx = x0.saturating_sub(pad);
+            let ex = (x1 + pad).min(w);
+            if ex <= sx + 2 {
+                return None;
+            }
+            let piece = crop.crop(pinshot_core::geom::Rect::from_i32(
+                sx as i32,
+                0,
+                (ex - sx) as i32,
+                h as i32,
+            ));
+            Some((sx, piece))
+        })
+        .collect()
+}
+
+#[cfg(any(feature = "ocr", unix))]
 fn cls_upside_down(session: &mut ort::session::Session, crop: &Raster) -> Result<bool, String> {
     let t = pack_rec(crop)?;
     let outputs = session.run(ort::inputs![t]).map_err(|e| e.to_string())?;
@@ -485,6 +614,38 @@ mod tests {
         assert!(
             has_en && has_zh,
             "expected English + Chinese, got {text:?}"
+        );
+    }
+
+    #[test]
+    fn ocr_keeps_english_word_spaces_when_requested() {
+        if std::env::var("PINSHOT_OCR_SMOKE").ok().as_deref() != Some("1") {
+            return;
+        }
+        let mut img = Raster::new(900, 120);
+        img.fill(Rgba::WHITE);
+        font::blit_rgba_chrome(
+            &mut img.pixels,
+            img.width,
+            img.width,
+            img.height,
+            "In 2009, Mozilla officially sponsored the project.",
+            16.0,
+            36.0,
+            28.0,
+            Rgba::BLACK,
+        );
+        img.force_opaque();
+        let text = recognize(&img).unwrap_or_else(|e| panic!("ocr: {e}"));
+        eprintln!("ocr space smoke => {text:?}");
+        let lower = text.to_ascii_lowercase();
+        assert!(
+            lower.contains("mozilla") || lower.contains("sponsored") || lower.contains("project"),
+            "expected English words, got {text:?}"
+        );
+        assert!(
+            text.contains(' '),
+            "expected ASCII spaces between English words, got {text:?}"
         );
     }
 }

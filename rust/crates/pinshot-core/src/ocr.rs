@@ -223,23 +223,79 @@ pub fn ctc_greedy(indices: &[usize], alphabet: &[String]) -> String {
 
 /// `blank` is the CTC blank class. When blank is 0, alphabet[i-1] is the glyph
 /// (PP-OCR). When blank is last, alphabet[i] is the glyph.
+///
+/// Chinese mobile rec rarely emits the space class. Word gaps are a *longer*
+/// CTC blank run than the inter-letter blanks; insert ASCII space there.
 pub fn ctc_greedy_blank(indices: &[usize], alphabet: &[String], blank: usize) -> String {
+    let glyphs = ctc_glyphs(indices, blank);
+    let mut gaps: Vec<usize> = glyphs.iter().skip(1).map(|g| g.blanks_before).collect();
+    gaps.sort_unstable();
+    let median = if gaps.is_empty() {
+        0
+    } else {
+        gaps[gaps.len() / 2]
+    };
+    // Word gap: clearly wider than typical letter spacing.
+    let word_gap = (median * 2 + 2).max(4);
     let mut out = String::new();
+    for (n, g) in glyphs.iter().enumerate() {
+        if n > 0 && g.blanks_before >= word_gap && !out.ends_with(' ') {
+            out.push(' ');
+        }
+        let ch = if blank == 0 {
+            alphabet.get(g.class.saturating_sub(1))
+        } else {
+            alphabet.get(g.class)
+        };
+        if let Some(ch) = ch {
+            if ch == " " && out.ends_with(' ') {
+                continue;
+            }
+            out.push_str(ch);
+        }
+    }
+    out
+}
+
+struct CtcGlyph {
+    class: usize,
+    blanks_before: usize,
+}
+
+pub fn ctc_gap_stats(indices: &[usize], blank: usize) -> (usize, usize, usize, usize) {
+    let glyphs = ctc_glyphs(indices, blank);
+    let gaps: Vec<usize> = glyphs.iter().skip(1).map(|g| g.blanks_before).collect();
+    let min = gaps.iter().copied().min().unwrap_or(0);
+    let max = gaps.iter().copied().max().unwrap_or(0);
+    let mut sorted = gaps;
+    sorted.sort_unstable();
+    let med = if sorted.is_empty() {
+        0
+    } else {
+        sorted[sorted.len() / 2]
+    };
+    (glyphs.len(), min, med, max)
+}
+
+fn ctc_glyphs(indices: &[usize], blank: usize) -> Vec<CtcGlyph> {
+    let mut out = Vec::new();
     let mut prev = usize::MAX;
+    let mut blanks = 0usize;
     for &i in indices {
-        if i == blank || i == prev {
+        if i == blank {
+            blanks += 1;
             prev = i;
             continue;
         }
-        prev = i;
-        let ch = if blank == 0 {
-            alphabet.get(i.saturating_sub(1))
-        } else {
-            alphabet.get(i)
-        };
-        if let Some(ch) = ch {
-            out.push_str(ch);
+        if i == prev {
+            continue;
         }
+        out.push(CtcGlyph {
+            class: i,
+            blanks_before: blanks,
+        });
+        prev = i;
+        blanks = 0;
     }
     out
 }
@@ -250,7 +306,7 @@ pub fn load_keys(text: &str) -> Vec<String> {
     text.lines()
         .map(|l| {
             let l = l.trim_end_matches('\r');
-            if l.is_empty() {
+            if l.is_empty() || l == "\u{3000}" || l == "\u{00a0}" {
                 " ".to_string()
             } else {
                 l.to_string()
@@ -308,6 +364,17 @@ mod tests {
     }
 
     #[test]
+    fn ctc_inserts_space_on_blank_runs() {
+        let alpha = vec!["I".into(), "n".into(), "2".into(), "0".into(), "9".into()];
+        // In ··· 2009  (two+ blanks between words)
+        let idx = [0, 1, 2, 0, 0, 0, 0, 3, 4, 0, 4, 5];
+        assert_eq!(ctc_greedy(&idx, &alpha), "In 2009");
+        // CJK with a single blank between glyphs stays unspaced.
+        let zh = vec!["你".into(), "好".into()];
+        assert_eq!(ctc_greedy(&[0, 1, 0, 2, 0], &zh), "你好");
+    }
+
+    #[test]
     fn model_paths_under_data() {
         let p = ModelPaths::in_dir("/tmp/ocr-models");
         assert!(p.det.ends_with(DET_FILE));
@@ -326,6 +393,9 @@ mod tests {
         assert_eq!(keys[1], "你");
         assert_eq!(keys[3], " ");
         assert_eq!(keys[4], "A");
+        let ideo = load_keys("\u{3000}\n你\n");
+        assert_eq!(ideo[0], " ");
+        assert_eq!(ideo[1], "你");
     }
 
     #[test]
