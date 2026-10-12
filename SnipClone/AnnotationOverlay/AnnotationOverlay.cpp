@@ -60,6 +60,7 @@ bool AnnotationOverlay::Start(HINSTANCE instance, HWND owner, CaptureResult crop
 
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
+    wc.style = CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS; // A05: text double-click re-edit
     wc.lpfnWndProc = StaticWndProc;
     wc.hInstance = instance;
     wc.hCursor = LoadCursorW(nullptr, IDC_CROSS);
@@ -108,6 +109,7 @@ bool AnnotationOverlay::Start(HINSTANCE instance, HWND owner, CaptureResult crop
     });
     // Start in Select: drag empty interior moves crop; pick a draw tool to annotate.
     m_ann.SetTool(ToolKind::Select);
+    m_ann.SetViewport(m_base.screenRect);
 
     ShowWindow(m_hwnd, SW_SHOW);
     SetForegroundWindow(m_hwnd);
@@ -292,9 +294,8 @@ LRESULT AnnotationOverlay::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             return 0;
         }
 
-        // Select tool: hit annotation (or its handles) → move/resize shape;
-        // empty interior → move the crop rect (Snipaste: no-draw-tool moves selection).
-        if (m_ann.Tool() == ToolKind::Select && !m_freeze.Empty())
+        // Select / None: hit annotation → move/resize; empty → move crop (A06).
+        if (IsSelectLikeTool() && !m_freeze.Empty())
         {
             const int sel = m_ann.SelectedIndex();
             const bool onHandle = sel >= 0 && m_ann.HitResizeHandle(sel, pt) > 0;
@@ -308,6 +309,11 @@ LRESULT AnnotationOverlay::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
                 m_cropPreviewScreen = m_base.screenRect;
                 UpdateCropCursor(CropHit::Body);
                 return 0;
+            }
+            // None maps to Select for object interaction.
+            if (m_ann.Tool() == ToolKind::None)
+            {
+                m_ann.SetTool(ToolKind::Select);
             }
         }
 
@@ -416,12 +422,12 @@ LRESULT AnnotationOverlay::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         }
         if (wParam == 'Z' && (GetKeyState(VK_CONTROL) & 0x8000))
         {
-            m_ann.Undo();
+            SessionUndo();
             return 0;
         }
         if (wParam == 'Y' && (GetKeyState(VK_CONTROL) & 0x8000))
         {
-            m_ann.Redo();
+            SessionRedo();
             return 0;
         }
         if (wParam == 'C' && (GetKeyState(VK_CONTROL) & 0x8000))
@@ -553,10 +559,10 @@ void AnnotationOverlay::OnToolbarAction(ToolbarAction action, ToolKind /*tool*/)
         {
             m_textEditor->Close(false);
         }
-        m_ann.Undo();
+        SessionUndo();
         break;
     case ToolbarAction::Redo:
-        m_ann.Redo();
+        SessionRedo();
         break;
     case ToolbarAction::WidthDec:
         if (m_ann.Tool() == ToolKind::Text)
@@ -697,7 +703,7 @@ void AnnotationOverlay::DoCopy()
 
 void AnnotationOverlay::DoSave()
 {
-    const auto settings = AppSettings::Load();
+    auto& settings = LiveSettings();
     auto path = ImageUtil::BrowseSavePng(m_hwnd, settings.outputDir);
     if (path.empty())
     {
@@ -711,13 +717,14 @@ void AnnotationOverlay::DoSave()
     }
     if (ImageUtil::SavePng(composed, path))
     {
-        // Remember folder for next save.
-        AppSettings updated = settings;
         const auto slash = path.find_last_of(L"\\/");
         if (slash != std::wstring::npos)
         {
-            updated.outputDir = path.substr(0, slash);
-            updated.Save();
+            settings.outputDir = path.substr(0, slash);
+            if (!settings.Save())
+            {
+                MessageBoxW(m_hwnd, L"图片已保存，但写入设置失败。", L"SnipClone", MB_ICONWARNING | MB_OK);
+            }
         }
         s_lastExport = std::move(composed);
         s_lastOrigin = ImageOrigin(m_base.screenRect);
@@ -807,6 +814,92 @@ void AnnotationOverlay::UpdateCropCursor(CropHit hit)
     SetCursor(LoadCursorW(nullptr, id));
 }
 
+bool AnnotationOverlay::IsSelectLikeTool() const
+{
+    const ToolKind t = m_ann.Tool();
+    return t == ToolKind::Select || t == ToolKind::None;
+}
+
+void AnnotationOverlay::SessionUndo()
+{
+    RECT crop{};
+    bool hasCrop = false;
+    if (!m_ann.Undo(&crop, &hasCrop))
+    {
+        return;
+    }
+    if (hasCrop)
+    {
+        ApplyCropFromHistory(crop);
+    }
+    if (m_toolbar)
+    {
+        m_toolbar->SyncFromAnnotator();
+    }
+}
+
+void AnnotationOverlay::SessionRedo()
+{
+    RECT crop{};
+    bool hasCrop = false;
+    if (!m_ann.Redo(&crop, &hasCrop))
+    {
+        return;
+    }
+    if (hasCrop)
+    {
+        ApplyCropFromHistory(crop);
+    }
+    if (m_toolbar)
+    {
+        m_toolbar->SyncFromAnnotator();
+    }
+}
+
+bool AnnotationOverlay::ApplyCropFromHistory(RECT cropScreen)
+{
+    if (m_freeze.Empty())
+    {
+        return false;
+    }
+    cropScreen.left = (std::max)(cropScreen.left, m_freeze.screenRect.left);
+    cropScreen.top = (std::max)(cropScreen.top, m_freeze.screenRect.top);
+    cropScreen.right = (std::min)(cropScreen.right, m_freeze.screenRect.right);
+    cropScreen.bottom = (std::min)(cropScreen.bottom, m_freeze.screenRect.bottom);
+    if (cropScreen.right - cropScreen.left < 8 || cropScreen.bottom - cropScreen.top < 8)
+    {
+        return false;
+    }
+
+    if (cropScreen.left == m_base.screenRect.left && cropScreen.top == m_base.screenRect.top &&
+        cropScreen.right == m_base.screenRect.right && cropScreen.bottom == m_base.screenRect.bottom)
+    {
+        m_ann.SetViewport(m_base.screenRect);
+        Present();
+        return true;
+    }
+
+    auto cropped = m_freeze.CropToScreenRect(cropScreen);
+    if (cropped.Empty())
+    {
+        return false;
+    }
+    // Shapes already restored by history; only swap the viewport bitmap.
+    m_base = std::move(cropped);
+    m_ann.SetViewport(m_base.screenRect);
+    ReleaseSurface();
+    if (!EnsureSurface())
+    {
+        return false;
+    }
+    if (m_toolbar)
+    {
+        m_toolbar->PlaceBelow(m_base.screenRect);
+    }
+    Present();
+    return true;
+}
+
 bool AnnotationOverlay::CommitCropRect(RECT newScreenRect)
 {
     if (m_freeze.Empty())
@@ -839,12 +932,13 @@ bool AnnotationOverlay::CommitCropRect(RECT newScreenRect)
 
     const float dx = static_cast<float>(cropped.screenRect.left - m_base.screenRect.left);
     const float dy = static_cast<float>(cropped.screenRect.top - m_base.screenRect.top);
-    // Shapes stay at stable screen positions: compensate crop-origin shift only.
-    // Outside the new crop is clipped while drawing; expanding the crop reveals them again.
+    // A01: push document history with current viewport, then remap shapes.
     m_ann.Finish();
+    m_ann.SetViewport(m_base.screenRect);
     m_ann.RemapForCrop(-dx, -dy);
 
     m_base = std::move(cropped);
+    m_ann.SetViewport(m_base.screenRect);
     ReleaseSurface();
     if (!EnsureSurface())
     {

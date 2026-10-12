@@ -359,7 +359,8 @@ LRESULT Toolbar::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         {
             if (b->action == ToolbarAction::SetTool && m_ann)
             {
-                m_ann->SetTool(m_ann->Tool() == b->tool ? ToolKind::None : b->tool);
+                // A06: toggling off a draw tool returns to Select (crop-move / object edit), not None.
+                m_ann->SetTool(m_ann->Tool() == b->tool ? ToolKind::Select : b->tool);
                 SyncFromAnnotator();
             }
             if (m_onAction)

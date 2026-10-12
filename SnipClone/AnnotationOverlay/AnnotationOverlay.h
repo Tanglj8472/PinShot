@@ -66,8 +66,13 @@ private:
     CropHit HitCropHandle(POINT client) const;
     void ApplyCropDrag(POINT client);
     bool CommitCropRect(RECT newScreenRect);
+    // Restore viewport from history without pushing undo (shapes already restored).
+    bool ApplyCropFromHistory(RECT cropScreen);
+    void SessionUndo();
+    void SessionRedo();
     void PaintCropChrome();
     void UpdateCropCursor(CropHit hit);
+    bool IsSelectLikeTool() const;
 
     static constexpr UINT WM_SNIP_CLOSE_SELF = WM_APP + 0x60;
 

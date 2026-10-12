@@ -98,9 +98,19 @@ void DrawStack::Notify()
     }
 }
 
+void DrawStack::SetViewport(RECT cropScreen)
+{
+    m_viewport = cropScreen;
+    m_viewportBound = true;
+}
+
 void DrawStack::PushUndoSnapshot()
 {
-    m_undo.push_back(m_shapes);
+    HistoryFrame frame;
+    frame.shapes = m_shapes;
+    frame.crop = m_viewport;
+    frame.hasCrop = m_viewportBound;
+    m_undo.push_back(std::move(frame));
     if (m_undo.size() > 50)
     {
         m_undo.erase(m_undo.begin());
@@ -352,11 +362,7 @@ void DrawStack::UpdateText(int index, const std::wstring& text, const DrawStyle*
 void DrawStack::RemapForCrop(float dx, float dy)
 {
     // Keep annotations at stable screen positions: only compensate crop origin shift.
-    // Clipping to the visible crop is the renderer's job (D2D RT bounds).
-    if (dx == 0.f && dy == 0.f)
-    {
-        return;
-    }
+    // Always push history (A01): edge-only crop (dx=dy=0) must still be undoable with viewport.
     PushUndoSnapshot();
     TranslateAll(dx, dy);
     Notify();
@@ -741,32 +747,80 @@ void DrawStack::ToggleFilled()
     Notify();
 }
 
-void DrawStack::Undo()
+bool DrawStack::Undo(RECT* outCrop, bool* outHasCrop)
 {
     Finish();
     if (m_undo.empty())
     {
-        return;
+        if (outHasCrop)
+        {
+            *outHasCrop = false;
+        }
+        return false;
     }
-    m_redo.push_back(m_shapes);
-    m_shapes = std::move(m_undo.back());
+    HistoryFrame current;
+    current.shapes = m_shapes;
+    current.crop = m_viewport;
+    current.hasCrop = m_viewportBound;
+    m_redo.push_back(std::move(current));
+
+    HistoryFrame frame = std::move(m_undo.back());
     m_undo.pop_back();
+    m_shapes = std::move(frame.shapes);
+    if (frame.hasCrop)
+    {
+        m_viewport = frame.crop;
+        m_viewportBound = true;
+    }
+    if (outCrop)
+    {
+        *outCrop = frame.crop;
+    }
+    if (outHasCrop)
+    {
+        *outHasCrop = frame.hasCrop;
+    }
     m_selected = -1;
     Notify();
+    return true;
 }
 
-void DrawStack::Redo()
+bool DrawStack::Redo(RECT* outCrop, bool* outHasCrop)
 {
     Finish();
     if (m_redo.empty())
     {
-        return;
+        if (outHasCrop)
+        {
+            *outHasCrop = false;
+        }
+        return false;
     }
-    m_undo.push_back(m_shapes);
-    m_shapes = std::move(m_redo.back());
+    HistoryFrame current;
+    current.shapes = m_shapes;
+    current.crop = m_viewport;
+    current.hasCrop = m_viewportBound;
+    m_undo.push_back(std::move(current));
+
+    HistoryFrame frame = std::move(m_redo.back());
     m_redo.pop_back();
+    m_shapes = std::move(frame.shapes);
+    if (frame.hasCrop)
+    {
+        m_viewport = frame.crop;
+        m_viewportBound = true;
+    }
+    if (outCrop)
+    {
+        *outCrop = frame.crop;
+    }
+    if (outHasCrop)
+    {
+        *outHasCrop = frame.hasCrop;
+    }
     m_selected = -1;
     Notify();
+    return true;
 }
 
 void DrawStack::Clear()

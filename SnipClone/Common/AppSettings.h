@@ -31,4 +31,9 @@ struct AppSettings
     static std::wstring FormatHotkey(const HotkeySpec& hk);
 };
 
+// Process-wide live settings (A04). Load once at startup; windows must mutate this
+// instance so exit Save cannot overwrite a fresher disk copy with a stale snapshot.
+AppSettings& LiveSettings();
+void LoadLiveSettings();
+
 } // namespace snip

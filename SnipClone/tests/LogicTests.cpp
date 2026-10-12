@@ -234,6 +234,58 @@ void TestRemapForCrop()
     Expect(stack.Shapes().empty(), "CullOutside removes fully outside shape");
 }
 
+void TestCropViewportUndo()
+{
+    // A01: crop + shapes share history; edge-only (dx=dy=0) still undoable with viewport.
+    std::printf("Crop viewport undo\n");
+    snip::DrawStack stack;
+    const RECT cropA{ 100, 50, 300, 200 };
+    const RECT cropB{ 100, 50, 280, 200 }; // right edge only
+    stack.SetViewport(cropA);
+    stack.AddText(D2D1::Point2F(20.f, 10.f), L"t");
+    Expect(stack.ShapeAt(0)->pts[0].x == 20.f, "text local x before crop");
+
+    // Simulate CommitCropRect origin shift: left moved +10 → Remap(-10,0), viewport→cropC.
+    const RECT cropC{ 110, 50, 310, 200 };
+    stack.SetViewport(cropA);
+    stack.RemapForCrop(-10.f, 0.f);
+    stack.SetViewport(cropC);
+    Expect(stack.ShapeAt(0)->pts[0].x == 10.f, "text remapped after origin shift");
+
+    RECT restored{};
+    bool hasCrop = false;
+    Expect(stack.Undo(&restored, &hasCrop), "undo crop remap");
+    Expect(hasCrop, "undo reports crop");
+    Expect(restored.left == cropA.left && restored.top == cropA.top &&
+               restored.right == cropA.right && restored.bottom == cropA.bottom,
+           "undo restores prior viewport");
+    Expect(stack.ShapeAt(0)->pts[0].x == 20.f, "undo restores shape local coords");
+
+    // Edge-only change: dx=dy=0 still pushes history with viewport.
+    stack.SetViewport(cropA);
+    stack.RemapForCrop(0.f, 0.f);
+    stack.SetViewport(cropB);
+    hasCrop = false;
+    Expect(stack.Undo(&restored, &hasCrop), "undo edge-only crop");
+    Expect(hasCrop && restored.right == cropA.right, "edge-only undo restores right");
+}
+
+void TestComposeFailsEmpty()
+{
+    // A02: failure / empty base must not return a non-empty silent base copy.
+    std::printf("Compose fail empty\n");
+    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    snip::AnnotationRenderer renderer;
+    snip::DrawStack stack;
+    snip::CaptureResult empty;
+    bool ok = true;
+    auto out = renderer.Compose(empty, stack, false, false, &ok);
+    Expect(out.Empty(), "empty base → empty compose");
+    Expect(!ok, "empty base → ok=false");
+    renderer.Shutdown();
+    CoUninitialize();
+}
+
 void TestComposeExportOmitsSelectionChrome()
 {
     std::printf("Compose export chrome\n");
@@ -285,6 +337,8 @@ int wmain()
     TestDrawStackUndo();
     TestHitAccuracy();
     TestRemapForCrop();
+    TestCropViewportUndo();
+    TestComposeFailsEmpty();
     TestComposeExportOmitsSelectionChrome();
 
     std::printf("\n%d passed, %d failed\n", g_passed, g_failed);
