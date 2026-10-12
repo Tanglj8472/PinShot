@@ -834,6 +834,12 @@ impl ApplicationHandler<AppEvent> for App {
                 }
             }
             AppEvent::PinMenu(action) => self.apply_pin_menu(action),
+            AppEvent::Ipc(cmd) if cmd == "reload-settings" => {
+                match config::load() {
+                    Ok(cfg) => self.apply_cfg(cfg),
+                    Err(e) => crate::logutil::log(&format!("reload settings: {e}")),
+                }
+            }
             AppEvent::Ipc(cmd) if cmd == "raise" => {
                 if let Some(fb) = &self.fallback {
                     fb.show();

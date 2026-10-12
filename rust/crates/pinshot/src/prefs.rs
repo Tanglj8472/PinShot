@@ -1,4 +1,4 @@
-//! egui preferences window (own thread + event loop). Apply sends `AppEvent::PrefsApplied`.
+//! Windows settings use a helper process: winit permits one event loop per process.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -30,49 +30,80 @@ pub fn open(cfg: Config, proxy: EventLoopProxy<AppEvent>) {
     }
     #[cfg(not(unix))]
     {
-        if OPEN.swap(true, Ordering::SeqCst) {
-            let _ = proxy.send_event(AppEvent::RaisePrefs);
-            return;
+        let _ = (cfg, proxy);
+        static CHILD: std::sync::Mutex<Option<std::process::Child>> = std::sync::Mutex::new(None);
+        let mut child = CHILD.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(proc) = child.as_mut() {
+            if matches!(proc.try_wait(), Ok(None)) {
+                raise_process_window(proc.id());
+                return;
+            }
         }
-        let _ = std::thread::Builder::new()
-            .name("pinshot-prefs".into())
-            .spawn(move || {
-                i18n::set_lang(cfg.lang());
-                let opts = eframe::NativeOptions {
-                    viewport: egui::ViewportBuilder::default()
-                        .with_title(tr("PinShot Preferences"))
-                        .with_inner_size([500.0, 580.0])
-                        .with_min_inner_size([440.0, 420.0]),
-                    ..Default::default()
-                };
-                let _ = eframe::run_native(
-                    "PinShot Preferences",
-                    opts,
-                    Box::new(move |cc| {
-                        apply_theme(cc, &cfg.theme);
-                        Ok(Box::new(PrefsApp {
-                            draft: cfg,
-                            proxy,
-                            tab: 0,
-                            advanced: false,
-                            group_sel: 0,
-                            group_edit: String::new(),
-                            status: String::new(),
-                        }))
-                    }),
-                );
-                OPEN.store(false, Ordering::SeqCst);
-            });
+        match std::env::current_exe().and_then(|exe| {
+            std::process::Command::new(exe).arg("--settings-window").spawn()
+        }) {
+            Ok(proc) => *child = Some(proc),
+            Err(e) => crate::logutil::log(&format!("settings launch: {e}")),
+        }
     }
 }
 
-fn apply_theme(cc: &eframe::CreationContext<'_>, theme: &str) {
+#[cfg(windows)]
+fn raise_process_window(pid: u32) {
+    use windows::Win32::Foundation::{BOOL, HWND, LPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::*;
+    unsafe extern "system" fn visit(hwnd: HWND, data: LPARAM) -> BOOL {
+        let mut pid = 0;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if pid == data.0 as u32 && IsWindowVisible(hwnd).as_bool() {
+            let _ = ShowWindow(hwnd, SW_RESTORE);
+            let _ = SetForegroundWindow(hwnd);
+            return BOOL(0);
+        }
+        BOOL(1)
+    }
+    unsafe { let _ = EnumWindows(Some(visit), LPARAM(pid as isize)); }
+}
+
+#[cfg(windows)]
+pub fn run_preferences() {
+    crate::logutil::init(&[]);
+    crate::native::init_process();
+    let cfg = config::load().unwrap_or_default();
+    i18n::set_lang(cfg.lang());
+    let opts = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_title(tr("PinShot Settings"))
+            .with_inner_size([500.0, 460.0])
+            .with_min_inner_size([440.0, 380.0]),
+        ..Default::default()
+    };
+    if let Err(e) = eframe::run_native("PinShot Settings", opts, Box::new(move |cc| {
+        if let Ok(font) = std::fs::read(std::path::PathBuf::from(
+            std::env::var_os("WINDIR").unwrap_or_else(|| "C:\\Windows".into())
+        ).join("Fonts/msyh.ttc")) {
+            let mut fonts = egui::FontDefinitions::default();
+            fonts.font_data.insert("cjk".into(), egui::FontData::from_owned(font).into());
+            fonts.families.entry(egui::FontFamily::Proportional).or_default().push("cjk".into());
+            cc.egui_ctx.set_fonts(fonts);
+        }
+        apply_theme(&cc.egui_ctx, &cfg.theme);
+        Ok(Box::new(PrefsApp {
+            draft: cfg, tab: 0, advanced: false, group_sel: 0,
+            group_edit: String::new(), status: String::new(),
+        }))
+    })) {
+        crate::logutil::log(&format!("settings window: {e}"));
+    }
+}
+
+fn apply_theme(ctx: &egui::Context, theme: &str) {
     let dark = match theme {
         "dark" => true,
         "light" => false,
         _ => system_dark(),
     };
-    cc.egui_ctx.set_visuals(if dark {
+    ctx.set_visuals(if dark {
         Visuals::dark()
     } else {
         Visuals::light()
@@ -123,7 +154,6 @@ fn system_dark() -> bool {
 
 struct PrefsApp {
     draft: Config,
-    proxy: EventLoopProxy<AppEvent>,
     tab: usize,
     advanced: bool,
     group_sel: usize,
@@ -132,7 +162,7 @@ struct PrefsApp {
 }
 
 impl PrefsApp {
-    fn apply(&mut self) {
+    fn apply(&mut self) -> bool {
         self.draft.hotkey_snip = normalize_seq(&self.draft.hotkey_snip);
         self.draft.hotkey_pin = normalize_seq(&self.draft.hotkey_pin);
         self.draft.hotkey_hide_all = normalize_seq(&self.draft.hotkey_hide_all);
@@ -148,29 +178,37 @@ impl PrefsApp {
                 conflicts[0].0,
                 conflicts[0].1
             );
-            return;
+            return false;
         }
         self.draft = self.draft.clone().validate();
         if let Err(e) = config::save(&self.draft) {
-            self.status = e.to_string();
-            return;
+            crate::logutil::log(&format!("save settings: {e}"));
+            self.status = tr("Could not save settings");
+            return false;
         }
         i18n::set_lang(self.draft.lang());
-        let _ = self.proxy.send_event(AppEvent::PrefsApplied(self.draft.clone()));
-        self.status = tr("Apply");
+        #[cfg(windows)]
+        if let Err(e) = crate::ipc::send("reload-settings") {
+            crate::logutil::log(&format!("apply settings: {e}"));
+            self.status = tr("Saved. Restart PinShot to apply.");
+            return false;
+        }
+        self.status = tr("Settings applied.");
+        true
     }
 }
 
 impl eframe::App for PrefsApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title(tr("PinShot Settings")));
+        apply_theme(ctx, &self.draft.theme);
         egui::TopBottomPanel::bottom("btns").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 if ui.button(tr("Apply")).clicked() {
                     self.apply();
                 }
                 if ui.button(tr("OK")).clicked() {
-                    self.apply();
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    if self.apply() { ctx.send_viewport_cmd(egui::ViewportCommand::Close); }
                 }
                 if ui.button(tr("Cancel")).clicked() {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -181,7 +219,6 @@ impl eframe::App for PrefsApp {
             });
         });
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading(tr("PinShot Preferences"));
             ui.horizontal(|ui| {
                 for (i, name) in [tr("General"), tr("Hotkeys"), tr("Output")].iter().enumerate() {
                     if ui.selectable_label(self.tab == i, name).clicked() {
@@ -190,11 +227,9 @@ impl eframe::App for PrefsApp {
                 }
             });
             ui.separator();
-            match self.tab {
-                0 => self.ui_general(ui),
-                1 => self.ui_hotkeys(ui),
-                _ => self.ui_output(ui),
-            }
+            egui::ScrollArea::vertical().show(ui, |ui| match self.tab {
+                0 => self.ui_general(ui), 1 => self.ui_hotkeys(ui), _ => self.ui_output(ui),
+            });
         });
     }
 }

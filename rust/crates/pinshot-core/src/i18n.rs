@@ -27,14 +27,23 @@ impl Lang {
     }
 
     pub fn display_name(self) -> &'static str {
-        match self {
-            Lang::En => "English",
-            Lang::ZhCn => "简体中文",
+        match (lang(), self) {
+            (Lang::En, Lang::En) => "English",
+            (Lang::En, Lang::ZhCn) => "Simplified Chinese",
+            (Lang::ZhCn, Lang::En) => "英语",
+            (Lang::ZhCn, Lang::ZhCn) => "简体中文",
         }
     }
 }
 
 const PAIRS: &[(&str, &str)] = &[
+    ("PinShot Settings", "PinShot 设置"),
+    ("Could not save settings", "设置保存失败"),
+    ("Saved. Restart PinShot to apply.", "已保存，重启后生效。"),
+    ("English", "英语"),
+    ("Simplified Chinese", "简体中文"),
+    ("Traditional Chinese", "繁体中文"),
+    ("Japanese", "日语"),
     ("PinShot", "PinShot"),
     ("Snip (F1)", "截图 (F1)"),
     ("Pin clipboard (F3)", "贴剪贴板 (F3)"),

@@ -49,7 +49,8 @@ pub fn apply_overlay_style(hwnd: HWND) {
         SetWindowLongPtrW(
             hwnd,
             GWL_EXSTYLE,
-            ex | WS_EX_TOPMOST.0 as isize | WS_EX_TOOLWINDOW.0 as isize | WS_EX_NOACTIVATE.0 as isize,
+            (ex | WS_EX_TOPMOST.0 as isize | WS_EX_TOOLWINDOW.0 as isize)
+                & !(WS_EX_NOACTIVATE.0 as isize),
         );
         let _ = SetWindowPos(
             hwnd,

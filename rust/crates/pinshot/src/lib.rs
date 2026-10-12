@@ -61,6 +61,8 @@ mod result_win;
 mod result_win;
 
 pub use app::run;
+#[cfg(windows)]
+pub use prefs::run_preferences;
 
 pub fn logutil_ensure() {
     crate::logutil::ensure_stdio();
