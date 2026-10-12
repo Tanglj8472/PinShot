@@ -1,8 +1,12 @@
 //==============================================================================
 // SnipClone — Windows header hygiene
 //
-// rpcndr.h defines: #define small char  (and near/far). That breaks identifiers
-// like `std::vector<...> small(...)`. Always include this after <Windows.h>.
+// rpcndr.h: `#define small char` breaks names like `vector<...> small(...)`.
+// Only undef `small` / `min` / `max`.
+//
+// NEVER undef `far` / `near`: windef maps FAR→far. Undefining far turns
+// `EXTERN_C const GUID FAR iid` into `... GUID far iid` and cascades into
+// thousands of IID_/GUID_ parse errors in d3d/dxgi/wincodec headers.
 //==============================================================================
 #pragma once
 
@@ -14,12 +18,6 @@
 
 #ifdef small
 #undef small
-#endif
-#ifdef near
-#undef near
-#endif
-#ifdef far
-#undef far
 #endif
 #ifdef min
 #undef min
