@@ -154,22 +154,20 @@ void TestDrawStackUndo()
     Expect(stack.Live() == nullptr, "Finish clears live");
     Expect(stack.Shapes().size() == 1, "Finish commits live");
 
-    // Move selection = one undo.
+    // Move selection = one undo (hit stroke edge — unfilled rect has no interior hit).
     stack.Clear();
     stack.SetTool(snip::ToolKind::Rect);
     stack.Press(D2D1::Point2F(10, 10));
     stack.Move(D2D1::Point2F(30, 30));
     stack.Release(D2D1::Point2F(30, 30));
     stack.SetTool(snip::ToolKind::Select);
-    stack.Press(D2D1::Point2F(20, 20));
-    stack.Move(D2D1::Point2F(25, 25));
-    stack.Move(D2D1::Point2F(35, 35));
-    stack.Release(D2D1::Point2F(35, 35));
-    const int undosBefore = stack.CanUndo() ? 1 : 0;
+    stack.Press(D2D1::Point2F(10, 20));
+    stack.Move(D2D1::Point2F(15, 25));
+    stack.Move(D2D1::Point2F(25, 35));
+    stack.Release(D2D1::Point2F(25, 35));
     Expect(stack.CanUndo(), "move creates undo");
     stack.Undo(); // undo move
     Expect(stack.CanUndo(), "draw still undoable");
-    (void)undosBefore;
 
     // UpdateText keeps style when provided.
     stack.Clear();
