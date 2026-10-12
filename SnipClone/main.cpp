@@ -22,6 +22,7 @@ namespace
 {
 constexpr wchar_t kMainClass[] = L"SnipCloneMain";
 constexpr int kHotkeySnip = 0x1001;
+constexpr int kHotkeyPins = 0x1002; // Ctrl+Shift+P — exit pin click-through / show all
 
 HINSTANCE g_instance = nullptr;
 HWND g_mainWnd = nullptr;
@@ -88,6 +89,11 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         if (static_cast<int>(wParam) == kHotkeySnip)
         {
             BeginSelection();
+        }
+        else if (static_cast<int>(wParam) == kHotkeyPins)
+        {
+            // Exit mouse pass-through and unhide pins (documented in pin context menu).
+            snip::PinManager::Instance().ClearClickThroughAll();
         }
         return 0;
 
@@ -194,6 +200,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
             L"SnipClone",
             MB_ICONWARNING | MB_OK);
     }
+    if (!snip::GlobalHotkey::Register(static_cast<UINT>('P'), MOD_CONTROL | MOD_SHIFT, kHotkeyPins, g_mainWnd))
+    {
+        MessageBoxW(
+            nullptr,
+            L"Failed to register hotkey Ctrl+Shift+P (pin click-through exit).",
+            L"SnipClone",
+            MB_ICONWARNING | MB_OK);
+    }
 
     MSG msg{};
     while (GetMessageW(&msg, nullptr, 0, 0) > 0)
@@ -202,6 +216,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
         DispatchMessageW(&msg);
     }
 
+    snip::GlobalHotkey::Unregister(kHotkeyPins, g_mainWnd);
     snip::GlobalHotkey::Unregister(kHotkeySnip, g_mainWnd);
     snip::PinManager::Instance().CloseAll();
     CoUninitialize();

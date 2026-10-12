@@ -3,6 +3,8 @@
 //==============================================================================
 #pragma once
 
+#include "PinWindow.h"
+
 #include "../Capture/CaptureResult.h"
 
 #include "../Common/WinCompat.h"
@@ -11,8 +13,6 @@
 
 namespace snip
 {
-
-class PinWindow;
 
 class PinManager
 {
@@ -26,9 +26,17 @@ public:
     void OnNcDestroy(PinWindow* pin);
 
     void CloseAll();
+    void HideAll();
+    void ShowAll();
+    void ClearClickThroughAll();
+    bool RestoreLastClosed(HINSTANCE instance);
+    bool HasLastClosed() const { return !m_lastClosed.image.Empty(); }
+    size_t Count() const { return m_pins.size(); }
 
 private:
     std::vector<PinWindow*> m_pins;
+    PinSnapshot m_lastClosed{};
+    bool m_hidden = false;
 };
 
 } // namespace snip
