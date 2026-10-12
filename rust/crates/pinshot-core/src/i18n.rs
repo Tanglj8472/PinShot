@@ -429,6 +429,8 @@ mod tests {
     #[test]
     fn zh_static_strings() {
         with_lang(Lang::ZhCn, || {
+            assert_eq!(Lang::ZhCn.display_name(), "简体中文");
+            assert_eq!(Lang::En.display_name(), "英语");
             assert_eq!(tr("Snip (F1)"), "截图 (F1)");
             assert_eq!(tr("Quit"), "退出");
             assert_eq!(tr("Abort snipping?"), "放弃截图？");
@@ -442,6 +444,8 @@ mod tests {
     #[test]
     fn en_is_identity() {
         with_lang(Lang::En, || {
+            assert_eq!(Lang::ZhCn.display_name(), "Simplified Chinese");
+            assert_eq!(Lang::En.display_name(), "English");
             assert_eq!(tr("Snip (F1)"), "Snip (F1)");
             assert_eq!(tr("Opacity: 80%"), "Opacity: 80%");
         });

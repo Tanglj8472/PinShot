@@ -310,21 +310,8 @@ impl PinWin {
 
     fn apply_tb(&mut self, a: TbAction) {
         match a {
-            TbAction::Tool(t) => {
-                self.annot.set_tool(Some(t));
-                if t == Tool::Line {
-                    self.annot
-                        .set_style_default(Tool::Line, |s| s.arrow = false);
-                    self.arrow_on = false;
-                } else {
-                    self.arrow_on = false;
-                }
-            }
-            TbAction::Arrow => {
-                self.annot.set_tool(Some(Tool::Line));
-                self.annot.set_style_default(Tool::Line, |s| s.arrow = true);
-                self.arrow_on = true;
-            }
+            TbAction::Tool(_) | TbAction::Arrow =>
+                crate::toolbar::toggle_tool(&mut self.annot, &mut self.arrow_on, a),
             TbAction::Undo => {
                 let _ = self.annot.undo();
             }

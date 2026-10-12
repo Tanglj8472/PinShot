@@ -3,7 +3,22 @@
 use pinshot_core::color::{palette_colors, Rgba};
 use pinshot_core::geom::{clamp_f32, Point, Rect};
 use pinshot_core::icons::IconKind;
-use pinshot_core::annotation::Tool;
+use pinshot_core::annotation::{Annotator, Tool};
+
+/// Clicking an active drawing tool switches back to selection/move mode.
+pub fn toggle_tool(annot: &mut Annotator, arrow_on: &mut bool, action: TbAction) {
+    let (tool, arrow) = match action {
+        TbAction::Tool(tool) => (tool, false),
+        TbAction::Arrow => (Tool::Line, true),
+        _ => return,
+    };
+    let same = annot.tool == Some(tool) && (tool != Tool::Line || *arrow_on == arrow);
+    annot.set_tool(if same { None } else { Some(tool) });
+    if tool == Tool::Line && !same {
+        annot.set_style_default(tool, |s| s.arrow = arrow);
+    }
+    *arrow_on = !same && arrow;
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TbAction {
@@ -220,6 +235,22 @@ impl Toolbar {
 mod tests {
     use super::*;
     use pinshot_core::geom::Rect;
+
+    #[test]
+    fn tool_click_toggles_and_line_arrow_switches_without_editing_shapes() {
+        let mut ann = Annotator::new();
+        let mut arrow = false;
+        toggle_tool(&mut ann, &mut arrow, TbAction::Tool(Tool::Rect));
+        assert_eq!(ann.tool, Some(Tool::Rect));
+        toggle_tool(&mut ann, &mut arrow, TbAction::Tool(Tool::Rect));
+        assert_eq!(ann.tool, None);
+        toggle_tool(&mut ann, &mut arrow, TbAction::Tool(Tool::Line));
+        toggle_tool(&mut ann, &mut arrow, TbAction::Arrow);
+        assert_eq!(ann.tool, Some(Tool::Line));
+        assert!(ann.style(Tool::Line).arrow);
+        toggle_tool(&mut ann, &mut arrow, TbAction::Arrow);
+        assert_eq!(ann.tool, None);
+    }
 
     #[test]
     fn layout_on_tiny_pin_does_not_panic() {
