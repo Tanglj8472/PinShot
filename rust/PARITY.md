@@ -200,4 +200,4 @@ Rust config default `language = "zh_CN"` (Phase 1) vs Python QSettings default `
 | impossible | 6 |
 | **total** | **118** |
 
-Remaining partial: RapidOCR band detector (full DBNet is large). Hands-on still wanted: F6 toast, font chips + B/I paint, pin-menu rename/IME, OCR-above-pins restack, AT-SPI `{role}:{name}` on a live a11y bus, 3×3 hit feel vs geometry slop. Custom color is in-process (no zenity).
+Remaining partial: RapidOCR band detector (full DBNet is large). Xvfb `:26` covered font chips + B/I/family paint diffs and pin-menu New/Rename typing (empty Enter ignored). Hands-on still wanted: OCR-above-pins restack, AT-SPI `{role}:{name}` on a live a11y bus, 3×3 hit feel vs geometry slop. Custom color is in-process (no zenity).

@@ -2,7 +2,7 @@
 
 对照源：`main` 上的 Python/PySide6 PinShot。Rust 在 `rust/`，分支 `rust`。Python 源码不改。
 
-最后更新：2026-10-12（`ce3b8ae`/`5264145` 字体 TTF + 分组框可打字；Xvfb `:26` 9/9 复测）。
+最后更新：2026-10-12（`a08bf05` 实机两项已修：Xvfb `:26` B/I/家族像素差 + New/Rename 可打字；25/25 与 9/9）。
 
 ---
 
@@ -357,6 +357,24 @@ HEAD 在 `rust`（本轮 PARITY 剩余项）。对照 Python/`main`，**先 Linu
 | Enter 提交 | PASS（`pin menu new group named`） |
 | Text 工具 + B/I/Family | PASS（`tb Bold(true)` / `tb Italic(true)` / `tb Family`） |
 | 字体像素 | PASS（`bold_and_italic_change_paint`：Default/Sans B/I 与 Serif/Mono 互异；Liberation TTF） |
+
+### Xvfb `5264145` 实机两项（`:26` 1920×1200 + xfwm4）
+
+脚本 `/tmp/pinshot-a08-verify.sh`。`pass=25 fail=0`。
+
+| 检查 | 结果 |
+|---|---|
+| Text `HiBg` 提交 | PASS（`text commit "HiBg"`） |
+| Bold 像素 | PASS（相对 Regular **666** px；LiberationSans-Bold.ttf） |
+| Italic 像素 | PASS（**615** px；LiberationSans-Italic.ttf） |
+| Serif 像素 | PASS（**636** px；LiberationSerif-Regular.ttf） |
+| Mono 像素 | PASS（**743** px；LiberationMono-Regular.ttf） |
+| Sans ≠ Mono / 无 PFB | PASS（LiberationSans-Regular.ttf） |
+| New 空 Enter | PASS（`pin menu prompt empty ignored`，未 `submit ""`） |
+| New 键入 Work | PASS（`pin menu prompt submit "Work"` + `new group named`） |
+| Rename 键入 Jobs | PASS（`pin menu prompt submit "Jobs"`；菜单 838 含 Work 行） |
+
+工件：`/opt/cursor/artifacts/a08-verify/`。overlay/pin 在编文字时也走 `blit_pixmap_ex`（B/I/家族即时可见）。Windows 短名 `segoeuib`/`segoeuii` 算 Bold/Italic，CI 不再要求 Liberation 文件名。
 
 ### Xvfb `6f19f21` PARITY 剩余项（`:25` 1920×1200 + xfwm4）
 

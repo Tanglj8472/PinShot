@@ -90,19 +90,57 @@ fn is_outline_font(path: &Path) -> bool {
     )
 }
 
+fn file_stem_lower(name: &str) -> String {
+    Path::new(name)
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_else(|| name.to_ascii_lowercase())
+}
+
 fn file_looks_bold(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
-    n.contains("bold")
+    if n.contains("bold")
         || n.contains("heavy")
         || n.contains("black")
         || n.contains("semibold")
-        || n.contains("bd.")
-        || n.ends_with("bd")
+    {
+        return true;
+    }
+    let stem = file_stem_lower(&n);
+    // GDI short names: arialbd, timesbd, segoeuib, segoeuiz, consolab, consolaz
+    stem.ends_with("bd")
+        || stem.ends_with("bi")
+        || stem.ends_with("segoeuib")
+        || stem.ends_with("segoeuiz")
+        || matches!(
+            stem.as_str(),
+            "consolab"
+                | "consolaz"
+                | "calibrib"
+                | "calibriz"
+                | "verdanab"
+                | "verdanaz"
+                | "tahomabd"
+                | "msyhbd"
+        )
 }
 
 fn file_looks_italic(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
-    n.contains("italic") || n.contains("oblique") || n.contains("it.")
+    if n.contains("italic") || n.contains("oblique") || n.contains("it.") {
+        return true;
+    }
+    let stem = file_stem_lower(&n);
+    stem.ends_with("segoeuii")
+        || stem.ends_with("segoeuiz")
+        || stem.ends_with("timesi")
+        || stem.ends_with("timesbi")
+        || stem.ends_with("ariali")
+        || stem.ends_with("arialbi")
+        || matches!(
+            stem.as_str(),
+            "consolai" | "consolaz" | "calibrii" | "calibriz" | "verdanai" | "verdanaz"
+        )
 }
 
 fn family_needles(family: &str) -> Vec<String> {
@@ -815,10 +853,17 @@ mod tests {
         assert_ne!(compact_name(&serif), compact_name(&sans));
         let sl = sans.to_string_lossy().to_ascii_lowercase();
         assert!(
-            sl.contains("liberation") || sl.contains("dejavu"),
-            "prefer Liberation/DejaVu, got {}",
+            sl.contains("liberation")
+                || sl.contains("dejavu")
+                || sl.contains("segoe")
+                || sl.contains("arial")
+                || sl.contains("msyh"),
+            "prefer Liberation/DejaVu (or Windows segoe/arial), got {}",
             sans.display()
         );
+        assert!(file_looks_bold(r"C:\Windows\Fonts\segoeuib.ttf"));
+        assert!(file_looks_italic(r"C:\Windows\Fonts\segoeuii.ttf"));
+        assert!(!file_looks_bold(r"C:\Windows\Fonts\segoeui.ttf"));
     }
 
     #[test]
