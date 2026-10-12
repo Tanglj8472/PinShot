@@ -63,7 +63,7 @@ Counts at the bottom. Python sources are not modified.
 | Drag / move / 8 handles | `selection.rs` | done | First F1 *selection* drag recovered via `QueryPointer`. Annotation press is winit-only — recover must not `annot.press` (that emptied the live shape) |
 | Toolbar + OCR/Translate | `toolbar.rs` | done |
 | `,` `.` history / Shift+R last rect | `history.rs` + overlay + `data_dir/history` | done | `,`/`.` replay image+rect; **R applies last rect on the live capture** (not the old PNG); persist so R works after restart |
-| Esc confirm abort | MessageBox / zenity | done |
+| Esc confirm abort | in-overlay ConfirmAbort | done | Y/N / Esc / “Do not show again”; skip via prefs |
 | Ctrl+C / Enter copy, Ctrl+S save, Ctrl+T / F3 pin | overlay keys | done |
 | Ctrl+A full screen | done |
 | Ctrl+Z/Y undo/redo | done |
