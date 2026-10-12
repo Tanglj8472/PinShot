@@ -240,7 +240,7 @@ void StylePanel::RebuildForTool(ToolKind tool)
             ToolButton hint;
             hint.action = ToolbarAction::None;
             hint.id = L"hint";
-            hint.tip = L"拖动调整 · 双击改文字 · Del 删除";
+            hint.tip = L"拖动调整 · Space拖选区 · 双击文字 · Del";
             m_buttons.push_back(hint);
         }
         LayoutButtons();

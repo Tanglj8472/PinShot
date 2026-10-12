@@ -643,16 +643,28 @@ void AnnotationRenderer::DrawScene(
                     D2D1::RectF(minX - pad, minY - pad, maxX + pad, maxY + pad),
                     m_brush,
                     1.5f);
-                // Resize handles for two-point shapes (select tool).
+                // Resize handles: 8 for box shapes, 2 endpoints for arrow.
                 if (IsTwoPointTool(sh->kind) && sh->pts.size() >= 2)
                 {
                     const float hs = 4.f;
-                    for (size_t i = 0; i < 2; ++i)
-                    {
-                        const auto& hp = sh->pts[i];
+                    auto fillHandle = [&](D2D1_POINT_2F hp) {
                         rt->FillRectangle(
                             D2D1::RectF(hp.x - hs, hp.y - hs, hp.x + hs, hp.y + hs),
                             m_brush);
+                    };
+                    if (DrawStack::UsesBoxHandles(sh->kind))
+                    {
+                        D2D1_POINT_2F hsPts[8]{};
+                        DrawStack::BoxHandlePoints(sh->pts[0], sh->pts[1], hsPts);
+                        for (const auto& hp : hsPts)
+                        {
+                            fillHandle(hp);
+                        }
+                    }
+                    else
+                    {
+                        fillHandle(sh->pts[0]);
+                        fillHandle(sh->pts[1]);
                     }
                 }
             }

@@ -64,8 +64,12 @@ public:
 
     // Hit any shape (top-most). Distance tests for pen/arrow; AABB/ellipse for fills.
     int HitTest(D2D1_POINT_2F pt) const;
-    // When a shape is selected: -1 none, 0 body/move, 1..n resize handles (two-point: 1=p0, 2=p1).
+    // Box shapes (rect/ellipse/mosaic): 1..8 = NW,N,NE,E,SE,S,SW,W.
+    // Arrow / other two-point: 1 = pts[0], 2 = pts[1].
     int HitResizeHandle(int shapeIndex, D2D1_POINT_2F pt) const;
+    // Public for renderer chrome — returns up to 8 handle centers; count in outCount.
+    static void BoxHandlePoints(D2D1_POINT_2F p0, D2D1_POINT_2F p1, D2D1_POINT_2F out[8]);
+    static bool UsesBoxHandles(ToolKind kind);
     void AddText(D2D1_POINT_2F pt, const std::wstring& text);
     // style: if non-null, replace shape style (re-edit / toolbar sync on commit).
     void UpdateText(int index, const std::wstring& text, const DrawStyle* style = nullptr);
@@ -131,9 +135,23 @@ private:
     int m_selected = -1;
     bool m_movingSelection = false;
     bool m_resizingSelection = false;
-    int m_resizeHandle = 0; // 1 = first point / NW-ish, 2 = second point
+    int m_resizeHandle = 0; // see HitResizeHandle
     bool m_moveUndoPushed = false;
     D2D1_POINT_2F m_moveOrigin{};
+    // Coalesce rapid style tweaks (width/font/mosaic) into one undo frame.
+    enum class StyleOp
+    {
+        None,
+        Width,
+        Font,
+        Mosaic,
+        Color,
+        Toggle,
+    };
+    void BeginStyleEdit(StyleOp op);
+    int m_styleEditSel = -1;
+    StyleOp m_styleEditOp = StyleOp::None;
+    DWORD m_styleEditTick = 0;
     ChangedFn m_changed;
 };
 

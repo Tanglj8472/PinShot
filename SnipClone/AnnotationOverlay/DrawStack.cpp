@@ -329,6 +329,29 @@ int DrawStack::HitTest(D2D1_POINT_2F pt) const
     return -1;
 }
 
+bool DrawStack::UsesBoxHandles(ToolKind kind)
+{
+    return kind == ToolKind::Rect || kind == ToolKind::Ellipse || kind == ToolKind::Mosaic;
+}
+
+void DrawStack::BoxHandlePoints(D2D1_POINT_2F p0, D2D1_POINT_2F p1, D2D1_POINT_2F out[8])
+{
+    const float l = (std::min)(p0.x, p1.x);
+    const float r = (std::max)(p0.x, p1.x);
+    const float t = (std::min)(p0.y, p1.y);
+    const float b = (std::max)(p0.y, p1.y);
+    const float mx = (l + r) * 0.5f;
+    const float my = (t + b) * 0.5f;
+    out[0] = D2D1::Point2F(l, t);  // NW
+    out[1] = D2D1::Point2F(mx, t); // N
+    out[2] = D2D1::Point2F(r, t);  // NE
+    out[3] = D2D1::Point2F(r, my); // E
+    out[4] = D2D1::Point2F(r, b);  // SE
+    out[5] = D2D1::Point2F(mx, b); // S
+    out[6] = D2D1::Point2F(l, b);  // SW
+    out[7] = D2D1::Point2F(l, my); // W
+}
+
 int DrawStack::HitResizeHandle(int shapeIndex, D2D1_POINT_2F pt) const
 {
     if (shapeIndex < 0 || shapeIndex >= static_cast<int>(m_shapes.size()))
@@ -341,6 +364,20 @@ int DrawStack::HitResizeHandle(int shapeIndex, D2D1_POINT_2F pt) const
         return -1;
     }
     constexpr float kHandle = 8.f;
+    if (UsesBoxHandles(sh.kind))
+    {
+        D2D1_POINT_2F hs[8]{};
+        BoxHandlePoints(sh.pts[0], sh.pts[1], hs);
+        for (int i = 0; i < 8; ++i)
+        {
+            if (std::sqrt(Dist2(pt, hs[i])) <= kHandle)
+            {
+                return i + 1;
+            }
+        }
+        return -1;
+    }
+    // Arrow (and other two-point): endpoints only.
     if (std::sqrt(Dist2(pt, sh.pts[0])) <= kHandle)
     {
         return 1;
@@ -350,6 +387,21 @@ int DrawStack::HitResizeHandle(int shapeIndex, D2D1_POINT_2F pt) const
         return 2;
     }
     return -1;
+}
+
+void DrawStack::BeginStyleEdit(StyleOp op)
+{
+    const DWORD now = GetTickCount();
+    const bool coalesce = m_selected >= 0 && m_selected == m_styleEditSel && op == m_styleEditOp &&
+                          op != StyleOp::None && op != StyleOp::Toggle && op != StyleOp::Color &&
+                          (now - m_styleEditTick) < 800u;
+    if (!coalesce && m_selected >= 0)
+    {
+        PushUndoSnapshot();
+    }
+    m_styleEditSel = m_selected;
+    m_styleEditOp = op;
+    m_styleEditTick = now;
 }
 
 void DrawStack::AddText(D2D1_POINT_2F pt, const std::wstring& text)
@@ -597,8 +649,61 @@ void DrawStack::Move(D2D1_POINT_2F pt)
                 PushUndoSnapshot();
                 m_moveUndoPushed = true;
             }
-            const size_t idx = static_cast<size_t>(m_resizeHandle == 1 ? 0 : 1);
-            sh.pts[idx] = pt;
+            if (UsesBoxHandles(sh.kind))
+            {
+                float l = (std::min)(sh.pts[0].x, sh.pts[1].x);
+                float r = (std::max)(sh.pts[0].x, sh.pts[1].x);
+                float t = (std::min)(sh.pts[0].y, sh.pts[1].y);
+                float b = (std::max)(sh.pts[0].y, sh.pts[1].y);
+                switch (m_resizeHandle)
+                {
+                case 1: // NW
+                    l = pt.x;
+                    t = pt.y;
+                    break;
+                case 2: // N
+                    t = pt.y;
+                    break;
+                case 3: // NE
+                    r = pt.x;
+                    t = pt.y;
+                    break;
+                case 4: // E
+                    r = pt.x;
+                    break;
+                case 5: // SE
+                    r = pt.x;
+                    b = pt.y;
+                    break;
+                case 6: // S
+                    b = pt.y;
+                    break;
+                case 7: // SW
+                    l = pt.x;
+                    b = pt.y;
+                    break;
+                case 8: // W
+                    l = pt.x;
+                    break;
+                default:
+                    break;
+                }
+                if (r - l < 2.f)
+                {
+                    r = l + 2.f;
+                }
+                if (b - t < 2.f)
+                {
+                    b = t + 2.f;
+                }
+                sh.pts[0] = D2D1::Point2F(l, t);
+                sh.pts[1] = D2D1::Point2F(r, b);
+            }
+            else
+            {
+                const size_t idx = static_cast<size_t>(m_resizeHandle == 1 ? 0 : 1);
+                sh.pts[idx] = pt;
+            }
             m_moveOrigin = pt;
             Notify();
         }
@@ -706,7 +811,7 @@ void DrawStack::AdjustWidth(int delta)
     }
     if (m_selected >= 0 && m_selected < static_cast<int>(m_shapes.size()))
     {
-        PushUndoSnapshot();
+        BeginStyleEdit(StyleOp::Width);
         auto& st = m_shapes[static_cast<size_t>(m_selected)].style;
         st.width = (std::max)(1.f, (std::min)(40.f, st.width + static_cast<float>(delta)));
         Notify();
@@ -731,7 +836,7 @@ void DrawStack::AdjustFontSize(int delta)
     if (m_selected >= 0 && m_selected < static_cast<int>(m_shapes.size()) &&
         m_shapes[static_cast<size_t>(m_selected)].kind == ToolKind::Text)
     {
-        PushUndoSnapshot();
+        BeginStyleEdit(StyleOp::Font);
         auto& st = m_shapes[static_cast<size_t>(m_selected)].style;
         st.fontSize = (std::max)(8.f, (std::min)(120.f, st.fontSize + step));
         Notify();
@@ -747,7 +852,7 @@ void DrawStack::AdjustMosaicSize(int delta)
     if (m_selected >= 0 && m_selected < static_cast<int>(m_shapes.size()) &&
         m_shapes[static_cast<size_t>(m_selected)].kind == ToolKind::Mosaic)
     {
-        PushUndoSnapshot();
+        BeginStyleEdit(StyleOp::Mosaic);
         auto& st = m_shapes[static_cast<size_t>(m_selected)].style;
         st.mosaicSize = (std::max)(2, (std::min)(40, st.mosaicSize + delta));
         Notify();

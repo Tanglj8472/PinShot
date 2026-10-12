@@ -295,20 +295,35 @@ LRESULT AnnotationOverlay::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             return 0;
         }
 
-        // Select / None: hit annotation → move/resize; empty → move crop (A06).
+        // Select / None: hit annotation → move/resize; blank click clears selection.
+        // Crop body move is Space+drag (edge/corner handles still resize crop).
         if (IsSelectLikeTool() && !m_freeze.Empty())
         {
             const int sel = m_ann.SelectedIndex();
             const bool onHandle = sel >= 0 && m_ann.HitResizeHandle(sel, pt) > 0;
             const bool onShape = m_ann.HitTest(pt) >= 0;
+            const bool spaceDown = (GetKeyState(VK_SPACE) & 0x8000) != 0;
             if (!onHandle && !onShape)
             {
-                SetCapture(hwnd);
-                m_cropDrag = CropHit::Body;
-                m_cropDragStart = { m_base.screenRect.left + client.x, m_base.screenRect.top + client.y };
-                m_cropDragStartScreen = m_base.screenRect;
-                m_cropPreviewScreen = m_base.screenRect;
-                UpdateCropCursor(CropHit::Body);
+                if (spaceDown)
+                {
+                    SetCapture(hwnd);
+                    m_cropDrag = CropHit::Body;
+                    m_cropDragStart = { m_base.screenRect.left + client.x, m_base.screenRect.top + client.y };
+                    m_cropDragStartScreen = m_base.screenRect;
+                    m_cropPreviewScreen = m_base.screenRect;
+                    UpdateCropCursor(CropHit::Body);
+                    return 0;
+                }
+                if (sel >= 0)
+                {
+                    m_ann.ClearSelection();
+                    if (m_toolbar)
+                    {
+                        m_toolbar->SyncFromAnnotator();
+                    }
+                    return 0;
+                }
                 return 0;
             }
             // None maps to Select for object interaction.
@@ -324,6 +339,12 @@ LRESULT AnnotationOverlay::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         {
             m_toolbar->SyncFromAnnotator();
         }
+        return 0;
+    }
+    case WM_RBUTTONUP:
+    {
+        const POINT client{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        ShowObjectContextMenu(client);
         return 0;
     }
     case WM_MOUSEMOVE:
@@ -589,6 +610,68 @@ void AnnotationOverlay::RequestClose()
     {
         PostMessageW(m_hwnd, WM_SNIP_CLOSE_SELF, 0, 0);
     }
+}
+
+void AnnotationOverlay::ShowObjectContextMenu(POINT client)
+{
+    if (!m_hwnd)
+    {
+        return;
+    }
+    const D2D1_POINT_2F pt = D2D1::Point2F(static_cast<float>(client.x), static_cast<float>(client.y));
+    const int hit = m_ann.HitTest(pt);
+    if (hit < 0)
+    {
+        return;
+    }
+    if (m_ann.Tool() != ToolKind::Select)
+    {
+        m_ann.SetTool(ToolKind::Select);
+    }
+    // Select the hit shape without starting a drag.
+    m_ann.Press(pt);
+    m_ann.Release(pt);
+    if (m_toolbar)
+    {
+        m_toolbar->SyncFromAnnotator();
+    }
+
+    enum : UINT
+    {
+        kCmdDup = 1,
+        kCmdDel = 2,
+    };
+    HMENU menu = CreatePopupMenu();
+    if (!menu)
+    {
+        return;
+    }
+    AppendMenuW(menu, MF_STRING, kCmdDup, L"复制对象\tCtrl+D");
+    AppendMenuW(menu, MF_STRING, kCmdDel, L"删除\tDel");
+    POINT screen = client;
+    ClientToScreen(m_hwnd, &screen);
+    const UINT cmd = TrackPopupMenu(
+        menu,
+        TPM_RETURNCMD | TPM_RIGHTBUTTON,
+        screen.x,
+        screen.y,
+        0,
+        m_hwnd,
+        nullptr);
+    DestroyMenu(menu);
+    if (cmd == kCmdDup)
+    {
+        m_ann.DuplicateSelected();
+    }
+    else if (cmd == kCmdDel)
+    {
+        m_ann.DeleteSelected();
+    }
+    if (cmd && m_toolbar)
+    {
+        m_toolbar->SyncFromAnnotator();
+    }
+    RequestPresent();
 }
 
 void AnnotationOverlay::OnToolbarAction(ToolbarAction action, ToolKind /*tool*/)

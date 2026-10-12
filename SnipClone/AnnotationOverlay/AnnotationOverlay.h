@@ -36,7 +36,7 @@ private:
     enum class CropHit
     {
         None,
-        Body, // Select tool + empty hit: drag moves the crop rect
+        Body, // Space+drag (or edge handles) moves the crop rect
         N,
         S,
         E,
@@ -68,6 +68,7 @@ private:
 
     CropHit HitCropHandle(POINT client) const;
     void ApplyCropDrag(POINT client);
+    void ShowObjectContextMenu(POINT client);
     bool CommitCropRect(RECT newScreenRect);
     // Restore viewport from history without pushing undo (shapes already restored).
     bool ApplyCropFromHistory(RECT cropScreen);

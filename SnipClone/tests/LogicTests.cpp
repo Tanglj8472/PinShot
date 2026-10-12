@@ -10,6 +10,7 @@
 #include "../Common/DpiHelper.h"
 #include "../Common/TextLayout.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
@@ -213,8 +214,40 @@ void TestHitAccuracy()
     stack.Move(D2D1::Point2F(50, 40));
     stack.Release(D2D1::Point2F(50, 40));
     stack.SetTool(snip::ToolKind::Select);
-    Expect(stack.HitResizeHandle(0, D2D1::Point2F(10, 10)) == 1, "resize handle p0");
-    Expect(stack.HitResizeHandle(0, D2D1::Point2F(50, 40)) == 2, "resize handle p1");
+    // Rect uses 8 box handles: 1=NW … 5=SE …
+    Expect(stack.HitResizeHandle(0, D2D1::Point2F(10, 10)) == 1, "resize handle NW");
+    Expect(stack.HitResizeHandle(0, D2D1::Point2F(50, 40)) == 5, "resize handle SE");
+    Expect(stack.HitResizeHandle(0, D2D1::Point2F(30, 10)) == 2, "resize handle N");
+    Expect(stack.HitResizeHandle(0, D2D1::Point2F(50, 25)) == 4, "resize handle E");
+
+    stack.Clear();
+    stack.SetTool(snip::ToolKind::Arrow);
+    stack.Press(D2D1::Point2F(0, 0));
+    stack.Move(D2D1::Point2F(40, 20));
+    stack.Release(D2D1::Point2F(40, 20));
+    stack.SetTool(snip::ToolKind::Select);
+    Expect(stack.HitResizeHandle(0, D2D1::Point2F(0, 0)) == 1, "arrow handle start");
+    Expect(stack.HitResizeHandle(0, D2D1::Point2F(40, 20)) == 2, "arrow handle end");
+}
+
+void TestBoxHandleResize()
+{
+    std::printf("Box handle resize\n");
+    snip::DrawStack stack;
+    stack.SetTool(snip::ToolKind::Rect);
+    stack.Press(D2D1::Point2F(10, 10));
+    stack.Move(D2D1::Point2F(50, 40));
+    stack.Release(D2D1::Point2F(50, 40));
+    stack.SetTool(snip::ToolKind::Select);
+    // Grab SE handle and expand.
+    stack.Press(D2D1::Point2F(50, 40));
+    stack.Move(D2D1::Point2F(70, 60));
+    stack.Release(D2D1::Point2F(70, 60));
+    const auto* sh = stack.ShapeAt(0);
+    Expect(sh && sh->pts.size() >= 2, "rect still two-point");
+    const float r = (std::max)(sh->pts[0].x, sh->pts[1].x);
+    const float b = (std::max)(sh->pts[0].y, sh->pts[1].y);
+    Expect(r >= 69.f && b >= 59.f, "SE resize expands bounds");
 }
 
 void TestRemapForCrop()
@@ -438,6 +471,7 @@ int wmain()
     TestRectsIntersect();
     TestDrawStackUndo();
     TestHitAccuracy();
+    TestBoxHandleResize();
     TestMosaicHitRect();
     TestStyleEditsSelected();
     TestRemapForCrop();
