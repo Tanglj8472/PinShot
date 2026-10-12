@@ -480,18 +480,18 @@ impl Overlay {
             TbAction::LineStyle(ls) => self.style_tool(|s| s.line_style = ls),
             TbAction::SetMode(mode) => self.style_tool(|s| s.mode = mode),
             TbAction::SetEffect(effect) => self.style_tool(|s| s.effect = effect),
-            TbAction::Bold(on) => self.style_tool(|s| s.bold = on),
-            TbAction::Italic(on) => self.style_tool(|s| s.italic = on),
+            TbAction::Bold(on) => {
+                self.style_tool(|s| s.bold = on);
+                self.log_font_resolve();
+            }
+            TbAction::Italic(on) => {
+                self.style_tool(|s| s.italic = on);
+                self.log_font_resolve();
+            }
             TbAction::Outline(on) => self.style_tool(|s| s.outline = on),
             TbAction::Family(fam) => {
                 self.style_tool(|s| s.family = fam.to_string());
-                if let Some(p) = pinshot_core::font::resolve_family_path(
-                    fam,
-                    self.annot.option_style().map(|s| s.bold).unwrap_or(false),
-                    self.annot.option_style().map(|s| s.italic).unwrap_or(false),
-                ) {
-                    crate::logutil::log(&format!("font resolve {fam:?} -> {}", p.display()));
-                }
+                self.log_font_resolve();
             }
         }
         crate::logutil::log(&format!("tb {a:?}"));
@@ -503,6 +503,19 @@ impl Overlay {
     fn style_tool(&mut self, setter: impl Fn(&mut pinshot_core::annotation::Style)) {
         if let Some(tool) = self.annot.option_tool().filter(|t| *t != Tool::Select) {
             self.annot.set_style_value(tool, setter);
+        }
+    }
+
+    fn log_font_resolve(&self) {
+        let st = self.annot.option_style();
+        let fam = st.map(|s| s.family.as_str()).unwrap_or("");
+        let bold = st.map(|s| s.bold).unwrap_or(false);
+        let italic = st.map(|s| s.italic).unwrap_or(false);
+        if let Some(p) = pinshot_core::font::resolve_family_path(fam, bold, italic) {
+            crate::logutil::log(&format!(
+                "font resolve {fam:?} bold={bold} italic={italic} -> {}",
+                p.display()
+            ));
         }
     }
 

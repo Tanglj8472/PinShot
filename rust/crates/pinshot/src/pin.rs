@@ -1081,14 +1081,18 @@ impl PinWin {
                         pinshot_core::color::Rgba::rgba(255, 255, 255, 90),
                     );
                     crate::draw::stroke_rect(&mut pm, rr, self.annot.style(Tool::Text).color, 1.0);
-                    crate::text::blit_into_pm(
+                    let st = self.annot.style(Tool::Text);
+                    pinshot_core::font::blit_pixmap_ex(
                         &mut pm,
                         &ed.text,
                         rr.x + 2.0,
                         rr.y + 2.0,
-                        ((self.annot.style(Tool::Text).font_size as f32) * self.scale) as i32,
-                        self.annot.style(Tool::Text).color,
-                        true,
+                        (st.font_size as f32 * self.scale).max(8.0),
+                        st.color,
+                        st.outline,
+                        &st.family,
+                        st.bold,
+                        st.italic,
                     );
                 }
             }

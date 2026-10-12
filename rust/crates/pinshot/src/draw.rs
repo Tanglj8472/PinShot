@@ -552,14 +552,18 @@ impl OverlayFront {
             if let Some(r) = annot.text_edit_rect() {
                 fill_rect(&mut self.frame, r, Rgba::rgba(255, 255, 255, 90));
                 stroke_rect(&mut self.frame, r, ed_style_color(annot), 1.0);
-                crate::text::blit_into_pm(
+                let st = annot.style(Tool::Text);
+                pinshot_core::font::blit_pixmap_ex(
                     &mut self.frame,
                     &ed.text,
                     r.x + 2.0,
                     r.y + 2.0,
-                    annot.style(Tool::Text).font_size.max(8),
-                    annot.style(Tool::Text).color,
-                    annot.style(Tool::Text).bold,
+                    st.font_size.max(8) as f32,
+                    st.color,
+                    st.outline,
+                    &st.family,
+                    st.bold,
+                    st.italic,
                 );
                 let caret_x = r.x + 2.0 + pinshot_core::font::measure(&ed.text, annot.style(Tool::Text).font_size.max(8) as f32).0;
                 stroke_rect(
