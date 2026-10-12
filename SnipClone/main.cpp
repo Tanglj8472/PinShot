@@ -11,6 +11,7 @@
 #include "AnnotationOverlay/AnnotatorDocument.h"
 #include "Capture/ScreenCapture.h"
 #include "Common/AppSettings.h"
+#include "Common/ImageUtil.h"
 #include "Common/ProjectIO.h"
 #include "Common/SettingsDialog.h"
 #include "Common/SingleInstance.h"
@@ -108,6 +109,35 @@ void OpenProjectFile()
         return;
     }
     snip::ProjectIO::RememberRecent(path);
+    BeginAnnotationFromDocument(std::move(doc));
+}
+
+void OpenImageForAnnotate()
+{
+    // M3: plain image import — only new annotations; no recovered vectors from PNG.
+    const std::wstring path = snip::ImageUtil::BrowseOpenImage(g_mainWnd, snip::LiveSettings().outputDir);
+    if (path.empty())
+    {
+        return;
+    }
+    snip::CaptureResult image;
+    if (!snip::ImageUtil::LoadImageFile(path, image) || image.Empty())
+    {
+        MessageBoxW(g_mainWnd, L"无法打开该图片。", L"SnipClone", MB_ICONERROR | MB_OK);
+        return;
+    }
+    MessageBoxW(
+        g_mainWnd,
+        L"正在打开普通图片进行标注。\n\n"
+        L"这与「打开项目 (.scdoc)」不同：图片里没有可恢复的原有箭头/文字对象，"
+        L"只能新增批注。若需要跨次修改同一套对象，请使用「保存可编辑项目」。",
+        L"SnipClone",
+        MB_ICONINFORMATION | MB_OK);
+
+    snip::AnnotatorDocument doc;
+    doc.base = image;
+    doc.freeze = std::move(image);
+    doc.shapes.clear();
     BeginAnnotationFromDocument(std::move(doc));
 }
 
@@ -280,6 +310,9 @@ void OnTrayCommand(snip::TrayIcon::Command cmd)
         break;
     case snip::TrayIcon::Command::OpenProject:
         OpenProjectFile();
+        break;
+    case snip::TrayIcon::Command::OpenImage:
+        OpenImageForAnnotate();
         break;
     case snip::TrayIcon::Command::RestoreAutosave:
         RestoreAutosaveProject();

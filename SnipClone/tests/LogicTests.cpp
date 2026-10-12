@@ -9,6 +9,7 @@
 #include "../AnnotationOverlay/AnnotatorDocument.h"
 #include "../Common/CoordMap.h"
 #include "../Common/DpiHelper.h"
+#include "../Common/ImageUtil.h"
 #include "../Common/ProjectIO.h"
 #include "../Common/TextLayout.h"
 
@@ -345,6 +346,29 @@ void TestMosaicHitRect()
     Expect(stack.HitTest(D2D1::Point2F(80, 80)) < 0, "mosaic far miss");
 }
 
+
+void TestLoadImageFile()
+{
+    std::printf("LoadImageFile PNG round-trip\n");
+    snip::CaptureResult img;
+    img.width = 4;
+    img.height = 2;
+    img.stride = 16;
+    img.screenRect = { 0, 0, 4, 2 };
+    img.bgra.assign(32, 80);
+    img.bgra[0] = 10; img.bgra[1] = 20; img.bgra[2] = 30; img.bgra[3] = 255;
+    wchar_t tmp[MAX_PATH]{};
+    GetTempPathW(MAX_PATH, tmp);
+    std::wstring path = tmp;
+    path += L"snipclone_load_test.png";
+    Expect(snip::ImageUtil::SavePng(img, path), "save png for load test");
+    snip::CaptureResult loaded;
+    Expect(snip::ImageUtil::LoadImageFile(path, loaded), "load image file");
+    Expect(loaded.width == 4 && loaded.height == 2, "loaded size");
+    Expect(!loaded.Empty() && loaded.bgra.size() >= 16, "loaded pixels");
+    DeleteFileW(path.c_str());
+}
+
 void TestProjectRoundTrip()
 {
     std::printf("Project .scdoc round-trip\n");
@@ -530,6 +554,7 @@ int wmain()
     TestBoxHandleResize();
     TestMosaicHitRect();
     TestLoadShapesDocument();
+    TestLoadImageFile();
     TestProjectRoundTrip();
     TestStyleEditsSelected();
     TestRemapForCrop();

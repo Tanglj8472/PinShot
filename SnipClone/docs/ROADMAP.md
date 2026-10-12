@@ -11,7 +11,7 @@
 | 批次三 | A11 / A14 / 静态 CRT | ✅（本分支 `cursor/snipclone-17f2`） |
 | M1 | 会话内二次编辑 + 基本设置 | ✅ 本 PR |
 | M2 | 贴图继续编辑（Document） | ✅ 本 PR |
-| M3 | .scdoc 项目保存 / 自动保存恢复 | 🔧 本 PR |
+| M3 | .scdoc 项目保存 / 自动保存 / 打开图片 | ✅ 本 PR |
 
 状态字典见 `VERIFICATION.md`。产品方案见 `PRODUCT_UI_UX_IMPROVEMENT_PLAN.md`。
 

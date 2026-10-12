@@ -159,6 +159,114 @@ bool ImageUtil::CopyToClipboard(const CaptureResult& image)
     return true;
 }
 
+bool ImageUtil::LoadImageFile(const std::wstring& path, CaptureResult& out)
+{
+    out = {};
+    if (path.empty())
+    {
+        return false;
+    }
+    InitCom();
+
+    IWICImagingFactory* factory = nullptr;
+    if (FAILED(CoCreateInstance(
+            CLSID_WICImagingFactory,
+            nullptr,
+            CLSCTX_INPROC_SERVER,
+            IID_PPV_ARGS(&factory))))
+    {
+        return false;
+    }
+
+    IWICBitmapDecoder* decoder = nullptr;
+    IWICBitmapFrameDecode* frame = nullptr;
+    IWICFormatConverter* converter = nullptr;
+    bool ok = false;
+    do
+    {
+        if (FAILED(factory->CreateDecoderFromFilename(
+                path.c_str(),
+                nullptr,
+                GENERIC_READ,
+                WICDecodeMetadataCacheOnLoad,
+                &decoder)))
+        {
+            break;
+        }
+        if (FAILED(decoder->GetFrame(0, &frame)))
+        {
+            break;
+        }
+        if (FAILED(factory->CreateFormatConverter(&converter)))
+        {
+            break;
+        }
+        if (FAILED(converter->Initialize(
+                frame,
+                GUID_WICPixelFormat32bppBGRA,
+                WICBitmapDitherTypeNone,
+                nullptr,
+                0.f,
+                WICBitmapPaletteTypeCustom)))
+        {
+            break;
+        }
+        UINT w = 0, h = 0;
+        if (FAILED(converter->GetSize(&w, &h)) || w == 0 || h == 0 || w > 16384 || h > 16384)
+        {
+            break;
+        }
+        const int stride = static_cast<int>(w) * 4;
+        const size_t bytes = static_cast<size_t>(stride) * static_cast<size_t>(h);
+        out.width = static_cast<int>(w);
+        out.height = static_cast<int>(h);
+        out.stride = stride;
+        out.screenRect = { 0, 0, static_cast<LONG>(w), static_cast<LONG>(h) };
+        out.bgra.resize(bytes);
+        if (FAILED(converter->CopyPixels(nullptr, static_cast<UINT>(stride), static_cast<UINT>(bytes), out.bgra.data())))
+        {
+            out = {};
+            break;
+        }
+        ok = true;
+    } while (false);
+
+    if (converter)
+        converter->Release();
+    if (frame)
+        frame->Release();
+    if (decoder)
+        decoder->Release();
+    factory->Release();
+    return ok;
+}
+
+std::wstring ImageUtil::BrowseOpenImage(HWND owner, const std::wstring& initialDir)
+{
+    InitCom();
+
+    wchar_t path[MAX_PATH]{};
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = owner;
+    ofn.lpstrFilter =
+        L"图片 (*.png;*.jpg;*.jpeg;*.bmp;*.gif)\0*.png;*.jpg;*.jpeg;*.bmp;*.gif\0"
+        L"PNG (*.png)\0*.png\0所有文件 (*.*)\0*.*\0";
+    ofn.lpstrFile = path;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+    ofn.lpstrTitle = L"打开图片并标注";
+    if (!initialDir.empty())
+    {
+        ofn.lpstrInitialDir = initialDir.c_str();
+    }
+    if (GetOpenFileNameW(&ofn))
+    {
+        return path;
+    }
+    return {};
+}
+
 std::wstring ImageUtil::BrowseSavePng(HWND owner, const std::wstring& initialDir)
 {
     InitCom();

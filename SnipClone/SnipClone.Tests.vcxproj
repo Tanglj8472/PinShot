@@ -86,6 +86,7 @@
     <ClCompile Include="Common\DpiHelper.cpp" />
     <ClCompile Include="Common\TextLayout.cpp" />
     <ClCompile Include="Common\AppSettings.cpp" />
+    <ClCompile Include="Common\ImageUtil.cpp" />
     <ClCompile Include="Common\ProjectIO.cpp" />
     <ClCompile Include="Capture\ScreenCapture.cpp" />
     <ClCompile Include="AnnotationOverlay\DrawStack.cpp" />

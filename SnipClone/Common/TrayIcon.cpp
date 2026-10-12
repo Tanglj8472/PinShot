@@ -128,6 +128,7 @@ void TrayIcon::PopupMenu()
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, static_cast<UINT>(Command::Settings), L"设置…");
     AppendMenuW(menu, MF_STRING, static_cast<UINT>(Command::OpenProject), L"打开项目…");
+    AppendMenuW(menu, MF_STRING, static_cast<UINT>(Command::OpenImage), L"打开图片标注…");
     AppendMenuW(
         menu,
         MF_STRING | (ProjectIO::HasAutosave() ? 0 : MF_GRAYED),

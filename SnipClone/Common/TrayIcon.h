@@ -27,6 +27,7 @@ public:
         OpenSettingsDir,
         Settings,
         OpenProject,
+        OpenImage,
         RestoreAutosave,
         ClearAutosave,
         About,
