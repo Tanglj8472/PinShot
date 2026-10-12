@@ -14,7 +14,7 @@
 #include "PinWindow/PinManager.h"
 #include "SelectionOverlay/SelectionOverlay.h"
 
-#include <Windows.h>
+#include "Common/WinCompat.h"
 
 #include <memory>
 

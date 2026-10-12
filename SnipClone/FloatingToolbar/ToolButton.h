@@ -5,7 +5,7 @@
 
 #include "../AnnotationOverlay/DrawCommand.h"
 
-#include <Windows.h>
+#include "../Common/WinCompat.h"
 
 #include <string>
 

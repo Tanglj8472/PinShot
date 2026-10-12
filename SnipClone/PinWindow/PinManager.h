@@ -5,7 +5,7 @@
 
 #include "../Capture/CaptureResult.h"
 
-#include <Windows.h>
+#include "../Common/WinCompat.h"
 
 #include <vector>
 

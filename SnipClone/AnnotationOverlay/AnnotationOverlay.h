@@ -9,7 +9,7 @@
 #include "DrawStack.h"
 #include "TextEditor.h"
 
-#include <Windows.h>
+#include "../Common/WinCompat.h"
 
 #include <memory>
 

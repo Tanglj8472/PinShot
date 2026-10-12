@@ -5,7 +5,7 @@
 
 #include "../Capture/CaptureResult.h"
 
-#include <Windows.h>
+#include "../Common/WinCompat.h"
 #include <d2d1.h>
 
 namespace snip

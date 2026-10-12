@@ -8,7 +8,7 @@
 
 #include "../Capture/CaptureResult.h"
 
-#include <Windows.h>
+#include "WinCompat.h"
 
 #include <string>
 
