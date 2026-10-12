@@ -224,6 +224,61 @@ impl Raster {
         out
     }
 
+    /// Crop `x,y,w,h` (may extend past the image) replicating edge pixels
+    /// (RapidOCR `BORDER_REPLICATE` on text-line crops).
+    pub fn crop_replicate(&self, x: i32, y: i32, w: u32, h: u32) -> Self {
+        let mut out = Self::new(w, h);
+        if self.width == 0 || self.height == 0 {
+            return out;
+        }
+        for yy in 0..h {
+            for xx in 0..w {
+                let c = self.get_clamped(x + xx as i32, y + yy as i32);
+                out.set(xx as i32, yy as i32, c);
+            }
+        }
+        out
+    }
+
+    /// OpenCV INTER_LINEAR mapping: `(x + 0.5) * scale - 0.5`.
+    pub fn scale_linear(&self, nw: u32, nh: u32) -> Self {
+        let mut out = Self::new(nw, nh);
+        if self.width == 0 || self.height == 0 || nw == 0 || nh == 0 {
+            return out;
+        }
+        let x_scale = self.width as f32 / nw as f32;
+        let y_scale = self.height as f32 / nh as f32;
+        let lerp = |a: u8, b: u8, t: f32| -> u8 {
+            (a as f32 + (b as f32 - a as f32) * t).round().clamp(0.0, 255.0) as u8
+        };
+        let sample = |fx: f32, fy: f32| -> Rgba {
+            let x0 = fx.floor() as i32;
+            let y0 = fy.floor() as i32;
+            let x1 = x0 + 1;
+            let y1 = y0 + 1;
+            let tx = fx - x0 as f32;
+            let ty = fy - y0 as f32;
+            let c00 = self.get_clamped(x0, y0);
+            let c10 = self.get_clamped(x1, y0);
+            let c01 = self.get_clamped(x0, y1);
+            let c11 = self.get_clamped(x1, y1);
+            Rgba {
+                r: lerp(lerp(c00.r, c10.r, tx), lerp(c01.r, c11.r, tx), ty),
+                g: lerp(lerp(c00.g, c10.g, tx), lerp(c01.g, c11.g, tx), ty),
+                b: lerp(lerp(c00.b, c10.b, tx), lerp(c01.b, c11.b, tx), ty),
+                a: lerp(lerp(c00.a, c10.a, tx), lerp(c01.a, c11.a, tx), ty),
+            }
+        };
+        for y in 0..nh {
+            let fy = (y as f32 + 0.5) * y_scale - 0.5;
+            for x in 0..nw {
+                let fx = (x as f32 + 0.5) * x_scale - 0.5;
+                out.set(x as i32, y as i32, sample(fx, fy));
+            }
+        }
+        out
+    }
+
     /// Bilinear resize for OCR rec (NN at H=48 smears thin Latin strokes).
     pub fn scale_bilinear(&self, nw: u32, nh: u32) -> Self {
         let mut out = Self::new(nw, nh);
@@ -474,5 +529,30 @@ mod tests {
         assert_eq!(s.width, 4);
         assert_eq!(s.get(0, 0), Some(Rgba::rgb(0, 0, 0)));
         assert_eq!(s.get(3, 0).unwrap().r, 255);
+    }
+
+    #[test]
+    fn scale_linear_matches_opencv_center() {
+        let mut r = Raster::new(2, 1);
+        r.set(0, 0, Rgba::rgb(0, 0, 0));
+        r.set(1, 0, Rgba::rgb(255, 0, 0));
+        let s = r.scale_linear(4, 1);
+        assert_eq!(s.width, 4);
+        assert_eq!(s.get(0, 0), Some(Rgba::rgb(0, 0, 0)));
+        assert_eq!(s.get(3, 0).unwrap().r, 255);
+    }
+
+    #[test]
+    fn crop_replicate_pads_with_edge() {
+        let mut r = Raster::new(2, 2);
+        r.set(0, 0, Rgba::rgb(10, 0, 0));
+        r.set(1, 0, Rgba::rgb(20, 0, 0));
+        r.set(0, 1, Rgba::rgb(30, 0, 0));
+        r.set(1, 1, Rgba::rgb(40, 0, 0));
+        let c = r.crop_replicate(-1, -1, 4, 3);
+        assert_eq!(c.width, 4);
+        assert_eq!(c.get(0, 0), Some(Rgba::rgb(10, 0, 0)));
+        assert_eq!(c.get(1, 1), Some(Rgba::rgb(10, 0, 0)));
+        assert_eq!(c.get(2, 1), Some(Rgba::rgb(20, 0, 0)));
     }
 }

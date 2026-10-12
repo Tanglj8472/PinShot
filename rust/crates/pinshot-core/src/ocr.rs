@@ -81,16 +81,46 @@ pub struct TextBox {
     pub score: f32,
 }
 
+/// RapidOCR rec canvas: height 48, keep the crop aspect, pad right to ≥320.
+pub const REC_H: u32 = 48;
+pub const REC_MIN_W: u32 = 320;
+/// Long Wikipedia lines are ~900×16 → width 2700 at H=48. 1280 would squash.
+pub const REC_MAX_W: u32 = 4096;
+
+/// `(resized_w, canvas_w)` for a rec crop. Stretching the line to an 8-aligned
+/// width smears `l`/`i`; pad zeros on the right instead (RapidOCR).
+pub fn rec_resize_spec(src_w: u32, src_h: u32) -> (u32, u32) {
+    let src_h = src_h.max(1) as f32;
+    let src_w = src_w.max(1) as f32;
+    let ratio = src_w / src_h;
+    let max_wh = (REC_MIN_W as f32 / REC_H as f32).max(ratio);
+    // RapidOCR: `imgW = int(imgH * max_wh_ratio)` (truncate, not round).
+    let mut canvas_w = ((REC_H as f32) * max_wh) as u32;
+    canvas_w = canvas_w.clamp(REC_MIN_W, REC_MAX_W);
+    let mut resized_w = ((REC_H as f32) * ratio).ceil() as u32;
+    if resized_w > canvas_w {
+        resized_w = canvas_w;
+    }
+    (resized_w.max(1), canvas_w.max(REC_H))
+}
+
+/// Image-space margin around a DBNet AABB. RapidOCR polygon unclip is looser
+/// than connected-component boxes, which otherwise clip `I`/`l`/`f`.
+/// Keep Y pad small: extra height shrinks glyphs on the H=48 rec canvas.
+pub fn text_crop_pad(box_h: u32) -> (i32, i32) {
+    let h = box_h.max(1) as i32;
+    ((h / 3).max(8), (h / 10).max(3))
+}
+
 /// DBNet probability map → boxes. `prob` is the first channel of the det
-/// output, sized `dw × dh` (model input, including 32-aligned padding).
-/// `scale` maps that grid back to the original raster; padding is top-left.
+/// output, sized `dw × dh` (model input). Mapped back with
+/// `x * img_w / dw` (RapidOCR stretch-to-32, no letterbox).
 pub fn db_boxes(
     prob: &[f32],
     dw: u32,
     dh: u32,
     img_w: u32,
     img_h: u32,
-    scale: f32,
 ) -> Vec<TextBox> {
     let dw = dw.max(1) as usize;
     let dh = dh.max(1) as usize;
@@ -99,14 +129,32 @@ pub fn db_boxes(
     }
     const BIN: f32 = 0.3;
     const MIN_SCORE: f32 = 0.5;
-    const UNCLIP: f32 = 1.5;
+    // RapidOCR config.yaml: unclip_ratio 1.6, use_dilation true (2×2).
+    const UNCLIP: f32 = 1.6;
+    let mut mask = vec![false; dw * dh];
+    for y in 0..dh {
+        for x in 0..dw {
+            if prob[y * dw + x] < BIN {
+                continue;
+            }
+            for dy in 0..2usize {
+                for dx in 0..2usize {
+                    let nx = x + dx;
+                    let ny = y + dy;
+                    if nx < dw && ny < dh {
+                        mask[ny * dw + nx] = true;
+                    }
+                }
+            }
+        }
+    }
     let mut seen = vec![false; dw * dh];
     let mut boxes = Vec::new();
     let mut stack = Vec::new();
     for y0 in 0..dh {
         for x0 in 0..dw {
             let i0 = y0 * dw + x0;
-            if seen[i0] || prob[i0] < BIN {
+            if seen[i0] || !mask[i0] {
                 continue;
             }
             stack.clear();
@@ -120,8 +168,10 @@ pub fn db_boxes(
             let mut n = 0u32;
             while let Some((x, y)) = stack.pop() {
                 let i = y * dw + x;
-                sum += prob[i];
-                n += 1;
+                if prob[i] >= BIN {
+                    sum += prob[i];
+                    n += 1;
+                }
                 minx = minx.min(x);
                 maxx = maxx.max(x);
                 miny = miny.min(y);
@@ -136,14 +186,15 @@ pub fn db_boxes(
                         continue;
                     }
                     let ni = ny * dw + nx;
-                    if seen[ni] || prob[ni] < BIN {
+                    if seen[ni] || !mask[ni] {
                         continue;
                     }
                     seen[ni] = true;
                     stack.push((nx, ny));
                 }
             }
-            if n < 8 {
+            // RapidOCR `min_size` is 3; 8 dropped isolated thin stems (`I`, `l`).
+            if n < 3 {
                 continue;
             }
             let score = sum / n as f32;
@@ -153,16 +204,15 @@ pub fn db_boxes(
             let bw = (maxx - minx + 1) as f32;
             let bh = (maxy - miny + 1) as f32;
             let peri = (2.0 * (bw + bh)).max(1.0);
-            let d = (UNCLIP * (n as f32) / peri).ceil().max(1.0);
+            let d = (UNCLIP * (n as f32) / peri).ceil().max(2.0);
             let x1 = (minx as f32 - d).max(0.0);
             let y1 = (miny as f32 - d).max(0.0);
             let x2 = (maxx as f32 + 1.0 + d).min(dw as f32);
             let y2 = (maxy as f32 + 1.0 + d).min(dh as f32);
-            let s = scale.max(1e-6);
-            let sx = ((x1 / s).floor() as i32).max(0) as u32;
-            let sy = ((y1 / s).floor() as i32).max(0) as u32;
-            let ex = ((x2 / s).ceil() as u32).min(img_w);
-            let ey = ((y2 / s).ceil() as u32).min(img_h);
+            let sx = ((x1 / dw as f32) * img_w as f32).floor().max(0.0) as u32;
+            let sy = ((y1 / dh as f32) * img_h as f32).floor().max(0.0) as u32;
+            let ex = ((x2 / dw as f32) * img_w as f32).ceil().min(img_w as f32) as u32;
+            let ey = ((y2 / dh as f32) * img_h as f32).ceil().min(img_h as f32) as u32;
             if ex <= sx + 2 || ey <= sy + 2 {
                 continue;
             }
@@ -416,7 +466,7 @@ fn is_cjk(c: char) -> bool {
 }
 
 /// PP-OCRv5 often emits `In2009,Mozilla` with no ASCII spaces. Restore the
-/// obvious Latin boundaries (letter↔digit, punctuation before a letter).
+/// obvious Latin boundaries without splitting `i.e.` / `2010s`.
 pub fn latin_space_tweak(s: &str) -> String {
     let chars: Vec<char> = s.chars().collect();
     let mut out = String::with_capacity(s.len() + 8);
@@ -424,9 +474,16 @@ pub fn latin_space_tweak(s: &str) -> String {
         if i > 0 {
             let a = chars[i - 1];
             if !a.is_whitespace() && !b.is_whitespace() {
-                let punct_word = ",.;:!?".contains(a) && b.is_ascii_alphabetic();
+                let punct_word = match a {
+                    ',' | ';' | ':' => b.is_ascii_alphabetic(),
+                    '.' | '!' | '?' => b.is_ascii_uppercase(),
+                    ')' | ']' => b.is_ascii_alphanumeric(),
+                    _ => false,
+                };
                 let letter_digit = a.is_ascii_alphabetic() && b.is_ascii_digit();
-                let digit_letter = a.is_ascii_digit() && b.is_ascii_alphabetic();
+                let digit_letter = a.is_ascii_digit()
+                    && b.is_ascii_alphabetic()
+                    && !matches!(b, 's' | 'S');
                 if punct_word || letter_digit || digit_letter {
                     out.push(' ');
                 }
@@ -877,6 +934,31 @@ mod tests {
         );
         assert_eq!(latin_space_tweak("你好PinShot"), "你好PinShot");
         assert_eq!(latin_space_tweak("Hello world"), "Hello world");
+        assert_eq!(latin_space_tweak("i.e.,"), "i.e.,");
+        assert_eq!(latin_space_tweak("2010s"), "2010s");
+        assert_eq!(latin_space_tweak("[21]A"), "[21] A");
+        assert_eq!(
+            latin_space_tweak("end.Next"),
+            "end. Next"
+        );
+    }
+
+    #[test]
+    fn rec_resize_spec_keeps_aspect_and_pads() {
+        let (rw, cw) = rec_resize_spec(80, 16);
+        assert_eq!(rw, 240);
+        assert_eq!(cw, 320, "short lines pad to RapidOCR rec_img_shape width");
+        let (rw, cw) = rec_resize_spec(400, 16);
+        assert_eq!(rw, 1200);
+        assert_eq!(cw, 1200);
+        let (rw, cw) = rec_resize_spec(16, 16);
+        assert_eq!(rw, 48);
+        assert_eq!(cw, 320);
+        let (rw, cw) = rec_resize_spec(900, 16);
+        assert_eq!(rw, 2700);
+        assert_eq!(cw, 2700, "long lines keep aspect; do not squash to 1280");
+        assert_eq!(text_crop_pad(16), (8, 3));
+        assert_eq!(text_crop_pad(30), (10, 3));
     }
 
     #[test]
@@ -940,7 +1022,7 @@ mod tests {
                 prob[(y * dw + x) as usize] = 0.85;
             }
         }
-        let boxes = db_boxes(&prob, dw, dh, 320, 320, 0.1);
+        let boxes = db_boxes(&prob, dw, dh, 320, 320);
         assert!(
             boxes.len() >= 2,
             "expected two text bands, got {:?}",

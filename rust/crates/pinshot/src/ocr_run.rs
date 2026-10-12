@@ -6,8 +6,8 @@ use std::path::Path;
 
 use pinshot_core::config::data_dir;
 use pinshot_core::ocr::{
-    ctc_decode_fracs, db_boxes, join_ocr_parts, latin_space_tweak, load_keys, model_dir, ModelPaths,
-    TextBox,
+    ctc_decode_fracs, db_boxes, join_ocr_parts, latin_space_tweak, load_keys, model_dir,
+    rec_resize_spec, text_crop_pad, ModelPaths, TextBox, REC_H,
 };
 use pinshot_core::raster::Raster;
 
@@ -127,13 +127,14 @@ fn infer(image: &Raster, paths: &ModelPaths) -> Result<String, String> {
     let mut parts: Vec<(TextBox, String)> = Vec::new();
     for b in boxes {
         crate::logutil::log(&format!("ocr box {}x{} at {},{}", b.w, b.h, b.x, b.y));
-        let pad = 3i32;
-        let mut crop = image.crop(pinshot_core::geom::Rect::from_i32(
-            b.x as i32 - pad,
-            b.y as i32 - pad,
-            b.w as i32 + pad * 2,
-            b.h as i32 + pad * 2,
-        ));
+        // Tight DBNet AABBs clip the first/last Latin stem (`In`→`Tn`, `logo`→`ogo`).
+        let (pad_x, pad_y) = text_crop_pad(b.h);
+        let mut crop = image.crop_replicate(
+            b.x as i32 - pad_x,
+            b.y as i32 - pad_y,
+            b.w + (pad_x as u32) * 2,
+            b.h + (pad_y as u32) * 2,
+        );
         if crop.width < 4 || crop.height < 4 {
             continue;
         }
@@ -196,7 +197,7 @@ fn detect_boxes(image: &Raster, paths: &ModelPaths) -> Result<Vec<TextBox>, Stri
     }
     // Use the last channel if the model emits (N, C, H, W) with C>1.
     let offset = data.len() - hw;
-    let boxes = db_boxes(&data[offset..], ow, oh, image.width, image.height, packed.scale);
+    let boxes = db_boxes(&data[offset..], ow, oh, image.width, image.height);
     if boxes.is_empty() {
         Err("no text boxes".into())
     } else {
@@ -209,51 +210,51 @@ struct Packed {
     tensor: ort::value::Value,
     nw: u32,
     nh: u32,
-    scale: f32,
 }
+
+/// Python PinShot RapidOCR: `Det.limit_type=max`, `limit_side_len=960`.
+/// RapidOCR's default `min`/736 upscales short screenshots ~5× and smears 13px type.
+const DET_LIMIT: f32 = 960.0;
 
 #[cfg(any(feature = "ocr", unix))]
 fn pack_det(image: &Raster, max_side: u32) -> Result<Packed, String> {
-    let max_wh = image.width.max(image.height).max(1);
-    let scale = (max_side as f32 / max_wh as f32).min(1.0);
-    let rw = ((image.width as f32 * scale).round() as u32).max(1);
-    let rh = ((image.height as f32 * scale).round() as u32).max(1);
-    let nw = rw.div_ceil(32) * 32;
-    let nh = rh.div_ceil(32) * 32;
-    let resized = image.scale_nn(rw, rh);
-    let mut canvas = Raster::new(nw, nh);
-    canvas.fill(pinshot_core::Rgba::BLACK);
-    for y in 0..rh {
-        for x in 0..rw {
-            if let Some(c) = resized.get(x as i32, y as i32) {
-                canvas.set(x as i32, y as i32, c);
-            }
-        }
+    let w = image.width.max(1);
+    let h = image.height.max(1);
+    let limit = (max_side as f32).max(32.0).min(DET_LIMIT);
+    let max_wh = w.max(h) as f32;
+    let ratio = if max_wh > limit { limit / max_wh } else { 1.0 };
+    // Ceil to 32 so 13px Wikipedia type is not squashed (round(108/32)*32 = 96).
+    let mut nw = ((w as f32 * ratio / 32.0).ceil() as u32 * 32).max(32);
+    let mut nh = ((h as f32 * ratio / 32.0).ceil() as u32 * 32).max(32);
+    if nw == 0 {
+        nw = 32;
     }
-    let tensor = nchw_imagenet(&canvas)?;
+    if nh == 0 {
+        nh = 32;
+    }
+    let resized = image.scale_linear(nw, nh);
+    let tensor = nchw_bgr05(&resized)?;
     Ok(Packed {
         tensor,
         nw,
         nh,
-        scale,
     })
 }
 
 #[cfg(any(feature = "ocr", unix))]
-fn nchw_imagenet(image: &Raster) -> Result<ort::value::Value, String> {
+fn nchw_bgr05(image: &Raster) -> Result<ort::value::Value, String> {
     let nw = image.width;
     let nh = image.height;
     let mut chw = vec![0f32; (3 * nw * nh) as usize];
-    let mean = [0.485f32, 0.456, 0.406];
-    let std = [0.229f32, 0.224, 0.225];
     let plane = (nw * nh) as usize;
     for y in 0..nh {
         for x in 0..nw {
             let c = image.get(x as i32, y as i32).unwrap_or(pinshot_core::Rgba::BLACK);
             let i = (y * nw + x) as usize;
-            chw[i] = (c.r as f32 / 255.0 - mean[0]) / std[0];
-            chw[plane + i] = (c.g as f32 / 255.0 - mean[1]) / std[1];
-            chw[2 * plane + i] = (c.b as f32 / 255.0 - mean[2]) / std[2];
+            // RapidOCR / OpenCV BGR, mean/std 0.5.
+            chw[i] = (c.b as f32 / 255.0 - 0.5) / 0.5;
+            chw[plane + i] = (c.g as f32 / 255.0 - 0.5) / 0.5;
+            chw[2 * plane + i] = (c.r as f32 / 255.0 - 0.5) / 0.5;
         }
     }
     let t = ort::value::Tensor::from_array((vec![1i64, 3, nh as i64, nw as i64], chw))
@@ -263,25 +264,30 @@ fn nchw_imagenet(image: &Raster) -> Result<ort::value::Value, String> {
 
 #[cfg(any(feature = "ocr", unix))]
 fn pack_rec(crop: &Raster) -> Result<ort::value::Value, String> {
-    let h = crop.height.max(1) as f32;
-    let mut nw = ((crop.width as f32) * (48.0 / h)).round() as u32;
-    nw = (nw.clamp(16, 1280) / 8 * 8).max(8);
-    let nh = 48u32;
-    let resized = crop.scale_bilinear(nw, nh);
-    let mut chw = vec![0f32; (3 * nw * nh) as usize];
-    let plane = (nw * nh) as usize;
+    pack_rec_shaped(crop, rec_resize_spec(crop.width, crop.height))
+}
+
+#[cfg(any(feature = "ocr", unix))]
+fn pack_rec_shaped(crop: &Raster, (resized_w, canvas_w): (u32, u32)) -> Result<ort::value::Value, String> {
+    let nh = REC_H;
+    // Align-corners bilinear keeps thin `l`/`i` apart better than OpenCV
+    // half-pixel mapping when upscaling 13–16px Wikipedia type to H=48.
+    let resized = crop.scale_bilinear(resized_w.max(1), nh);
+    let mut chw = vec![0f32; (3 * canvas_w * nh) as usize];
+    let plane = (canvas_w * nh) as usize;
+    let copy_w = resized_w.min(canvas_w);
     for y in 0..nh {
-        for x in 0..nw {
+        for x in 0..copy_w {
             let c = resized
                 .get(x as i32, y as i32)
                 .unwrap_or(pinshot_core::Rgba::WHITE);
-            let i = (y * nw + x) as usize;
-            chw[i] = (c.r as f32 / 255.0 - 0.5) / 0.5;
+            let i = (y * canvas_w + x) as usize;
+            chw[i] = (c.b as f32 / 255.0 - 0.5) / 0.5;
             chw[plane + i] = (c.g as f32 / 255.0 - 0.5) / 0.5;
-            chw[2 * plane + i] = (c.b as f32 / 255.0 - 0.5) / 0.5;
+            chw[2 * plane + i] = (c.r as f32 / 255.0 - 0.5) / 0.5;
         }
     }
-    let t = ort::value::Tensor::from_array((vec![1i64, 3, nh as i64, nw as i64], chw))
+    let t = ort::value::Tensor::from_array((vec![1i64, 3, nh as i64, canvas_w as i64], chw))
         .map_err(|e| e.to_string())?;
     Ok(t.into())
 }
@@ -336,28 +342,7 @@ fn rec_line_ex(
         }
         idx.push(best);
     }
-    let decoded = decode_ctc_ex(&idx, keys, classes);
-    if !decoded.0.trim().is_empty() {
-        return Ok(decoded);
-    }
-    drop(outputs);
-    // Some RapidOCR exports expect BGR CHW. Retry once before giving up.
-    if let Ok(t_bgr) = pack_rec_bgr(crop) {
-        if let Ok(outputs) = session.run(ort::inputs![t_bgr]) {
-            if outputs.len() > 0 {
-                if let Ok((shape, data)) = outputs[0].try_extract_tensor::<f32>() {
-                    let dims: Vec<i64> = shape.iter().copied().collect();
-                    if let Ok(idx) = rec_argmax(&dims, data, keys.len()) {
-                        let alt = decode_ctc_ex(&idx, keys, keys.len().max(2));
-                        if !alt.0.trim().is_empty() {
-                            return Ok(alt);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    Ok(decoded)
+    Ok(decode_ctc_ex(&idx, keys, classes))
 }
 
 #[cfg(any(feature = "ocr", unix))]
@@ -378,64 +363,9 @@ fn decode_ctc_ex(idx: &[usize], keys: &[String], classes: usize) -> (String, Vec
 }
 
 #[cfg(any(feature = "ocr", unix))]
-fn rec_argmax(dims: &[i64], data: &[f32], nclass: usize) -> Result<Vec<usize>, String> {
-    let (tlen, classes, transposed) = match dims {
-        [_, t, c] if (*c as usize) >= nclass => (*t as usize, *c as usize, false),
-        [_, c, t] if (*c as usize) >= nclass => (*t as usize, *c as usize, true),
-        [_, _, t, c] if (*c as usize) >= nclass => (*t as usize, *c as usize, false),
-        [_, _, c, t] if (*c as usize) >= nclass => (*t as usize, *c as usize, true),
-        d if d.len() >= 3 => (d[d.len() - 2] as usize, d[d.len() - 1] as usize, false),
-        d if d.len() == 2 => (d[0] as usize, d[1] as usize, false),
-        _ => return Err("unexpected rec shape".into()),
-    };
-    let mut idx = Vec::with_capacity(tlen);
-    for ti in 0..tlen {
-        let mut best = 0usize;
-        let mut bv = f32::NEG_INFINITY;
-        for c in 0..classes {
-            let v = if transposed {
-                data[c * tlen + ti]
-            } else {
-                data[ti * classes + c]
-            };
-            if v > bv {
-                bv = v;
-                best = c;
-            }
-        }
-        idx.push(best);
-    }
-    Ok(idx)
-}
-
-#[cfg(any(feature = "ocr", unix))]
-fn pack_rec_bgr(crop: &Raster) -> Result<ort::value::Value, String> {
-    let h = crop.height.max(1) as f32;
-    let mut nw = ((crop.width as f32) * (48.0 / h)).round() as u32;
-    nw = (nw.clamp(16, 1280) / 8 * 8).max(8);
-    let nh = 48u32;
-    let resized = crop.scale_bilinear(nw, nh);
-    let mut chw = vec![0f32; (3 * nw * nh) as usize];
-    let plane = (nw * nh) as usize;
-    for y in 0..nh {
-        for x in 0..nw {
-            let c = resized
-                .get(x as i32, y as i32)
-                .unwrap_or(pinshot_core::Rgba::WHITE);
-            let i = (y * nw + x) as usize;
-            chw[i] = (c.b as f32 / 255.0 - 0.5) / 0.5;
-            chw[plane + i] = (c.g as f32 / 255.0 - 0.5) / 0.5;
-            chw[2 * plane + i] = (c.r as f32 / 255.0 - 0.5) / 0.5;
-        }
-    }
-    let t = ort::value::Tensor::from_array((vec![1i64, 3, nh as i64, nw as i64], chw))
-        .map_err(|e| e.to_string())?;
-    Ok(t.into())
-}
-
-#[cfg(any(feature = "ocr", unix))]
 fn cls_upside_down(session: &mut ort::session::Session, crop: &Raster) -> Result<bool, String> {
-    let t = pack_rec(crop)?;
+    let (rw, _) = rec_resize_spec(crop.width, crop.height);
+    let t = pack_rec_shaped(crop, (rw.min(192), 192))?;
     let outputs = session.run(ort::inputs![t]).map_err(|e| e.to_string())?;
     if outputs.len() == 0 {
         return Ok(false);
@@ -535,5 +465,139 @@ mod tests {
             text.chars().filter(|c| *c == ' ').count() >= 3,
             "expected several English word spaces, got {text:?}"
         );
+    }
+
+    fn load_png_raster(path: &std::path::Path) -> Option<Raster> {
+        let img = image::open(path).ok()?.to_rgba8();
+        let (w, h) = img.dimensions();
+        let mut r = Raster::from_rgba(w, h, img.into_raw())?;
+        r.force_opaque();
+        Some(r)
+    }
+
+    fn place_on_page(src: &Raster, page_w: u32, page_h: u32, ox: u32, oy: u32) -> Raster {
+        let mut img = Raster::new(page_w.max(src.width + ox), page_h.max(src.height + oy));
+        img.fill(Rgba::WHITE);
+        for y in 0..src.height {
+            for x in 0..src.width {
+                if let Some(c) = src.get(x as i32, y as i32) {
+                    img.set((ox + x) as i32, (oy + y) as i32, c);
+                }
+            }
+        }
+        img
+    }
+
+    fn pango_article_raster(lines: &[&str], font: &str) -> Option<Raster> {
+        let dir = std::env::temp_dir();
+        let tag = font.replace([' ', '/'], "-");
+        let txt = dir.join(format!("pinshot-ocr-stem-{tag}.txt"));
+        let png = dir.join(format!("pinshot-ocr-stem-{tag}.png"));
+        std::fs::write(&txt, lines.join("\n")).ok()?;
+        let st = std::process::Command::new("pango-view")
+            .args([
+                "--no-display",
+                "--dpi=96",
+                "--margin=16",
+                "--align=left",
+                "-qo",
+            ])
+            .arg(&png)
+            .arg(format!("--font={font}"))
+            .arg(&txt)
+            .status()
+            .ok()?;
+        if !st.success() {
+            return None;
+        }
+        let src = load_png_raster(&png)?;
+        Some(place_on_page(&src, 1100, 400, 40, 40))
+    }
+
+    fn assert_wiki_stems(text: &str, strict_doubles: bool) {
+        let lower = text.to_ascii_lowercase();
+        let words: Vec<&str> = lower
+            .split(|c: char| !c.is_ascii_alphanumeric() && c != '-')
+            .filter(|w| !w.is_empty())
+            .collect();
+        for needle in ["in", "2009", "logo", "first"] {
+            assert!(
+                words.iter().any(|w| *w == needle),
+                "missing {needle:?} in {text:?} tokens={words:?}"
+            );
+        }
+        assert!(
+            !words.iter().any(|w| *w == "tn" || *w == "fficially" || *w == "ogo"),
+            "clipped Latin stems in {text:?} tokens={words:?}"
+        );
+        assert!(
+            !text.contains("i. e.") && !text.contains("2010 s") && !text.contains("[21]A"),
+            "spacing glitches in {text:?}"
+        );
+        if strict_doubles {
+            for needle in ["mozilla", "officially"] {
+                assert!(
+                    words.iter().any(|w| *w == needle),
+                    "missing {needle:?} in {text:?} tokens={words:?}"
+                );
+            }
+            assert!(
+                words.iter().any(|w| *w == "full-time" || *w == "fulltime"),
+                "missing full-time in {text:?}"
+            );
+            assert!(
+                lower.contains("note 5"),
+                "missing [note 5] in {text:?}"
+            );
+            assert!(
+                !words.iter().any(|w| *w == "mozila" || *w == "ful-time"),
+                "dropped thin doubles in {text:?} tokens={words:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn ocr_keeps_latin_stems_on_browser_sized_type_when_requested() {
+        if std::env::var("PINSHOT_OCR_SMOKE").ok().as_deref() != Some("1") {
+            return;
+        }
+        let lines = [
+            "In 2009, Mozilla officially sponsored the project.",
+            "The Firefox logo and the first full-time MacOS engineers.",
+            "See [note 5] and [21] After 2010s (i.e., later).",
+        ];
+        let mut pango_ran = false;
+        for font in ["Liberation Sans 13", "DejaVu Sans 13"] {
+            let Some(img) = pango_article_raster(&lines, font) else {
+                continue;
+            };
+            pango_ran = true;
+            let text = recognize(&img).unwrap_or_else(|e| panic!("ocr {font}: {e}"));
+            eprintln!("ocr stem {font} {}x{} => {text:?}", img.width, img.height);
+            assert_wiki_stems(&text, font.starts_with("Liberation"));
+        }
+        // Fontdue 16px is thinner than Chrome; still require first-letter + spacing.
+        let mut img = Raster::new(1100, 360);
+        img.fill(Rgba::WHITE);
+        for (i, line) in lines.iter().enumerate() {
+            font::blit_rgba_chrome(
+                &mut img.pixels,
+                img.width,
+                img.width,
+                img.height,
+                line,
+                36.0,
+                64.0 + i as f32 * 36.0,
+                16.0,
+                Rgba::BLACK,
+            );
+        }
+        img.force_opaque();
+        let text = recognize(&img).unwrap_or_else(|e| panic!("ocr: {e}"));
+        eprintln!("ocr stem fontdue => {text:?}");
+        assert_wiki_stems(&text, false);
+        if !pango_ran {
+            eprintln!("pango-view missing; skipped Liberation/DejaVu screenshots");
+        }
     }
 }
