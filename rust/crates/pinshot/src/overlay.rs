@@ -307,6 +307,22 @@ impl Overlay {
         }
     }
 
+    fn log_tb_chrome(&self) {
+        let Some(tb) = &self.toolbar else {
+            return;
+        };
+        crate::logutil::log(&format!(
+            "tb bar {:.0},{:.0} {:.0}x{:.0}",
+            tb.bar.x, tb.bar.y, tb.bar.w, tb.bar.h
+        ));
+        if let Some(c) = tb.button_center(TbAction::Tool(Tool::Text)) {
+            crate::logutil::log(&format!("tb Text at {:.0},{:.0}", c.x, c.y));
+        }
+        if let Some(c) = tb.button_center(TbAction::Pin) {
+            crate::logutil::log(&format!("tb Pin at {:.0},{:.0}", c.x, c.y));
+        }
+    }
+
     fn crop(&mut self) -> Option<Raster> {
         if !self.sel.has_sel() {
             return None;
@@ -801,6 +817,7 @@ impl Overlay {
                         self.sel.release(pt, self.hover, self.bounds());
                         self.log_sel_translate();
                         self.relayout_toolbar();
+                        self.log_tb_chrome();
                         if self.translate_on_select && self.sel.has_sel() {
                             self.finish_ocr(true);
                         }

@@ -2,16 +2,19 @@
 
 对照源：`main` 上的 Python/PySide6 PinShot。Rust 在 `rust/`，分支 `rust`。Python 源码不改。
 
-最后更新：2026-10-12（`a08bf05` 实机两项已修：Xvfb `:26` B/I/家族像素差 + New/Rename 可打字；25/25 与 9/9）。
+最后更新：2026-10-12（Rust UI chrome：工具栏/图钉菜单/分组提示向公开 Snipaste 观感靠拢；功能未改）。
 
 ---
 
 ## 当前进度
 
-HEAD 在 `rust`（本轮 PARITY 剩余项）。对照 Python/`main`，**先 Linux X11**（Xfce / xfwm4，1920×1200），再 Windows。Python 源码不改。用户提交（`a6d6765` / `7c406a6` / `ed59e0f` 共享 `toggle_tool`、Windows prefs 循环、语言标签测试）保留。
+HEAD 在 `rust`。本轮只改自绘 chrome（clean-room，未拆 Snipaste 资源）：工具栏更密（CELL 24 / PAD 3）、圆角+软阴影、选中工具蓝边、芯片选中实心蓝、直线/箭头图标区分、图钉菜单圆角悬停+勾选、分组名称框焦点描边。F1 / B/I/家族 / New·Rename KeyboardInput / 滚轮改宽 / 托盘路径未动。Python 源码不改。用户提交保留。
 
 | 面 | 状态 |
 |---|---|
+| 标注工具栏 / 子面板视觉 | 本轮：近白底、6px 圆角、阴影、分隔线、选中 `#3D8FD1` 描边；中文芯片 12px |
+| 图钉右键菜单 / 新分组提示 | 本轮：浅色主题、inset 悬停、勾选刻度、输入框圆角蓝边 |
+| 确认放弃 / 取色 / toast / 尺寸条 / fallback·prefs 按钮 | 本轮：同一套圆角 chrome（prefs 有余力带过） |
 | Linux 框选 / 矩形·椭圆·箭头 / 点边 8 手柄 / 滚轮改宽与面板数字 | 实机过（`7ef18fe`） |
 | 文字快打 `hello world` + Ctrl+Enter、Ctrl+C PNG、prefs、`,` `.` 历史 | 实机过 |
 | 重启后 R 套在**当前截图**的上次选区、Tab 不漏到 Chrome | 实机过 |
@@ -45,6 +48,12 @@ HEAD 在 `rust`（本轮 PARITY 剩余项）。对照 Python/`main`，**先 Linu
 ## 阶段与提交
 
 时间按仓库提交顺序（均为 `rust` 线，除非注明）。
+
+### UI chrome（本轮）
+
+| SHA | 内容 |
+|---|---|
+| （本轮） | 工具栏/菜单/对话框向公开 Snipaste 密度与质感靠拢：圆角阴影、选中高亮、直线图标无箭头头。单元测试 `toolbar_selected_uses_blue_accent` + `line_icon_has_no_arrow_head`。Xvfb 截图见 `/opt/cursor/artifacts/ui-polish/` |
 
 ### P1 骨架（Windows-only workspace）
 

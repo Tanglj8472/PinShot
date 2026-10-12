@@ -81,8 +81,10 @@ pub struct Toolbar {
     pub custom_value: Rgba,
 }
 
-const CELL: f32 = 26.0;
-const PAD: f32 = 4.0;
+/// Compact cells (Snipaste-like density). Hit-testing uses the same metrics.
+const CELL: f32 = 24.0;
+const PAD: f32 = 3.0;
+const SEP: f32 = 8.0;
 
 impl Toolbar {
     pub fn layout(
@@ -145,8 +147,9 @@ impl Toolbar {
                 (IconKind::Copy, TbAction::Copy, "Copy (Ctrl+C / Enter)"),
             ]
         };
-        let n = (tools.len() + 1 + acts.len()) as f32;
-        let w = PAD * 2.0 + n * CELL + 8.0;
+        let n_tools = tools.len() as f32;
+        let n_acts = acts.len() as f32;
+        let w = PAD * 2.0 + n_tools * CELL + SEP + n_acts * CELL;
         let h = CELL + PAD * 2.0;
         let mut x = sel.right() + 1.0 - w;
         let mut y = sel.bottom() + 8.0;
@@ -175,7 +178,7 @@ impl Toolbar {
             });
             cx += CELL;
         }
-        cx += 8.0;
+        cx += SEP;
         for (icon, action, tip) in acts {
             buttons.push(TbButton {
                 rect: Rect::new(cx, y + PAD, CELL, CELL),
@@ -202,17 +205,17 @@ impl Toolbar {
             );
             let show_palette = !matches!(active, Some(Tool::Mosaic | Tool::Eraser | Tool::Select));
             let pw = (20.0_f32 * 16.0 + 128.0).min(overlay.w.max(128.0));
-            let ph = if has_style_row { 66.0 } else { 40.0 };
-            let mut py = bar.bottom() + 3.0;
+            let ph = if has_style_row { 70.0 } else { 42.0 };
+            let mut py = bar.bottom() + 4.0;
             if py + ph > overlay.bottom() {
-                py = bar.y - ph - 3.0;
+                py = bar.y - ph - 4.0;
             }
             let px = clamp_f32(bar.x, overlay.x, overlay.right() - pw);
             let pr = Rect::new(px, py, pw, ph);
             panel = Some(pr);
 
-            let mut chip_x = pr.x + 6.0;
-            let chip_y = pr.y + 6.0;
+            let mut chip_x = pr.x + 8.0;
+            let chip_y = pr.y + 8.0;
             if let Some(st) = style {
                 match active {
                     Some(Tool::Rect) | Some(Tool::Ellipse) => {
@@ -238,9 +241,9 @@ impl Toolbar {
                         push_chip(&mut extras, &mut chip_x, chip_y, 44.0, tr("Rect"), TbAction::SetMode(DrawMode::Rect), st.mode == DrawMode::Rect);
                     }
                     Some(Tool::Text) => {
-                        push_chip(&mut extras, &mut chip_x, chip_y, 22.0, "B".into(), TbAction::Bold(!st.bold), st.bold);
-                        push_chip(&mut extras, &mut chip_x, chip_y, 22.0, "I".into(), TbAction::Italic(!st.italic), st.italic);
-                        push_chip(&mut extras, &mut chip_x, chip_y, 58.0, tr("Outline"), TbAction::Outline(!st.outline), st.outline);
+                        push_chip(&mut extras, &mut chip_x, chip_y, 24.0, "B".into(), TbAction::Bold(!st.bold), st.bold);
+                        push_chip(&mut extras, &mut chip_x, chip_y, 24.0, "I".into(), TbAction::Italic(!st.italic), st.italic);
+                        push_chip(&mut extras, &mut chip_x, chip_y, 56.0, tr("Outline"), TbAction::Outline(!st.outline), st.outline);
                         for (fam, label) in pinshot_core::font::FAMILY_PRESETS {
                             let on = if fam.is_empty() {
                                 st.family.is_empty()
@@ -248,10 +251,10 @@ impl Toolbar {
                                 st.family.eq_ignore_ascii_case(fam)
                             };
                             let w = match *fam {
-                                "" => 58.0,
-                                "Sans" => 44.0,
-                                "Serif" => 46.0,
-                                _ => 46.0,
+                                "" => 52.0,
+                                "Sans" => 46.0,
+                                "Serif" => 48.0,
+                                _ => 50.0,
                             };
                             push_chip(
                                 &mut extras,
@@ -272,11 +275,11 @@ impl Toolbar {
                 }
             }
 
-            let row_y = if has_style_row { pr.y + 36.0 } else { pr.y + 8.0 };
-            width_minus = Rect::new(pr.x + 6.0, row_y, 22.0, 22.0);
-            width_label = Rect::new(pr.x + 30.0, row_y, 28.0, 22.0);
-            width_plus = Rect::new(pr.x + 60.0, row_y, 22.0, 22.0);
-            let mut pal_x = pr.x + 88.0;
+            let row_y = if has_style_row { pr.y + 38.0 } else { pr.y + 10.0 };
+            width_minus = Rect::new(pr.x + 8.0, row_y, 22.0, 22.0);
+            width_label = Rect::new(pr.x + 32.0, row_y, 28.0, 22.0);
+            width_plus = Rect::new(pr.x + 62.0, row_y, 22.0, 22.0);
+            let mut pal_x = pr.x + 90.0;
             if show_palette {
                 custom_color = Rect::new(pal_x, row_y, 22.0, 22.0);
                 pal_x += 26.0;
@@ -360,6 +363,13 @@ impl Toolbar {
             }
         }
         None
+    }
+
+    pub fn button_center(&self, want: TbAction) -> Option<Point> {
+        self.buttons
+            .iter()
+            .find(|b| b.action == want)
+            .map(|b| b.rect.center())
     }
 }
 
@@ -457,5 +467,21 @@ mod tests {
         assert!(tb.extras.iter().any(|e| e.action == TbAction::Family("Mono")));
         let sans = tb.extras.iter().find(|e| e.action == TbAction::Family("Sans")).unwrap();
         assert_eq!(tb.hit(sans.rect.center()), Some(TbAction::Family("Sans")));
+    }
+
+    #[test]
+    fn compact_bar_and_button_centers() {
+        let sel = Rect::new(100.0, 100.0, 400.0, 240.0);
+        let over = Rect::new(0.0, 0.0, 1920.0, 1200.0);
+        let tb = Toolbar::layout(sel, over, None, false, None);
+        assert!(
+            tb.bar.h <= 32.0,
+            "toolbar should be denser than the old 34px bar, h={}",
+            tb.bar.h
+        );
+        let text = tb.button_center(TbAction::Tool(Tool::Text)).unwrap();
+        assert_eq!(tb.hit(text), Some(TbAction::Tool(Tool::Text)));
+        let pin = tb.button_center(TbAction::Pin).unwrap();
+        assert_eq!(tb.hit(pin), Some(TbAction::Pin));
     }
 }

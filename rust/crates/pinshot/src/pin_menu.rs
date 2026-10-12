@@ -14,14 +14,17 @@ use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
 
-use crate::draw::{fill_rect, present, stroke_rect};
+use crate::draw::{
+    fill_rect, fill_rounded_rect, paint_check_tick, present, stroke_rect, stroke_rounded_rect,
+    UiTheme,
+};
 use crate::event::PinMenuAction;
 use pinshot_core::color::Rgba;
 
 const ROW_H: f32 = 22.0;
 const MENU_W: f32 = 268.0;
 const PAD: f32 = 6.0;
-const PROMPT_H: u32 = 96;
+const PROMPT_H: u32 = 112;
 
 #[derive(Clone, Copy)]
 enum PromptKind {
@@ -344,15 +347,16 @@ impl PinMenuWin {
         let Some(mut pm) = tiny_skia::Pixmap::new(w, h) else {
             return;
         };
+        let thm = UiTheme::resolve("light");
         fill_rect(
             &mut pm,
             Rect::new(0.0, 0.0, w as f32, h as f32),
-            Rgba::rgb(247, 247, 247),
+            thm.bg,
         );
         stroke_rect(
             &mut pm,
             Rect::new(0.5, 0.5, w as f32 - 1.0, h as f32 - 1.0),
-            Rgba::rgb(154, 154, 154),
+            thm.border,
             1.0,
         );
         if let Some(p) = &self.prompt {
@@ -360,23 +364,19 @@ impl PinMenuWin {
                 PromptKind::New => tr("New group"),
                 PromptKind::Rename => tr("Rename group"),
             };
-            crate::text::blit_into_pm(&mut pm, &title, 12.0, 10.0, 13, Rgba::rgb(20, 20, 20), true);
+            crate::text::blit_into_pm(&mut pm, &title, 14.0, 12.0, 14, thm.text, true);
             crate::text::blit_into_pm(
                 &mut pm,
                 &tr("Name:"),
-                12.0,
-                36.0,
+                14.0,
+                40.0,
                 12,
-                Rgba::rgb(90, 90, 90),
+                thm.muted,
                 false,
             );
-            fill_rect(&mut pm, Rect::new(12.0, 56.0, MENU_W - 24.0, 26.0), Rgba::WHITE);
-            stroke_rect(
-                &mut pm,
-                Rect::new(12.0, 56.0, MENU_W - 24.0, 26.0),
-                Rgba::rgb(20, 20, 20),
-                1.0,
-            );
+            let field = Rect::new(14.0, 62.0, MENU_W - 28.0, 28.0);
+            fill_rounded_rect(&mut pm, field, 5.0, Rgba::WHITE);
+            stroke_rounded_rect(&mut pm, field, 5.0, thm.accent, 1.5);
             let shown = if p.buf.is_empty() {
                 String::new()
             } else {
@@ -385,10 +385,10 @@ impl PinMenuWin {
             crate::text::blit_into_pm(
                 &mut pm,
                 &format!("{shown}|"),
-                16.0,
-                60.0,
+                20.0,
+                67.0,
                 13,
-                Rgba::rgb(20, 20, 20),
+                thm.text,
                 false,
             );
             if let Ok(mut buf) = self.surface.buffer_mut() {
@@ -403,18 +403,18 @@ impl PinMenuWin {
                 Row::Sep => {
                     fill_rect(
                         &mut pm,
-                        Rect::new(8.0, r.y + 3.0, MENU_W - 16.0, 1.0),
-                        Rgba::rgb(200, 200, 200),
+                        Rect::new(10.0, r.y + 3.5, MENU_W - 20.0, 1.0),
+                        thm.border,
                     );
                 }
                 Row::Head(s) => {
                     crate::text::blit_into_pm(
                         &mut pm,
                         s,
-                        r.x + 10.0,
+                        r.x + 12.0,
                         r.y + 4.0,
                         11,
-                        Rgba::rgb(90, 90, 90),
+                        thm.muted,
                         true,
                     );
                 }
@@ -427,22 +427,17 @@ impl PinMenuWin {
                 } => {
                     let hover = r.contains(self.cursor);
                     if hover {
-                        fill_rect(&mut pm, *r, Rgba::rgb(196, 217, 242));
+                        fill_rounded_rect(
+                            &mut pm,
+                            Rect::new(r.x + 4.0, r.y + 1.0, r.w - 8.0, r.h - 2.0),
+                            4.0,
+                            thm.hover,
+                        );
                     }
                     let mut x = if *indent { 28.0 } else { 12.0 };
                     if *checkable || *checked {
-                        let boxr = Rect::new(x, r.y + 5.0, 12.0, 12.0);
-                        fill_rect(
-                            &mut pm,
-                            boxr,
-                            if *checked {
-                                Rgba::rgb(40, 140, 80)
-                            } else {
-                                Rgba::rgb(247, 247, 247)
-                            },
-                        );
-                        stroke_rect(&mut pm, boxr, Rgba::rgb(20, 20, 20), 1.0);
-                        x += 16.0;
+                        paint_check_tick(&mut pm, x, r.y + 5.0, *checked);
+                        x += 18.0;
                     }
                     crate::text::blit_into_pm(
                         &mut pm,
@@ -450,7 +445,7 @@ impl PinMenuWin {
                         x,
                         r.y + 3.0,
                         12,
-                        Rgba::rgb(20, 20, 20),
+                        thm.text,
                         false,
                     );
                 }

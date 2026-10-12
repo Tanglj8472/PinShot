@@ -572,6 +572,11 @@ impl PinWin {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x as f32, position.y as f32);
+                let was_over_tb = self
+                    .toolbar
+                    .as_ref()
+                    .map(|t| t.contains(self.last_cursor))
+                    .unwrap_or(false);
                 self.last_cursor = p;
                 if self.annotating
                     && (self.annot.is_brush_live()
@@ -579,6 +584,10 @@ impl PinWin {
                         || self.annot.live.is_some())
                 {
                     self.annot.move_to(self.img_pt(p), false);
+                    self.dirty = true;
+                } else if self.annotating
+                    && (was_over_tb || self.toolbar.as_ref().is_some_and(|t| t.contains(p)))
+                {
                     self.dirty = true;
                 } else if let Some((off, tl)) = self.drag {
                     let nx = tl.0 + (p.x - off.x) as i32;
@@ -1064,7 +1073,7 @@ impl PinWin {
                 self.relayout_tb();
             }
             if let Some(tb) = &self.toolbar {
-                paint_toolbar(&mut pm, tb);
+                paint_toolbar(&mut pm, tb, Some(self.last_cursor));
             }
             if let Some(ed) = &self.annot.text_edit {
                 if let Some(r) = self.annot.text_edit_rect() {

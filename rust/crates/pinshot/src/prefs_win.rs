@@ -15,7 +15,7 @@ use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId, WindowLevel};
 
-use crate::draw::{fill_rect, present, stroke_rect, UiTheme};
+use crate::draw::{fill_rect, fill_rounded_rect, present, stroke_rect, stroke_rounded_rect, UiTheme};
 use crate::event::AppEvent;
 use pinshot_core::color::Rgba;
 
@@ -469,8 +469,8 @@ impl PrefsWin {
         ] {
             let r = Rect::new(x, by, 80.0, 32.0);
             let hover = r.contains(self.cursor);
-            fill_rect(&mut pm, r, if hover { thm.hover } else { thm.panel });
-            stroke_rect(&mut pm, r, thm.border, 1.0);
+            fill_rounded_rect(&mut pm, r, 5.0, if hover { thm.hover } else { thm.panel });
+            stroke_rounded_rect(&mut pm, r, 5.0, thm.border, 1.0);
             crate::text::blit_into_pm(&mut pm, &lab, r.x + 12.0, r.y + 7.0, 13, thm.text, true);
         }
         if !self.status.is_empty() {
@@ -502,8 +502,8 @@ fn push(w: &mut PrefsWin, x: f32, y: f32, ww: f32, field: Field) {
 fn row_val(pm: &mut tiny_skia::Pixmap, y: f32, lab: &str, val: &str, thm: UiTheme) -> f32 {
     crate::text::blit_into_pm(pm, lab, 16.0, y + 6.0, 13, thm.text, true);
     let r = Rect::new(200.0, y, 280.0, 30.0);
-    fill_rect(pm, r, thm.panel);
-    stroke_rect(pm, r, thm.border, 1.0);
+    fill_rounded_rect(pm, r, 5.0, thm.panel);
+    stroke_rounded_rect(pm, r, 5.0, thm.border, 1.0);
     crate::text::blit_into_pm(pm, val, r.x + 8.0, r.y + 6.0, 13, thm.text, false);
     y + 36.0
 }
@@ -519,16 +519,16 @@ fn row_step(pm: &mut tiny_skia::Pixmap, y: f32, lab: &str, val: &str, thm: UiThe
 fn row_hk(pm: &mut tiny_skia::Pixmap, y: f32, lab: &str, val: &str, armed: bool, thm: UiTheme) -> f32 {
     crate::text::blit_into_pm(pm, lab, 16.0, y + 6.0, 13, thm.text, true);
     let r = Rect::new(200.0, y, 280.0, 30.0);
-    fill_rect(pm, r, if armed { Rgba::rgb(255, 236, 179) } else { thm.panel });
-    stroke_rect(pm, r, thm.border, 1.0);
+    fill_rounded_rect(pm, r, 5.0, if armed { Rgba::rgb(255, 236, 179) } else { thm.panel });
+    stroke_rounded_rect(pm, r, 5.0, thm.border, 1.0);
     let shown = if val.is_empty() { "—" } else { val };
     crate::text::blit_into_pm(pm, shown, r.x + 8.0, r.y + 6.0, 13, thm.text, false);
     y + 36.0
 }
 
 fn btn(pm: &mut tiny_skia::Pixmap, r: Rect, t: &str, thm: UiTheme) {
-    fill_rect(pm, r, thm.panel);
-    stroke_rect(pm, r, thm.border, 1.0);
+    fill_rounded_rect(pm, r, 5.0, thm.panel);
+    stroke_rounded_rect(pm, r, 5.0, thm.border, 1.0);
     crate::text::blit_into_pm(pm, t, r.x + 10.0, r.y + 5.0, 14, thm.text, true);
 }
 

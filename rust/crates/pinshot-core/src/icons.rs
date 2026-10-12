@@ -125,7 +125,12 @@ pub fn draw_icon(pixmap: &mut Pixmap, kind: IconKind, cell: Rect, color: Option<
                 pixmap.stroke_path(&path, &p, &st, t, None);
             }
         }
-        IconKind::Line | IconKind::Arrow => {
+        IconKind::Line => {
+            if let Some(path) = line_path((4.0, 16.0), (16.0, 4.0)) {
+                pixmap.stroke_path(&path, &p, &st, t, None);
+            }
+        }
+        IconKind::Arrow => {
             if let Some(path) = line_path((4.0, 16.0), (16.0, 4.0)) {
                 pixmap.stroke_path(&path, &p, &st, t, None);
             }
@@ -376,6 +381,7 @@ mod tests {
             IconKind::Rect,
             IconKind::Ellipse,
             IconKind::Line,
+            IconKind::Arrow,
             IconKind::Pen,
             IconKind::Marker,
             IconKind::Mosaic,
@@ -393,5 +399,19 @@ mod tests {
             let painted = pm.pixels().iter().any(|p| p.alpha() > 0);
             assert!(painted, "{kind:?} produced an empty icon");
         }
+    }
+
+    #[test]
+    fn line_icon_has_no_arrow_head() {
+        let cell = Rect::new(2.0, 2.0, 20.0, 20.0);
+        let mut line = Pixmap::new(24, 24).unwrap();
+        let mut arrow = Pixmap::new(24, 24).unwrap();
+        draw_icon(&mut line, IconKind::Line, cell, None);
+        draw_icon(&mut arrow, IconKind::Arrow, cell, None);
+        assert_ne!(
+            line.data(),
+            arrow.data(),
+            "Line and Arrow must be distinct icons"
+        );
     }
 }

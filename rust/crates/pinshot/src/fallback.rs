@@ -13,7 +13,7 @@ use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
 
-use crate::draw::{fill_rect, present, stroke_rect, UiTheme};
+use crate::draw::{fill_rect, fill_rounded_rect, present, stroke_rounded_rect, UiTheme};
 use crate::event::TrayCmd;
 
 struct Btn {
@@ -164,16 +164,17 @@ impl FallbackWin {
         );
         for b in &self.buttons {
             let hover = b.rect.contains(self.cursor);
-            fill_rect(
+            fill_rounded_rect(
                 &mut pm,
                 b.rect,
+                5.0,
                 if hover {
                     self.theme.hover
                 } else {
                     self.theme.panel
                 },
             );
-            stroke_rect(&mut pm, b.rect, self.theme.border, 1.0);
+            stroke_rounded_rect(&mut pm, b.rect, 5.0, self.theme.border, 1.0);
             crate::text::blit_into_pm(
                 &mut pm,
                 &b.label,
