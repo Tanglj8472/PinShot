@@ -909,26 +909,16 @@ impl Overlay {
                     self.sel.state,
                     SelState::Creating | SelState::Moving | SelState::Resizing
                 );
-                // Consume the rising-edge snapshot only on press. A leftover
-                // release used to clear it so the next drag started at motion.
-                let pending = if *state == ElementState::Pressed {
-                    self.pending_press.take()
-                } else {
-                    None
-                };
-                let pt = if *state == ElementState::Pressed {
-                    if live_sel {
-                        self.sync_pointer();
-                        self.cursor
-                    } else {
-                        gesture_origin(pending, self.last_idle_pointer, self.cursor)
+                // ButtonPress-time location: QueryPointer now, never a stale
+                // idle sample from the previous cursor position.
+                self.sync_pointer();
+                let pt = self.cursor;
+                if *state == ElementState::Pressed && self.confirm.is_some() {
+                    // Recover may already have taken this rising edge.
+                    if !self.held_btn1 {
+                        let _ = self.hit_confirm(pt);
                     }
-                } else {
-                    self.sync_pointer();
-                    self.cursor
-                };
-                self.cursor = pt;
-                if *state == ElementState::Pressed && self.hit_confirm(pt) {
+                    self.held_btn1 = *button == MouseButton::Left;
                     return;
                 }
                 if *state == ElementState::Pressed {
@@ -943,8 +933,7 @@ impl Overlay {
                         }
                     }
                     if live_sel {
-                        self.sync_pointer();
-                        self.apply_sel_motion(self.cursor);
+                        self.apply_sel_motion(pt);
                         self.dirty = true;
                         return;
                     }
@@ -954,12 +943,17 @@ impl Overlay {
                         self.mark_dirty();
                         return;
                     }
-                    let mut kind = self.sel.press(pt, self.bounds(), self.annot.tool.is_some());
+                    let anchor = handle_press_point(
+                        self.last_idle_pointer,
+                        pt,
+                        self.sel.has_sel(),
+                        self.sel.normalized(),
+                    );
+                    let mut kind = self
+                        .sel
+                        .press(anchor, self.bounds(), self.annot.tool.is_some());
                     if kind == PressKind::Ignore && self.sel.has_sel() {
-                        self.sync_pointer();
-                        kind =
-                            self.sel
-                                .press(self.cursor, self.bounds(), self.annot.tool.is_some());
+                        kind = self.sel.press(pt, self.bounds(), self.annot.tool.is_some());
                     }
                     match kind {
                         PressKind::Ignore => {}
@@ -1469,14 +1463,12 @@ impl Overlay {
     /// no live — rect/ellipse/arrow draw nothing. MouseInput owns press;
     /// recover only continues or commits a stroke that already has extent.
     ///
-    /// QueryPointer often reports a single false Button1-up during XGrab.
-    /// Debounce two consecutive ups. A fast click that winit missed still
-    /// window-adopts after those two ups. Do not freeze the cursor at the
-    /// rising-edge snapshot while Creating/Moving/Resizing — that made
-    /// handle drags snap back to the press point. Start Create/Resize from
-    /// `last_idle_pointer` so a 2-point jump still grabs the corner.
+    /// Create origin is the live pointer (ButtonPress / QueryPointer now),
+    /// never a leftover idle sample. Click vs drag is movement from that
+    /// origin, not how long the button was down. Two QueryPointer ups still
+    /// debounce a false XGrab release for an in-progress drag.
     fn recover_pointer_drag(&mut self) {
-        if self.confirm.is_some() || self.color_picker.is_some() {
+        if self.color_picker.is_some() {
             return;
         }
         let Some((x, y, down)) = native::pointer_in_window(&self.window) else {
@@ -1490,6 +1482,15 @@ impl Overlay {
         } else {
             self.btn1_up_streak = self.btn1_up_streak.saturating_add(1);
         }
+        let rising = down && !self.held_btn1;
+        if self.confirm.is_some() {
+            if rising {
+                let _ = self.hit_confirm(pt);
+            }
+            self.cursor = pt;
+            self.held_btn1 = down;
+            return;
+        }
         let drawing = self.annot.live.is_some()
             || self.annot.is_selecting()
             || self.annot.is_dragging_text()
@@ -1501,10 +1502,8 @@ impl Overlay {
         if !down {
             self.last_idle_pointer = Some(pt);
         }
-        // Rising-edge snapshot: last idle pixel, not the (already moved)
-        // QueryPointer sample. Used for Create origin and 2-point handles.
-        if down && !self.held_btn1 && self.pending_press.is_none() {
-            self.pending_press = self.last_idle_pointer.or(Some(pt));
+        if rising {
+            self.pending_press = Some(pt);
         }
         self.cursor = pt;
         let over_tb = self
@@ -1524,12 +1523,12 @@ impl Overlay {
                 }
                 RecoverStroke::Idle => {}
             }
-        } else if down
+        } else if rising
             && self.sel.state == SelState::Idle
             && !self.sel.has_sel()
             && self.annot.tool.is_none()
         {
-            let origin = self.pending_press.unwrap_or(pt);
+            let origin = pt;
             let _ = self.sel.press(origin, self.bounds(), false);
             crate::logutil::log(&format!(
                 "recover Button1 drag ({:.0},{:.0})",
@@ -1537,13 +1536,14 @@ impl Overlay {
             ));
             self.apply_sel_motion(pt);
             self.dirty = true;
-        } else if down
+        } else if rising
             && self.sel.state == SelState::Idle
             && self.sel.has_sel()
             && self.annot.tool.is_none()
             && !over_tb
         {
-            let origin = self.pending_press.unwrap_or(pt);
+            let origin =
+                handle_press_point(self.last_idle_pointer, pt, true, self.sel.normalized());
             let mut kind = self.sel.press(origin, self.bounds(), false);
             if kind == PressKind::Ignore {
                 kind = self.sel.press(pt, self.bounds(), false);
@@ -1589,7 +1589,7 @@ impl Overlay {
             self.pending_press = None;
             self.dirty = true;
         }
-        if !down && self.btn1_up_streak >= 2 && !live_sel && self.sel.state != SelState::Creating {
+        if !down && self.btn1_up_streak >= 2 && !live_sel {
             self.pending_press = None;
         }
         self.held_btn1 = down;
@@ -1612,10 +1612,17 @@ enum RecoverStroke {
     Release,
 }
 
-/// Prefer the Button1 rising-edge snapshot, then the last idle pixel, then
-/// the event point. A 2-point xdotool drag reports the drop as `fallback`.
-fn gesture_origin(pending: Option<Point>, last_idle: Option<Point>, fallback: Point) -> Point {
-    pending.or(last_idle).unwrap_or(fallback)
+/// Create uses the live ButtonPress / QueryPointer point. A 2-point handle
+/// grab still uses the last idle pixel if that pixel sits on a handle.
+fn handle_press_point(idle: Option<Point>, live: Point, has_sel: bool, sel: Rect) -> Point {
+    if has_sel {
+        if let Some(p) = idle {
+            if hit_sel_handle(sel, p).is_some() {
+                return p;
+            }
+        }
+    }
+    live
 }
 
 /// Two consecutive QueryPointer ups commit Creating (window-adopt if the
@@ -1726,7 +1733,7 @@ fn keysym_to_winit(keysym: u32) -> Option<(Key, Option<String>)> {
 mod keysym_tests {
     use super::keysym_to_winit;
     use super::{
-        annot_stroke_extent, gesture_origin, recover_should_commit_sel, recover_stroke_action,
+        annot_stroke_extent, handle_press_point, recover_should_commit_sel, recover_stroke_action,
         RecoverStroke,
     };
     use pinshot_core::annotation::{Annotator, Tool};
@@ -1788,20 +1795,22 @@ mod keysym_tests {
     }
 
     #[test]
-    fn late_press_uses_rising_edge_not_drop_point() {
-        let origin = Point::new(40.0, 80.0);
-        let drop = Point::new(120.0, 140.0);
-        assert_eq!(gesture_origin(Some(origin), None, drop), origin);
-        assert_eq!(gesture_origin(None, Some(origin), drop), origin);
-        assert_eq!(gesture_origin(None, None, drop), drop);
+    fn create_uses_live_press_not_stale_idle() {
+        let stale = Point::new(40.0, 80.0);
+        let press = Point::new(400.0, 300.0);
+        assert_eq!(
+            handle_press_point(Some(stale), press, false, pinshot_core::geom::Rect::EMPTY),
+            press
+        );
     }
 
     #[test]
     fn two_point_handle_uses_idle_pixel_not_drop() {
         let handle = Point::new(300.0, 200.0);
         let drop = Point::new(380.0, 250.0);
-        assert_eq!(gesture_origin(None, Some(handle), drop), handle);
-        assert_eq!(gesture_origin(Some(handle), Some(drop), drop), handle);
+        let sel = pinshot_core::geom::Rect::new(100.0, 80.0, 200.0, 120.0);
+        assert_eq!(handle_press_point(Some(handle), drop, true, sel), handle);
+        assert_eq!(handle_press_point(Some(drop), drop, true, sel), drop);
     }
 
     #[test]

@@ -3,38 +3,100 @@
 use std::fs;
 use std::io::Read;
 use std::path::Path;
+use std::sync::Mutex;
 
 use pinshot_core::ocr::{
-    det_padding, model_dir, page_from_blocks, ModelPaths, OcrPage, DET_BOX_SCORE, DET_BOX_THRESH,
-    DET_MAX_SIDE, DET_UNCLIP,
+    det_padding, model_dir, page_from_blocks, ModelPaths, OcrModelKind, OcrPage, DET_BOX_SCORE,
+    DET_BOX_THRESH, DET_MAX_SIDE, DET_UNCLIP,
 };
 use pinshot_core::raster::Raster;
 
 pub fn recognize(image: &Raster) -> Result<OcrPage, String> {
+    recognize_with_progress(image, |_| {})
+}
+
+pub fn recognize_with_progress(
+    image: &Raster,
+    mut progress: impl FnMut(&str),
+) -> Result<OcrPage, String> {
     crate::logutil::log(&format!("ocr recognize {}x{}", image.width, image.height));
-    let paths = ensure_models()?;
+    progress("Downloading OCR models…");
+    let paths = ensure_models_with_progress(&mut progress)?;
+    progress("Recognizing…");
     infer(image, &paths)
 }
 
+pub fn prefetch_models() {
+    std::thread::spawn(|| {
+        match ensure_models_with_progress(&mut |msg| {
+            crate::logutil::log(&format!("ocr prefetch {msg}"));
+        }) {
+            Ok(p) => crate::logutil::log(&format!("ocr prefetch ready {}", p.rec.display())),
+            Err(e) => crate::logutil::log(&format!("ocr prefetch: {e}")),
+        }
+    });
+}
+
 pub fn ensure_models() -> Result<ModelPaths, String> {
+    ensure_models_with_progress(&mut |_| {})
+}
+
+fn configured_kind() -> OcrModelKind {
+    if let Ok(v) = std::env::var("PINSHOT_OCR_MODEL") {
+        return OcrModelKind::parse(&v);
+    }
+    let cfg = pinshot_core::config::load().unwrap_or_default();
+    OcrModelKind::parse(&cfg.ocr_model)
+}
+
+fn ensure_models_with_progress(progress: &mut dyn FnMut(&str)) -> Result<ModelPaths, String> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    let _g = LOCK.lock().map_err(|e| e.to_string())?;
     let dir = model_dir(&pinshot_core::config::data_dir());
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let paths = ModelPaths::in_dir(&dir);
+    let kind = configured_kind();
+    let preferred = ModelPaths::for_kind(&dir, kind);
+    let fallback = ModelPaths::for_kind(
+        &dir,
+        match kind {
+            OcrModelKind::Mobile => OcrModelKind::Server,
+            OcrModelKind::Server => OcrModelKind::Mobile,
+        },
+    );
     if let Ok(bundled) = std::env::var("PINSHOT_OCR_MODELS") {
-        copy_if_present(Path::new(&bundled), &paths);
+        copy_if_present(Path::new(&bundled), &preferred);
+        copy_if_present(Path::new(&bundled), &fallback);
     }
-    if !paths.ready() {
-        for (urls, dest) in paths.downloads() {
-            if dest.is_file() {
-                continue;
-            }
-            download_first(&urls, &dest)?;
+    if preferred.ready() {
+        return Ok(preferred);
+    }
+    if fallback.ready() {
+        crate::logutil::log(&format!(
+            "ocr using {} models ({} not downloaded yet)",
+            fallback
+                .det
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy(),
+            kind.as_str()
+        ));
+        return Ok(fallback);
+    }
+    for (urls, dest) in preferred.downloads() {
+        if dest.is_file() {
+            continue;
         }
+        let name = dest
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        download_first(&urls, &dest, &name, progress)?;
     }
-    if !paths.ready() {
+    if !preferred.ready() {
         return Err("OCR models missing (det/rec/cls)".into());
     }
-    Ok(paths)
+    Ok(preferred)
 }
 
 fn copy_if_present(src: &Path, dest: &ModelPaths) {
@@ -80,10 +142,15 @@ fn copy_if_present(src: &Path, dest: &ModelPaths) {
     }
 }
 
-fn download_first(urls: &[&str], dest: &Path) -> Result<(), String> {
+fn download_first(
+    urls: &[&str],
+    dest: &Path,
+    name: &str,
+    progress: &mut dyn FnMut(&str),
+) -> Result<(), String> {
     let mut last = "no urls".to_string();
     for url in urls {
-        match download(url, dest) {
+        match download(url, dest, name, progress) {
             Ok(()) => return Ok(()),
             Err(e) => {
                 crate::logutil::log(&format!("ocr download fail {url}: {e}"));
@@ -94,18 +161,46 @@ fn download_first(urls: &[&str], dest: &Path) -> Result<(), String> {
     Err(last)
 }
 
-fn download(url: &str, dest: &Path) -> Result<(), String> {
-    crate::logutil::log(&format!("ocr download {url}"));
+fn download(
+    url: &str,
+    dest: &Path,
+    name: &str,
+    progress: &mut dyn FnMut(&str),
+) -> Result<(), String> {
+    crate::logutil::log(&format!("ocr download {name}"));
     let resp = ureq::get(url)
         .timeout(std::time::Duration::from_secs(180))
         .call()
-        .map_err(|e| format!("download {url}: {e}"))?;
+        .map_err(|e| format!("download {name}: {e}"))?;
+    let total = resp
+        .header("Content-Length")
+        .and_then(|s| s.parse::<u64>().ok())
+        .filter(|n| *n > 0);
+    let mut reader = resp.into_reader();
     let mut bytes = Vec::new();
-    resp.into_reader()
-        .read_to_end(&mut bytes)
-        .map_err(|e| e.to_string())?;
+    if let Some(t) = total {
+        bytes.reserve(t as usize);
+    }
+    let mut buf = [0u8; 64 * 1024];
+    let mut last_pct = 999u32;
+    loop {
+        let n = reader.read(&mut buf).map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&buf[..n]);
+        if let Some(t) = total {
+            let pct = ((bytes.len() as u64).min(t) * 100 / t) as u32;
+            if pct != last_pct {
+                last_pct = pct;
+                progress(&format!("Downloading {pct}%"));
+            }
+        } else {
+            progress(&format!("Downloading {}…", name));
+        }
+    }
     if bytes.len() < 64 {
-        return Err(format!("download too small: {url}"));
+        return Err(format!("download too small: {name}"));
     }
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;

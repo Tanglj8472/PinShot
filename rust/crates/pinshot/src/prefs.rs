@@ -282,6 +282,7 @@ impl PrefsApp {
                 self.draft.language = d.language;
                 self.draft.run_at_login = d.run_at_login;
                 self.draft.start_minimized = d.start_minimized;
+                self.draft.ocr_model = d.ocr_model;
             }
             1 => {
                 self.draft.theme = d.theme;
@@ -435,6 +436,31 @@ impl PrefsApp {
         ui.checkbox(&mut self.draft.run_at_login, tr("Run at login"))
             .on_hover_text(tr("Start PinShot when you log in"));
         ui.checkbox(&mut self.draft.start_minimized, tr("Start minimized"));
+        ui.horizontal(|ui| {
+            ui.label(tr("OCR model:"));
+            let ocr = match self.draft.ocr_model.as_str() {
+                "server" => tr("Server (more accurate)"),
+                _ => tr("Mobile (faster)"),
+            };
+            egui::ComboBox::from_id_salt("ocr_model")
+                .icon(combo_chevron)
+                .selected_text(ocr)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut self.draft.ocr_model,
+                        "mobile".into(),
+                        tr("Mobile (faster)"),
+                    );
+                    ui.selectable_value(
+                        &mut self.draft.ocr_model,
+                        "server".into(),
+                        tr("Server (more accurate)"),
+                    );
+                });
+        });
+        ui.weak(tr(
+            "Mobile models download first (~20 MB). Switch to Server for Traditional / small type.",
+        ));
         ui.add_space(4.0);
         ui.label(RichText::new(tr("Configuration")).strong());
         ui.horizontal(|ui| {

@@ -201,6 +201,11 @@ const PAIRS: &[(&str, &str)] = &[
     ("No text to translate", "没有可翻译的文字"),
     ("OCR not available in this build. Use pinshot-ocr.exe.", "此构建未包含 OCR，请使用 pinshot-ocr.exe。"),
     ("Downloading OCR models…", "正在下载 OCR 模型…"),
+    ("OCR ready — drag to select text", "识别完成 — 拖选文字即可"),
+    ("OCR model:", "OCR 模型："),
+    ("Mobile (faster)", "轻量（更快）"),
+    ("Server (more accurate)", "服务器（更准）"),
+    ("Mobile models download first (~20 MB). Switch to Server for Traditional / small type.", "默认先下轻量模型（约 20 MB）。繁体或小字可改用服务器模型。"),
     ("The Default group cannot be removed.", "不能删除默认分组。"),
     ("The Default group cannot be renamed.", "不能重命名默认分组。"),
     ("Hotkeys already used by another app cannot be bound. Click Apply to rebind.", "已被其他程序占用的热键无法绑定。点「应用」重新注册。"),
@@ -350,6 +355,7 @@ const PATTERNS: &[(&str, &str)] = &[
     ("Group {0}", "分组 {0}"),
     ("Unbound hotkeys: {0}", "未绑定热键：{0}"),
     ("{0} s", "{0} 秒"),
+    ("Downloading {0}%", "正在下载 {0}%"),
 ];
 
 fn zh_map() -> &'static HashMap<&'static str, &'static str> {

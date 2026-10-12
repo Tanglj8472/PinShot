@@ -112,6 +112,10 @@ pub struct PinWin {
     ocr: Option<OcrOverlay>,
     ocr_gesture: Option<OcrGesture>,
     pending_ocr: bool,
+    pending_translate: bool,
+    /// Sticky banner (download / recognize). Unlike toast it does not expire.
+    status: Option<String>,
+    ocr_flash_until: Option<Instant>,
 }
 
 impl PinWin {
@@ -183,6 +187,9 @@ impl PinWin {
             ocr: None,
             ocr_gesture: None,
             pending_ocr: false,
+            pending_translate: false,
+            status: None,
+            ocr_flash_until: None,
         };
         pin.redraw();
         crate::logutil::log(&format!(
@@ -324,8 +331,29 @@ impl PinWin {
             translating: false,
         });
         self.ocr_gesture = None;
+        self.status = None;
+        self.ocr_flash_until = Some(Instant::now() + Duration::from_millis(900));
+        self.show_toast(tr("OCR ready — drag to select text"));
         self.dirty = true;
         self.window.request_redraw();
+    }
+
+    pub fn set_status(&mut self, text: Option<String>) {
+        self.status = text;
+        self.dirty = true;
+        self.window.request_redraw();
+    }
+
+    pub fn ocr_text(&self) -> Option<String> {
+        self.ocr.as_ref().map(|o| o.page.text.clone())
+    }
+
+    pub fn request_ocr(&mut self) {
+        self.pending_ocr = true;
+    }
+
+    pub fn request_translate(&mut self) {
+        self.pending_translate = true;
     }
 
     pub fn set_translating(&mut self, on: bool) {
@@ -353,6 +381,12 @@ impl PinWin {
     pub fn take_pending_ocr(&mut self) -> bool {
         let v = self.pending_ocr;
         self.pending_ocr = false;
+        v
+    }
+
+    pub fn take_pending_translate(&mut self) -> bool {
+        let v = self.pending_translate;
+        self.pending_translate = false;
         v
     }
 
@@ -1047,6 +1081,9 @@ impl PinWin {
                         }
                     }
                     Key::Named(NamedKey::Space) => self.show_toolbar(!self.annotating),
+                    Key::Named(NamedKey::F5) => {
+                        self.pending_translate = true;
+                    }
                     Key::Character(c) if c.eq_ignore_ascii_case("c") => {
                         self.copy_hotkey();
                     }
@@ -1293,6 +1330,8 @@ impl PinWin {
                 self.invert = !self.invert;
                 self.dirty = true;
             }
+            PinMenuAction::Ocr => self.pending_ocr = true,
+            PinMenuAction::Translate => self.pending_translate = true,
         }
     }
 
@@ -1443,6 +1482,7 @@ impl PinWin {
             }
         }
         if let Some(ocr) = &self.ocr {
+            let flashing = self.ocr_flash_until.is_some_and(|t| Instant::now() < t);
             if let Some((a, b)) = ocr.sel {
                 let lo = a.min(b);
                 let hi = a.max(b);
@@ -1454,6 +1494,14 @@ impl PinWin {
                         &mut pm,
                         self.token_win_rect(tok.rect),
                         Rgba::rgba(61, 143, 209, 90),
+                    );
+                }
+            } else if flashing {
+                for tok in &ocr.page.tokens {
+                    fill_rect(
+                        &mut pm,
+                        self.token_win_rect(tok.rect),
+                        Rgba::rgba(255, 196, 72, 70),
                     );
                 }
             }
@@ -1559,7 +1607,7 @@ impl PinWin {
         if let Some(picker) = &self.color_picker {
             paint_color_picker(&mut pm, ww, hh, picker);
         }
-        if let Some(t) = &self.toast {
+        if let Some(t) = self.status.as_ref().or(self.toast.as_ref()) {
             crate::draw::paint_toast(&mut pm, t, ww, hh);
         }
         if let Ok(mut buf) = self.surface.buffer_mut() {
@@ -1571,6 +1619,17 @@ impl PinWin {
 
     pub fn pump_redraw(&mut self) {
         self.expire_toast();
+        if let Some(t) = self.ocr_flash_until {
+            if Instant::now() >= t {
+                self.ocr_flash_until = None;
+                self.dirty = true;
+            } else {
+                self.dirty = true;
+            }
+        }
+        if self.status.is_some() {
+            self.dirty = true;
+        }
         if self.annot.text_edit.is_some() {
             self.dirty = true;
         }
@@ -1580,10 +1639,14 @@ impl PinWin {
     }
 
     pub fn next_wake(&self) -> Option<Instant> {
-        if self.annot.text_edit.is_some() {
+        if self.annot.text_edit.is_some() || self.status.is_some() {
             return Some(Instant::now() + Duration::from_millis(80));
         }
-        self.toast_until
+        match (self.toast_until, self.ocr_flash_until) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (Some(a), None) | (None, Some(a)) => Some(a),
+            (None, None) => None,
+        }
     }
 }
 

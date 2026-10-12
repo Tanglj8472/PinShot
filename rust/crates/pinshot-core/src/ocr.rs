@@ -6,12 +6,52 @@ use crate::geom::{Point, Rect};
 
 pub const MODEL_DIR_NAME: &str = "ocr-models";
 
-/// RapidOCR PP-OCRv5 *server* ONNX (ModelScope v3.9.2). Better Traditional
-/// Chinese / small browser type than the mobile pair.
-pub const DET_FILE: &str = "ch_PP-OCRv5_server_det.onnx";
-pub const REC_FILE: &str = "ch_PP-OCRv5_server_rec.onnx";
+/// RapidOCR PP-OCRv5 ONNX (ModelScope v3.9.2). Mobile is the default download
+/// (~20 MB); server (~170 MB) is more accurate on Traditional / small type.
+pub const MOBILE_DET_FILE: &str = "ch_PP-OCRv5_mobile_det.onnx";
+pub const MOBILE_REC_FILE: &str = "ch_PP-OCRv5_mobile_rec.onnx";
+pub const SERVER_DET_FILE: &str = "ch_PP-OCRv5_server_det.onnx";
+pub const SERVER_REC_FILE: &str = "ch_PP-OCRv5_server_rec.onnx";
+pub const DET_FILE: &str = MOBILE_DET_FILE;
+pub const REC_FILE: &str = MOBILE_REC_FILE;
 pub const CLS_FILE: &str = "ch_PP-LCNet_x0_25_textline_ori.onnx";
 pub const KEYS_FILE: &str = "ppocr_keys_v5.txt";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OcrModelKind {
+    Mobile,
+    Server,
+}
+
+impl OcrModelKind {
+    pub fn parse(s: &str) -> Self {
+        match s.trim() {
+            "server" => Self::Server,
+            _ => Self::Mobile,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Mobile => "mobile",
+            Self::Server => "server",
+        }
+    }
+
+    pub fn det_file(self) -> &'static str {
+        match self {
+            Self::Mobile => MOBILE_DET_FILE,
+            Self::Server => SERVER_DET_FILE,
+        }
+    }
+
+    pub fn rec_file(self) -> &'static str {
+        match self {
+            Self::Mobile => MOBILE_REC_FILE,
+            Self::Server => SERVER_REC_FILE,
+        }
+    }
+}
 
 /// RapidOCR defaults: padding, max side, box_score_thresh, box_thresh, unclip.
 pub const DET_PADDING: u32 = 50;
@@ -27,15 +67,25 @@ pub fn det_padding(width: u32, height: u32) -> u32 {
     DET_PADDING.min(side / 4).max(8)
 }
 
-/// RapidOCR / PaddleOCR v5 server ONNX. First URL is ModelScope v3.9.2.
-pub const DET_URLS: &[&str] = &[
+/// RapidOCR / PaddleOCR v5 ONNX. First URL is ModelScope v3.9.2.
+pub const MOBILE_DET_URLS: &[&str] = &[
+    "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv5/det/ch_PP-OCRv5_det_mobile.onnx",
+    "https://huggingface.co/RapidAI/RapidOCR/resolve/main/onnx/PP-OCRv5/det/ch_PP-OCRv5_det_mobile.onnx",
+];
+pub const MOBILE_REC_URLS: &[&str] = &[
+    "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv5/rec/ch_PP-OCRv5_rec_mobile.onnx",
+    "https://huggingface.co/RapidAI/RapidOCR/resolve/main/onnx/PP-OCRv5/rec/ch_PP-OCRv5_rec_mobile.onnx",
+];
+pub const SERVER_DET_URLS: &[&str] = &[
     "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv5/det/ch_PP-OCRv5_det_server.onnx",
     "https://huggingface.co/RapidAI/RapidOCR/resolve/main/onnx/PP-OCRv5/det/ch_PP-OCRv5_det_server.onnx",
 ];
-pub const REC_URLS: &[&str] = &[
+pub const SERVER_REC_URLS: &[&str] = &[
     "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv5/rec/ch_PP-OCRv5_rec_server.onnx",
     "https://huggingface.co/RapidAI/RapidOCR/resolve/main/onnx/PP-OCRv5/rec/ch_PP-OCRv5_rec_server.onnx",
 ];
+pub const DET_URLS: &[&str] = MOBILE_DET_URLS;
+pub const REC_URLS: &[&str] = MOBILE_REC_URLS;
 pub const CLS_URLS: &[&str] = &[
     "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv5/cls/ch_PP-LCNet_x0_25_textline_ori_cls_mobile.onnx",
     "https://huggingface.co/RapidAI/RapidOCR/resolve/main/onnx/PP-OCRv5/cls/ch_PP-LCNet_x0_25_textline_ori_cls_mobile.onnx",
@@ -57,10 +107,14 @@ pub struct ModelPaths {
 
 impl ModelPaths {
     pub fn in_dir(dir: impl Into<PathBuf>) -> Self {
+        Self::for_kind(dir, OcrModelKind::Mobile)
+    }
+
+    pub fn for_kind(dir: impl Into<PathBuf>, kind: OcrModelKind) -> Self {
         let dir = dir.into();
         Self {
-            det: dir.join(DET_FILE),
-            rec: dir.join(REC_FILE),
+            det: dir.join(kind.det_file()),
+            rec: dir.join(kind.rec_file()),
             keys: dir.join(KEYS_FILE),
             cls: dir.join(CLS_FILE),
             dir,
@@ -72,9 +126,20 @@ impl ModelPaths {
     }
 
     pub fn downloads(&self) -> Vec<(Vec<&'static str>, PathBuf)> {
+        let server = self.det.file_name().is_some_and(|n| n == SERVER_DET_FILE);
+        let det = if server {
+            SERVER_DET_URLS
+        } else {
+            MOBILE_DET_URLS
+        };
+        let rec = if server {
+            SERVER_REC_URLS
+        } else {
+            MOBILE_REC_URLS
+        };
         vec![
-            (DET_URLS.to_vec(), self.det.clone()),
-            (REC_URLS.to_vec(), self.rec.clone()),
+            (det.to_vec(), self.det.clone()),
+            (rec.to_vec(), self.rec.clone()),
             (KEYS_URLS.to_vec(), self.keys.clone()),
             (CLS_URLS.to_vec(), self.cls.clone()),
         ]
@@ -422,8 +487,11 @@ mod tests {
     #[test]
     fn model_paths_under_data() {
         let p = ModelPaths::in_dir("/tmp/ocr-models");
-        assert!(p.det.ends_with(DET_FILE));
+        assert!(p.det.ends_with(MOBILE_DET_FILE));
         assert_eq!(p.downloads().len(), 4);
+        let s = ModelPaths::for_kind("/tmp/ocr-models", OcrModelKind::Server);
+        assert!(s.det.ends_with(SERVER_DET_FILE));
+        assert!(s.downloads()[0].0[0].contains("det_server"));
     }
 
     #[test]

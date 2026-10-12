@@ -405,7 +405,7 @@ impl App {
             OverlayResult::Ocr(img, translate, pos) => {
                 self.spawn_pin(event_loop, img.clone(), Some(pos), None);
                 if let Some(p) = self.pins.last_mut() {
-                    p.toast(tr("Recognizing…"));
+                    p.set_status(Some(tr("Recognizing…")));
                     let id = p.window_id();
                     self.spawn_ocr(id, img, translate);
                 }
@@ -427,7 +427,17 @@ impl App {
         ));
         let proxy = self.proxy.clone();
         std::thread::spawn(move || {
-            let result = crate::ocr_run::recognize(&img).map_err(|e| {
+            let mut last = String::new();
+            let result = crate::ocr_run::recognize_with_progress(&img, |msg| {
+                if msg != last {
+                    last = msg.to_string();
+                    let _ = proxy.send_event(AppEvent::OcrProgress {
+                        pin,
+                        message: msg.to_string(),
+                    });
+                }
+            })
+            .map_err(|e| {
                 crate::logutil::log(&format!("ocr fail: {e}"));
                 e
             });
@@ -498,6 +508,33 @@ impl App {
                 }
             }
         }
+    }
+
+    fn pin_or_selection_translate(&mut self) {
+        if let Some(id) = self
+            .menu_pin
+            .or_else(|| self.pins.last().map(|p| p.window_id()))
+        {
+            self.start_pin_translate(id);
+            return;
+        }
+        self.selection_translate();
+    }
+
+    fn start_pin_translate(&mut self, pin: WindowId) {
+        let Some(p) = self.pins.iter_mut().find(|p| p.window_id() == pin) else {
+            return;
+        };
+        if let Some(text) = p.ocr_text() {
+            if !text.trim().is_empty() {
+                p.set_translating(true);
+                self.spawn_translate(pin, text);
+                return;
+            }
+        }
+        p.set_status(Some(tr("Recognizing…")));
+        let img = p.rendered();
+        self.spawn_ocr(pin, img, true);
     }
 
     fn selection_translate(&self) {
@@ -853,7 +890,28 @@ impl App {
             return;
         }
         if let Some(p) = self.pins.iter_mut().find(|p| p.window_id() == pid) {
-            p.apply_menu(action);
+            p.apply_menu(action.clone());
+        }
+        match action {
+            PinMenuAction::Ocr => {
+                if let Some(p) = self.pins.iter_mut().find(|p| p.window_id() == pid) {
+                    let _ = p.take_pending_ocr();
+                    p.set_status(Some(tr("Recognizing…")));
+                    let img = p.rendered();
+                    self.spawn_ocr(pid, img, false);
+                }
+            }
+            PinMenuAction::Translate => {
+                let _ = self
+                    .pins
+                    .iter_mut()
+                    .find(|p| p.window_id() == pid)
+                    .map(|p| {
+                        p.take_pending_translate();
+                    });
+                self.start_pin_translate(pid);
+            }
+            _ => {}
         }
     }
 }
@@ -891,6 +949,7 @@ impl ApplicationHandler<AppEvent> for App {
             self.session_restored = true;
             self.restore_session(event_loop);
             self.restore_history();
+            crate::ocr_run::prefetch_models();
         }
         if self.start_prefs {
             self.start_prefs = false;
@@ -934,7 +993,13 @@ impl ApplicationHandler<AppEvent> for App {
                 prefs::open(self.cfg.clone(), self.proxy.clone());
             }
             AppEvent::Hotkey(Command::CaptureTranslate) => self.request_snip(event_loop, true),
-            AppEvent::Hotkey(Command::SelectionTranslate) => self.selection_translate(),
+            AppEvent::Hotkey(Command::SelectionTranslate) => {
+                if self.overlay.is_some() {
+                    // Overlay F5 already runs OCR+translate on the selection.
+                } else {
+                    self.pin_or_selection_translate();
+                }
+            }
             AppEvent::Tray(TrayCmd::Snip) => self.request_snip(event_loop, false),
             AppEvent::Tray(TrayCmd::Pin) => self.pin_clipboard(event_loop),
             AppEvent::Tray(TrayCmd::HideAll) => self.toggle_pins(),
@@ -980,6 +1045,11 @@ impl ApplicationHandler<AppEvent> for App {
                 }
             }
             AppEvent::Ipc(_) => {}
+            AppEvent::OcrProgress { pin, message } => {
+                if let Some(p) = self.pins.iter_mut().find(|p| p.window_id() == pin) {
+                    p.set_status(Some(tr(&message)));
+                }
+            }
             AppEvent::OcrDone {
                 pin,
                 result,
@@ -996,7 +1066,10 @@ impl ApplicationHandler<AppEvent> for App {
                                 follow = Some(text);
                             }
                         }
-                        Err(err) => p.toast(tr(&err)),
+                        Err(err) => {
+                            p.set_status(None);
+                            p.toast(tr(&err));
+                        }
                     }
                 }
                 if let Some(text) = follow {
@@ -1116,6 +1189,7 @@ impl ApplicationHandler<AppEvent> for App {
         let mut open_menu = None;
         let mut close_menu = false;
         let mut ocr_job = None;
+        let mut translate_pin = None;
         let swallow_keys = self.pin_esc_guarded();
         let menu_open = self.pin_menu.is_some();
         for p in &mut self.pins {
@@ -1165,8 +1239,11 @@ impl ApplicationHandler<AppEvent> for App {
                     p.handle(&event);
                 }
                 if p.take_pending_ocr() {
-                    p.toast(tr("Recognizing…"));
+                    p.set_status(Some(tr("Recognizing…")));
                     ocr_job = Some(p.rendered());
+                }
+                if p.take_pending_translate() {
+                    translate_pin = Some(id);
                 }
                 if p.pending_menu {
                     p.pending_menu = false;
@@ -1177,6 +1254,9 @@ impl ApplicationHandler<AppEvent> for App {
         }
         if let Some(img) = ocr_job {
             self.spawn_ocr(id, img, false);
+        }
+        if let Some(pid) = translate_pin {
+            self.start_pin_translate(pid);
         }
         if close_menu {
             self.dismiss_pin_menu();

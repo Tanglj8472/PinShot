@@ -18,9 +18,9 @@ use crate::draw::{
     fill_rect, fill_rounded_rect, paint_check_tick, present, stroke_rect, stroke_rounded_rect,
     UiTheme,
 };
-use tiny_skia::{FillRule, Paint, PathBuilder, Transform};
 use crate::event::PinMenuAction;
 use pinshot_core::color::Rgba;
+use tiny_skia::{FillRule, Paint, PathBuilder, Transform};
 
 const ROW_H: f32 = 22.0;
 const MENU_W: f32 = 220.0;
@@ -377,7 +377,10 @@ impl PinMenuWin {
     fn hit_submenu_parent(&self) -> Option<SubKind> {
         for (r, row) in &self.rows {
             if r.contains(self.cursor) {
-                if let Row::Item { submenu: Some(k), .. } = row {
+                if let Row::Item {
+                    submenu: Some(k), ..
+                } = row
+                {
                     return Some(*k);
                 }
             }
@@ -410,15 +413,16 @@ impl PinMenuWin {
             .rows
             .iter()
             .find_map(|(r, row)| match row {
-                Row::Item { submenu: Some(k), .. } if *k == kind => Some(r.y),
+                Row::Item {
+                    submenu: Some(k), ..
+                } if *k == kind => Some(r.y),
                 _ => None,
             })
             .unwrap_or(PAD);
         let mut y = parent_y;
         for row in build_sub_rows(&self.state, kind) {
             let hh = row_h(&row);
-            self.sub_rows
-                .push((Rect::new(MENU_W, y, SUB_W, hh), row));
+            self.sub_rows.push((Rect::new(MENU_W, y, SUB_W, hh), row));
             y += hh;
         }
     }
@@ -428,11 +432,7 @@ impl PinMenuWin {
         if self.open_sub.is_none() {
             return (MENU_W as u32, main_h.max(40));
         }
-        let sub_bottom = self
-            .sub_rows
-            .last()
-            .map(|(r, _)| r.bottom())
-            .unwrap_or(0.0);
+        let sub_bottom = self.sub_rows.last().map(|(r, _)| r.bottom()).unwrap_or(0.0);
         let h = main_h.max((sub_bottom + PAD).ceil() as u32).max(40);
         ((MENU_W + SUB_W) as u32, h)
     }
@@ -454,11 +454,7 @@ impl PinMenuWin {
             return;
         };
         let thm = UiTheme::resolve("light");
-        fill_rect(
-            &mut pm,
-            Rect::new(0.0, 0.0, w as f32, h as f32),
-            thm.bg,
-        );
+        fill_rect(&mut pm, Rect::new(0.0, 0.0, w as f32, h as f32), thm.bg);
         stroke_rect(
             &mut pm,
             Rect::new(0.5, 0.5, w as f32 - 1.0, h as f32 - 1.0),
@@ -471,15 +467,7 @@ impl PinMenuWin {
                 PromptKind::Rename => tr("Rename group"),
             };
             crate::text::blit_into_pm(&mut pm, &title, 14.0, 12.0, 14, thm.text, true);
-            crate::text::blit_into_pm(
-                &mut pm,
-                &tr("Name:"),
-                14.0,
-                40.0,
-                12,
-                thm.muted,
-                false,
-            );
+            crate::text::blit_into_pm(&mut pm, &tr("Name:"), 14.0, 40.0, 12, thm.muted, false);
             let field = Rect::new(14.0, 62.0, MENU_W - 28.0, 28.0);
             fill_rounded_rect(&mut pm, field, 5.0, Rgba::WHITE);
             stroke_rounded_rect(&mut pm, field, 5.0, thm.accent, 1.5);
@@ -546,15 +534,7 @@ impl PinMenuWin {
                         paint_check_tick(&mut pm, x, r.y + 5.0, *checked);
                         x += 18.0;
                     }
-                    crate::text::blit_into_pm(
-                        &mut pm,
-                        label,
-                        x,
-                        r.y + 3.0,
-                        12,
-                        thm.text,
-                        false,
-                    );
+                    crate::text::blit_into_pm(&mut pm, label, x, r.y + 3.0, 12, thm.text, false);
                     if submenu.is_some() {
                         paint_flyout_arrow(&mut pm, r.right() - 14.0, r.y + 7.0, thm.muted);
                     }
@@ -633,6 +613,8 @@ fn build_rows(state: &PinMenuState) -> Vec<Row> {
             state.annotating,
             false,
         ),
+        item(tr("Recognize text"), PinMenuAction::Ocr, false, false),
+        item(tr("Translate"), PinMenuAction::Translate, false, false),
         check_item(
             tr("Shadow"),
             PinMenuAction::ToggleShadow,
@@ -667,10 +649,7 @@ fn build_rows(state: &PinMenuState) -> Vec<Row> {
         item(tr("Close"), PinMenuAction::Close, false, false),
         item(tr("Destroy"), PinMenuAction::Destroy, false, false),
         Row::Sep,
-        flyout(
-            format!("{} × {}", state.img_w, state.img_h),
-            SubKind::Info,
-        ),
+        flyout(format!("{} × {}", state.img_w, state.img_h), SubKind::Info),
     ]
 }
 
@@ -720,9 +699,19 @@ fn build_sub_rows(state: &PinMenuState, kind: SubKind) -> Vec<Row> {
                 } else {
                     groups::label(g)
                 };
-                rows.push(check_item(label, PinMenuAction::MoveGroup(g.clone()), on, false));
+                rows.push(check_item(
+                    label,
+                    PinMenuAction::MoveGroup(g.clone()),
+                    on,
+                    false,
+                ));
             }
-            rows.push(item(tr("New group…"), PinMenuAction::NewGroup, false, false));
+            rows.push(item(
+                tr("New group…"),
+                PinMenuAction::NewGroup,
+                false,
+                false,
+            ));
             rows.push(item(
                 tr("Rename group…"),
                 PinMenuAction::RenameGroup,
@@ -842,7 +831,12 @@ pub fn menu_action_center(state: &PinMenuState, want: &PinMenuAction) -> Option<
         }
         PAD
     };
-    for kind in [SubKind::Zoom, SubKind::ImageProc, SubKind::Groups, SubKind::Info] {
+    for kind in [
+        SubKind::Zoom,
+        SubKind::ImageProc,
+        SubKind::Groups,
+        SubKind::Info,
+    ] {
         let mut y = parent_y(kind);
         for row in build_sub_rows(state, kind) {
             let hh = row_h(&row);
@@ -917,6 +911,20 @@ mod tests {
             _ => None,
         });
         assert_eq!(sh, Some((true, true)));
+        assert!(rows.iter().any(|r| matches!(
+            r,
+            Row::Item {
+                action: Some(PinMenuAction::Ocr),
+                ..
+            }
+        )));
+        assert!(rows.iter().any(|r| matches!(
+            r,
+            Row::Item {
+                action: Some(PinMenuAction::Translate),
+                ..
+            }
+        )));
         assert!(rows.iter().any(|r| matches!(
             r,
             Row::Item {

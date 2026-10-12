@@ -32,6 +32,9 @@ pub struct Config {
     pub closed_pins_max: u32,
     pub theme: String,
     pub dim_alpha: u8,
+    /// `mobile` (default, ~20 MB) or `server` (~170 MB, better Traditional).
+    #[serde(default)]
+    pub ocr_model: String,
     /// F5 translator (pot / STranslate / openai-translator style).
     #[serde(default)]
     pub translate: TranslateSettings,
@@ -67,6 +70,7 @@ impl Default for Config {
             closed_pins_max: 10,
             theme: "system".into(),
             dim_alpha: 110,
+            ocr_model: "mobile".into(),
             translate: TranslateSettings::default(),
         }
     }
@@ -145,6 +149,10 @@ impl Config {
         if !matches!(self.theme.as_str(), "system" | "light" | "dark") {
             self.theme = "system".into();
         }
+        self.ocr_model = match self.ocr_model.trim() {
+            "server" => "server".into(),
+            _ => "mobile".into(),
+        };
         self.groups = crate::groups::dedupe(&self.groups);
         if self.hotkey_selection_translate.trim().is_empty() {
             self.hotkey_selection_translate = "F5".into();
@@ -363,6 +371,7 @@ mod tests {
         assert_eq!(c.hotkey_snip, "F2");
         assert_eq!(c.hotkey_selection_translate, "F5");
         assert_eq!(c.hotkey_clickthrough, "F4");
+        assert_eq!(c.ocr_model, "mobile");
         assert!(c.groups.iter().any(|g| g == "Default"));
     }
 

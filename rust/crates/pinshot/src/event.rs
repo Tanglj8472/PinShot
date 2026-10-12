@@ -15,6 +15,10 @@ pub enum AppEvent {
         result: Result<OcrPage, String>,
         translate: bool,
     },
+    OcrProgress {
+        pin: WindowId,
+        message: String,
+    },
     TranslateDone {
         pin: WindowId,
         result: Result<String, String>,
@@ -56,6 +60,8 @@ pub enum PinMenuAction {
     ToggleSmooth,
     ToggleGrayscale,
     ToggleInvert,
+    Ocr,
+    Translate,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

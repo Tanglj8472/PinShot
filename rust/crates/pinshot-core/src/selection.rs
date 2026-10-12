@@ -21,6 +21,9 @@ pub struct Selection {
     pub rect: Rect,
     pub state: SelState,
     press: Option<Point>,
+    /// Furthest Manhattan distance from `press` during this gesture.
+    /// Click vs drag uses this, not how long the button was down.
+    moved: f32,
     drag_off: Point,
     handle: Option<Handle>,
 }
@@ -31,6 +34,7 @@ impl Default for Selection {
             rect: Rect::EMPTY,
             state: SelState::Idle,
             press: None,
+            moved: 0.0,
             drag_off: Point::ZERO,
             handle: None,
         }
@@ -93,6 +97,7 @@ impl Selection {
         }
         self.state = SelState::Creating;
         self.press = Some(pt.clamp_to(bounds));
+        self.moved = 0.0;
         self.rect = Rect::EMPTY;
         PressKind::Create
     }
@@ -108,7 +113,8 @@ impl Selection {
             SelState::Creating => {
                 if let Some(origin) = self.press {
                     let pt = guides.map(|g| g.snap_point(pt, SNAP_PX)).unwrap_or(pt);
-                    if pt.manhattan(origin) > 3.0 {
+                    self.moved = self.moved.max(pt.manhattan(origin));
+                    if self.moved > CLICK_PX {
                         self.rect = Rect::span(origin, pt);
                     }
                 }
@@ -149,12 +155,17 @@ impl Selection {
         if self.state == SelState::Creating {
             if let Some(origin) = self.press {
                 let pt = guides.map(|g| g.snap_point(pt, SNAP_PX)).unwrap_or(pt);
-                if origin.manhattan(pt) <= CLICK_PX {
-                    // Click: Snipaste window-detect. A press-and-drag keeps the span.
+                self.moved = self.moved.max(pt.manhattan(origin));
+                let is_click = self.moved <= CLICK_PX;
+                if is_click {
+                    // Click: Snipaste window-detect. A press-and-drag keeps the span
+                    // even if QueryPointer has not yet caught up with the finger.
                     self.rect = if hover.is_empty() { bounds } else { hover };
-                } else {
+                } else if pt.manhattan(origin) > CLICK_PX {
                     self.rect = Rect::span(origin, pt);
                 }
+                // else keep the motion rectangle; a lagged release sample
+                // must not collapse a real drag into a window-adopt click.
             } else if !self.has_sel() {
                 self.rect = if hover.is_empty() { bounds } else { hover };
             }
@@ -446,5 +457,21 @@ mod tests {
         );
         s.release(Point::new(80.0, 50.0), Rect::EMPTY, bounds());
         assert_eq!(s.normalized(), Rect::new(10.0, 10.0, 70.0, 40.0));
+    }
+
+    #[test]
+    fn click_vs_drag_uses_movement_not_release_near_origin() {
+        let mut s = Selection::new();
+        let hover = Rect::new(100.0, 80.0, 400.0, 300.0);
+        s.press(Point::new(10.0, 10.0), bounds(), false);
+        s.motion(Point::new(90.0, 70.0), bounds());
+        // Release sample still at the press pixel (lagged QueryPointer).
+        s.release(Point::new(11.0, 11.0), hover, bounds());
+        let r = s.normalized();
+        assert!(
+            r.w > 50.0 && r.h > 40.0,
+            "drag must not window-adopt, got {r:?}"
+        );
+        assert_ne!(r, hover);
     }
 }
