@@ -594,7 +594,7 @@ impl Overlay {
         self.window.set_visible(false);
     }
 
-    fn resnip(&mut self) {
+    pub fn resnip(&mut self) {
         crate::logutil::log("overlay F1 resnip");
         self.release_grab();
         self.result = Some(OverlayResult::Resnip);

@@ -214,6 +214,13 @@ impl App {
                 .as_ref()
                 .is_some_and(|o| o.peek_result().is_some());
             if !closing {
+                // Overlay may be up while Chrome kept keyboard focus, so F1
+                // lands here instead of OverlayKeyGrab. Restart the snip.
+                crate::logutil::log("hotkey F1 while overlay live");
+                if let Some(ov) = self.overlay.as_mut() {
+                    ov.resnip();
+                }
+                self.finish_overlay(event_loop);
                 return;
             }
             self.finish_overlay(event_loop);

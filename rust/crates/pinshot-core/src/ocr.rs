@@ -501,6 +501,19 @@ fn note_cite_len(chars: &[char]) -> Option<usize> {
     Some(i)
 }
 
+fn out_ends_with_note(out: &str) -> bool {
+    let t: String = out
+        .chars()
+        .rev()
+        .skip_while(|c| c.is_whitespace())
+        .take(4)
+        .collect();
+    t.chars()
+        .rev()
+        .collect::<String>()
+        .eq_ignore_ascii_case("note")
+}
+
 fn repair_unmatched_cites(s: &str) -> String {
     let chars: Vec<char> = s.chars().collect();
     let mut out = String::with_capacity(s.len() + 4);
@@ -516,8 +529,52 @@ fn repair_unmatched_cites(s: &str) -> String {
                 let prev = out.chars().rev().find(|c| !c.is_whitespace());
                 let already = prev == Some('[') || prev == Some('【');
                 let follows_cjk_or_start = prev.is_none() || prev.is_some_and(is_cjk);
-                if !already && follows_cjk_or_start {
+                // `[note 5]` is not a missing `[5]`.
+                if !already && follows_cjk_or_start && !out_ends_with_note(&out) {
                     out.push('[');
+                }
+            }
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
+}
+
+/// `[note[5]` / `[note [5]` from a split det box → `[note 5]`.
+fn glue_split_note_digit(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if matches!(chars[i], '[' | '【') && i + 5 < chars.len() {
+            let head: String = chars[i + 1..i + 5]
+                .iter()
+                .collect::<String>()
+                .to_ascii_lowercase();
+            if head == "note" {
+                let mut j = i + 5;
+                while j < chars.len() && chars[j].is_whitespace() {
+                    j += 1;
+                }
+                if j < chars.len() && matches!(chars[j], '[' | '【') {
+                    let d0 = j + 1;
+                    let digits = chars[d0..]
+                        .iter()
+                        .take_while(|c| c.is_ascii_digit())
+                        .count();
+                    let after = d0 + digits;
+                    if (1..=3).contains(&digits)
+                        && after < chars.len()
+                        && matches!(chars[after], ']' | '】')
+                    {
+                        out.push('[');
+                        out.push_str("note ");
+                        out.extend(chars[d0..d0 + digits].iter());
+                        out.push(']');
+                        i = after + 1;
+                        continue;
+                    }
                 }
             }
         }
@@ -538,9 +595,10 @@ fn repair_rustc(s: &str) -> String {
 fn polish_ocr_text(s: &str) -> String {
     let s = collapse_cjk_spaces(s);
     let s = insert_bracket_spaces(&s);
-    let s = restore_note_brackets(&s);
     let s = glue_adjacent_cites(&s);
     let s = repair_leading_cite(&s);
+    let s = restore_note_brackets(&s);
+    let s = glue_split_note_digit(&s);
     repair_rustc(&s)
 }
 
@@ -1263,6 +1321,35 @@ mod tests {
         assert!(
             split_sel.contains("[26][note 5]"),
             "copy of split cite+note, got {split_sel:?}"
+        );
+        let broken = page_from_blocks(vec![(quad(0, 0, 120, 16), "[26][note[5]".into())]);
+        assert!(
+            broken.text.contains("[26][note 5]"),
+            "NN] must not split [note 5], got {:?}",
+            broken.text
+        );
+        assert!(
+            !broken.text.contains("[note[5]"),
+            "expected glued note, got {:?}",
+            broken.text
+        );
+        let broken_sel = selected_text(&broken.tokens, 0, broken.tokens.len() - 1);
+        assert!(
+            broken_sel.contains("[26][note 5]"),
+            "copy of [26][note[5] must be [26][note 5], got {broken_sel:?}"
+        );
+        assert!(
+            !broken_sel.contains("[note[5]"),
+            "copy must not keep the split note, got {broken_sel:?}"
+        );
+        let boxes = page_from_blocks(vec![
+            (quad(0, 0, 80, 16), "[26][note".into()),
+            (quad(88, 0, 120, 16), "5]".into()),
+        ]);
+        assert!(
+            boxes.text.contains("[26][note 5]"),
+            "note box + NN] box, got {:?}",
+            boxes.text
         );
     }
 

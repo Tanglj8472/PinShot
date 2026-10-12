@@ -22,8 +22,33 @@ const LOCK: u16 = 2;
 const CONTROL: u16 = 4;
 const MOD1: u16 = 8;
 const MOD2: u16 = 16;
+const MOD3: u16 = 32;
 const MOD4: u16 = 64;
+const MOD5: u16 = 128;
+const BUTTONS: u16 = 0x1f00;
 const IGNORE: [u16; 4] = [0, LOCK, MOD2, LOCK | MOD2];
+
+fn ignore_mod_combos() -> [u16; 16] {
+    let mut out = [0u16; 16];
+    let mut i = 0;
+    for lock in [0u16, LOCK] {
+        for num in [0u16, MOD2] {
+            for m3 in [0u16, MOD3] {
+                for m5 in [0u16, MOD5] {
+                    out[i] = lock | num | m3 | m5;
+                    i += 1;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Key modifiers that participate in a hotkey bind. Caps/Num/Mode_switch
+/// / AltGr and leftover mouse buttons (clicking Chrome, then F1) are ignored.
+fn hotkey_event_mods(state: u16) -> u16 {
+    state & (SHIFT | CONTROL | MOD1 | MOD4) & !BUTTONS
+}
 
 /// True when an X compositor owns `_NET_WM_CM_Sn` (Python `_composited`).
 pub fn compositor_active() -> bool {
@@ -1048,28 +1073,32 @@ fn hotkey_loop(
             continue;
         };
         let mods = win_mods_to_x(hk.mods);
-        for ig in IGNORE {
-            let _ = c.grab_key(
-                true,
+        // owner_events=false: Chrome (focused) must not see F1 as Help.
+        for ig in ignore_mod_combos() {
+            if let Err(e) = c.grab_key(
+                false,
                 root,
                 ModMask::from(mods | ig),
                 code,
                 GrabMode::ASYNC,
                 GrabMode::ASYNC,
-            );
+            ) {
+                crate::logutil::log(&format!("XGrabKey {seq}: {e}"));
+            }
         }
         binds.push((mods, code, cmd));
+        crate::logutil::log(&format!("XGrabKey {seq} keycode={code} mods={mods}"));
     }
     let _ = c.flush();
     loop {
         let ev = c.wait_for_event().map_err(|e| e.to_string())?;
         if let Event::KeyPress(KeyPressEvent { detail, state, .. }) = ev {
-            let mods = state & !(LOCK | MOD2);
-            let mods_u = u16::from(mods);
+            let mods_u = hotkey_event_mods(u16::from(state));
             if let Some((_, _, cmd)) = binds
                 .iter()
                 .find(|(m, code, _)| *m == mods_u && *code == detail)
             {
+                crate::logutil::log(&format!("hotkey {cmd:?} state={:#x}", u16::from(state)));
                 let _ = proxy.send_event(AppEvent::Hotkey(*cmd));
             }
         }
@@ -1080,4 +1109,31 @@ fn hotkey_loop(
 fn _keep_atom(a: AtomEnum) {
     let _ = COPY_DEPTH_FROM_PARENT;
     let _ = a;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hotkey_event_mods_strips_buttons_and_lock() {
+        // Click-focus Chrome then F1: Button1Mask (0x100) must not hide F1.
+        assert_eq!(hotkey_event_mods(0), 0);
+        assert_eq!(hotkey_event_mods(LOCK | MOD2), 0);
+        assert_eq!(hotkey_event_mods(BUTTONS), 0);
+        assert_eq!(hotkey_event_mods(0x100), 0);
+        assert_eq!(hotkey_event_mods(LOCK | 0x100 | MOD5), 0);
+        assert_eq!(hotkey_event_mods(CONTROL | 0x100), CONTROL);
+        assert_eq!(hotkey_event_mods(SHIFT | CONTROL), SHIFT | CONTROL);
+        assert_eq!(hotkey_event_mods(MOD1 | MOD5), MOD1);
+    }
+
+    #[test]
+    fn ignore_mod_combos_cover_lock_num_mode() {
+        let c = ignore_mod_combos();
+        assert!(c.contains(&0));
+        assert!(c.contains(&(LOCK | MOD2)));
+        assert!(c.contains(&(LOCK | MOD2 | MOD3 | MOD5)));
+        assert_eq!(c.len(), 16);
+    }
 }
