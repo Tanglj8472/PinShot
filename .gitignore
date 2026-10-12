@@ -1,0 +1,12 @@
+# SnipClone (VS / MSBuild)
+SnipClone/bin/
+SnipClone/obj/
+SnipClone/.vs/
+*.aps
+*.user
+*.suo
+*.ncb
+*.sdf
+*.opensdf
+*.VC.db
+*.VC.opendb

@@ -1,0 +1,41 @@
+name: build-snipclone
+
+on:
+  push:
+    paths:
+      - "SnipClone/**"
+      - ".github/workflows/build-snipclone.yml"
+  pull_request:
+    paths:
+      - "SnipClone/**"
+      - ".github/workflows/build-snipclone.yml"
+  workflow_dispatch:
+
+jobs:
+  msvc:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [Debug, Release]
+        platform: [x64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build + LogicTests (${{ matrix.configuration }}|${{ matrix.platform }})
+        working-directory: SnipClone
+        shell: pwsh
+        run: |
+          .\build.ps1 -Configuration ${{ matrix.configuration }} -Platform ${{ matrix.platform }}
+
+      - name: Upload SnipClone.exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: SnipClone-${{ matrix.platform }}-${{ matrix.configuration }}
+          path: |
+            SnipClone/bin/${{ matrix.platform }}/${{ matrix.configuration }}/SnipClone.exe
+            SnipClone/bin/${{ matrix.platform }}/${{ matrix.configuration }}/SnipClone.Tests.exe
+          if-no-files-found: error
