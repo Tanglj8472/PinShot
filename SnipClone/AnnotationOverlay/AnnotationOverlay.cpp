@@ -135,11 +135,6 @@ void AnnotationOverlay::Stop()
         DestroyWindow(hwnd);
     }
     ReleaseSurface();
-    if (m_baseBmp)
-    {
-        m_baseBmp->Release();
-        m_baseBmp = nullptr;
-    }
     m_renderer.Shutdown();
 }
 
@@ -630,18 +625,20 @@ void AnnotationOverlay::DoPin()
     RequestClose();
 }
 
-void AnnotationOverlay::StampBaseToDib()
+void AnnotationOverlay::StampCaptureToDib(const CaptureResult& image)
 {
-    if (!m_bits || m_base.Empty() || m_w <= 0 || m_h <= 0 || m_dibStride <= 0)
+    if (!m_bits || image.Empty() || m_w <= 0 || m_h <= 0 || m_dibStride <= 0)
     {
         return;
     }
+    const int copyW = m_w < image.width ? m_w : image.width;
+    const int copyH = m_h < image.height ? m_h : image.height;
     auto* dstBase = static_cast<std::uint8_t*>(m_bits);
-    for (int y = 0; y < m_h; ++y)
+    for (int y = 0; y < copyH; ++y)
     {
-        const auto* src = m_base.bgra.data() + static_cast<size_t>(y) * m_base.stride;
+        const auto* src = image.bgra.data() + static_cast<size_t>(y) * image.stride;
         auto* dst = dstBase + static_cast<size_t>(y) * m_dibStride;
-        for (int x = 0; x < m_w; ++x)
+        for (int x = 0; x < copyW; ++x)
         {
             dst[x * 4 + 0] = src[x * 4 + 0];
             dst[x * 4 + 1] = src[x * 4 + 1];
@@ -649,36 +646,6 @@ void AnnotationOverlay::StampBaseToDib()
             dst[x * 4 + 3] = 255; // ULW_ALPHA requires opaque for solid photo
         }
     }
-}
-
-bool AnnotationOverlay::DibLooksEmpty() const
-{
-    if (!m_bits || m_w <= 0 || m_h <= 0 || m_dibStride < 4)
-    {
-        return true;
-    }
-    // Sample a few pixels — all alpha==0 means layered window is invisible.
-    const auto* bits = static_cast<const std::uint8_t*>(m_bits);
-    const int samples[][2] = {
-        { 0, 0 },
-        { m_w / 2, m_h / 2 },
-        { m_w - 1, m_h - 1 },
-        { m_w / 4, m_h / 4 },
-    };
-    for (const auto& s : samples)
-    {
-        const int x = s[0];
-        const int y = s[1];
-        if (x < 0 || y < 0 || x >= m_w || y >= m_h)
-        {
-            continue;
-        }
-        if (bits[static_cast<size_t>(y) * m_dibStride + static_cast<size_t>(x) * 4 + 3] != 0)
-        {
-            return false;
-        }
-    }
-    return true;
 }
 
 bool AnnotationOverlay::EnsureSurface()
@@ -689,7 +656,7 @@ bool AnnotationOverlay::EnsureSurface()
     {
         return false;
     }
-    if (m_rt && m_baseBmp && m_w == w && m_h == h && m_bits)
+    if (m_w == w && m_h == h && m_bits && m_memDc && m_dib)
     {
         return true;
     }
@@ -721,41 +688,16 @@ bool AnnotationOverlay::EnsureSurface()
         m_dibStride = w * 4;
     }
 
-    D2D1_RENDER_TARGET_PROPERTIES props = D2D1::RenderTargetProperties(
-        D2D1_RENDER_TARGET_TYPE_DEFAULT,
-        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED),
-        96.f,
-        96.f);
-    if (FAILED(m_renderer.Factory()->CreateDCRenderTarget(&props, &m_rt)))
-    {
-        return false;
-    }
-    RECT bind{ 0, 0, w, h };
-    if (FAILED(m_rt->BindDC(m_memDc, &bind)))
-    {
-        return false;
-    }
-    m_baseBmp = m_renderer.CreateBitmapFromCapture(m_rt, m_base);
     m_w = w;
     m_h = h;
 
-    // Base stamp works even if D2D bitmap upload failed.
-    StampBaseToDib();
+    // Seed with freeze crop so the host is never blank before first Compose.
+    StampCaptureToDib(m_base);
     return m_bits != nullptr;
 }
 
 void AnnotationOverlay::ReleaseSurface()
 {
-    if (m_baseBmp)
-    {
-        m_baseBmp->Release();
-        m_baseBmp = nullptr;
-    }
-    if (m_rt)
-    {
-        m_rt->Release();
-        m_rt = nullptr;
-    }
     if (m_memDc)
     {
         if (m_oldBmp)
@@ -788,37 +730,17 @@ void AnnotationOverlay::Present()
         return;
     }
 
-    // Always seed the layered DIB with the freeze crop (GDI path).
-    StampBaseToDib();
-
-    if (m_rt && m_baseBmp)
+    // Compose via WIC (same path as copy/save/pin). The old DC RT Clear+DrawScene
+    // wiped the GDI stamp; when the base bitmap failed to show, annotations still
+    // had opaque alpha so the layered host looked black with only strokes visible.
+    CaptureResult frame = m_renderer.Compose(m_base, m_ann);
+    if (frame.Empty())
     {
-        RECT bind{ 0, 0, m_w, m_h };
-        if (SUCCEEDED(m_rt->BindDC(m_memDc, &bind)))
-        {
-            m_rt->BeginDraw();
-            m_rt->Clear(D2D1::ColorF(0, 0, 0, 0));
-            m_renderer.DrawScene(m_rt, m_baseBmp, &m_base, m_ann);
-            const HRESULT hr = m_rt->EndDraw();
-            if (hr == D2DERR_RECREATE_TARGET)
-            {
-                ReleaseSurface();
-                if (!EnsureSurface())
-                {
-                    return;
-                }
-                StampBaseToDib();
-            }
-            else if (FAILED(hr) || DibLooksEmpty())
-            {
-                // D2D path failed or wiped alpha — show at least the photo.
-                StampBaseToDib();
-            }
-        }
+        StampCaptureToDib(m_base);
     }
-    else if (DibLooksEmpty())
+    else
     {
-        StampBaseToDib();
+        StampCaptureToDib(frame);
     }
 
     // Keep window size in sync with capture pixels (DPI-safe).

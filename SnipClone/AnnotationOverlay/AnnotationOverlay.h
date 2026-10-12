@@ -46,8 +46,7 @@ private:
     void Present();
     bool EnsureSurface();
     void ReleaseSurface();
-    void StampBaseToDib();
-    bool DibLooksEmpty() const;
+    void StampCaptureToDib(const CaptureResult& image);
 
     static constexpr UINT WM_SNIP_CLOSE_SELF = WM_APP + 0x60;
 
@@ -63,8 +62,8 @@ private:
     int m_editingTextIndex = -1; // -1 = new text
     D2D1_POINT_2F m_textAnchor{};
 
-    ID2D1Bitmap* m_baseBmp = nullptr;
-    ID2D1DCRenderTarget* m_rt = nullptr;
+    // Layered host is GDI DIB + UpdateLayeredWindow. Scene pixels come from
+    // AnnotationRenderer::Compose (WIC) — not a DC render target Clear/Draw path.
     HDC m_screenDc = nullptr;
     HDC m_memDc = nullptr;
     HBITMAP m_dib = nullptr;
