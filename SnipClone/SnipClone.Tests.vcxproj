@@ -98,6 +98,7 @@
     <ClInclude Include="Common\TextLayout.h" />
     <ClInclude Include="Common\WinCompat.h" />
     <ClInclude Include="Common\AppSettings.h" />
+    <ClInclude Include="Common\ImageUtil.h" />
     <ClInclude Include="Common\ProjectIO.h" />
     <ClInclude Include="Capture\CaptureResult.h" />
     <ClInclude Include="Capture\ScreenCapture.h" />
