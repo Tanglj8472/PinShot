@@ -2,6 +2,7 @@
 //! X11 on Linux. `pinshot-core` stays portable.
 
 mod app;
+mod cursor;
 mod event;
 mod clipboard;
 mod draw;

@@ -7,14 +7,15 @@ use pinshot_core::annotation::{Annotator, Tool};
 use pinshot_core::color::Rgba;
 use pinshot_core::colorpicker::{color_picker_layout, ColorPicker, PickerAction};
 use pinshot_core::confirm::{confirm_abort_layout, ConfirmAbortHit};
-use pinshot_core::geom::{hover_rect, Point, Rect};
-use pinshot_core::wheel::WheelGate;
+use pinshot_core::cursor::cursor_for;
+use pinshot_core::geom::{hit_handle, hover_rect, Point, Rect};
 use pinshot_core::history::{HistoryEntry, HistoryView, SnipHistory};
 use pinshot_core::i18n::tr;
 use pinshot_core::magnifier::magnifier_visible;
 use pinshot_core::raster::Raster;
 use pinshot_core::render::compose;
 use pinshot_core::selection::{DetectMode, Nudge, PressKind, SelState, Selection};
+use pinshot_core::wheel::WheelGate;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
@@ -205,6 +206,27 @@ impl Overlay {
         self.window.request_redraw();
     }
 
+    fn sync_cursor(&mut self) {
+        let over_chrome = self.confirm.is_some()
+            || self.color_picker.is_some()
+            || self
+                .toolbar
+                .as_ref()
+                .is_some_and(|t| t.contains(self.cursor));
+        let mut hint = self.annot.cursor_hint(self.img_pt(self.cursor));
+        hint.over_chrome = over_chrome;
+        hint.sel_state = Some(self.sel.state);
+        hint.hover_sel_handle = self.sel.resize_handle().or_else(|| {
+            if self.annot.tool.is_none() && self.sel.has_sel() {
+                hit_handle(self.sel.normalized(), self.cursor, 8.0)
+            } else {
+                None
+            }
+        });
+        hint.over_selection = self.sel.has_sel() && self.sel.normalized().contains(self.cursor);
+        crate::cursor::apply(&self.window, cursor_for(hint));
+    }
+
     fn release_grab(&mut self) {
         #[cfg(unix)]
         if let Some(mut g) = self.key_grab.take() {
@@ -244,10 +266,7 @@ impl Overlay {
                 let b = sh.bounds();
                 crate::logutil::log(&format!(
                     "annot {:?} {:.0}x{:.0} selected={:?}",
-                    sh.kind,
-                    b.w,
-                    b.h,
-                    self.annot.selected
+                    sh.kind, b.w, b.h, self.annot.selected
                 ));
             }
         }
@@ -467,8 +486,9 @@ impl Overlay {
 
     fn apply_tb(&mut self, a: TbAction) {
         match a {
-            TbAction::Tool(_) | TbAction::Arrow =>
-                crate::toolbar::toggle_tool(&mut self.annot, &mut self.arrow_on, a),
+            TbAction::Tool(_) | TbAction::Arrow => {
+                crate::toolbar::toggle_tool(&mut self.annot, &mut self.arrow_on, a)
+            }
             TbAction::Undo => {
                 self.annot.undo();
             }
@@ -728,6 +748,7 @@ impl Overlay {
             if self.dirty {
                 self.window.request_redraw();
             }
+            self.sync_cursor();
             return;
         }
         match event {
@@ -754,14 +775,6 @@ impl Overlay {
                 } else {
                     let prev_hover = self.hover;
                     self.update_hover();
-                    if self.sel.has_sel()
-                        && self.sel.normalized().contains(self.cursor)
-                        && self.annot.tool.is_none()
-                    {
-                        self.window.set_cursor(CursorIcon::Move);
-                    } else {
-                        self.window.set_cursor(CursorIcon::Crosshair);
-                    }
                     if !same_px || prev_hover != self.hover {
                         self.dirty = true;
                     }
@@ -893,6 +906,7 @@ impl Overlay {
         if self.dirty {
             self.window.request_redraw();
         }
+        self.sync_cursor();
     }
 
     pub fn handle_x11_key(&mut self, keysym: u32, mods: u16, pressed: bool) {
@@ -907,6 +921,7 @@ impl Overlay {
         };
         self.key(&key, text.as_deref());
         self.sync_ime();
+        self.sync_cursor();
         self.window.request_redraw();
     }
 

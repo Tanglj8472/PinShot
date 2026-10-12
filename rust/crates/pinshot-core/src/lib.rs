@@ -6,6 +6,7 @@ pub mod annotation;
 pub mod color;
 pub mod colorpicker;
 pub mod confirm;
+pub mod cursor;
 pub mod config;
 pub mod font;
 pub mod geom;
@@ -25,6 +26,7 @@ pub mod translate;
 pub mod wheel;
 
 pub use annotation::{Annotator, DrawMode, Effect, LineStyleKind, Shape, Style, Tool, UndoStack};
+pub use cursor::{cursor_for, CursorHint, CursorKind};
 pub use confirm::{confirm_abort_layout, ConfirmAbortHit, ConfirmAbortLayout};
 pub use colorpicker::{
     color_picker_layout, ColorPicker, ColorPickerLayout, PickerAction, PickerHit,
