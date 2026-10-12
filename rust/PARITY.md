@@ -34,7 +34,7 @@ Counts at the bottom. Python sources are not modified.
 | Python | Rust | Status |
 |---|---|---|
 | `main.App.__init__` | `app::run` | done |
-| `_build_fallback` 4 buttons, min width 220 | `fallback.rs` | done | Always shown on Linux; Windows if tray fails |
+| `_build_fallback` 4 buttons, min width 220 | `fallback.rs` | done | Always shown on Linux; Windows if tray fails. Esc does not quit (Python same) |
 | `_rebuild_tray` menu order | `tray.rs` | done | Snip, Pin clipboard, Snip and translate, Hide/Show all, Restore, Groups, Prefs, Quit |
 | `QSystemTrayIcon.Trigger` only snips | `tray::poll` MenuEvent first, left-click only | done | Bugfix: every item used to snip |
 | `_bind_local_shortcuts` F1/F3/Shift+F3/Ctrl+Shift+P/F5/F6 | fallback keys + XGrabKey + pin/overlay | done |
