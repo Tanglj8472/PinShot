@@ -338,3 +338,41 @@ fn cls_upside_down(session: &mut ort::session::Session, crop: &Raster) -> Result
 fn infer(_image: &Raster, _paths: &ModelPaths) -> Result<String, String> {
     Err("OCR not available in this build. Use pinshot-ocr.exe.".into())
 }
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use pinshot_core::font;
+    use pinshot_core::raster::Raster;
+    use pinshot_core::Rgba;
+
+    #[test]
+    fn ocr_reads_chinese_and_english_when_requested() {
+        if std::env::var("PINSHOT_OCR_SMOKE").ok().as_deref() != Some("1") {
+            return;
+        }
+        let mut img = Raster::new(720, 180);
+        img.fill(Rgba::WHITE);
+        font::blit_rgba_chrome(
+            &mut img.pixels,
+            img.width,
+            img.width,
+            img.height,
+            "Hello 你好 PinShot",
+            24.0,
+            48.0,
+            42.0,
+            Rgba::BLACK,
+        );
+        img.force_opaque();
+        let text = recognize(&img).unwrap_or_else(|e| panic!("ocr: {e}"));
+        eprintln!("ocr smoke => {text:?}");
+        let has_en = text.to_ascii_lowercase().contains("hello")
+            || text.to_ascii_lowercase().contains("pinshot");
+        let has_zh = text.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c));
+        assert!(
+            has_en && has_zh,
+            "expected English + Chinese, got {text:?}"
+        );
+    }
+}

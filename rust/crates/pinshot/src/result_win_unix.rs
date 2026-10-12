@@ -48,10 +48,13 @@ pub fn run_ocr_window(path: &str, auto_translate: bool) {
     let _ = std::fs::remove_file(path);
     OPEN.store(true, Ordering::SeqCst);
     schedule_raises();
+    let cfg = pinshot_core::config::load().unwrap_or_default();
+    let theme = cfg.theme.clone();
     let opts = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(tr("PinShot OCR"))
-            .with_inner_size([520.0, 540.0])
+            .with_inner_size([520.0, 420.0])
+            .with_min_inner_size([460.0, 320.0])
             .with_always_on_top(),
         persist_window: false,
         centered: true,
@@ -62,6 +65,16 @@ pub fn run_ocr_window(path: &str, auto_translate: bool) {
         opts,
         Box::new(move |cc| {
             crate::ui_font::install_cjk(&cc.egui_ctx);
+            let mut style = (*cc.egui_ctx.style()).clone();
+            style.spacing.item_spacing = egui::vec2(12.0, 8.0);
+            style.spacing.button_padding = egui::vec2(12.0, 5.0);
+            cc.egui_ctx.set_style(style);
+            let dark = theme == "dark";
+            cc.egui_ctx.set_visuals(if dark {
+                egui::Visuals::dark()
+            } else {
+                egui::Visuals::light()
+            });
             Ok(Box::new(OcrWin {
                 orig: text,
                 trans: String::new(),

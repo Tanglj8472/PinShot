@@ -65,7 +65,9 @@ HEAD 在本轮 Snipaste 对齐：文字标注（点击落字、IME、光标、�
 |---|---|---|
 | 文字 | Linux `XGrabKeyboard` 吃掉 IME；caret/度量忽略 CJK；文字工具会偷选别的形状；右键清掉全部标注；默认描边；字号近似 `0.6*chars` | 编辑全程 ungrab；`insert_str`/IME/粘贴；闪烁 caret；点已有文字回编且保持 Text 工具；右键 `finish()`；默认 `outline=false` `font_size=22`；`measure_ex` + 2× AA + CJK 回退 |
 | 设置 | Linux 自制 `prefs_win` 乱；GTK 初始化后再起 eframe 静默失败 | 双平台 spawn `--settings-window`；egui Grid；CJK `ui_font`；Apply/OK/Cancel；`config.toml` 全保留 |
-| OCR | Linux 默认无 `ocr` feature；条带检测非 DBNet；结果窗同样踩 GTK+eframe | unix 始终链 ort；DBNet + letterbox + rec H=48 + cls 180°；`--ocr-window` 独立进程 |
+| OCR | Linux 默认无 `ocr` feature；条带检测非 DBNet；结果窗同样踩 GTK+eframe | unix 始终链 ort；DBNet + letterbox + rec H=48 + cls 180°；`--ocr-window` 独立进程（浅色 + CJK，跟设置窗同一套） |
+
+验证：`cargo test --workspace --lib` 绿（含 `text_default_style_matches_snipaste`）。`PINSHOT_OCR_SMOKE=1` → `ocr smoke => "Hello你好PinShot"`。`cargo build --release --bin pinshot` Linux 绿。Xvfb `:31`/`:32` 1920×1200 + xfwm4 + xdotool：`text commit "Hello 你好"`（编辑时 `XUngrabKeyboard`）；设置窗 520×318 常规/热键/输出网格 + `ui font wqy-microhei`；框选「Hello 你好 / PinShot OCR」→ `ocr line "Hello你好"` / `"PinShotOCR"` → `--ocr-window`。截图 `/opt/cursor/artifacts/snipaste-align/`。模型走 RapidOCR ModelScope v3.9.2（旧 v3.2.0 / HuggingFace 文件名已失效）。
 
 ### UI chrome 文字 AA（上轮）
 
