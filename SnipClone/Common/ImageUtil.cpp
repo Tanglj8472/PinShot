@@ -159,7 +159,7 @@ bool ImageUtil::CopyToClipboard(const CaptureResult& image)
     return true;
 }
 
-std::wstring ImageUtil::BrowseSavePng(HWND owner)
+std::wstring ImageUtil::BrowseSavePng(HWND owner, const std::wstring& initialDir)
 {
     InitCom();
 
@@ -173,6 +173,10 @@ std::wstring ImageUtil::BrowseSavePng(HWND owner)
     ofn.lpstrDefExt = L"png";
     ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
     ofn.lpstrTitle = L"Save snip";
+    if (!initialDir.empty())
+    {
+        ofn.lpstrInitialDir = initialDir.c_str();
+    }
     if (GetSaveFileNameW(&ofn))
     {
         return path;

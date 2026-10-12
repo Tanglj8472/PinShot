@@ -4,6 +4,7 @@
 //==============================================================================
 #include "AnnotationOverlay.h"
 
+#include "../Common/AppSettings.h"
 #include "../Common/CoordMap.h"
 #include "../Common/ImageUtil.h"
 #include "../Common/WinHelper.h"
@@ -12,6 +13,7 @@
 #include <windowsx.h>
 
 #include <algorithm>
+#include <string>
 
 namespace snip
 {
@@ -675,7 +677,8 @@ void AnnotationOverlay::DoCopy()
 
 void AnnotationOverlay::DoSave()
 {
-    auto path = ImageUtil::BrowseSavePng(m_hwnd);
+    const auto settings = AppSettings::Load();
+    auto path = ImageUtil::BrowseSavePng(m_hwnd, settings.outputDir);
     if (path.empty())
     {
         return;
@@ -688,6 +691,14 @@ void AnnotationOverlay::DoSave()
     }
     if (ImageUtil::SavePng(composed, path))
     {
+        // Remember folder for next save.
+        AppSettings updated = settings;
+        const auto slash = path.find_last_of(L"\\/");
+        if (slash != std::wstring::npos)
+        {
+            updated.outputDir = path.substr(0, slash);
+            updated.Save();
+        }
         s_lastExport = std::move(composed);
         s_lastOrigin = ImageOrigin(m_base.screenRect);
         RequestClose();

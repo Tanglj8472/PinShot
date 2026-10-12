@@ -4,6 +4,7 @@
 #include "PinWindow.h"
 
 #include "PinManager.h"
+#include "../Common/AppSettings.h"
 #include "../Common/ImageUtil.h"
 #include "../Common/WinHelper.h"
 
@@ -11,6 +12,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <string>
 #include <vector>
 
 #pragma comment(lib, "d2d1.lib")
@@ -191,7 +193,8 @@ void PinWindow::CopyImage()
 
 void PinWindow::SaveImage()
 {
-    auto path = ImageUtil::BrowseSavePng(m_hwnd);
+    auto settings = AppSettings::Load();
+    auto path = ImageUtil::BrowseSavePng(m_hwnd, settings.outputDir);
     if (path.empty())
     {
         return;
@@ -199,6 +202,13 @@ void PinWindow::SaveImage()
     if (!ImageUtil::SavePng(m_image, path))
     {
         MessageBoxW(m_hwnd, L"保存 PNG 失败。", L"SnipClone", MB_ICONWARNING | MB_OK);
+        return;
+    }
+    const auto slash = path.find_last_of(L"\\/");
+    if (slash != std::wstring::npos)
+    {
+        settings.outputDir = path.substr(0, slash);
+        settings.Save();
     }
 }
 

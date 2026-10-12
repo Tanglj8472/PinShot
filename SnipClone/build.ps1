@@ -1,7 +1,7 @@
 #Requires -Version 7.0
 <#
 .SYNOPSIS
-  Build SnipClone with VS2022 MSBuild (Windows only). Optionally run LogicTests.
+  Build SnipClone with VS2022 MSBuild (Windows only). Run LogicTests + --smoke.
 #>
 param(
     [ValidateSet('Debug', 'Release')]
@@ -47,4 +47,14 @@ if (-not $SkipTests -and $Platform -eq 'x64') {
     if ($LASTEXITCODE -ne 0) {
         throw "LogicTests failed with exit code $LASTEXITCODE"
     }
+
+    if (-not (Test-Path $out)) {
+        throw "SnipClone.exe missing: $out"
+    }
+    Write-Host "Running smoke: $out --smoke"
+    & $out --smoke
+    if ($LASTEXITCODE -ne 0) {
+        throw "SnipClone --smoke failed with exit code $LASTEXITCODE"
+    }
+    Write-Host "Smoke OK"
 }

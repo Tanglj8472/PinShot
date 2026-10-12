@@ -25,7 +25,8 @@ public:
     static bool CopyToClipboard(const CaptureResult& image);
 
     // Optional file dialog; returns empty if cancelled.
-    static std::wstring BrowseSavePng(HWND owner);
+    // initialDir may be empty (system default).
+    static std::wstring BrowseSavePng(HWND owner, const std::wstring& initialDir = {});
 };
 
 } // namespace snip

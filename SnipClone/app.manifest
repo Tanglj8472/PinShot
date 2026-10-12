@@ -2,7 +2,7 @@
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
   <assemblyIdentity
       name="SnipClone"
-      version="0.1.0.0"
+      version="0.2.0.0"
       type="win32"
       processorArchitecture="*"/>
   <description>SnipClone — Snipaste-style snipping tool (Win32 + Direct2D)</description>
