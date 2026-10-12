@@ -67,6 +67,7 @@ private:
     void DoCopy();
     void DoSave();
     void DoPin();
+    void DoSaveProject(); // M3: .scdoc
     AnnotatorDocument BuildDocument() const;
     bool CommitWriteBack(); // updates target pin; returns false if compose failed
     void RequestClose();

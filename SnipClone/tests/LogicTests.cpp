@@ -6,8 +6,10 @@
 #include "../AnnotationOverlay/DrawStack.h"
 #include "../Capture/CaptureResult.h"
 #include "../Capture/ScreenCapture.h"
+#include "../AnnotationOverlay/AnnotatorDocument.h"
 #include "../Common/CoordMap.h"
 #include "../Common/DpiHelper.h"
+#include "../Common/ProjectIO.h"
 #include "../Common/TextLayout.h"
 
 #include <algorithm>

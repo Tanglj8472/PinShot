@@ -7,6 +7,7 @@
 #include "../Common/AppSettings.h"
 #include "../Common/CoordMap.h"
 #include "../Common/ImageUtil.h"
+#include "../Common/ProjectIO.h"
 #include "../Common/WinHelper.h"
 #include "../PinWindow/PinManager.h"
 #include "../PinWindow/PinWindow.h"
@@ -528,6 +529,11 @@ LRESULT AnnotationOverlay::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             }
             return 0;
         }
+        if (wParam == 'E' && (GetKeyState(VK_CONTROL) & 0x8000) && (GetKeyState(VK_SHIFT) & 0x8000))
+        {
+            DoSaveProject();
+            return 0;
+        }
         if (wParam == 'C' && (GetKeyState(VK_CONTROL) & 0x8000))
         {
             DoCopy();
@@ -958,6 +964,30 @@ void AnnotationOverlay::DoSave()
     }
 }
 
+void AnnotationOverlay::DoSaveProject()
+{
+    auto doc = BuildDocument();
+    if (!doc.Editable())
+    {
+        MessageBoxW(m_hwnd, L"没有可保存的文档。", L"SnipClone", MB_ICONWARNING | MB_OK);
+        return;
+    }
+    std::wstring path;
+    if (!ProjectIO::BrowseSavePath(m_hwnd, path))
+    {
+        return;
+    }
+    std::wstring err;
+    if (!ProjectIO::Save(doc, path, &err))
+    {
+        MessageBoxW(m_hwnd, err.empty() ? L"保存项目失败。" : err.c_str(), L"SnipClone", MB_ICONERROR | MB_OK);
+        return;
+    }
+    ProjectIO::RememberRecent(path);
+    ProjectIO::SaveAutosave(doc);
+    MessageBoxW(m_hwnd, L"项目已保存（.scdoc）。", L"SnipClone", MB_ICONINFORMATION | MB_OK);
+}
+
 void AnnotationOverlay::DoPin()
 {
     auto composed = ComposeExport();
@@ -968,6 +998,7 @@ void AnnotationOverlay::DoPin()
     }
     s_lastOrigin = ImageOrigin(m_base.screenRect);
     auto doc = BuildDocument();
+    ProjectIO::SaveAutosave(doc); // M3: keep last editable session for restart
     if (m_writeBackPin)
     {
         m_writeBackPin->ApplyEdit(std::move(composed), std::move(doc));

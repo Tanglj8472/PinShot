@@ -59,6 +59,7 @@ private:
         IDM_EDIT = 4000,
         IDM_COPY = 4001,
         IDM_SAVE,
+        IDM_SAVE_PROJECT,
         IDM_RESET_SCALE,
         IDM_OPACITY_100,
         IDM_OPACITY_75,

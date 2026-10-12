@@ -6,6 +6,7 @@
 #include "PinManager.h"
 #include "../Common/AppSettings.h"
 #include "../Common/ImageUtil.h"
+#include "../Common/ProjectIO.h"
 #include "../Common/WinHelper.h"
 
 #include <windowsx.h>
@@ -283,6 +284,11 @@ void PinWindow::ShowContextMenu(POINT screen)
         L"编辑标注…\tSpace");
     AppendMenuW(menu, MF_STRING, IDM_COPY, L"复制");
     AppendMenuW(menu, MF_STRING, IDM_SAVE, L"保存 PNG…");
+    AppendMenuW(
+        menu,
+        MF_STRING | (HasEditableDocument() ? 0 : MF_GRAYED),
+        IDM_SAVE_PROJECT,
+        L"保存可编辑项目…");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, IDM_RESET_SCALE, L"恢复原始比例");
     HMENU opacity = CreatePopupMenu();
@@ -336,6 +342,29 @@ void PinWindow::ShowContextMenu(POINT screen)
         break;
     case IDM_SAVE:
         SaveImage();
+        break;
+    case IDM_SAVE_PROJECT:
+        if (HasEditableDocument())
+        {
+            std::wstring path;
+            if (ProjectIO::BrowseSavePath(m_hwnd, path))
+            {
+                std::wstring err;
+                if (ProjectIO::Save(m_document, path, &err))
+                {
+                    ProjectIO::RememberRecent(path);
+                    ProjectIO::SaveAutosave(m_document);
+                }
+                else
+                {
+                    MessageBoxW(
+                        m_hwnd,
+                        err.empty() ? L"保存项目失败。" : err.c_str(),
+                        L"SnipClone",
+                        MB_ICONERROR | MB_OK);
+                }
+            }
+        }
         break;
     case IDM_RESET_SCALE:
         ResetScale();

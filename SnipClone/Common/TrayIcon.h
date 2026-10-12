@@ -26,6 +26,9 @@ public:
         OpenOutputDir,
         OpenSettingsDir,
         Settings,
+        OpenProject,
+        RestoreAutosave,
+        ClearAutosave,
         About,
         Exit,
     };

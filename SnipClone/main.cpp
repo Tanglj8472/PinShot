@@ -11,6 +11,7 @@
 #include "AnnotationOverlay/AnnotatorDocument.h"
 #include "Capture/ScreenCapture.h"
 #include "Common/AppSettings.h"
+#include "Common/ProjectIO.h"
 #include "Common/SettingsDialog.h"
 #include "Common/SingleInstance.h"
 #include "Common/TrayIcon.h"
@@ -70,6 +71,60 @@ void BeginAnnotationFromSelection()
         g_annotation.reset();
         MessageBoxW(g_mainWnd, L"Failed to open annotation overlay.", L"SnipClone", MB_ICONERROR | MB_OK);
     }
+}
+
+void BeginAnnotationFromDocument(snip::AnnotatorDocument doc)
+{
+    if (Busy())
+    {
+        MessageBoxW(g_mainWnd, L"请先结束当前截图或编辑。", L"SnipClone", MB_ICONINFORMATION | MB_OK);
+        return;
+    }
+    if (!doc.Editable())
+    {
+        MessageBoxW(g_mainWnd, L"项目无效或已损坏。", L"SnipClone", MB_ICONERROR | MB_OK);
+        return;
+    }
+    g_annotation = std::make_unique<snip::AnnotationOverlay>();
+    if (!g_annotation->StartFromDocument(g_instance, g_mainWnd, std::move(doc), nullptr))
+    {
+        g_annotation.reset();
+        MessageBoxW(g_mainWnd, L"无法打开项目。", L"SnipClone", MB_ICONERROR | MB_OK);
+    }
+}
+
+void OpenProjectFile()
+{
+    std::wstring path;
+    if (!snip::ProjectIO::BrowseOpenPath(g_mainWnd, path))
+    {
+        return;
+    }
+    snip::AnnotatorDocument doc;
+    std::wstring err;
+    if (!snip::ProjectIO::Load(path, doc, &err))
+    {
+        MessageBoxW(g_mainWnd, err.empty() ? L"打开项目失败。" : err.c_str(), L"SnipClone", MB_ICONERROR | MB_OK);
+        return;
+    }
+    snip::ProjectIO::RememberRecent(path);
+    BeginAnnotationFromDocument(std::move(doc));
+}
+
+void RestoreAutosaveProject()
+{
+    snip::AnnotatorDocument doc;
+    std::wstring err;
+    if (!snip::ProjectIO::LoadAutosave(doc, &err))
+    {
+        MessageBoxW(
+            g_mainWnd,
+            err.empty() ? L"没有可恢复的自动保存。" : err.c_str(),
+            L"SnipClone",
+            MB_ICONINFORMATION | MB_OK);
+        return;
+    }
+    BeginAnnotationFromDocument(std::move(doc));
 }
 
 void BeginAnnotationFromPin(snip::PinWindow* pin)
@@ -222,6 +277,18 @@ void OnTrayCommand(snip::TrayIcon::Command cmd)
         break;
     case snip::TrayIcon::Command::Settings:
         OpenSettings();
+        break;
+    case snip::TrayIcon::Command::OpenProject:
+        OpenProjectFile();
+        break;
+    case snip::TrayIcon::Command::RestoreAutosave:
+        RestoreAutosaveProject();
+        break;
+    case snip::TrayIcon::Command::ClearAutosave:
+        if (snip::ProjectIO::ClearAutosave())
+        {
+            MessageBoxW(g_mainWnd, L"已清除自动保存。", L"SnipClone", MB_ICONINFORMATION | MB_OK);
+        }
         break;
     case snip::TrayIcon::Command::OpenOutputDir:
         ChooseOutputDir();

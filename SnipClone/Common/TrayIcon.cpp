@@ -5,6 +5,7 @@
 
 #include "../PinWindow/PinManager.h"
 #include "AppSettings.h"
+#include "ProjectIO.h"
 
 #include <shellapi.h>
 
@@ -126,6 +127,17 @@ void TrayIcon::PopupMenu()
         L"恢复最近关闭的贴图");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, static_cast<UINT>(Command::Settings), L"设置…");
+    AppendMenuW(menu, MF_STRING, static_cast<UINT>(Command::OpenProject), L"打开项目…");
+    AppendMenuW(
+        menu,
+        MF_STRING | (ProjectIO::HasAutosave() ? 0 : MF_GRAYED),
+        static_cast<UINT>(Command::RestoreAutosave),
+        L"恢复自动保存的项目");
+    AppendMenuW(
+        menu,
+        MF_STRING | (ProjectIO::HasAutosave() ? 0 : MF_GRAYED),
+        static_cast<UINT>(Command::ClearAutosave),
+        L"清除自动保存");
     AppendMenuW(menu, MF_STRING, static_cast<UINT>(Command::OpenOutputDir), L"打开输出目录");
     AppendMenuW(menu, MF_STRING, static_cast<UINT>(Command::OpenSettingsDir), L"打开设置目录（settings.ini）");
     AppendMenuW(menu, MF_STRING, static_cast<UINT>(Command::About), L"关于");
