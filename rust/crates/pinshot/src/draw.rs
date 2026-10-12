@@ -688,7 +688,9 @@ impl OverlayFront {
             chrome.push(hole_pad);
         }
 
-        if let Some(i) = annot.option_target() {
+        // Python / Snipaste: handles only for `selected`. Text commit leaves
+        // width_target but must not keep a blue box and 8 nubs.
+        if let Some(i) = annot.selected {
             if let Some(sh) = annot.shapes.get(i) {
                 // Same box `hit_handle_of_selected` / Python `render` use.
                 let hb = sh.bounds().adjusted(-2.0, -2.0, 2.0, 2.0);
@@ -762,9 +764,17 @@ impl OverlayFront {
                 );
                 if annot.caret_visible() {
                     let caret_x = r.x + 2.0 + annot.caret_x();
+                    let ch = (r.h - 4.0).max(8.0);
+                    // Hairline plus a light edge so a dark caret shows on dark shots
+                    // (it used to appear only after the user picked a bright colour).
                     fill_rect(
                         &mut self.frame,
-                        Rect::new(caret_x, r.y + 2.0, 2.0, (r.h - 4.0).max(8.0)),
+                        Rect::new(caret_x - 1.0, r.y + 1.0, 4.0, ch + 2.0),
+                        Rgba::rgba(255, 255, 255, 200),
+                    );
+                    fill_rect(
+                        &mut self.frame,
+                        Rect::new(caret_x, r.y + 2.0, 2.0, ch),
                         st.color,
                     );
                 }
@@ -1020,7 +1030,7 @@ pub fn paint_toolbar(pm: &mut Pixmap, tb: &Toolbar, cursor: Option<Point>) -> Re
     }
     if let Some(cursor) = cursor {
         for b in &tb.buttons {
-            if b.rect.contains(cursor) {
+            if b.rect.inflated(3.0).contains(cursor) {
                 let tip = tr(b.tip);
                 let (tw, th) = crate::text::measure(&tip, 11, false);
                 let tw = tw as f32 + 12.0;

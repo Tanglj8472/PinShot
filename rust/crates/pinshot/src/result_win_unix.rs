@@ -12,8 +12,7 @@ use crate::clipboard;
 
 static OPEN: AtomicBool = AtomicBool::new(false);
 
-static CHILD: std::sync::Mutex<Option<std::process::Child>> =
-    std::sync::Mutex::new(None);
+static CHILD: std::sync::Mutex<Option<u32>> = std::sync::Mutex::new(None);
 
 pub fn open(text: String, auto_translate: bool) {
     spawn_window(&text, auto_translate, false);
@@ -49,11 +48,25 @@ fn spawn_window(text: &str, auto_translate: bool, is_error: bool) {
                 cmd.arg("--ocr-error");
             }
             match cmd.spawn() {
-                Ok(proc) => {
+                Ok(mut proc) => {
                     crate::logutil::log(&format!("ocr window spawn {}", path.display()));
+                    let pid = proc.id();
                     if let Ok(mut slot) = CHILD.lock() {
-                        *slot = Some(proc);
+                        *slot = Some(pid);
                     }
+                    // Wait on a helper thread so the child is reaped (no defunct
+                    // `[pinshot]`) even while the overlay loop is in Wait.
+                    let _ = std::thread::Builder::new()
+                        .name("pinshot-ocr-wait".into())
+                        .spawn(move || {
+                            let _ = proc.wait();
+                            if let Ok(mut slot) = CHILD.lock() {
+                                if *slot == Some(pid) {
+                                    *slot = None;
+                                }
+                            }
+                            crate::x11util::release_stray_grabs();
+                        });
                 }
                 Err(e) => crate::logutil::log(&format!("ocr window spawn: {e}")),
             }
@@ -63,19 +76,8 @@ fn spawn_window(text: &str, auto_translate: bool, is_error: bool) {
 }
 
 pub fn reap_child() {
-    if let Ok(mut slot) = CHILD.lock() {
-        if let Some(child) = slot.as_mut() {
-            match child.try_wait() {
-                Ok(Some(_)) => {
-                    *slot = None;
-                    #[cfg(unix)]
-                    crate::x11util::release_stray_grabs();
-                }
-                Ok(None) => {}
-                Err(_) => *slot = None,
-            }
-        }
-    }
+    // The waiter thread owns Child::wait and calls release_stray_grabs on exit.
+    // Do not ungrab from the UI loop — that would run on every about_to_wait.
 }
 
 pub fn run_ocr_window(path: &str, auto_translate: bool, is_error: bool) {
@@ -128,6 +130,7 @@ pub fn run_ocr_window(path: &str, auto_translate: bool, is_error: bool) {
                 trans: String::new(),
                 target: 0,
                 status: status0,
+                error: is_error,
                 auto: auto_translate && !is_error,
                 busy: auto_translate && !is_error,
                 raised: false,
@@ -162,6 +165,7 @@ struct OcrWin {
     trans: String,
     target: usize,
     status: String,
+    error: bool,
     auto: bool,
     busy: bool,
     raised: bool,
@@ -181,6 +185,7 @@ impl eframe::App for OcrWin {
                 Ok(b) => b,
                 Err(e) => {
                     self.status = e;
+                    self.error = true;
                     self.busy = false;
                     return;
                 }
@@ -194,8 +199,12 @@ impl eframe::App for OcrWin {
                     let t = resp.into_string().unwrap_or_default();
                     self.trans = read_translation(&t).unwrap_or_default();
                     self.status = tr("Translation done");
+                    self.error = false;
                 }
-                Err(e) => self.status = e.to_string(),
+                Err(e) => {
+                    self.status = e.to_string();
+                    self.error = true;
+                }
             }
             self.busy = false;
         }
@@ -203,7 +212,12 @@ impl eframe::App for OcrWin {
             .frame(egui::Frame::central_panel(&ctx.style()).inner_margin(egui::Margin::same(16)))
             .show(ctx, |ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
-                ui.label(egui::RichText::new(&self.status).weak());
+                let status = if self.error {
+                    egui::RichText::new(&self.status).color(egui::Color32::from_rgb(196, 40, 40))
+                } else {
+                    egui::RichText::new(&self.status).weak()
+                };
+                ui.label(status);
                 ui.add_space(4.0);
                 ui.label(tr("Original (editable)"));
                 ui.add(

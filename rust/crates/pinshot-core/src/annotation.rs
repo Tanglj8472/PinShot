@@ -187,10 +187,11 @@ impl Style {
                 s.filled = true;
                 s.font_size = 14;
             }
-            // Snipaste: default text annotation is not outlined; interface font.
+            // Snipaste: default text annotation is not outlined; dark interface font.
             Tool::Text => {
                 s.outline = false;
                 s.font_size = 22;
+                s.color = Rgba::rgb(30, 30, 30);
             }
             _ => {}
         }
@@ -362,6 +363,9 @@ pub struct Annotator {
     sel_dirty: bool,
     /// Text-tool press on committed text: click re-edits, drag moves.
     pending_text_click: Option<Point>,
+    /// After click-outside commit, ignore the rest of this click so we do not
+    /// immediately open a new empty box (Snipaste: next click places).
+    swallow_text_place: bool,
     wheel_target: Option<usize>,
     wheel_time: Instant,
     wheel_delta: i32,
@@ -385,6 +389,7 @@ impl Default for Annotator {
             sel_pts0: Vec::new(),
             sel_dirty: false,
             pending_text_click: None,
+            swallow_text_place: false,
             wheel_target: None,
             wheel_time: Instant::now(),
             wheel_delta: 0,
@@ -570,9 +575,11 @@ impl Annotator {
                     self.add(sh);
                 }
             }
-            // Snipaste: committing text does not leave resize handles.
+            // Snipaste: committing text does not leave a selection box / 8 handles.
+            // `add()` would otherwise keep width_target, and chrome paints that.
             self.selected = None;
             self.edit_target = None;
+            self.width_target = None;
         }
         if let Some(sh) = self.live.take() {
             let ok = sh.pts.len() > 1
@@ -884,7 +891,13 @@ impl Annotator {
                 }
             }
             Tool::Select => false,
-            Tool::Text => b.contains(p) || crate::render::shape_paints_at(sh, p),
+            Tool::Text => {
+                // Glyph ink plus a Snipaste-style border grab so drag-to-move
+                // still hits when the pointer is on the box edge, not the ink.
+                let pad = (sh.style.font_size.max(12) as f32) * 0.4 + 10.0;
+                b.adjusted(-pad, -pad, pad, pad).contains(p)
+                    || crate::render::shape_paints_at(sh, p)
+            }
             _ => crate::render::shape_paints_at(sh, p),
         }
     }
@@ -921,6 +934,15 @@ impl Annotator {
 
     pub fn is_editing_text(&self) -> bool {
         self.text_edit.is_some()
+    }
+
+    /// Text-tool press on committed text: the pointer is down, drag will move.
+    pub fn is_dragging_text(&self) -> bool {
+        self.pending_text_click.is_some()
+    }
+
+    pub fn is_swallowing_text_click(&self) -> bool {
+        self.swallow_text_place
     }
 
     /// Shape / handle under the pointer for cursor mapping.
@@ -999,6 +1021,9 @@ impl Annotator {
         let st = self.style(tool).clone();
         match tool {
             Tool::Text => {
+                if self.swallow_text_place {
+                    return true;
+                }
                 if let Some(r) = self.text_edit_rect() {
                     if r.contains(img_pt) {
                         self.set_caret_at_x(img_pt.x);
@@ -1023,6 +1048,7 @@ impl Annotator {
                 if self.text_edit.is_some() {
                     self.commit_text(false);
                     self.selected = None;
+                    self.swallow_text_place = true;
                     return true;
                 }
                 self.start_text(img_pt, None);
@@ -1187,8 +1213,8 @@ impl Annotator {
         Some(Rect::new(
             ed.img_pt.x,
             ed.img_pt.y,
-            (w + 6.0).max(8.0),
-            h.max(fs) + 6.0,
+            (w + 4.0).max(6.0),
+            h.max(fs) + 4.0,
         ))
     }
 
@@ -1401,20 +1427,38 @@ impl Annotator {
     }
 
     pub fn release(&mut self, img_pt: Point) -> bool {
-        if self.pending_text_click.take().is_some() {
-            let dragged = self.sel_dirty;
-            let idx = self.selected;
+        if self.swallow_text_place {
+            self.swallow_text_place = false;
             self.sel_mode = None;
-            self.sel_pts0.clear();
-            if !dragged {
-                if let Some(i) = idx {
-                    if self.shapes.get(i).map(|s| s.kind) == Some(Tool::Text) {
-                        self.begin_edit_text(i);
-                        self.set_caret_at_x(img_pt.x);
+            return true;
+        }
+        if self.pending_text_click.take().is_some() {
+            // Fast drags may skip CursorMoved; still treat a moved pointer as move.
+            let dragged = self.sel_dirty || img_pt.manhattan(self.sel_origin) > 5.0;
+            let idx = self.selected;
+            if dragged {
+                if !self.sel_dirty {
+                    if let Some(i) = idx {
+                        if i < self.shapes.len() && !self.sel_pts0.is_empty() {
+                            self.push_edit();
+                            let d = img_pt.sub(self.sel_origin);
+                            self.shapes[i].pts =
+                                self.sel_pts0.iter().map(|p| p.add(d)).collect();
+                        }
                     }
                 }
-            } else {
+                self.sel_mode = None;
+                self.sel_pts0.clear();
                 self.selected = None;
+                return true;
+            }
+            self.sel_mode = None;
+            self.sel_pts0.clear();
+            if let Some(i) = idx {
+                if self.shapes.get(i).map(|s| s.kind) == Some(Tool::Text) {
+                    self.begin_edit_text(i);
+                    self.set_caret_at_x(img_pt.x);
+                }
             }
             return true;
         }
@@ -1616,7 +1660,8 @@ mod tests {
         assert_eq!(a.shapes[0].text, "Hi");
         assert!(a.text_edit.is_none());
         assert!(a.selected.is_none(), "committed text has no handles");
-        assert_eq!(a.width_target, Some(0));
+        assert!(a.option_target().is_none(), "no leftover width_target chrome");
+        assert!(a.selected_handle_points().is_empty());
     }
 
     #[test]
@@ -1708,7 +1753,7 @@ mod tests {
         a.press(Point::new(20.0, 30.0), false);
         a.type_text('A');
         let r = a.text_edit_rect().expect("editor");
-        assert!(r.w < 80.0, "editor must hug glyphs, w={}", r.w);
+        assert!(r.w < 40.0, "editor must hug glyphs, w={}", r.w);
         assert!(r.w > 4.0);
         a.commit_text(true);
         assert!(a.shapes.is_empty());
@@ -1769,6 +1814,18 @@ mod tests {
         let st = a.style(Tool::Text);
         assert!(!st.outline, "Snipaste default text is not outlined");
         assert_eq!(st.font_size, 22);
+        assert_eq!(st.color, Rgba::rgb(30, 30, 30));
+    }
+
+    #[test]
+    fn cjk_insert_does_not_dismiss_editor() {
+        let mut a = Annotator::new();
+        a.set_tool(Some(Tool::Text));
+        a.press(Point::new(8.0, 8.0), false);
+        a.insert_str("你好PinShot");
+        let ed = a.text_edit.as_ref().expect("editor stays");
+        assert_eq!(ed.text, "你好PinShot");
+        assert!(a.caret_visible());
     }
 
     #[test]
@@ -1832,6 +1889,8 @@ mod tests {
         assert_eq!(a.shapes.len(), 1);
         assert_eq!(a.shapes[0].text, "Hi");
         assert!(a.selected.is_none());
+        assert!(a.option_target().is_none());
+        a.release(Point::new(200.0, 180.0));
         assert!(a.press(Point::new(200.0, 180.0), false));
         assert!(a.text_edit.is_some());
         assert_eq!(a.shapes.len(), 1);
@@ -1847,6 +1906,7 @@ mod tests {
         assert!(a.press(Point::new(40.0, 50.0), false));
         assert!(a.text_edit.is_none());
         assert!(a.shapes.is_empty());
+        a.release(Point::new(40.0, 50.0));
         assert!(a.press(Point::new(40.0, 50.0), false));
         let ed = a.text_edit.as_ref().expect("new box");
         assert!(ed.text.is_empty());
@@ -1880,6 +1940,21 @@ mod tests {
         a.commit_text(false);
         assert!(a.press(Point::new(10.0, 10.0), false));
         a.move_to(Point::new(40.0, 28.0), false);
+        a.release(Point::new(40.0, 28.0));
+        assert!(a.text_edit.is_none());
+        assert_eq!(a.shapes.len(), 1);
+        assert_eq!(a.shapes[0].text, "Hi");
+        assert!((a.shapes[0].pts[0].x - 38.0).abs() < 0.5);
+    }
+
+    #[test]
+    fn text_drag_without_move_events_still_moves() {
+        let mut a = Annotator::new();
+        a.set_tool(Some(Tool::Text));
+        a.press(Point::new(8.0, 8.0), false);
+        a.insert_str("Hi");
+        a.commit_text(false);
+        assert!(a.press(Point::new(10.0, 10.0), false));
         a.release(Point::new(40.0, 28.0));
         assert!(a.text_edit.is_none());
         assert_eq!(a.shapes.len(), 1);

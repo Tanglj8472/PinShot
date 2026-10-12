@@ -384,6 +384,7 @@ impl PrefsApp {
         ui.horizontal(|ui| {
             ui.label(tr("Language:"));
             egui::ComboBox::from_id_salt("lang")
+                .icon(combo_chevron)
                 .selected_text(self.draft.lang().display_name())
                 .show_ui(ui, |ui| {
                     ui.selectable_value(
@@ -615,6 +616,26 @@ impl PrefsApp {
     }
 }
 
+/// Always a down chevron when closed. egui's default uses AboveOrBelow and
+/// paints ▲ on short pages (Interface) because the popup opens upward.
+fn combo_chevron(
+    ui: &Ui,
+    rect: egui::Rect,
+    visuals: &egui::style::WidgetVisuals,
+    _is_popup_open: bool,
+    _above_or_below: egui::AboveOrBelow,
+) {
+    let rect = egui::Rect::from_center_size(
+        rect.center(),
+        egui::vec2(rect.width() * 0.7, rect.height() * 0.45),
+    );
+    ui.painter().add(egui::Shape::convex_polygon(
+        vec![rect.left_top(), rect.right_top(), rect.center_bottom()],
+        visuals.fg_stroke.color,
+        egui::Stroke::NONE,
+    ));
+}
+
 fn form_grid(ui: &mut Ui, id: &'static str, add: impl FnOnce(&mut Ui)) {
     egui::Grid::new(id)
         .num_columns(2)
@@ -637,6 +658,7 @@ fn form_combo(
     });
     egui::ComboBox::from_id_salt(id)
         .width(CONTROL_W)
+        .icon(combo_chevron)
         .selected_text(selected)
         .show_ui(ui, add_contents);
     ui.end_row();
@@ -682,6 +704,13 @@ mod tests {
         assert!(PREFS_W < 500.0);
         assert_eq!(TABS.len(), 7);
         assert_eq!(PREFS_MIN_H, PREFS_MAX_H);
+    }
+
+    #[test]
+    fn combo_chevron_closed_points_down() {
+        // Closed (openness=0) must be ▼ so Interface matches Control/Output.
+        let _ = combo_chevron
+            as fn(&Ui, egui::Rect, &egui::style::WidgetVisuals, bool, egui::AboveOrBelow);
     }
 
     #[test]

@@ -6,7 +6,8 @@ use std::path::Path;
 
 use pinshot_core::config::data_dir;
 use pinshot_core::ocr::{
-    ctc_greedy, ctc_greedy_blank, db_boxes, join_lines, load_keys, model_dir, ModelPaths, TextBox,
+    ctc_greedy, ctc_greedy_blank, db_boxes, join_ocr_parts, load_keys, model_dir, ModelPaths,
+    TextBox,
 };
 use pinshot_core::raster::Raster;
 
@@ -123,8 +124,9 @@ fn infer(image: &Raster, paths: &ModelPaths) -> Result<String, String> {
         }]
     });
     crate::logutil::log(&format!("ocr boxes {}", boxes.len()));
-    let mut lines = Vec::new();
+    let mut parts: Vec<(TextBox, String)> = Vec::new();
     for b in boxes {
+        crate::logutil::log(&format!("ocr box {}x{} at {},{}", b.w, b.h, b.x, b.y));
         let pad = 3i32;
         let mut crop = image.crop(pinshot_core::geom::Rect::from_i32(
             b.x as i32 - pad,
@@ -132,10 +134,12 @@ fn infer(image: &Raster, paths: &ModelPaths) -> Result<String, String> {
             b.w as i32 + pad * 2,
             b.h as i32 + pad * 2,
         ));
-        if crop.width < 8 || crop.height < 8 {
+        if crop.width < 4 || crop.height < 4 {
             continue;
         }
-        if crop.height as f32 > crop.width as f32 * 1.5 {
+        // Only rotate true vertical lines. Word boxes that are merely a bit
+        // taller than wide must stay upright (Wikipedia captions, etc.).
+        if crop.height as f32 > crop.width as f32 * 2.2 {
             crop = crop.rotate90(1);
         }
         if let Some(session) = cls.as_mut() {
@@ -146,13 +150,13 @@ fn infer(image: &Raster, paths: &ModelPaths) -> Result<String, String> {
         match rec_line(&mut rec, &crop, &keys) {
             Ok(text) if !text.trim().is_empty() => {
                 crate::logutil::log(&format!("ocr line {:?}", text));
-                lines.push(text);
+                parts.push((b, text));
             }
             Ok(_) => {}
             Err(e) => crate::logutil::log(&format!("ocr rec: {e}")),
         }
     }
-    let joined = join_lines(&lines);
+    let joined = join_ocr_parts(&parts);
     if joined.is_empty() {
         Err("OCR produced no text".into())
     } else {
@@ -261,7 +265,7 @@ fn pack_rec(crop: &Raster) -> Result<ort::value::Value, String> {
     let mut nw = ((crop.width as f32) * (48.0 / h)).round() as u32;
     nw = (nw.clamp(16, 1280) / 8 * 8).max(8);
     let nh = 48u32;
-    let resized = crop.scale_nn(nw, nh);
+    let resized = crop.scale_bilinear(nw, nh);
     let mut chw = vec![0f32; (3 * nw * nh) as usize];
     let plane = (nw * nh) as usize;
     for y in 0..nh {
@@ -330,12 +334,99 @@ fn rec_line(
         }
         idx.push(best);
     }
-    let standard = ctc_greedy(&idx, keys);
-    if !standard.trim().is_empty() {
-        return Ok(standard);
+    let decoded = decode_ctc(&idx, keys, classes);
+    if !decoded.trim().is_empty() {
+        return Ok(decoded);
     }
-    let alt = ctc_greedy_blank(&idx, keys, classes.saturating_sub(1));
-    Ok(if alt.trim().is_empty() { standard } else { alt })
+    drop(outputs);
+    // Some RapidOCR exports expect BGR CHW. Retry once before giving up.
+    if let Ok(t_bgr) = pack_rec_bgr(crop) {
+        if let Ok(outputs) = session.run(ort::inputs![t_bgr]) {
+            if outputs.len() > 0 {
+                if let Ok((shape, data)) = outputs[0].try_extract_tensor::<f32>() {
+                    let dims: Vec<i64> = shape.iter().copied().collect();
+                    if let Ok(idx) = rec_argmax(&dims, data, keys.len()) {
+                        let alt = decode_ctc(&idx, keys, keys.len().max(2));
+                        if !alt.trim().is_empty() {
+                            return Ok(alt);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(decoded)
+}
+
+#[cfg(any(feature = "ocr", unix))]
+fn decode_ctc(idx: &[usize], keys: &[String], classes: usize) -> String {
+    let norm = |s: String| s.replace('\u{3000}', " ").replace('\u{00a0}', " ");
+    let standard = norm(ctc_greedy(idx, keys));
+    if !standard.trim().is_empty() {
+        return standard;
+    }
+    let alt = norm(ctc_greedy_blank(idx, keys, classes.saturating_sub(1)));
+    if alt.trim().is_empty() {
+        standard
+    } else {
+        alt
+    }
+}
+
+#[cfg(any(feature = "ocr", unix))]
+fn rec_argmax(dims: &[i64], data: &[f32], nclass: usize) -> Result<Vec<usize>, String> {
+    let (tlen, classes, transposed) = match dims {
+        [_, t, c] if (*c as usize) >= nclass => (*t as usize, *c as usize, false),
+        [_, c, t] if (*c as usize) >= nclass => (*t as usize, *c as usize, true),
+        [_, _, t, c] if (*c as usize) >= nclass => (*t as usize, *c as usize, false),
+        [_, _, c, t] if (*c as usize) >= nclass => (*t as usize, *c as usize, true),
+        d if d.len() >= 3 => (d[d.len() - 2] as usize, d[d.len() - 1] as usize, false),
+        d if d.len() == 2 => (d[0] as usize, d[1] as usize, false),
+        _ => return Err("unexpected rec shape".into()),
+    };
+    let mut idx = Vec::with_capacity(tlen);
+    for ti in 0..tlen {
+        let mut best = 0usize;
+        let mut bv = f32::NEG_INFINITY;
+        for c in 0..classes {
+            let v = if transposed {
+                data[c * tlen + ti]
+            } else {
+                data[ti * classes + c]
+            };
+            if v > bv {
+                bv = v;
+                best = c;
+            }
+        }
+        idx.push(best);
+    }
+    Ok(idx)
+}
+
+#[cfg(any(feature = "ocr", unix))]
+fn pack_rec_bgr(crop: &Raster) -> Result<ort::value::Value, String> {
+    let h = crop.height.max(1) as f32;
+    let mut nw = ((crop.width as f32) * (48.0 / h)).round() as u32;
+    nw = (nw.clamp(16, 1280) / 8 * 8).max(8);
+    let nh = 48u32;
+    let resized = crop.scale_bilinear(nw, nh);
+    let mut chw = vec![0f32; (3 * nw * nh) as usize];
+    let plane = (nw * nh) as usize;
+    for y in 0..nh {
+        for x in 0..nw {
+            let c = resized
+                .get(x as i32, y as i32)
+                .unwrap_or(pinshot_core::Rgba::WHITE);
+            let i = (y * nw + x) as usize;
+            chw[i] = (c.b as f32 / 255.0 - 0.5) / 0.5;
+            chw[plane + i] = (c.g as f32 / 255.0 - 0.5) / 0.5;
+            chw[2 * plane + i] = (c.r as f32 / 255.0 - 0.5) / 0.5;
+        }
+    }
+    let t = ort::value::Tensor::from_array((vec![1i64, 3, nh as i64, nw as i64], chw))
+        .map_err(|e| e.to_string())?;
+    Ok(t.into())
 }
 
 #[cfg(any(feature = "ocr", unix))]

@@ -635,6 +635,7 @@ impl PinWin {
                 if self.annotating
                     && (self.annot.is_brush_live()
                         || self.annot.is_selecting()
+                        || self.annot.is_dragging_text()
                         || self.annot.live.is_some())
                 {
                     self.annot.move_to(self.img_pt(p), false);
@@ -703,6 +704,8 @@ impl PinWin {
                     if self.annotating
                         && (self.annot.live.is_some()
                             || self.annot.is_selecting()
+                            || self.annot.is_dragging_text()
+                            || self.annot.is_swallowing_text_click()
                             || self.annot.is_editing_text())
                     {
                         self.annot.release(self.img_pt(p));
@@ -1236,16 +1239,22 @@ impl PinWin {
                     );
                     if self.annot.caret_visible() {
                         let caret_x = rr.x + 2.0 + self.annot.caret_x() * self.scale;
+                        let ch = (rr.h - 4.0).max(8.0);
                         crate::draw::fill_rect(
                             &mut pm,
-                            Rect::new(caret_x, rr.y + 2.0, 2.0, (rr.h - 4.0).max(8.0)),
+                            Rect::new(caret_x - 1.0, rr.y + 1.0, 4.0, ch + 2.0),
+                            pinshot_core::color::Rgba::rgba(255, 255, 255, 200),
+                        );
+                        crate::draw::fill_rect(
+                            &mut pm,
+                            Rect::new(caret_x, rr.y + 2.0, 2.0, ch),
                             st.color,
                         );
                     }
                 }
             }
         }
-        if let Some(i) = self.annot.option_target() {
+        if let Some(i) = self.annot.selected {
             if let Some(sh) = self.annot.shapes.get(i) {
                 let hb = sh.bounds().adjusted(-2.0, -2.0, 2.0, 2.0);
                 let m = self.margin() as f32;

@@ -310,29 +310,44 @@ pub fn draw_icon(pixmap: &mut Pixmap, kind: IconKind, cell: Rect, color: Option<
             }
         }
         IconKind::Ocr => {
-            if let Some(r) = tiny_skia::Rect::from_xywh(4.0, 3.0, 12.0, 14.0) {
+            // Document + magnifier — must not look like the Text "T".
+            if let Some(r) = tiny_skia::Rect::from_xywh(3.0, 3.0, 9.0, 12.0) {
                 pixmap.stroke_path(&PathBuilder::from_rect(r), &p, &st, t, None);
             }
-            for y in [7.0, 10.0, 13.0] {
-                if let Some(path) = line_path((6.5, y), (13.5, y)) {
-                    pixmap.stroke_path(&path, &p, &stroke(1.2), t, None);
+            for y in [6.0, 9.0] {
+                if let Some(path) = line_path((5.0, y), (10.0, y)) {
+                    pixmap.stroke_path(&path, &p, &stroke(1.1), t, None);
                 }
+            }
+            if let Some(r) = tiny_skia::Rect::from_xywh(9.5, 9.5, 6.5, 6.5) {
+                pixmap.stroke_path(
+                    &PathBuilder::from_oval(r).unwrap(),
+                    &p,
+                    &stroke(1.6),
+                    t,
+                    None,
+                );
+            }
+            if let Some(path) = line_path((15.0, 15.0), (17.5, 17.5)) {
+                pixmap.stroke_path(&path, &p, &stroke(1.8), t, None);
             }
         }
         IconKind::Translate => {
-            if let Some(path) = line_path((5.0, 5.0), (11.0, 5.0)) {
+            // Latin A + CJK 口, not a T (was confused with the Text tool).
+            if let Some(path) = line_path((4.0, 14.0), (7.0, 5.0)) {
                 pixmap.stroke_path(&path, &p, &stroke(1.6), t, None);
             }
-            if let Some(path) = line_path((8.0, 5.0), (8.0, 14.0)) {
+            if let Some(path) = line_path((7.0, 5.0), (10.0, 14.0)) {
                 pixmap.stroke_path(&path, &p, &stroke(1.6), t, None);
             }
-            let mut pb = PathBuilder::new();
-            pb.move_to(12.0, 10.0);
-            pb.line_to(16.0, 16.0);
-            pb.line_to(12.5, 16.0);
-            pb.close();
-            if let Some(path) = pb.finish() {
-                pixmap.fill_path(&path, &p, FillRule::Winding, t, None);
+            if let Some(path) = line_path((5.2, 11.0), (8.8, 11.0)) {
+                pixmap.stroke_path(&path, &p, &stroke(1.3), t, None);
+            }
+            if let Some(r) = tiny_skia::Rect::from_xywh(11.0, 6.0, 6.0, 9.0) {
+                pixmap.stroke_path(&PathBuilder::from_rect(r), &p, &st, t, None);
+            }
+            if let Some(path) = line_path((11.0, 10.5), (17.0, 10.5)) {
+                pixmap.stroke_path(&path, &p, &stroke(1.2), t, None);
             }
         }
         IconKind::Fill => {
@@ -497,5 +512,19 @@ mod tests {
             arrow.data(),
             "Line and Arrow must be distinct icons"
         );
+    }
+
+    #[test]
+    fn ocr_and_translate_are_not_a_t() {
+        let cell = Rect::new(2.0, 2.0, 20.0, 20.0);
+        let mut text = Pixmap::new(24, 24).unwrap();
+        let mut ocr = Pixmap::new(24, 24).unwrap();
+        let mut tr = Pixmap::new(24, 24).unwrap();
+        draw_icon(&mut text, IconKind::Text, cell, None);
+        draw_icon(&mut ocr, IconKind::Ocr, cell, None);
+        draw_icon(&mut tr, IconKind::Translate, cell, None);
+        assert_ne!(text.data(), ocr.data(), "OCR must not match Text T");
+        assert_ne!(text.data(), tr.data(), "Translate must not match Text T");
+        assert_ne!(ocr.data(), tr.data(), "OCR and Translate must differ");
     }
 }

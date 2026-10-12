@@ -54,9 +54,18 @@ pub fn run_ocr_window(path: &str, auto_translate: bool, is_error: bool) {
     }
 }
 
-pub fn open_error(_err: String) {
-    // Keep the editable field empty; the window title names the failure.
+pub fn open_error(err: String) {
+    // Keep the editable field empty; put the failure in the window title
+    // (Linux styles this as a red status line).
     open(String::new(), false);
+    if let Ok(g) = cell().lock() {
+        if let Some(st) = g.as_ref() {
+            unsafe {
+                let title = wide(&format!("{} — {}", tr("OCR failed"), err));
+                let _ = SetWindowTextW(HWND(st.hwnd as *mut _), PCWSTR(title.as_ptr()));
+            }
+        }
+    }
 }
 
 pub fn reap_child() {}

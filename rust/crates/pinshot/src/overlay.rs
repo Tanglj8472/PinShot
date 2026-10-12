@@ -848,9 +848,16 @@ impl Overlay {
                 self.cursor = next;
                 if self.annot.is_brush_live()
                     || self.annot.is_selecting()
+                    || self.annot.is_dragging_text()
                     || self.annot.live.is_some()
                 {
                     self.annot.move_to(self.img_pt(self.cursor), false);
+                    self.dirty = true;
+                } else if self
+                    .toolbar
+                    .as_ref()
+                    .is_some_and(|t| t.contains(self.cursor))
+                {
                     self.dirty = true;
                 } else if matches!(
                     self.sel.state,
@@ -885,6 +892,7 @@ impl Overlay {
                     }
                     if self.sel.has_sel() && self.annot.press(self.img_pt(pt), false) {
                         self.sync_ime();
+                        self.relayout_toolbar();
                         self.mark_dirty();
                         return;
                     }
@@ -927,6 +935,8 @@ impl Overlay {
                     self.held_btn1 = false;
                     if self.annot.live.is_some()
                         || self.annot.is_selecting()
+                        || self.annot.is_dragging_text()
+                        || self.annot.is_swallowing_text_click()
                         || self.annot.is_editing_text()
                     {
                         self.commit_annot_release(pt);
@@ -1023,7 +1033,15 @@ impl Overlay {
             self.mark_dirty();
             return;
         }
-        let Some((key, text)) = keysym_to_winit(keysym) else {
+        let Some((key, text)) = keysym_to_winit(keysym).or_else(|| {
+            // Direct UCS keysym without the 0x01000000 prefix (some xdotool setups).
+            let ch = char::from_u32(keysym)?;
+            if ch.is_control() || (keysym >= 0xff00 && keysym <= 0xffff) {
+                return None;
+            }
+            let s = ch.to_string();
+            Some((Key::Character(s.clone().into()), Some(s)))
+        }) else {
             return;
         };
         self.key(&key, text.as_deref());
@@ -1346,6 +1364,14 @@ impl Overlay {
         if self.annot.text_edit.is_some() {
             self.dirty = true;
         }
+        if self
+            .toolbar
+            .as_ref()
+            .is_some_and(|t| t.contains(self.cursor))
+        {
+            // Keep tooltips live even when winit skipped CursorMoved (XGrab).
+            self.dirty = true;
+        }
         if self.dirty {
             self.window.request_redraw();
         }
@@ -1378,6 +1404,7 @@ impl Overlay {
         if self.sel.has_sel() && self.annot.tool.is_some() && !over_tb {
             let drawing = self.annot.live.is_some()
                 || self.annot.is_selecting()
+                || self.annot.is_dragging_text()
                 || self.annot.is_brush_live();
             match recover_stroke_action(down, drawing, annot_stroke_extent(&self.annot)) {
                 RecoverStroke::Move => {
@@ -1454,7 +1481,7 @@ fn recover_stroke_action(down: bool, drawing: bool, live_has_extent: bool) -> Re
 }
 
 fn annot_stroke_extent(annot: &Annotator) -> bool {
-    if annot.is_selecting() {
+    if annot.is_selecting() || annot.is_dragging_text() {
         return true;
     }
     let Some(sh) = annot.live.as_ref() else {

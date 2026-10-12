@@ -197,8 +197,10 @@ fn merge_line_boxes(boxes: &[TextBox]) -> Vec<TextBox> {
                 (cy as i32 - ly as i32).unsigned_abs() < last.h.max(b.h) / 2 + 4
             };
             let gap = b.x.saturating_sub(last.x + last.w);
-            // Tight gap so neighbouring columns (Wikipedia infobox, etc.) stay separate.
-            if same_line && gap < last.h.max(b.h).max(8) / 2 + 4 {
+            // Only glue touching glyphs (CJK). English word gaps stay separate so
+            // we can insert ASCII spaces when joining.
+            let glue = last.h.min(b.h).max(6) / 5;
+            if same_line && gap <= glue {
                 let x2 = (last.x + last.w).max(b.x + b.w);
                 let y2 = (last.y + last.h).max(b.y + b.h);
                 last.x = last.x.min(b.x);
@@ -243,9 +245,17 @@ pub fn ctc_greedy_blank(indices: &[usize], alphabet: &[String], blank: usize) ->
 }
 
 pub fn load_keys(text: &str) -> Vec<String> {
+    // Paddle/RapidOCR dicts use a blank (or space-only) first line for ' '.
+    // Dropping it shifts every class and the rec stage emits garbage / nothing.
     text.lines()
-        .map(|l| l.trim_end_matches('\r').to_string())
-        .filter(|l| !l.is_empty())
+        .map(|l| {
+            let l = l.trim_end_matches('\r');
+            if l.is_empty() {
+                " ".to_string()
+            } else {
+                l.to_string()
+            }
+        })
         .collect()
 }
 
@@ -256,6 +266,35 @@ pub fn join_lines(lines: &[String]) -> String {
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Join recognized snippets using box layout: newline between rows, space
+/// between words on the same line (PP-OCRv5 often omits ASCII spaces).
+pub fn join_ocr_parts(parts: &[(TextBox, String)]) -> String {
+    let mut out = String::new();
+    let mut prev: Option<TextBox> = None;
+    for (b, raw) in parts {
+        let t = raw.trim();
+        if t.is_empty() {
+            continue;
+        }
+        if let Some(p) = prev {
+            let cy = b.y + b.h / 2;
+            let py = p.y + p.h / 2;
+            let same_line = (cy as i32 - py as i32).unsigned_abs() < p.h.max(b.h) / 2 + 4;
+            if !same_line {
+                out.push('\n');
+            } else {
+                let gap = b.x.saturating_sub(p.x + p.w);
+                if gap > p.h.max(b.h).max(8) / 5 {
+                    out.push(' ');
+                }
+            }
+        }
+        out.push_str(t);
+        prev = Some(*b);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -278,6 +317,46 @@ mod tests {
     #[test]
     fn join_filters_blank() {
         assert_eq!(join_lines(&[" a ".into(), "".into(), "b".into()]), "a\nb");
+    }
+
+    #[test]
+    fn load_keys_keeps_blank_as_space() {
+        let keys = load_keys("\n你\n好\n \nA\n");
+        assert_eq!(keys[0], " ");
+        assert_eq!(keys[1], "你");
+        assert_eq!(keys[3], " ");
+        assert_eq!(keys[4], "A");
+    }
+
+    #[test]
+    fn join_ocr_parts_inserts_english_spaces() {
+        let a = TextBox {
+            x: 0,
+            y: 0,
+            w: 40,
+            h: 20,
+            score: 1.0,
+        };
+        let b = TextBox {
+            x: 55,
+            y: 1,
+            w: 50,
+            h: 20,
+            score: 1.0,
+        };
+        let c = TextBox {
+            x: 0,
+            y: 30,
+            w: 80,
+            h: 20,
+            score: 1.0,
+        };
+        let s = join_ocr_parts(&[
+            (a, "In2009".into()),
+            (b, "Mozilla".into()),
+            (c, "sponsored".into()),
+        ]);
+        assert_eq!(s, "In2009 Mozilla\nsponsored");
     }
 
     #[test]

@@ -481,9 +481,12 @@ pub fn release_stray_grabs() {
     let Ok((c, screen)) = conn() else {
         return;
     };
-    let _ = screen;
+    let root = c.setup().roots.get(screen).map(|s| s.root);
     let _ = c.ungrab_keyboard(x11rb::CURRENT_TIME);
     let _ = c.ungrab_pointer(x11rb::CURRENT_TIME);
+    if let Some(root) = root {
+        let _ = c.set_input_focus(InputFocus::POINTER_ROOT, root, x11rb::CURRENT_TIME);
+    }
     let _ = c.flush();
 }
 
@@ -582,6 +585,12 @@ fn overlay_grab_loop(
         }
         match c.poll_for_event() {
             Ok(Some(Event::KeyPress(ev))) => {
+                // xdotool `type` remaps a keycode then FakeKeyEvent; MappingNotify
+                // often lands *after* the KeyPress, so a cached map turns CJK into
+                // Return/None and the empty editor vanishes.
+                if let Some(m) = load_keymap(&c) {
+                    map = Some(m);
+                }
                 let keysym = map
                     .as_ref()
                     .map(|m| keysym_from_map(m, ev.detail, u16::from(ev.state)))
