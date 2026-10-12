@@ -4,10 +4,6 @@ __pycache__/
 .venv-win/
 .syslibs/
 
-# SnipClone (VS / MSBuild)
-SnipClone/bin/
-SnipClone/obj/
-SnipClone/.vs/
 *.aps
 *.user
 *.suo
