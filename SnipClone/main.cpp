@@ -39,7 +39,11 @@ void BeginAnnotationFromSelection()
     auto cropped = snip::SelectionOverlay::LastCrop();
     if (cropped.Empty())
     {
-        MessageBoxW(g_mainWnd, L"Screen capture failed.", L"SnipClone", MB_ICONERROR | MB_OK);
+        MessageBoxW(
+            g_mainWnd,
+            L"选区裁切失败（可能选区无效）。请重新截图。",
+            L"SnipClone",
+            MB_ICONERROR | MB_OK);
         return;
     }
 

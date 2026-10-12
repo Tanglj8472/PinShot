@@ -139,4 +139,10 @@ RECT ForceRectInBounds(const RECT& rect, const RECT& bounds)
     return out;
 }
 
+bool RectsIntersect(const RECT& a, const RECT& b)
+{
+    return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+}
+
 } // namespace snip
+

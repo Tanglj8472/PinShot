@@ -1,13 +1,14 @@
 #Requires -Version 7.0
 <#
 .SYNOPSIS
-  Build SnipClone with VS2022 MSBuild (Windows only).
+  Build SnipClone with VS2022 MSBuild (Windows only). Optionally run LogicTests.
 #>
 param(
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Release',
     [ValidateSet('x64', 'Win32')]
-    [string]$Platform = 'x64'
+    [string]$Platform = 'x64',
+    [switch]$SkipTests
 )
 
 $ErrorActionPreference = 'Stop'
@@ -35,3 +36,15 @@ if ($LASTEXITCODE -ne 0) {
 
 $out = Join-Path $PSScriptRoot "bin\$Platform\$Configuration\SnipClone.exe"
 Write-Host "Output: $out"
+
+if (-not $SkipTests -and $Platform -eq 'x64') {
+    $tests = Join-Path $PSScriptRoot "bin\$Platform\$Configuration\SnipClone.Tests.exe"
+    if (-not (Test-Path $tests)) {
+        throw "Tests binary missing: $tests"
+    }
+    Write-Host "Running $tests"
+    & $tests
+    if ($LASTEXITCODE -ne 0) {
+        throw "LogicTests failed with exit code $LASTEXITCODE"
+    }
+}

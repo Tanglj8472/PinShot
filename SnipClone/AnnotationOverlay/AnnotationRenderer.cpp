@@ -506,7 +506,9 @@ void AnnotationRenderer::DrawScene(
     ID2D1RenderTarget* rt,
     ID2D1Bitmap* baseBitmap,
     const CaptureResult* basePixels,
-    const DrawStack& stack)
+    const DrawStack& stack,
+    bool includeSelectionChrome,
+    bool includeLive)
 {
     EnsureBrushes(rt);
     if (baseBitmap)
@@ -531,12 +533,15 @@ void AnnotationRenderer::DrawScene(
     {
         DrawCommandOn(rt, baseBitmap, basePixels, cmd, false);
     }
-    if (const auto* live = stack.Live())
+    if (includeLive)
     {
-        DrawCommandOn(rt, baseBitmap, basePixels, *live, true);
+        if (const auto* live = stack.Live())
+        {
+            DrawCommandOn(rt, baseBitmap, basePixels, *live, true);
+        }
     }
-    // Selection outline (PinShot select tool).
-    if (stack.SelectedIndex() >= 0)
+    // Selection outline (PinShot select tool) — preview only.
+    if (includeSelectionChrome && stack.SelectedIndex() >= 0)
     {
         if (const auto* sh = stack.ShapeAt(stack.SelectedIndex()))
         {
@@ -567,7 +572,11 @@ void AnnotationRenderer::DrawScene(
     }
 }
 
-CaptureResult AnnotationRenderer::Compose(const CaptureResult& base, const DrawStack& stack)
+CaptureResult AnnotationRenderer::Compose(
+    const CaptureResult& base,
+    const DrawStack& stack,
+    bool includeSelectionChrome,
+    bool includeLive)
 {
     CaptureResult out = base;
     if (base.Empty() || !Initialize())
@@ -605,7 +614,7 @@ CaptureResult AnnotationRenderer::Compose(const CaptureResult& base, const DrawS
     }
     rt->BeginDraw();
     rt->Clear(D2D1::ColorF(0, 0, 0, 0));
-    DrawScene(rt, baseBmp, &base, stack);
+    DrawScene(rt, baseBmp, &base, stack, includeSelectionChrome, includeLive);
     rt->EndDraw();
 
     if (baseBmp)

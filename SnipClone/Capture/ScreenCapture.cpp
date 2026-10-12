@@ -131,7 +131,7 @@ CaptureResult ScreenCapture::CaptureRegion(const RECT& screenRect)
 
     HGDIOBJ old = SelectObject(memDc, dib);
     // ZoomIt: SRCCOPY | CAPTUREBLT so layered desktop composition is included.
-    BitBlt(
+    const BOOL blitOk = BitBlt(
         memDc,
         0,
         0,
@@ -142,12 +142,20 @@ CaptureResult ScreenCapture::CaptureRegion(const RECT& screenRect)
         screenRect.top,
         SRCCOPY | CAPTUREBLT);
 
-    out.width = width;
-    out.height = height;
-    out.stride = AlignStride(width);
-    out.bgra.resize(static_cast<size_t>(out.stride) * static_cast<size_t>(height));
-    memcpy(out.bgra.data(), bits, out.bgra.size());
-    ForceOpaqueAlpha(out);
+    if (blitOk)
+    {
+        out.width = width;
+        out.height = height;
+        out.stride = AlignStride(width);
+        out.bgra.resize(static_cast<size_t>(out.stride) * static_cast<size_t>(height));
+        memcpy(out.bgra.data(), bits, out.bgra.size());
+        ForceOpaqueAlpha(out);
+    }
+    else
+    {
+        out = {};
+        out.screenRect = screenRect;
+    }
 
     SelectObject(memDc, old);
     DeleteObject(dib);

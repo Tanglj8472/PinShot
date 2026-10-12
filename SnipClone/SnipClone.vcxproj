@@ -196,6 +196,7 @@
   <ItemGroup>
     <ClInclude Include="Common\WinCompat.h" />
     <ClInclude Include="Common\DpiHelper.h" />
+    <ClInclude Include="Common\CoordMap.h" />
     <ClInclude Include="Common\WinHelper.h" />
     <ClInclude Include="Common\ImageUtil.h" />
     <ClInclude Include="Hotkey\GlobalHotkey.h" />

@@ -26,13 +26,21 @@ public:
     bool Initialize();
     void Shutdown();
 
+    // includeSelectionChrome: blue select outline (preview only — never export).
+    // includeLive: in-progress stroke / preview overlays (export after Finish() is empty).
     void DrawScene(
         ID2D1RenderTarget* rt,
         ID2D1Bitmap* baseBitmap,
         const CaptureResult* basePixels,
-        const DrawStack& stack);
+        const DrawStack& stack,
+        bool includeSelectionChrome = true,
+        bool includeLive = true);
 
-    CaptureResult Compose(const CaptureResult& base, const DrawStack& stack);
+    CaptureResult Compose(
+        const CaptureResult& base,
+        const DrawStack& stack,
+        bool includeSelectionChrome = true,
+        bool includeLive = true);
 
     ID2D1Bitmap* CreateBitmapFromCapture(ID2D1RenderTarget* rt, const CaptureResult& image);
 

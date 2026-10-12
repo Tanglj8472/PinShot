@@ -4,6 +4,7 @@
 #include "StylePanel.h"
 
 #include "ToolIcons.h"
+#include "../Common/DpiHelper.h"
 #include "../Common/WinHelper.h"
 
 #include <windowsx.h>
@@ -268,21 +269,26 @@ void StylePanel::PlaceUnder(HWND toolbarHwnd)
 
     int x = tr.left;
     int y = tr.bottom + 4;
-    const RECT vs = [] {
-        RECT r{};
-        r.left = GetSystemMetrics(SM_XVIRTUALSCREEN);
-        r.top = GetSystemMetrics(SM_YVIRTUALSCREEN);
-        r.right = r.left + GetSystemMetrics(SM_CXVIRTUALSCREEN);
-        r.bottom = r.top + GetSystemMetrics(SM_CYVIRTUALSCREEN);
-        return r;
-    }();
+    const RECT vs = GetVirtualScreenRect();
     if (y + ph > vs.bottom)
     {
         y = tr.top - ph - 4;
     }
     if (x + pw > vs.right)
     {
-        x = vs.right - pw - 4;
+        x = vs.right - pw;
+    }
+    if (x < vs.left)
+    {
+        x = vs.left;
+    }
+    if (y < vs.top)
+    {
+        y = vs.top;
+    }
+    if (y + ph > vs.bottom)
+    {
+        y = vs.bottom - ph;
     }
 
     SetWindowPos(m_hwnd, HWND_TOPMOST, x, y, pw, ph, SWP_SHOWWINDOW | SWP_NOACTIVATE);

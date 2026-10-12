@@ -5,7 +5,7 @@
 - **底层**（捕获 / DPI / Layered / 矢量绘制 / 编码）：参考 PowerToys ZoomIt（MIT，见 `THIRD_PARTY_NOTICES.md`）
 - **批注组装**（Annotator 所有权、工具栏对话、copy/pin/save）：对齐本仓库 PinShot（自研 Snipaste 式 UX）
 
-装配对照见 [`docs/ASSEMBLY.md`](docs/ASSEMBLY.md)。
+装配对照见 [`docs/ASSEMBLY.md`](docs/ASSEMBLY.md)。分阶段计划见 [`docs/ROADMAP.md`](docs/ROADMAP.md)；桌面验收见 [`docs/DESKTOP_CHECKLIST.md`](docs/DESKTOP_CHECKLIST.md)。
 
 ## 当前进度
 
@@ -15,10 +15,13 @@
 | 冻结虚拟桌面 → 框选松手即批注 | ✅ |
 | 选区放大镜 + HEX | ✅ |
 | 批注宿主显示冻结底图（WIC Compose → ULW） | ✅ |
+| 坐标映射 `CoordMap`（含负虚拟原点） | ✅ 代码；多屏 待验证 |
+| 导出不含选中框 / 失败可重试 | ✅ |
 | Annotator：选中/笔/矩形/椭圆/箭头/文字/马赛克/橡皮 + undo/redo | ✅ |
 | 工具栏图标 + 样式子面板（色板/线宽/填充/文字/自定义色） | ✅ |
 | 复制剪贴板 / 保存 PNG / 贴图 Pin | ✅ |
-| GraphicsCapture / 窗口探测 | ❌ 后续 |
+| LogicTests（裁切 / 撤销 / 合成） | ✅ CI |
+| GraphicsCapture / 窗口探测 | ❌ 第四阶段 |
 
 ## 使用
 

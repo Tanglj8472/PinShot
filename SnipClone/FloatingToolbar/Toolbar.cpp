@@ -225,6 +225,23 @@ void Toolbar::PlaceBelow(const RECT& annotationScreenRect)
             y = annotationScreenRect.top - th - 8;
         }
     }
+    // Clamp into virtual desktop (negative multi-monitor origins / screen edges).
+    if (x + tw > vs.right)
+    {
+        x = vs.right - tw;
+    }
+    if (x < vs.left)
+    {
+        x = vs.left;
+    }
+    if (y + th > vs.bottom)
+    {
+        y = vs.bottom - th;
+    }
+    if (y < vs.top)
+    {
+        y = vs.top;
+    }
 
     SetWindowPos(m_hwnd, HWND_TOPMOST, x, y, tw, th, SWP_SHOWWINDOW | SWP_NOACTIVATE);
     Present();

@@ -30,4 +30,8 @@ RECT RectFromPointsMinSize(POINT a, POINT b, LONG minSize);
 // Clamp rect into bounds (both client or screen space).
 RECT ForceRectInBounds(const RECT& rect, const RECT& bounds);
 
+// True when rect intersects bounds (virtual-desktop / monitor math).
+bool RectsIntersect(const RECT& a, const RECT& b);
+
 } // namespace snip
+

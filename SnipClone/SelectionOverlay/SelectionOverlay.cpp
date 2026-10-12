@@ -3,6 +3,7 @@
 //==============================================================================
 #include "SelectionOverlay.h"
 
+#include "../Common/CoordMap.h"
 #include "../Common/DpiHelper.h"
 #include "../Common/WinHelper.h"
 
@@ -189,9 +190,11 @@ void SelectionOverlay::Stop(bool confirmed)
 
 RECT SelectionOverlay::LocalSelection() const
 {
-    RECT r = m_model.screenRect;
-    OffsetRect(&r, -m_screenOrigin.left, -m_screenOrigin.top);
-    return r;
+    // Overlay client = freeze pixels; origin = virtual-desktop top-left (may be negative).
+    const POINT origin{ m_screenOrigin.left, m_screenOrigin.top };
+    const POINT tl = ScreenToImage(origin, POINT{ m_model.screenRect.left, m_model.screenRect.top });
+    const POINT br = ScreenToImage(origin, POINT{ m_model.screenRect.right, m_model.screenRect.bottom });
+    return RECT{ tl.x, tl.y, br.x, br.y };
 }
 
 void SelectionOverlay::SetSelectionFromLocal(const RECT& local)
@@ -206,9 +209,10 @@ void SelectionOverlay::SetSelectionFromLocal(const RECT& local)
         clamped.bottom = clamped.top + kMinSelectionPx;
     }
     clamped = ForceRectInBounds(clamped, m_clientBounds);
-    RECT screen = clamped;
-    OffsetRect(&screen, m_screenOrigin.left, m_screenOrigin.top);
-    m_model.Set(screen);
+    const POINT origin{ m_screenOrigin.left, m_screenOrigin.top };
+    const POINT tl = ImageToScreen(origin, POINT{ clamped.left, clamped.top });
+    const POINT br = ImageToScreen(origin, POINT{ clamped.right, clamped.bottom });
+    m_model.Set(RECT{ tl.x, tl.y, br.x, br.y });
 }
 
 void SelectionOverlay::SamplePixel(POINT client, COLORREF* outBgr, bool* ok) const

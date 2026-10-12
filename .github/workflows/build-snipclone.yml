@@ -25,7 +25,7 @@ jobs:
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      - name: Build SnipClone (${{ matrix.configuration }}|${{ matrix.platform }})
+      - name: Build + LogicTests (${{ matrix.configuration }}|${{ matrix.platform }})
         working-directory: SnipClone
         shell: pwsh
         run: |
@@ -35,5 +35,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: SnipClone-${{ matrix.platform }}-${{ matrix.configuration }}
-          path: SnipClone/bin/${{ matrix.platform }}/${{ matrix.configuration }}/SnipClone.exe
+          path: |
+            SnipClone/bin/${{ matrix.platform }}/${{ matrix.configuration }}/SnipClone.exe
+            SnipClone/bin/${{ matrix.platform }}/${{ matrix.configuration }}/SnipClone.Tests.exe
           if-no-files-found: error

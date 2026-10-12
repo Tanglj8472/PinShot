@@ -4,6 +4,7 @@
 //==============================================================================
 #include "AnnotationOverlay.h"
 
+#include "../Common/CoordMap.h"
 #include "../Common/ImageUtil.h"
 #include "../Common/WinHelper.h"
 #include "../PinWindow/PinManager.h"
@@ -179,10 +180,7 @@ void AnnotationOverlay::OpenTextEditorAt(D2D1_POINT_2F imagePt, int editIndex)
         }
     }
 
-    POINT screen{
-        m_base.screenRect.left + static_cast<LONG>(imagePt.x),
-        m_base.screenRect.top + static_cast<LONG>(imagePt.y)
-    };
+    const POINT screen = ImageFToScreen(m_base.screenRect, imagePt);
 
     m_textEditor->Open(
         m_instance,
@@ -586,17 +584,27 @@ CaptureResult AnnotationOverlay::ComposeExport()
         m_textEditor->Close(true);
     }
     m_ann.Finish();
-    return m_renderer.Compose(m_base, m_ann);
+    // Export must match final image: no select outline, no live preview chrome.
+    return m_renderer.Compose(m_base, m_ann, /*includeSelectionChrome=*/false, /*includeLive=*/false);
 }
 
 void AnnotationOverlay::DoCopy()
 {
     auto composed = ComposeExport();
+    if (composed.Empty())
+    {
+        MessageBoxW(m_hwnd, L"导出合成失败，请重试。", L"SnipClone", MB_ICONERROR | MB_OK);
+        return;
+    }
     if (ImageUtil::CopyToClipboard(composed))
     {
         s_lastExport = std::move(composed);
-        s_lastOrigin = { m_base.screenRect.left, m_base.screenRect.top };
+        s_lastOrigin = ImageOrigin(m_base.screenRect);
         RequestClose();
+    }
+    else
+    {
+        MessageBoxW(m_hwnd, L"复制到剪贴板失败，批注仍可继续编辑。", L"SnipClone", MB_ICONWARNING | MB_OK);
     }
 }
 
@@ -608,20 +616,38 @@ void AnnotationOverlay::DoSave()
         return;
     }
     auto composed = ComposeExport();
+    if (composed.Empty())
+    {
+        MessageBoxW(m_hwnd, L"导出合成失败，请重试。", L"SnipClone", MB_ICONERROR | MB_OK);
+        return;
+    }
     if (ImageUtil::SavePng(composed, path))
     {
         s_lastExport = std::move(composed);
-        s_lastOrigin = { m_base.screenRect.left, m_base.screenRect.top };
+        s_lastOrigin = ImageOrigin(m_base.screenRect);
         RequestClose();
+    }
+    else
+    {
+        MessageBoxW(m_hwnd, L"保存 PNG 失败，批注仍可继续编辑。", L"SnipClone", MB_ICONWARNING | MB_OK);
     }
 }
 
 void AnnotationOverlay::DoPin()
 {
     auto composed = ComposeExport();
-    s_lastExport = composed;
-    s_lastOrigin = { m_base.screenRect.left, m_base.screenRect.top };
-    PinManager::Instance().CreatePin(m_instance, composed, s_lastOrigin);
+    if (composed.Empty())
+    {
+        MessageBoxW(m_hwnd, L"导出合成失败，请重试。", L"SnipClone", MB_ICONERROR | MB_OK);
+        return;
+    }
+    s_lastOrigin = ImageOrigin(m_base.screenRect);
+    if (PinManager::Instance().CreatePin(m_instance, composed, s_lastOrigin) == nullptr)
+    {
+        MessageBoxW(m_hwnd, L"创建贴图失败，批注仍可继续编辑。", L"SnipClone", MB_ICONWARNING | MB_OK);
+        return;
+    }
+    s_lastExport = std::move(composed);
     RequestClose();
 }
 
@@ -730,10 +756,8 @@ void AnnotationOverlay::Present()
         return;
     }
 
-    // Compose via WIC (same path as copy/save/pin). The old DC RT Clear+DrawScene
-    // wiped the GDI stamp; when the base bitmap failed to show, annotations still
-    // had opaque alpha so the layered host looked black with only strokes visible.
-    CaptureResult frame = m_renderer.Compose(m_base, m_ann);
+    // Preview Compose keeps live stroke + selection chrome; export strips both.
+    CaptureResult frame = m_renderer.Compose(m_base, m_ann, true, true);
     if (frame.Empty())
     {
         StampCaptureToDib(m_base);
