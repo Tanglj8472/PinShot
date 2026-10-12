@@ -10,12 +10,12 @@ use pinshot_core::confirm::{confirm_abort_layout, ConfirmAbortHit};
 use pinshot_core::cursor::cursor_for;
 use pinshot_core::geom::{hit_handle, hover_rect, Point, Rect};
 use pinshot_core::history::{HistoryEntry, HistoryView, SnipHistory};
-use pinshot_core::snap::SnapGuides;
 use pinshot_core::i18n::tr;
 use pinshot_core::magnifier::magnifier_visible;
 use pinshot_core::raster::Raster;
 use pinshot_core::render::compose;
 use pinshot_core::selection::{DetectMode, Nudge, PressKind, SelState, Selection};
+use pinshot_core::snap::SnapGuides;
 use pinshot_core::wheel::WheelGate;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
@@ -554,6 +554,7 @@ impl Overlay {
     }
 
     fn cancel(&mut self) {
+        crate::logutil::log("overlay cancel");
         self.release_grab();
         self.result = Some(OverlayResult::Cancel);
         self.window.set_visible(false);
@@ -837,7 +838,9 @@ impl Overlay {
                     }
                 }
                 WindowEvent::RedrawRequested => self.redraw(),
-                WindowEvent::CloseRequested => self.cancel(),
+                WindowEvent::CloseRequested => {
+                    crate::logutil::log("overlay CloseRequested ignored");
+                }
                 _ => {}
             }
             if self.dirty {
@@ -1037,7 +1040,9 @@ impl Overlay {
                 self.dirty = true;
             }
             WindowEvent::RedrawRequested => self.redraw(),
-            WindowEvent::CloseRequested => self.cancel(),
+            WindowEvent::CloseRequested => {
+                crate::logutil::log("overlay CloseRequested ignored");
+            }
             _ => {}
         }
         if self.dirty {
