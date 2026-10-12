@@ -54,7 +54,7 @@ HEAD 在本轮 chrome 文字 AA 修复。工具栏芯片「描边 / 默认 / 等
 
 | SHA | 内容 |
 |---|---|
-| 本轮 | chrome 标签不再锯齿：`blend` 正确累加 alpha；chrome 字体栈 Noto Sans CJK SC + Liberation；2× 超采样。标注 `blit_pixmap_ex` / 家族解析未改。`cargo test --workspace --lib`：pinshot-core 126 + pinshot 23。截图 `/opt/cursor/artifacts/chrome-aa/` |
+| `fc0a8db` | chrome 标签不再锯齿：`blend` 正确累加 alpha；chrome 字体栈 Noto Sans CJK SC + Liberation；2× 超采样。标注 `blit_pixmap_ex` / 家族解析未改。`cargo test --workspace --lib`：pinshot-core 126 + pinshot 23。Xvfb `:29` 1920×1200：F1/`--snip` 框选 → `tb Tool(Text)` → 芯片「描边/默认/等宽」平滑；Pin → 菜单 268×816 中文平滑。截图 `/opt/cursor/artifacts/chrome-aa/` |
 
 ### UI chrome（上轮）
 
