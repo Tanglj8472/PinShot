@@ -104,7 +104,7 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>d2d1.lib;dwrite.lib;windowscodecs.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>d2d1.lib;dwrite.lib;windowscodecs.lib;comdlg32.lib;ole32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <Manifest>
       <AdditionalManifestFiles>app.manifest</AdditionalManifestFiles>
@@ -126,7 +126,7 @@
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>d2d1.lib;dwrite.lib;windowscodecs.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>d2d1.lib;dwrite.lib;windowscodecs.lib;comdlg32.lib;ole32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <Manifest>
       <AdditionalManifestFiles>app.manifest</AdditionalManifestFiles>
@@ -144,7 +144,7 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>d2d1.lib;dwrite.lib;windowscodecs.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>d2d1.lib;dwrite.lib;windowscodecs.lib;comdlg32.lib;ole32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <Manifest>
       <AdditionalManifestFiles>app.manifest</AdditionalManifestFiles>
@@ -166,7 +166,7 @@
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>d2d1.lib;dwrite.lib;windowscodecs.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>d2d1.lib;dwrite.lib;windowscodecs.lib;comdlg32.lib;ole32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <Manifest>
       <AdditionalManifestFiles>app.manifest</AdditionalManifestFiles>
@@ -176,14 +176,33 @@
     <ClCompile Include="main.cpp" />
     <ClCompile Include="Common\DpiHelper.cpp" />
     <ClCompile Include="Common\WinHelper.cpp" />
+    <ClCompile Include="Common\ImageUtil.cpp" />
     <ClCompile Include="SelectionOverlay\SelectionOverlay.cpp" />
+    <ClCompile Include="Capture\ScreenCapture.cpp" />
+    <ClCompile Include="AnnotationOverlay\DrawStack.cpp" />
+    <ClCompile Include="AnnotationOverlay\AnnotationRenderer.cpp" />
+    <ClCompile Include="AnnotationOverlay\AnnotationOverlay.cpp" />
+    <ClCompile Include="FloatingToolbar\Toolbar.cpp" />
+    <ClCompile Include="PinWindow\PinWindow.cpp" />
+    <ClCompile Include="PinWindow\PinManager.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Common\DpiHelper.h" />
     <ClInclude Include="Common\WinHelper.h" />
+    <ClInclude Include="Common\ImageUtil.h" />
     <ClInclude Include="Hotkey\GlobalHotkey.h" />
     <ClInclude Include="SelectionOverlay\SelectionModel.h" />
     <ClInclude Include="SelectionOverlay\SelectionOverlay.h" />
+    <ClInclude Include="Capture\CaptureResult.h" />
+    <ClInclude Include="Capture\ScreenCapture.h" />
+    <ClInclude Include="AnnotationOverlay\DrawCommand.h" />
+    <ClInclude Include="AnnotationOverlay\DrawStack.h" />
+    <ClInclude Include="AnnotationOverlay\AnnotationRenderer.h" />
+    <ClInclude Include="AnnotationOverlay\AnnotationOverlay.h" />
+    <ClInclude Include="FloatingToolbar\ToolButton.h" />
+    <ClInclude Include="FloatingToolbar\Toolbar.h" />
+    <ClInclude Include="PinWindow\PinWindow.h" />
+    <ClInclude Include="PinWindow\PinManager.h" />
   </ItemGroup>
   <ItemGroup>
     <Manifest Include="app.manifest" />

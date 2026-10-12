@@ -1,12 +1,17 @@
 //==============================================================================
-// SnipClone — entry point & state machine (V0)
+// SnipClone — entry / state machine
 //
-// States implemented:
-//   Idle  --Ctrl+Shift+S-->  SelectionOverlay  --confirm/ESC-->  Idle
+// 装配对齐 PinShot App.snip：
+//   Idle → Selection → Capture(region) → Annotation(Annotator+Toolbar)
+//        → copy / save / pin → Idle
 //
-// V1+: Selection confirmed → ScreenCapture → AnnotationOverlay → Pin/Copy/Save
+// 底层：ZoomIt 风格 GDI 捕获 + D2D 矢量批注 + WIC/剪贴板
+// UX：PinShot 工具栏动作与 Annotator 所有权拆分
 //==============================================================================
+#include "AnnotationOverlay/AnnotationOverlay.h"
+#include "Capture/ScreenCapture.h"
 #include "Hotkey/GlobalHotkey.h"
+#include "PinWindow/PinManager.h"
 #include "SelectionOverlay/SelectionOverlay.h"
 
 #include <Windows.h>
@@ -20,47 +25,49 @@ constexpr int kHotkeySnip = 0x1001;
 
 HINSTANCE g_instance = nullptr;
 HWND g_mainWnd = nullptr;
-std::unique_ptr<snip::SelectionOverlay> g_overlay;
+std::unique_ptr<snip::SelectionOverlay> g_selection;
+std::unique_ptr<snip::AnnotationOverlay> g_annotation;
 
-void DebugLogSelection(bool confirmed)
+bool Busy()
 {
-    const auto& sel = snip::SelectionOverlay::LastSelection();
-    wchar_t buf[256]{};
-    if (confirmed && sel.hasSelection)
-    {
-        swprintf_s(
-            buf,
-            L"[SnipClone V0] selection confirmed: (%ld,%ld)-(%ld,%ld) %ldx%ld\n",
-            sel.screenRect.left,
-            sel.screenRect.top,
-            sel.screenRect.right,
-            sel.screenRect.bottom,
-            sel.Width(),
-            sel.Height());
-    }
-    else
-    {
-        swprintf_s(buf, L"[SnipClone V0] selection cancelled\n");
-    }
-    OutputDebugStringW(buf);
+    return (g_selection && g_selection->IsActive()) || (g_annotation && g_annotation->IsActive());
 }
 
-void BeginSelection()
+void BeginAnnotationFromSelection()
 {
-    if (g_overlay && g_overlay->IsActive())
+    const auto& sel = snip::SelectionOverlay::LastSelection();
+    if (!sel.hasSelection)
     {
         return;
     }
 
-    g_overlay = std::make_unique<snip::SelectionOverlay>();
-    if (!g_overlay->Start(g_instance, g_mainWnd))
+    auto captured = snip::ScreenCapture::CaptureRegion(sel.screenRect);
+    if (captured.Empty())
     {
-        g_overlay.reset();
-        MessageBoxW(
-            g_mainWnd,
-            L"Failed to create selection overlay.",
-            L"SnipClone",
-            MB_ICONERROR | MB_OK);
+        MessageBoxW(g_mainWnd, L"Screen capture failed.", L"SnipClone", MB_ICONERROR | MB_OK);
+        return;
+    }
+
+    g_annotation = std::make_unique<snip::AnnotationOverlay>();
+    if (!g_annotation->Start(g_instance, g_mainWnd, std::move(captured)))
+    {
+        g_annotation.reset();
+        MessageBoxW(g_mainWnd, L"Failed to open annotation overlay.", L"SnipClone", MB_ICONERROR | MB_OK);
+    }
+}
+
+void BeginSelection()
+{
+    if (Busy())
+    {
+        return;
+    }
+
+    g_selection = std::make_unique<snip::SelectionOverlay>();
+    if (!g_selection->Start(g_instance, g_mainWnd))
+    {
+        g_selection.reset();
+        MessageBoxW(g_mainWnd, L"Failed to create selection overlay.", L"SnipClone", MB_ICONERROR | MB_OK);
     }
 }
 
@@ -76,23 +83,42 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         return 0;
 
     case snip::WM_SNIP_SELECTION_DONE:
-        DebugLogSelection(wParam != 0);
-        // Keep LastSelection for V1 capture; tear down overlay instance.
-        if (g_overlay && !g_overlay->IsActive())
+        if (g_selection && !g_selection->IsActive())
         {
-            g_overlay.reset();
+            g_selection.reset();
+        }
+        if (wParam != 0)
+        {
+            // PinShot: capture then annotate. SnipClone: region capture then annotate host.
+            BeginAnnotationFromSelection();
+        }
+        return 0;
+
+    case snip::WM_SNIP_ANNOTATION_DONE:
+        if (g_annotation && !g_annotation->IsActive())
+        {
+            g_annotation.reset();
         }
         return 0;
 
     case WM_DESTROY:
-        if (g_overlay)
+        if (g_selection)
         {
-            if (g_overlay->IsActive())
+            if (g_selection->IsActive())
             {
-                g_overlay->Stop(false);
+                g_selection->Stop(false);
             }
-            g_overlay.reset();
+            g_selection.reset();
         }
+        if (g_annotation)
+        {
+            if (g_annotation->IsActive())
+            {
+                g_annotation->Stop();
+            }
+            g_annotation.reset();
+        }
+        snip::PinManager::Instance().CloseAll();
         PostQuitMessage(0);
         return 0;
 
@@ -114,15 +140,10 @@ bool RegisterMainClass(HINSTANCE instance)
 }
 } // namespace
 
-int WINAPI wWinMain(
-    HINSTANCE hInstance,
-    HINSTANCE /*hPrevInstance*/,
-    PWSTR /*lpCmdLine*/,
-    int /*nShowCmd*/)
+int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
 {
     g_instance = hInstance;
 
-    // Prefer Per-Monitor V2 when available (manifest also declares it).
     using SetDpiAwFn = BOOL(WINAPI*)(DPI_AWARENESS_CONTEXT);
     if (auto setDpi = reinterpret_cast<SetDpiAwFn>(
             GetProcAddress(GetModuleHandleW(L"user32.dll"), "SetProcessDpiAwarenessContext")))
@@ -130,12 +151,13 @@ int WINAPI wWinMain(
         setDpi(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     }
 
+    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+
     if (!RegisterMainClass(hInstance))
     {
         return 1;
     }
 
-    // Message-only style hidden owner for hotkeys (0-size popup).
     g_mainWnd = CreateWindowExW(
         0,
         kMainClass,
@@ -154,13 +176,11 @@ int WINAPI wWinMain(
         return 1;
     }
 
-    // Ctrl+Shift+S — avoid conflicting with browsers' Ctrl+S.
     if (!snip::GlobalHotkey::Register(VK_S, MOD_CONTROL | MOD_SHIFT, kHotkeySnip, g_mainWnd))
     {
         MessageBoxW(
             nullptr,
-            L"Failed to register hotkey Ctrl+Shift+S.\n"
-            L"Another app may already own it.",
+            L"Failed to register hotkey Ctrl+Shift+S.\nAnother app may already own it.",
             L"SnipClone",
             MB_ICONWARNING | MB_OK);
     }
@@ -173,5 +193,7 @@ int WINAPI wWinMain(
     }
 
     snip::GlobalHotkey::Unregister(kHotkeySnip, g_mainWnd);
+    snip::PinManager::Instance().CloseAll();
+    CoUninitialize();
     return static_cast<int>(msg.wParam);
 }
