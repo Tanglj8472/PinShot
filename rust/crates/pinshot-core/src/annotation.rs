@@ -1221,7 +1221,8 @@ impl Annotator {
         }
     }
 
-    /// Editor box hugs the glyphs (empty box is just wide enough for the caret).
+    /// Editor box hugs the glyphs. An empty box stays wide enough that the
+    /// caret and outline are visible on the first click (Snipaste).
     pub fn text_edit_rect(&self) -> Option<Rect> {
         let ed = self.text_edit.as_ref()?;
         let st = self.text_edit_style();
@@ -1230,7 +1231,7 @@ impl Annotator {
         Some(Rect::new(
             ed.img_pt.x,
             ed.img_pt.y,
-            (w + 4.0).max(6.0),
+            (w + 8.0).max(fs * 0.7).max(16.0),
             h.max(fs) + 4.0,
         ))
     }
@@ -1803,9 +1804,14 @@ mod tests {
         let mut a = Annotator::new();
         a.set_tool(Some(Tool::Text));
         a.press(Point::new(20.0, 30.0), false);
+        let empty = a.text_edit_rect().expect("empty editor");
+        assert!(
+            empty.w >= 16.0 && empty.h >= 20.0,
+            "first click must show a visible box, {empty:?}"
+        );
         a.type_text('A');
         let r = a.text_edit_rect().expect("editor");
-        assert!(r.w < 40.0, "editor must hug glyphs, w={}", r.w);
+        assert!(r.w < 48.0, "editor must hug glyphs, w={}", r.w);
         assert!(r.w > 4.0);
         a.commit_text(true);
         assert!(a.shapes.is_empty());

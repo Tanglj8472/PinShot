@@ -294,15 +294,12 @@ pub fn ctc_decode_fracs(
     let mut out = String::new();
     let mut fracs = Vec::new();
     for (n, g) in glyphs.iter().enumerate() {
-        let ch = if blank == 0 {
-            alphabet.get(g.class.saturating_sub(1))
-        } else {
-            alphabet.get(g.class)
-        };
+        // PP-OCR / RapidOCR: class 0 is CTC blank, alphabet[i-1] is the glyph,
+        // and the extra trailing class (keys.len()+1) is the space token from
+        // `use_space_char`. That token is the primary English word space.
+        let ch = ctc_class_glyph(g.class, alphabet, blank);
         if n > 0 && g.blanks_before >= word_gap && !out.ends_with(' ') {
-            let next_cjk = ch
-                .and_then(|s| s.chars().next())
-                .is_some_and(is_cjk);
+            let next_cjk = ch.and_then(|s| s.chars().next()).is_some_and(is_cjk);
             let prev_cjk = out.chars().last().is_some_and(is_cjk);
             if !(prev_cjk && next_cjk) {
                 out.push(' ');
@@ -321,6 +318,24 @@ pub fn ctc_decode_fracs(
         }
     }
     (out, fracs)
+}
+
+/// Map a CTC class to a dict glyph. Out-of-range is the rec model's space class.
+fn ctc_class_glyph(class: usize, alphabet: &[String], blank: usize) -> Option<&str> {
+    if class == blank {
+        return None;
+    }
+    if blank == 0 {
+        match alphabet.get(class.saturating_sub(1)) {
+            Some(s) => Some(s.as_str()),
+            None => Some(" "),
+        }
+    } else {
+        match alphabet.get(class) {
+            Some(s) => Some(s.as_str()),
+            None => Some(" "),
+        }
+    }
 }
 
 pub fn load_keys(text: &str) -> Vec<String> {
@@ -347,33 +362,51 @@ pub fn join_lines(lines: &[String]) -> String {
         .join("\n")
 }
 
-/// Join recognized snippets using box layout: newline between rows, space
-/// between words on the same line (PP-OCRv5 often omits ASCII spaces).
+/// Join recognized snippets using box layout: space between words on the
+/// same line, and space (not a mid-sentence newline) between stacked lines
+/// of one paragraph.
 pub fn join_ocr_parts(parts: &[(TextBox, String)]) -> String {
     let mut out = String::new();
-    let mut prev: Option<TextBox> = None;
+    let mut prev: Option<(TextBox, String)> = None;
     for (b, raw) in parts {
         let t = raw.trim();
         if t.is_empty() {
             continue;
         }
-        if let Some(p) = prev {
+        if let Some((p, ref prev_t)) = prev {
             let cy = b.y + b.h / 2;
             let py = p.y + p.h / 2;
             let same_line = (cy as i32 - py as i32).unsigned_abs() < p.h.max(b.h) / 2 + 4;
-            if !same_line {
-                out.push('\n');
-            } else {
+            if same_line {
                 let gap = b.x.saturating_sub(p.x + p.w);
-                if gap > p.h.max(b.h).max(8) / 5 {
+                if gap > p.h.max(b.h).max(8) / 5 && !out.ends_with(' ') {
                     out.push(' ');
+                }
+            } else {
+                let stack_gap = b.y.saturating_sub(p.y + p.h);
+                let close = stack_gap <= p.h.max(b.h).saturating_mul(3) / 2 + 4;
+                if close && !ends_sentence(prev_t) {
+                    if out.ends_with('-') {
+                        out.pop();
+                    } else if !out.ends_with(' ') {
+                        out.push(' ');
+                    }
+                } else {
+                    out.push('\n');
                 }
             }
         }
         out.push_str(t);
-        prev = Some(*b);
+        prev = Some((*b, t.to_string()));
     }
     out
+}
+
+fn ends_sentence(s: &str) -> bool {
+    s.trim_end()
+        .chars()
+        .last()
+        .is_some_and(|c| ".!?。！？…".contains(c))
 }
 
 fn is_cjk(c: char) -> bool {
@@ -504,13 +537,11 @@ pub fn insert_spaces_aligned(text: &str, glyph_fracs: &[f32], gap_fracs: &[f32])
     out
 }
 
-/// Geometry gaps, Latin punctuation/digit boundaries, then glued-word break.
-pub fn restore_english_spaces(text: &str, glyph_fracs: &[f32], gap_fracs: &[f32]) -> String {
-    segment_glued_latin(&insert_spaces_aligned(
-        &latin_space_tweak(text),
-        glyph_fracs,
-        gap_fracs,
-    ))
+/// Keep the rec model's space token / CTC blank-run spaces. Only restore the
+/// obvious Latin letter↔digit and punctuation boundaries — geometric ink
+/// gaps and a greedy English dictionary split letters inside real words.
+pub fn restore_english_spaces(text: &str, _glyph_fracs: &[f32], _gap_fracs: &[f32]) -> String {
+    latin_space_tweak(text)
 }
 
 /// Common English tokens, longest first. Used only on long letter-runs that
@@ -749,6 +780,29 @@ mod tests {
     }
 
     #[test]
+    fn ctc_trailing_class_is_the_space_token() {
+        // RapidOCR: classes = keys + 2 (blank + trailing ' ').
+        let alpha = vec!["H".into(), "i".into(), "t".into()];
+        // H · space-class · i t
+        let space = alpha.len() + 1;
+        let idx = [0, 1, space, 2, 3];
+        assert_eq!(ctc_greedy(&idx, &alpha), "H it");
+        assert_eq!(
+            restore_english_spaces("officially", &[], &[]),
+            "officially",
+            "must not split inside words"
+        );
+        assert_eq!(
+            restore_english_spaces("contributors", &[], &[]),
+            "contributors"
+        );
+        assert_eq!(
+            restore_english_spaces("In2009,Mozilla", &[], &[]),
+            "In 2009, Mozilla"
+        );
+    }
+
+    #[test]
     fn model_paths_under_data() {
         let p = ModelPaths::in_dir("/tmp/ocr-models");
         assert!(p.det.ends_with(DET_FILE));
@@ -800,7 +854,19 @@ mod tests {
             (b, "Mozilla".into()),
             (c, "sponsored".into()),
         ]);
-        assert_eq!(s, "In2009 Mozilla\nsponsored");
+        assert_eq!(s, "In2009 Mozilla sponsored");
+        let d = TextBox {
+            x: 0,
+            y: 80,
+            w: 80,
+            h: 20,
+            score: 1.0,
+        };
+        let para = join_ocr_parts(&[
+            (a, "Hello.".into()),
+            (d, "Next paragraph".into()),
+        ]);
+        assert_eq!(para, "Hello.\nNext paragraph");
     }
 
     #[test]
@@ -825,7 +891,7 @@ mod tests {
         assert_eq!(s, "Mozilla officially sponsored");
         assert_eq!(
             restore_english_spaces("In2009,Mozillaofficially", &[], &[]),
-            "In 2009, Mozilla officially"
+            "In 2009, Mozillaofficially"
         );
         assert_eq!(
             segment_glued_latin("Mozillaofficiallysponsoredtheproject."),
@@ -835,10 +901,13 @@ mod tests {
         let too_many: Vec<f32> = (0..23).map(|i| (i as f32 + 1.0) / 24.0).collect();
         let restored = restore_english_spaces(glued, &[], &too_many);
         assert!(
-            restored.contains("officially") && restored.contains(' '),
+            restored.contains("officially") && !restored.contains("o f f"),
             "{restored:?}"
         );
-        assert!(!restored.contains("o f f"), "{restored:?}");
+        assert!(
+            !restored.contains("all y") && !restored.contains("but or"),
+            "dictionary must not split inside words: {restored:?}"
+        );
     }
 
     #[test]

@@ -98,6 +98,24 @@ fn line_path(a: (f32, f32), b: (f32, f32)) -> Option<Path> {
     pb.finish()
 }
 
+/// 4-pointed sparkle (Snipping Tool "Text actions" accent).
+fn fill_sparkle(pixmap: &mut Pixmap, cx: f32, cy: f32, r: f32, color: Rgba, t: Transform) {
+    let mut pb = PathBuilder::new();
+    let inner = r * 0.32;
+    pb.move_to(cx, cy - r);
+    pb.line_to(cx + inner, cy - inner);
+    pb.line_to(cx + r, cy);
+    pb.line_to(cx + inner, cy + inner);
+    pb.line_to(cx, cy + r);
+    pb.line_to(cx - inner, cy + inner);
+    pb.line_to(cx - r, cy);
+    pb.line_to(cx - inner, cy - inner);
+    pb.close();
+    if let Some(path) = pb.finish() {
+        pixmap.fill_path(&path, &paint(color), FillRule::Winding, t, None);
+    }
+}
+
 fn arrow_head(pixmap: &mut Pixmap, a: (f32, f32), b: (f32, f32), head: f32, color: Rgba, t: Transform) {
     let ang = (b.1 - a.1).atan2(b.0 - a.0);
     let mut pb = PathBuilder::new();
@@ -310,27 +328,17 @@ pub fn draw_icon(pixmap: &mut Pixmap, kind: IconKind, cell: Rect, color: Option<
             }
         }
         IconKind::Ocr => {
-            // Document + magnifier — must not look like the Text "T".
-            if let Some(r) = tiny_skia::Rect::from_xywh(3.0, 3.0, 9.0, 12.0) {
+            // Windows Snipping Tool "Text actions": page with lines + sparkle.
+            if let Some(r) = tiny_skia::Rect::from_xywh(2.5, 4.0, 11.0, 13.0) {
                 pixmap.stroke_path(&PathBuilder::from_rect(r), &p, &st, t, None);
             }
-            for y in [6.0, 9.0] {
-                if let Some(path) = line_path((5.0, y), (10.0, y)) {
-                    pixmap.stroke_path(&path, &p, &stroke(1.1), t, None);
+            for y in [7.5, 10.5, 13.5] {
+                if let Some(path) = line_path((4.5, y), (11.5, y)) {
+                    pixmap.stroke_path(&path, &p, &stroke(1.15), t, None);
                 }
             }
-            if let Some(r) = tiny_skia::Rect::from_xywh(9.5, 9.5, 6.5, 6.5) {
-                pixmap.stroke_path(
-                    &PathBuilder::from_oval(r).unwrap(),
-                    &p,
-                    &stroke(1.6),
-                    t,
-                    None,
-                );
-            }
-            if let Some(path) = line_path((15.0, 15.0), (17.5, 17.5)) {
-                pixmap.stroke_path(&path, &p, &stroke(1.8), t, None);
-            }
+            fill_sparkle(pixmap, 15.6, 5.0, 3.8, color, t);
+            fill_sparkle(pixmap, 17.6, 9.2, 1.7, color, t);
         }
         IconKind::Translate => {
             // Latin A + CJK 口 — a two-script mark, never a T (Text) or Tₓ.
@@ -526,5 +534,11 @@ mod tests {
         assert_ne!(text.data(), ocr.data(), "OCR must not match Text T");
         assert_ne!(text.data(), tr.data(), "Translate must not match Text T");
         assert_ne!(ocr.data(), tr.data(), "OCR and Translate must differ");
+        // Sparkle lives in the top-right of the 20×20 icon (cell origin 2,2).
+        let sparkle = ocr.pixel(18, 6).unwrap().demultiply();
+        assert!(
+            sparkle.alpha() > 0,
+            "OCR icon needs the Snipping Tool sparkle"
+        );
     }
 }

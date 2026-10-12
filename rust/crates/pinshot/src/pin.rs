@@ -527,7 +527,7 @@ impl PinWin {
                 self.annot
                     .set_style_value(Tool::Text, |s| s.family = fam.to_string());
             }
-            TbAction::Ocr | TbAction::Translate | TbAction::Pin => {}
+            TbAction::Ocr | TbAction::Pin => {}
         }
         if self.annotating {
             self.relayout_tb();

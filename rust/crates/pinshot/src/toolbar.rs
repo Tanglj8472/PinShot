@@ -45,7 +45,6 @@ pub enum TbAction {
     Outline(bool),
     Family(&'static str),
     Ocr,
-    Translate,
     Check,
 }
 
@@ -152,7 +151,6 @@ impl Toolbar {
         } else {
             vec![
                 (IconKind::Ocr, TbAction::Ocr, "Recognize text"),
-                (IconKind::Translate, TbAction::Translate, "Recognize and translate"),
                 (IconKind::Undo, TbAction::Undo, "Undo (Ctrl+Z)"),
                 (IconKind::Redo, TbAction::Redo, "Redo (Ctrl+Y)"),
                 (IconKind::Close, TbAction::Close, "Cancel (Esc)"),
@@ -618,6 +616,12 @@ mod tests {
             .expect("ocr");
         assert_eq!(ocr.icon, IconKind::Ocr);
         assert_eq!(ocr.tip, "Recognize text");
+        assert!(
+            tb.buttons
+                .iter()
+                .all(|b| b.tip != "Recognize and translate"),
+            "translate is F5-only, not a toolbar button"
+        );
         assert!(tb.buttons.iter().any(|b| b.action == TbAction::Tool(Tool::Eraser)));
     }
 

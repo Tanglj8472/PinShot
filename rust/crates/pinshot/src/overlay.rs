@@ -73,6 +73,9 @@ pub struct Overlay {
     mods: ModifiersState,
     history_max: u32,
     held_btn1: bool,
+    /// QueryPointer sample from the Button1 rising edge. A late winit press
+    /// (XGrab) must not start a text box at the drop point.
+    pending_press: Option<Point>,
     wheel: WheelGate,
     confirm: Option<ConfirmAbort>,
     color_picker: Option<ColorPicker>,
@@ -161,6 +164,7 @@ impl Overlay {
             mods: ModifiersState::empty(),
             history_max: history_max.max(1),
             held_btn1: false,
+            pending_press: None,
             wheel: WheelGate::new(),
             confirm: None,
             color_picker: None,
@@ -572,7 +576,6 @@ impl Overlay {
             TbAction::Save => self.finish_save(),
             TbAction::Copy => self.finish_copy(),
             TbAction::Ocr => self.finish_ocr(false),
-            TbAction::Translate => self.finish_ocr(true),
             TbAction::Check => {}
             TbAction::Width(d) => {
                 self.annot.adjust_width(d);
@@ -874,8 +877,19 @@ impl Overlay {
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => {
-                self.sync_pointer();
-                let pt = self.cursor;
+                let pending = self.pending_press.take();
+                let pt = if *state == ElementState::Pressed {
+                    if let Some(p) = pending {
+                        p
+                    } else {
+                        self.sync_pointer();
+                        self.cursor
+                    }
+                } else {
+                    self.sync_pointer();
+                    self.cursor
+                };
+                self.cursor = pt;
                 if *state == ElementState::Pressed && self.hit_confirm(pt) {
                     return;
                 }
@@ -1125,6 +1139,11 @@ impl Overlay {
         match key {
             Key::Named(NamedKey::Escape) => self.request_abort(),
             Key::Named(NamedKey::F1) => self.resnip(),
+            Key::Named(NamedKey::F5) => {
+                if self.sel.has_sel() {
+                    self.finish_ocr(true);
+                }
+            }
             Key::Named(NamedKey::Enter) => {
                 if self.sel.has_sel() {
                     self.finish_copy();
@@ -1395,17 +1414,30 @@ impl Overlay {
         let vx = self.capture.virtual_origin.0;
         let vy = self.capture.virtual_origin.1;
         let pt = Point::new((x - vx) as f32, (y - vy) as f32);
-        self.cursor = pt;
+        let drawing = self.annot.live.is_some()
+            || self.annot.is_selecting()
+            || self.annot.is_dragging_text()
+            || self.annot.is_brush_live();
+        // Snapshot the first QueryPointer sample after Button1 went down.
+        // Later samples are the drag; a late winit press must use this origin.
+        if down && !self.held_btn1 && self.pending_press.is_none() {
+            self.pending_press = Some(pt);
+        }
+        if down && !drawing {
+            if let Some(p) = self.pending_press {
+                self.cursor = p;
+            } else {
+                self.cursor = pt;
+            }
+        } else {
+            self.cursor = pt;
+        }
         let over_tb = self
             .toolbar
             .as_ref()
-            .map(|t| t.contains(pt))
+            .map(|t| t.contains(self.cursor))
             .unwrap_or(false);
         if self.sel.has_sel() && self.annot.tool.is_some() && !over_tb {
-            let drawing = self.annot.live.is_some()
-                || self.annot.is_selecting()
-                || self.annot.is_dragging_text()
-                || self.annot.is_brush_live();
             match recover_stroke_action(down, drawing, annot_stroke_extent(&self.annot)) {
                 RecoverStroke::Move => {
                     self.annot.move_to(self.img_pt(pt), false);
@@ -1446,6 +1478,9 @@ impl Overlay {
             }
             self.dirty = true;
         }
+        if !down {
+            self.pending_press = None;
+        }
         self.held_btn1 = down;
     }
 
@@ -1464,6 +1499,13 @@ enum RecoverStroke {
     Idle,
     Move,
     Release,
+}
+
+/// Prefer the Button1 rising-edge snapshot. QueryPointer is only the fallback
+/// when recover has not seen the press yet (timely winit ButtonPress).
+#[cfg(test)]
+fn press_from_pending(pending: &mut Option<Point>, fallback: impl FnOnce() -> Point) -> Point {
+    pending.take().unwrap_or_else(fallback)
 }
 
 /// Recover continues a live stroke; it never starts one (see `recover_pointer_drag`).
@@ -1561,7 +1603,7 @@ fn keysym_to_winit(keysym: u32) -> Option<(Key, Option<String>)> {
 #[cfg(test)]
 mod keysym_tests {
     use super::keysym_to_winit;
-    use super::{annot_stroke_extent, recover_stroke_action, RecoverStroke};
+    use super::{annot_stroke_extent, press_from_pending, recover_stroke_action, RecoverStroke};
     use pinshot_core::annotation::{Annotator, Tool};
     use pinshot_core::geom::Point;
     use winit::keyboard::{Key, NamedKey};
@@ -1617,5 +1659,16 @@ mod keysym_tests {
         assert!(!annot_stroke_extent(&a));
         a.move_to(Point::new(40.0, 30.0), false);
         assert!(annot_stroke_extent(&a));
+    }
+
+    #[test]
+    fn late_press_uses_rising_edge_not_drop_point() {
+        let origin = Point::new(40.0, 80.0);
+        let drop = Point::new(120.0, 140.0);
+        let mut pending = Some(origin);
+        assert_eq!(press_from_pending(&mut pending, || drop), origin);
+        assert!(pending.is_none());
+        let mut none = None;
+        assert_eq!(press_from_pending(&mut none, || drop), drop);
     }
 }

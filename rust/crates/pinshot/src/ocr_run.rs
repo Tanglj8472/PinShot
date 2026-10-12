@@ -6,8 +6,8 @@ use std::path::Path;
 
 use pinshot_core::config::data_dir;
 use pinshot_core::ocr::{
-    ctc_decode_fracs, db_boxes, join_ocr_parts, load_keys, model_dir, restore_english_spaces,
-    word_gap_fracs, ModelPaths, TextBox,
+    ctc_decode_fracs, db_boxes, join_ocr_parts, latin_space_tweak, load_keys, model_dir, ModelPaths,
+    TextBox,
 };
 use pinshot_core::raster::Raster;
 
@@ -147,16 +147,11 @@ fn infer(image: &Raster, paths: &ModelPaths) -> Result<String, String> {
                 crop = crop.rotate90(2);
             }
         }
-        let (full, fracs) = rec_line_ex(&mut rec, &crop, &keys).unwrap_or_default();
-        let ink = crop_ink_columns(&crop);
-        let gaps = word_gap_fracs(&ink, crop.height);
-        let spaced = restore_english_spaces(&full, &fracs, &gaps);
-        crate::logutil::log(&format!(
-            "ocr line gaps={} raw={:?} spaced={:?}",
-            gaps.len(),
-            full,
-            spaced
-        ));
+        let (full, _fracs) = rec_line_ex(&mut rec, &crop, &keys).unwrap_or_default();
+        // Spaces come from the rec model's space token (and CTC blank runs).
+        // Do not split on ink gaps or a greedy English dictionary.
+        let spaced = latin_space_tweak(&full);
+        crate::logutil::log(&format!("ocr line raw={:?} spaced={:?}", full, spaced));
         if !spaced.trim().is_empty() {
             parts.push((b, spaced));
         } else {
@@ -436,24 +431,6 @@ fn pack_rec_bgr(crop: &Raster) -> Result<ort::value::Value, String> {
     let t = ort::value::Tensor::from_array((vec![1i64, 3, nh as i64, nw as i64], chw))
         .map_err(|e| e.to_string())?;
     Ok(t.into())
-}
-
-#[cfg(any(feature = "ocr", unix))]
-fn crop_ink_columns(crop: &Raster) -> Vec<u32> {
-    let w = crop.width;
-    let h = crop.height;
-    let mut ink = vec![0u32; w as usize];
-    for x in 0..w {
-        for y in 0..h {
-            let Some(c) = crop.get(x as i32, y as i32) else {
-                continue;
-            };
-            if (c.r as u16) + (c.g as u16) + (c.b as u16) < 620 {
-                ink[x as usize] += 1;
-            }
-        }
-    }
-    ink
 }
 
 #[cfg(any(feature = "ocr", unix))]
