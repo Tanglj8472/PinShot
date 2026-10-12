@@ -29,8 +29,8 @@
 ```
 Ctrl+Shift+S
   → ScreenCapture::CaptureVirtualScreen()     // 先冻结（PinShot）
-  → SelectionOverlay 冻结图 + 区外变暗 + 手柄调整 + 放大镜
-       Enter / 双击 / OK → crop；Esc / X → 取消
+  → SelectionOverlay 冻结图 + 区外变暗 + 放大镜
+       松手 → crop 进入批注；Esc → 取消
   → freeze.CropToScreenRect(selection)
   → AnnotationOverlay 拥有 crop 位图
        ├─ DrawStack（选中/笔/形/箭头/文字/马赛克/橡皮 + undo）

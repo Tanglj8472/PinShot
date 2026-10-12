@@ -46,6 +46,8 @@ private:
     void Present();
     bool EnsureSurface();
     void ReleaseSurface();
+    void StampBaseToDib();
+    bool DibLooksEmpty() const;
 
     static constexpr UINT WM_SNIP_CLOSE_SELF = WM_APP + 0x60;
 
@@ -68,6 +70,7 @@ private:
     HBITMAP m_dib = nullptr;
     HGDIOBJ m_oldBmp = nullptr;
     void* m_bits = nullptr;
+    int m_dibStride = 0; // bytes per row of CreateDIBSection (may exceed width*4)
     int m_w = 0;
     int m_h = 0;
 

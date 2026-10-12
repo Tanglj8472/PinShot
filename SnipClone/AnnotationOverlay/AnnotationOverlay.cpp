@@ -630,15 +630,66 @@ void AnnotationOverlay::DoPin()
     RequestClose();
 }
 
+void AnnotationOverlay::StampBaseToDib()
+{
+    if (!m_bits || m_base.Empty() || m_w <= 0 || m_h <= 0 || m_dibStride <= 0)
+    {
+        return;
+    }
+    auto* dstBase = static_cast<std::uint8_t*>(m_bits);
+    for (int y = 0; y < m_h; ++y)
+    {
+        const auto* src = m_base.bgra.data() + static_cast<size_t>(y) * m_base.stride;
+        auto* dst = dstBase + static_cast<size_t>(y) * m_dibStride;
+        for (int x = 0; x < m_w; ++x)
+        {
+            dst[x * 4 + 0] = src[x * 4 + 0];
+            dst[x * 4 + 1] = src[x * 4 + 1];
+            dst[x * 4 + 2] = src[x * 4 + 2];
+            dst[x * 4 + 3] = 255; // ULW_ALPHA requires opaque for solid photo
+        }
+    }
+}
+
+bool AnnotationOverlay::DibLooksEmpty() const
+{
+    if (!m_bits || m_w <= 0 || m_h <= 0 || m_dibStride < 4)
+    {
+        return true;
+    }
+    // Sample a few pixels — all alpha==0 means layered window is invisible.
+    const auto* bits = static_cast<const std::uint8_t*>(m_bits);
+    const int samples[][2] = {
+        { 0, 0 },
+        { m_w / 2, m_h / 2 },
+        { m_w - 1, m_h - 1 },
+        { m_w / 4, m_h / 4 },
+    };
+    for (const auto& s : samples)
+    {
+        const int x = s[0];
+        const int y = s[1];
+        if (x < 0 || y < 0 || x >= m_w || y >= m_h)
+        {
+            continue;
+        }
+        if (bits[static_cast<size_t>(y) * m_dibStride + static_cast<size_t>(x) * 4 + 3] != 0)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool AnnotationOverlay::EnsureSurface()
 {
     const int w = m_base.width;
     const int h = m_base.height;
-    if (w <= 0 || h <= 0)
+    if (w <= 0 || h <= 0 || m_base.Empty())
     {
         return false;
     }
-    if (m_rt && m_w == w && m_h == h)
+    if (m_rt && m_baseBmp && m_w == w && m_h == h && m_bits)
     {
         return true;
     }
@@ -654,11 +705,21 @@ bool AnnotationOverlay::EnsureSurface()
     bmi.bmiHeader.biBitCount = 32;
     bmi.bmiHeader.biCompression = BI_RGB;
     m_dib = CreateDIBSection(m_memDc, &bmi, DIB_RGB_COLORS, &m_bits, nullptr, 0);
-    if (!m_dib)
+    if (!m_dib || !m_bits)
     {
         return false;
     }
     m_oldBmp = SelectObject(m_memDc, m_dib);
+
+    BITMAP bm{};
+    if (GetObjectW(m_dib, sizeof(bm), &bm) && bm.bmWidthBytes > 0)
+    {
+        m_dibStride = bm.bmWidthBytes;
+    }
+    else
+    {
+        m_dibStride = w * 4;
+    }
 
     D2D1_RENDER_TARGET_PROPERTIES props = D2D1::RenderTargetProperties(
         D2D1_RENDER_TARGET_TYPE_DEFAULT,
@@ -675,13 +736,12 @@ bool AnnotationOverlay::EnsureSurface()
         return false;
     }
     m_baseBmp = m_renderer.CreateBitmapFromCapture(m_rt, m_base);
-    if (!m_baseBmp)
-    {
-        return false;
-    }
     m_w = w;
     m_h = h;
-    return true;
+
+    // Base stamp works even if D2D bitmap upload failed.
+    StampBaseToDib();
+    return m_bits != nullptr;
 }
 
 void AnnotationOverlay::ReleaseSurface()
@@ -717,6 +777,7 @@ void AnnotationOverlay::ReleaseSurface()
         ReleaseDC(nullptr, m_screenDc);
         m_screenDc = nullptr;
     }
+    m_dibStride = 0;
     m_w = m_h = 0;
 }
 
@@ -726,23 +787,49 @@ void AnnotationOverlay::Present()
     {
         return;
     }
-    RECT bind{ 0, 0, m_w, m_h };
-    if (FAILED(m_rt->BindDC(m_memDc, &bind)))
+
+    // Always seed the layered DIB with the freeze crop (GDI path).
+    StampBaseToDib();
+
+    if (m_rt && m_baseBmp)
     {
-        return;
-    }
-    m_rt->BeginDraw();
-    m_rt->Clear(D2D1::ColorF(0, 0, 0, 0));
-    m_renderer.DrawScene(m_rt, m_baseBmp, &m_base, m_ann);
-    const HRESULT hr = m_rt->EndDraw();
-    if (FAILED(hr))
-    {
-        if (hr == D2DERR_RECREATE_TARGET)
+        RECT bind{ 0, 0, m_w, m_h };
+        if (SUCCEEDED(m_rt->BindDC(m_memDc, &bind)))
         {
-            ReleaseSurface();
+            m_rt->BeginDraw();
+            m_rt->Clear(D2D1::ColorF(0, 0, 0, 0));
+            m_renderer.DrawScene(m_rt, m_baseBmp, &m_base, m_ann);
+            const HRESULT hr = m_rt->EndDraw();
+            if (hr == D2DERR_RECREATE_TARGET)
+            {
+                ReleaseSurface();
+                if (!EnsureSurface())
+                {
+                    return;
+                }
+                StampBaseToDib();
+            }
+            else if (FAILED(hr) || DibLooksEmpty())
+            {
+                // D2D path failed or wiped alpha — show at least the photo.
+                StampBaseToDib();
+            }
         }
-        return;
     }
+    else if (DibLooksEmpty())
+    {
+        StampBaseToDib();
+    }
+
+    // Keep window size in sync with capture pixels (DPI-safe).
+    SetWindowPos(
+        m_hwnd,
+        HWND_TOPMOST,
+        m_base.screenRect.left,
+        m_base.screenRect.top,
+        m_w,
+        m_h,
+        SWP_NOACTIVATE);
 
     POINT ptSrc{ 0, 0 };
     SIZE size{ m_w, m_h };

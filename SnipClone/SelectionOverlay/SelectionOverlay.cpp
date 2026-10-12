@@ -477,8 +477,16 @@ LRESULT SelectionOverlay::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
             m_ptCurrent = pt;
             RECT local = RectFromPointsMinSize(m_ptStart, m_ptCurrent, kMinSelectionPx);
             SetSelectionFromLocal(local);
-            m_phase = m_model.hasSelection ? Phase::Adjusting : Phase::Idle;
-            Present();
+            // PinShot / Snipaste: release → enter annotation immediately (no OK step).
+            if (m_model.hasSelection)
+            {
+                Stop(true);
+            }
+            else
+            {
+                m_phase = Phase::Idle;
+                Present();
+            }
             return 0;
         }
         m_dragPart = HitPart::None;

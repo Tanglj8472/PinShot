@@ -87,34 +87,54 @@ ID2D1Bitmap* AnnotationRenderer::CreateBitmapFromCapture(ID2D1RenderTarget* rt, 
         return nullptr;
     }
 
-    D2D1_BITMAP_PROPERTIES props = D2D1::BitmapProperties(
-        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
-
-    std::vector<std::uint8_t> premul(image.bgra.size());
+    // Pitch aligned to 16 bytes — some D2D/DXGI paths reject tight width*4 pitches.
+    const UINT pitch = static_cast<UINT>((image.width * 4 + 15) & ~15);
+    std::vector<std::uint8_t> premul(static_cast<size_t>(pitch) * static_cast<size_t>(image.height), 0);
     for (int y = 0; y < image.height; ++y)
     {
         const auto* src = image.bgra.data() + static_cast<size_t>(y) * image.stride;
-        auto* dst = premul.data() + static_cast<size_t>(y) * image.stride;
+        auto* dst = premul.data() + static_cast<size_t>(y) * pitch;
         for (int x = 0; x < image.width; ++x)
         {
             const std::uint8_t b = src[x * 4 + 0];
             const std::uint8_t g = src[x * 4 + 1];
             const std::uint8_t r = src[x * 4 + 2];
-            const std::uint8_t a = src[x * 4 + 3] ? src[x * 4 + 3] : 255;
-            dst[x * 4 + 0] = static_cast<std::uint8_t>(b * a / 255);
-            dst[x * 4 + 1] = static_cast<std::uint8_t>(g * a / 255);
-            dst[x * 4 + 2] = static_cast<std::uint8_t>(r * a / 255);
+            // Capture forces opaque; keep defensive fallback.
+            const std::uint8_t a = 255;
+            dst[x * 4 + 0] = b;
+            dst[x * 4 + 1] = g;
+            dst[x * 4 + 2] = r;
             dst[x * 4 + 3] = a;
+            (void)src[x * 4 + 3];
         }
     }
 
+    D2D1_BITMAP_PROPERTIES props = D2D1::BitmapProperties(
+        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+
     ID2D1Bitmap* bmp = nullptr;
-    rt->CreateBitmap(
+    const HRESULT hr = rt->CreateBitmap(
         D2D1::SizeU(static_cast<UINT32>(image.width), static_cast<UINT32>(image.height)),
         premul.data(),
-        static_cast<UINT32>(image.stride),
+        pitch,
         props,
         &bmp);
+    if (FAILED(hr) || !bmp)
+    {
+        // Fallback: ignore-alpha bitmap (still BGRA bytes).
+        props = D2D1::BitmapProperties(
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE));
+        bmp = nullptr;
+        if (FAILED(rt->CreateBitmap(
+                D2D1::SizeU(static_cast<UINT32>(image.width), static_cast<UINT32>(image.height)),
+                premul.data(),
+                pitch,
+                props,
+                &bmp)))
+        {
+            return nullptr;
+        }
+    }
     return bmp;
 }
 
