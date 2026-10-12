@@ -4,6 +4,7 @@
 #pragma once
 
 #include "../Capture/CaptureResult.h"
+#include "../Common/WinCompat.h"
 #include "DrawCommand.h"
 
 #include <vector>
