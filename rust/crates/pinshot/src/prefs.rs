@@ -23,18 +23,19 @@ static OPEN: AtomicBool = AtomicBool::new(false);
 
 /// Window hugs the form: width is the tab strip + fields, height is measured
 /// from the widgets each frame (not a leftover empty square).
-const PREFS_W: f32 = 448.0;
-const PREFS_MIN_W: f32 = 400.0;
+const PREFS_W: f32 = 480.0;
+const PREFS_MIN_W: f32 = 420.0;
 const PREFS_MIN_H: f32 = 100.0;
-const PREFS_MAX_H: f32 = 292.0;
-const FOOTER_H: f32 = 30.0;
+const PREFS_MAX_H: f32 = 320.0;
+const FOOTER_H: f32 = 32.0;
 const BODY_MARGIN_Y: f32 = 8.0;
+const SIZE_SLACK: f32 = 18.0;
 const FORM_LABEL_W: f32 = 104.0;
 const ROW_H: f32 = 20.0;
-const CONTROL_W: f32 = 248.0;
+const CONTROL_W: f32 = 260.0;
 
 fn prefs_inner_size(body_h: f32) -> egui::Vec2 {
-    let h = (body_h + FOOTER_H + BODY_MARGIN_Y).clamp(PREFS_MIN_H, PREFS_MAX_H);
+    let h = (body_h + FOOTER_H + BODY_MARGIN_Y + SIZE_SLACK).clamp(PREFS_MIN_H, PREFS_MAX_H);
     egui::vec2(PREFS_W, h)
 }
 
@@ -140,9 +141,14 @@ pub fn run_preferences() {
             style.spacing.interact_size.y = ROW_H;
             cc.egui_ctx.set_style(style);
             apply_theme(&cc.egui_ctx, &cfg.theme);
+            let tab = std::env::var("PINSHOT_PREFS_TAB")
+                .ok()
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(0)
+                .min(TABS.len() - 1);
             Ok(Box::new(PrefsApp {
                 draft: cfg,
-                tab: 0,
+                tab,
                 group_sel: 0,
                 group_edit: String::new(),
                 status: String::new(),
@@ -322,7 +328,7 @@ impl eframe::App for PrefsApp {
             .exact_height(FOOTER_H)
             .frame(
                 egui::Frame::side_top_panel(&ctx.style())
-                    .inner_margin(egui::Margin::symmetric(8, 3)),
+                    .inner_margin(egui::Margin::symmetric(8, 4)),
             )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
@@ -385,6 +391,10 @@ impl eframe::App for PrefsApp {
             });
         let size = prefs_inner_size(body_h);
         if self.size_key != self.tab || (self.last_h - size.y).abs() > 1.0 {
+            crate::logutil::log(&format!(
+                "prefs hug tab={} body={:.0} inner={:.0}x{:.0}",
+                self.tab, body_h, size.x, size.y
+            ));
             self.size_key = self.tab;
             self.last_h = size.y;
             ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
@@ -565,7 +575,7 @@ impl PrefsApp {
                 ui.label(tr("Save folder:"));
             });
             ui.horizontal(|ui| {
-                let w = (ui.available_width() - 88.0).max(160.0);
+                let w = (ui.available_width() - 96.0).max(140.0);
                 ui.add(
                     egui::TextEdit::singleline(&mut self.draft.quick_save_folder).desired_width(w),
                 );
@@ -696,7 +706,7 @@ mod tests {
         let general = prefs_inner_size(148.0);
         let control = prefs_inner_size(236.0);
         assert_eq!(interface.x, PREFS_W);
-        assert!(interface.y < 140.0, "short tabs must not keep a tall square");
+        assert!(interface.y < 160.0, "short tabs must not keep a tall square");
         assert!(about.y < general.y);
         assert!(interface.y < general.y);
         assert!(control.y > general.y);
