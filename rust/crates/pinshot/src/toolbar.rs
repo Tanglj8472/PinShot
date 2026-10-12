@@ -217,6 +217,9 @@ impl Toolbar {
                     Some(Tool::Rect) | Some(Tool::Ellipse) => {
                         push_chip(&mut extras, &mut chip_x, chip_y, 58.0, tr("Outline"), TbAction::Fill(false), !st.filled);
                         push_chip(&mut extras, &mut chip_x, chip_y, 52.0, tr("Filled"), TbAction::Fill(true), st.filled);
+                        push_chip(&mut extras, &mut chip_x, chip_y, 46.0, tr("Solid"), TbAction::LineStyle(LineStyleKind::Solid), st.line_style == LineStyleKind::Solid);
+                        push_chip(&mut extras, &mut chip_x, chip_y, 46.0, tr("Dash"), TbAction::LineStyle(LineStyleKind::Dash), st.line_style == LineStyleKind::Dash);
+                        push_chip(&mut extras, &mut chip_x, chip_y, 40.0, tr("Dot"), TbAction::LineStyle(LineStyleKind::Dot), st.line_style == LineStyleKind::Dot);
                     }
                     Some(Tool::Line) => {
                         push_chip(&mut extras, &mut chip_x, chip_y, 46.0, tr("Solid"), TbAction::LineStyle(LineStyleKind::Solid), st.line_style == LineStyleKind::Solid);
@@ -403,6 +406,10 @@ mod tests {
             tb.hit(Point::new(tb.custom_color.x + 2.0, tb.custom_color.y + 2.0)),
             Some(TbAction::CustomColor)
         );
+        assert!(tb.extras.iter().any(|e| e.action == TbAction::LineStyle(LineStyleKind::Dash)));
+        assert!(tb.extras.iter().any(|e| e.action == TbAction::LineStyle(LineStyleKind::Dot)));
+        let dash = tb.extras.iter().find(|e| e.action == TbAction::LineStyle(LineStyleKind::Dash)).unwrap();
+        assert_eq!(tb.hit(dash.rect.center()), Some(TbAction::LineStyle(LineStyleKind::Dash)));
     }
 
     #[test]

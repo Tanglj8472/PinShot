@@ -361,6 +361,7 @@ impl OverlayFront {
         show_cursor: bool,
         shot: &Raster,
         confirm_dont: Option<bool>,
+        picker: Option<&pinshot_core::ColorPicker>,
     ) {
         let bounds = self.bounds();
         let hole = if sel.has_sel() {
@@ -503,6 +504,10 @@ impl OverlayFront {
 
         if let Some(dont) = confirm_dont {
             chrome.push(paint_confirm_abort(&mut self.frame, fw, fh, dont));
+        }
+
+        if let Some(picker) = picker {
+            chrome.push(paint_color_picker(&mut self.frame, fw, fh, picker));
         }
 
         if let Some(ed) = &annot.text_edit {
@@ -902,6 +907,125 @@ pub fn paint_confirm_abort(pm: &mut Pixmap, w: u32, h: u32, dont: bool) -> Rect 
         crate::text::blit_into_pm(pm, &label, r.x + 22.0, r.y + 5.0, 12, Rgba::rgb(20, 20, 20), true);
     }
     lay.frame.inflated(2.0)
+}
+
+pub fn paint_color_picker(
+    pm: &mut Pixmap,
+    w: u32,
+    h: u32,
+    picker: &pinshot_core::ColorPicker,
+) -> Rect {
+    let lay = pinshot_core::color_picker_layout(w as f32, h as f32);
+    fill_rect(pm, lay.frame, Rgba::rgb(247, 247, 247));
+    stroke_rect(pm, lay.frame, Rgba::rgb(80, 80, 80), 1.0);
+    crate::text::blit_into_pm(
+        pm,
+        &tr("Custom color"),
+        lay.frame.x + 14.0,
+        lay.frame.y + 10.0,
+        13,
+        Rgba::rgb(20, 20, 20),
+        true,
+    );
+    blit_hsv_sv(pm, lay.sv, picker.hsv.0);
+    stroke_rect(pm, lay.sv, Rgba::rgb(40, 40, 40), 1.0);
+    let marker = Point::new(
+        lay.sv.x + picker.hsv.1 * lay.sv.w,
+        lay.sv.y + (1.0 - picker.hsv.2) * lay.sv.h,
+    );
+    fill_rect(
+        pm,
+        Rect::new(marker.x - 3.0, marker.y - 3.0, 6.0, 6.0),
+        Rgba::WHITE,
+    );
+    stroke_rect(
+        pm,
+        Rect::new(marker.x - 3.0, marker.y - 3.0, 6.0, 6.0),
+        Rgba::BLACK,
+        1.0,
+    );
+    blit_hue_strip(pm, lay.hue);
+    stroke_rect(pm, lay.hue, Rgba::rgb(40, 40, 40), 1.0);
+    let hy = lay.hue.y + (picker.hsv.0 / 360.0) * lay.hue.h;
+    fill_rect(pm, Rect::new(lay.hue.x - 2.0, hy - 2.0, lay.hue.w + 4.0, 4.0), Rgba::WHITE);
+    stroke_rect(pm, Rect::new(lay.hue.x - 2.0, hy - 2.0, lay.hue.w + 4.0, 4.0), Rgba::BLACK, 1.0);
+    fill_rect(pm, lay.preview, picker.current);
+    stroke_rect(pm, lay.preview, Rgba::rgb(40, 40, 40), 1.0);
+    fill_rect(pm, lay.initial, picker.initial);
+    stroke_rect(pm, lay.initial, Rgba::rgb(40, 40, 40), 1.0);
+    crate::text::blit_into_pm(
+        pm,
+        &picker.current.hex(),
+        lay.preview.x,
+        lay.initial.bottom() + 6.0,
+        11,
+        Rgba::rgb(20, 20, 20),
+        false,
+    );
+    for (i, r) in lay.palette.iter().enumerate() {
+        fill_rect(pm, *r, pinshot_core::palette_colors()[i]);
+        stroke_rect(pm, *r, Rgba::rgb(60, 60, 60), 1.0);
+    }
+    for (r, label) in [(lay.ok, tr("OK")), (lay.cancel, tr("Cancel"))] {
+        fill_rect(pm, r, Rgba::rgb(235, 235, 235));
+        stroke_rect(pm, r, Rgba::rgb(154, 154, 154), 1.0);
+        crate::text::blit_into_pm(pm, &label, r.x + 18.0, r.y + 5.0, 12, Rgba::rgb(20, 20, 20), true);
+    }
+    lay.frame.inflated(2.0)
+}
+
+fn blit_hsv_sv(pm: &mut Pixmap, r: Rect, hue: f32) {
+    let bw = pm.width();
+    let bh = pm.height();
+    let x0 = r.x.round().max(0.0) as u32;
+    let y0 = r.y.round().max(0.0) as u32;
+    let x1 = (r.right().round() as i32).max(0) as u32;
+    let y1 = (r.bottom().round() as i32).max(0) as u32;
+    let x1 = x1.min(bw);
+    let y1 = y1.min(bh);
+    if x1 <= x0 || y1 <= y0 {
+        return;
+    }
+    let ww = (x1 - x0) as f32;
+    let hh = (y1 - y0) as f32;
+    let pixels = pm.pixels_mut();
+    let stride = bw as usize;
+    for y in y0..y1 {
+        let v = 1.0 - (y - y0) as f32 / hh.max(1.0);
+        for x in x0..x1 {
+            let s = (x - x0) as f32 / ww.max(1.0);
+            let c = pinshot_core::hsv_to_rgb(hue, s, v);
+            if let Some(px) = PremultipliedColorU8::from_rgba(c.r, c.g, c.b, 255) {
+                pixels[y as usize * stride + x as usize] = px;
+            }
+        }
+    }
+}
+
+fn blit_hue_strip(pm: &mut Pixmap, r: Rect) {
+    let bw = pm.width();
+    let bh = pm.height();
+    let x0 = r.x.round().max(0.0) as u32;
+    let y0 = r.y.round().max(0.0) as u32;
+    let x1 = (r.right().round() as i32).max(0) as u32;
+    let y1 = (r.bottom().round() as i32).max(0) as u32;
+    let x1 = x1.min(bw);
+    let y1 = y1.min(bh);
+    if x1 <= x0 || y1 <= y0 {
+        return;
+    }
+    let hh = (y1 - y0) as f32;
+    let pixels = pm.pixels_mut();
+    let stride = bw as usize;
+    for y in y0..y1 {
+        let hue = (y - y0) as f32 / hh.max(1.0) * 359.9;
+        let c = pinshot_core::hsv_to_rgb(hue, 1.0, 1.0);
+        if let Some(px) = PremultipliedColorU8::from_rgba(c.r, c.g, c.b, 255) {
+            for x in x0..x1 {
+                pixels[y as usize * stride + x as usize] = px;
+            }
+        }
+    }
 }
 
 pub const PIN_SHADOW_M: f32 = 12.0;

@@ -13,7 +13,7 @@ use winit::dpi::LogicalSize;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
-use winit::window::{Window, WindowId};
+use winit::window::{Window, WindowId, WindowLevel};
 
 use crate::draw::{fill_rect, present, stroke_rect, UiTheme};
 use crate::event::AppEvent;
@@ -75,9 +75,12 @@ impl PrefsWin {
             .with_title(tr("PinShot Preferences"))
             .with_inner_size(LogicalSize::new(W, H))
             .with_min_inner_size(LogicalSize::new(440.0, 420.0))
-            .with_resizable(true);
+            .with_resizable(true)
+            .with_window_level(WindowLevel::AlwaysOnTop);
         let window = Rc::new(event_loop.create_window(attrs).map_err(|e| e.to_string())?);
+        crate::native::raise_on_top(&window);
         crate::native::focus_window(&window);
+        crate::logutil::log("prefs raise above");
         let context = Context::new(window.clone()).map_err(|e| format!("{e:?}"))?;
         let surface = Surface::new(&context, window.clone()).map_err(|e| format!("{e:?}"))?;
         let mut w = Self {
@@ -105,7 +108,9 @@ impl PrefsWin {
 
     pub fn raise(&self) {
         self.window.set_visible(true);
+        crate::native::raise_on_top(&self.window);
         crate::native::focus_window(&self.window);
+        crate::logutil::log("prefs raise above");
     }
 
     pub fn close(&mut self) {

@@ -963,7 +963,7 @@ impl ApplicationHandler<AppEvent> for App {
                     }
                 }
                 if let WindowEvent::MouseWheel { delta, .. } = &event {
-                    if self.mods.control_key() {
+                    if self.mods.control_key() || crate::native::pointer_ctrl_down() {
                         let dy = match delta {
                             MouseScrollDelta::LineDelta(_, y) => *y,
                             MouseScrollDelta::PixelDelta(pt) => pt.y as f32 / 120.0,

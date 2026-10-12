@@ -17,7 +17,7 @@ Counts at the bottom. Python sources are not modified.
 | `input_hold` / `capture.InputHold` | `x11util::InputHold` | done | Grab pointer+keyboard on root during capture |
 | `exclude_from_capture` | — | impossible | Windows 10 2004+ WDA only |
 | `install_hotkeys` | `native::install_hotkeys` | done | Win32 `RegisterHotKey` / X11 `XGrabKey` |
-| `raise_on_top` / `x11raise.py` | `x11util::raise_on_top` | partial | EWMH ABOVE + restack; OCR window uses egui always-on-top |
+| `raise_on_top` / `x11raise.py` | `x11util::raise_on_top` | partial | EWMH ABOVE + restack; Linux prefs `AlwaysOnTop` + raise; OCR window uses egui always-on-top |
 | `set_skip_taskbar` | `apply_pin_style` `_NET_WM_STATE_SKIP_TASKBAR` | done | |
 | `x11pass.set_input_passthrough` | `x11util::set_click_through` XShape Input | done | |
 | `winlist.window_rects` | `detect_x11::window_rects` | done | `_NET_CLIENT_LIST_STACKING` + frame extents |
@@ -68,7 +68,7 @@ Counts at the bottom. Python sources are not modified.
 | Ctrl+A full screen | done |
 | Ctrl+Z/Y undo/redo | done |
 | WASD move cursor | `overlay::move_cursor` | done |
-| Arrows move / Shift shrink / Ctrl grow | `nudge_key` | done |
+| Arrows move / Shift shrink / Ctrl grow | `nudge_key` + `Annotator::translate_all` | done | Moving the hole (drag or arrows) keeps annotations in selection space |
 | `` ` `` toggle cursor | toast + `paint_pointer` | done | System cursor hidden while painted |
 | V select, N number, 1/2 width | done |
 | Double-click copy / edit text | done |
@@ -96,7 +96,7 @@ Counts at the bottom. Python sources are not modified.
 | Text glyphs / number digits | `font.rs` fontdue | done |
 | Dash/dot line, fill, arrow, marker alpha | `render.rs` | done |
 | Property panel (bold/italic/family/mode/effect) | B/I/Outline + mosaic mode/effect; no font combo | partial |
-| Custom QColorDialog | current-color swatch → zenity `--color-selection` | partial |
+| Custom QColorDialog | in-overlay / in-pin HSV + palette picker | done | No zenity; grab stays on the freeze |
 | Brush cursor poll timer | QueryPointer 8ms while brush live | done |
 | Pixel-perfect hit via 3×3 paint | geometry hit | partial |
 
@@ -108,7 +108,7 @@ Counts at the bottom. Python sources are not modified.
 | OCR / Translate / Undo Redo Close Pin Save Copy | done |
 | Pin Check (done) | `TbAction::Check` | done |
 | Palette 20 + width −/+ | done | Panel shows `option_width` (selected/live), not the tool default |
-| Per-tool panel (filled, dash, blur, font…) | Fill/Dash/Dot/mode/effect chips | partial | No QFontComboBox |
+| Per-tool panel (filled, dash, blur, font…) | Fill/Dash/Dot on Rect+Ellipse+Line; mode/effect chips | partial | No QFontComboBox |
 | Tips / i18n keys | `Tool::tip` + `tr` | done |
 
 ## Pin window (`pin_window.py`)
@@ -116,7 +116,7 @@ Counts at the bottom. Python sources are not modified.
 | Python | Rust | Status |
 |---|---|---|
 | Frameless always-on-top + skip taskbar | winit + EWMH / WS_EX_TOOLWINDOW | done |
-| Drag move, wheel zoom (cursor-anchored), Ctrl+wheel opacity | done | `WheelGate` shared with overlay; one notch = one zoom / opacity step |
+| Drag move, wheel zoom (cursor-anchored), Ctrl+wheel opacity | done | `WheelGate` shared with overlay; Ctrl from winit mods **or** `QueryPointer` mask so unfocused pins still change opacity; `_NET_WM_WINDOW_OPACITY` on client + WM frame, re-set after geom |
 | Annotating: wheel → `ann.wheel` not zoom | done |
 | Space / right-click Show toolbar | Space = toolbar; right-click = full menu | done | Never falls back to toolbar |
 | TOOL_KEYS R E P T N … | R E P T N + 1/2/3/4 | done |
@@ -194,10 +194,10 @@ Rust config default `language = "zh_CN"` (Phase 1) vs Python QSettings default `
 
 | Status | Rows |
 |---|---|
-| done | 102 |
-| partial | 11 |
+| done | 103 |
+| partial | 10 |
 | missing | 1 |
 | impossible | 6 |
 | **total** | **120** |
 
-Partial/missing that still need Windows or Xfce hands-on: font family combo, pixel-perfect hit, AT-SPI when the a11y bus is down, pin group rename, PynputHotkeys.
+Partial/missing that still need Windows or Xfce hands-on: font family combo, pixel-perfect hit, AT-SPI when the a11y bus is down, pin group rename, PynputHotkeys. Custom color is in-process (no zenity).

@@ -2,7 +2,7 @@
 
 对照源：`main` 上的 Python/PySide6 PinShot。Rust 在 `rust/`，分支 `rust`。Python 源码不改。
 
-最后更新：2026-10-12（双倍滚轮已关；PARITY ConfirmAbort / 阴影缩略 / 子面板推进）。
+最后更新：2026-10-12（A–F：选区移动带标注、内置取色、透明度/Ctrl 滚轮/prefs 置顶/矩形虚线）。
 
 ---
 
@@ -17,14 +17,14 @@ HEAD 在 `rust`（用户提交 `ed59e0f` 之后本轮继续）。对照 Python/`
 | 重启后 R 套在**当前截图**的上次选区、Tab 不漏到 Chrome | 实机过 |
 | pin 光标锚缩放（不切工作区）、菜单高度、Esc 只关菜单、穿透勾选 | 实机过 |
 | Linux 滚轮每格两次 | **已修**（Xvfb `:22` 15/15）：3 格 → 3 次 `overlay wheel`，线宽 3→6；4 格缩放 → 4 次 `pin zoom`（不再 8 步） |
-| 工具栏子面板 | Fill/Outline、Solid/Dash/Dot、B/I/Outline、马赛克 Brush/Rect/Blur；当前色块 → zenity `--color-selection` |
+| 工具栏子面板 | Fill/Outline、Solid/Dash/Dot（矩形/椭圆/直线）、B/I/Outline、马赛克 Brush/Rect/Blur；当前色块 → overlay/pin 内 HSV 取色（无 zenity） |
 | Esc 放弃确认 | overlay 内 Y/N /「不再提示」（不再 zenity 抢抓键） |
 | pin 阴影 / 缩略图 | 合成器在则默认阴影 M=12；菜单可勾 Shadow；Shift+双击 72px 中心裁切；写入 session |
 | 画笔采样 | 活笔时 QueryPointer 8ms（Python 8ms timer） |
 | Windows 实机 | **未关**：Linux-first 改动后尚未在真 Windows 上复测（CI 绿） |
 | AT-SPI / IME / 合成器 | 限制同前，见「已知限制」 |
 
-`PARITY.md`：done 102 / partial 11 / missing 1 / impossible 6（合计 120）。
+`PARITY.md`：done 103 / partial 10 / missing 1 / impossible 6（合计 120）。
 
 ---
 
@@ -146,7 +146,7 @@ HEAD 在 `rust`（用户提交 `ed59e0f` 之后本轮继续）。对照 Python/`
 | `ed59e0f` | 用户：overlay 用共享 `toggle_tool` |
 | `7c406a6` | 用户：单击再点同一工具取消；语言标签回归测试 |
 | `a6d6765` | 用户：Windows 设置事件循环 + 截图焦点 |
-| `7d5ebb7` / `c344764` | `WheelGate` 去双倍滚轮；Fill/Dash/Dot 子面板；overlay 内 ConfirmAbort；pin 阴影/缩略；zenity 自定义色；画笔 8ms poll |
+| `7d5ebb7` / `c344764` / `6edae0a` | `WheelGate` 去双倍滚轮；Fill/Dash/Dot 子面板；overlay 内 ConfirmAbort；pin 阴影/缩略；zenity 自定义色（已被本轮内置取色替换）；画笔 8ms poll |
 
 ### `7ef18fe` 实机（Xfce/xfwm4，2026-10-12 08:33 UTC+8）
 
@@ -237,13 +237,13 @@ HEAD 在 `rust`（用户提交 `ed59e0f` 之后本轮继续）。对照 Python/`
 
 | 状态 | 行数 |
 |---|---|
-| done | 102 |
-| partial | 11 |
+| done | 103 |
+| partial | 10 |
 | missing | 1 |
 | impossible | 6 |
 | **合计** | **120** |
 
-仍偏 partial/missing：完整字体下拉、像素级 hit、无 a11y 时 AT-SPI、pin 分组改名、OCR 条带、`PynputHotkeys`、zenity 自定义色（非 QColorDialog）。
+仍偏 partial/missing：完整字体下拉、像素级 hit、无 a11y 时 AT-SPI、pin 分组改名、OCR 条带、`PynputHotkeys`。
 
 ---
 
@@ -253,7 +253,8 @@ HEAD 在 `rust`（用户提交 `ed59e0f` 之后本轮继续）。对照 Python/`
 |---|---|---|
 | Linux 滚轮每格两次 | 已修 | `WheelGate` 去重；Xvfb 连续滚轮应 3 格→+3 宽、4 格缩放 4 步 |
 | Windows 实机 | 未关 | Linux-first 改动后只跑过 CI，尚未在真 Windows 上复测、未出新的 release exe |
-| PARITY 缺口 | 部分关 | ConfirmAbort / 阴影缩略 / 画笔 poll / 子面板主项已做；剩字体家族、像素 hit、Pynput（102/11/1/6） |
+| PARITY 缺口 | 部分关 | ConfirmAbort / 阴影缩略 / 画笔 poll / 子面板 / 内置取色已做；剩字体家族、像素 hit、Pynput（103/10/1/6） |
+| 6edae0a 实机 A–F | 已修 | 见下表 |
 
 ---
 
@@ -275,6 +276,19 @@ HEAD 在 `rust`（用户提交 `ed59e0f` 之后本轮继续）。对照 Python/`
 
 1. **Windows 实机 + 放出 exe**：在真机复测 overlay/pin/热键/剪贴板，CI 已绿的 `pinshot.exe` 再打一版。
 2. **PARITY 剩余**：字体家族下拉、像素级 hit、无 a11y 时控件框、pin 分组改名。
+
+### 6edae0a 实机 OPEN A–F（本轮）
+
+实机报告：滚轮已过。下列 A–F 在本轮对齐 Python（选区坐标 / 无 zenity）。
+
+| ID | 问题 | 状态 | 修法 |
+|---|---|---|---|
+| A | 关掉工具后拖动选区，标注留在原屏幕位置（被裁切） | 已修 | `Annotator::translate_all`：Moving / 方向键 Move 时按选区位移×dpr 平移全部点与 undo |
+| B | 当前色块调 zenity，无 zenity 则无反应 | 已修 | overlay/pin 内 HSV+调色板+OK/Cancel；不放抓、不依赖外部进程 |
+| C | `_NET_WM_WINDOW_OPACITY` 已设但 picom 下仍不透明 | 已修 | 属性写到 client **和** WM frame；`apply_geom` 后重设 |
+| D | 未聚焦 pin 上 Ctrl+滚轮不可靠 | 已修 | `QueryPointer` mask Control=4，与 winit mods 或运算 |
+| E | 首选项开在置顶 pin 下面 | 已修 | prefs `AlwaysOnTop` + `raise_on_top` |
+| F | 矩形面板无 Solid/Dash/Dot | 已修 | 与直线相同的线型芯片；`render` 已用 `line_style` |
 
 验证约定：Linux 改动必须在 **Xvfb + xfwm4 + xdotool**（以及有桌面时的 `:1` Xfce）上做焦点/按键/菜单回归。本轮用 `type --delay 20`、两步快拖、连续滚轮格（间隔 80ms > 门控 40ms）。
 

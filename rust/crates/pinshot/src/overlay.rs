@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 use pinshot_core::annotation::{Annotator, Tool};
 use pinshot_core::color::Rgba;
+use pinshot_core::colorpicker::{color_picker_layout, ColorPicker, PickerAction};
 use pinshot_core::confirm::{confirm_abort_layout, ConfirmAbortHit};
 use pinshot_core::geom::{hover_rect, Point, Rect};
 use pinshot_core::wheel::WheelGate;
@@ -71,6 +72,8 @@ pub struct Overlay {
     held_btn1: bool,
     wheel: WheelGate,
     confirm: Option<ConfirmAbort>,
+    color_picker: Option<ColorPicker>,
+    sel_move0: Option<Rect>,
     #[cfg(unix)]
     proxy: winit::event_loop::EventLoopProxy<crate::event::AppEvent>,
     #[cfg(unix)]
@@ -148,6 +151,8 @@ impl Overlay {
             held_btn1: false,
             wheel: WheelGate::new(),
             confirm: None,
+            color_picker: None,
+            sel_move0: None,
             #[cfg(unix)]
             proxy: proxy.clone(),
             #[cfg(unix)]
@@ -482,22 +487,88 @@ impl Overlay {
         let Some(tool) = self.annot.option_tool().filter(|t| *t != Tool::Select) else {
             return;
         };
-        let cur = self.annot.style(tool).color;
-        self.window.set_visible(false);
-        #[cfg(unix)]
-        if let Some(mut g) = self.key_grab.take() {
-            g.release();
+        let cur = self
+            .annot
+            .option_style()
+            .map(|s| s.color)
+            .unwrap_or_else(|| self.annot.style(tool).color);
+        self.color_picker = Some(ColorPicker::new(cur));
+        crate::logutil::log(&format!("color picker open {}", cur.hex()));
+        self.mark_dirty();
+    }
+
+    fn picker_layout(&self) -> pinshot_core::ColorPickerLayout {
+        let b = self.bounds();
+        color_picker_layout(b.w, b.h)
+    }
+
+    fn picker_press(&mut self, pt: Point) {
+        let lay = self.picker_layout();
+        let Some(picker) = self.color_picker.as_mut() else {
+            return;
+        };
+        let Some(hit) = lay.hit(pt) else {
+            return;
+        };
+        match picker.press(hit, pt, &lay) {
+            PickerAction::Accept => self.accept_picker(),
+            PickerAction::Cancel => self.close_picker(),
+            PickerAction::Continue => self.mark_dirty(),
         }
-        let picked = crate::dialog::pick_color(hwnd_of(&self.window), cur);
-        self.window.set_visible(true);
-        native::focus_window(&self.window);
-        #[cfg(unix)]
-        {
-            self.key_grab = native::grab_overlay_keys(&self.window, self.proxy.clone());
+    }
+
+    fn picker_drag(&mut self, pt: Point) {
+        let lay = self.picker_layout();
+        if let Some(picker) = self.color_picker.as_mut() {
+            if picker.drag.is_some() {
+                picker.drag_to(pt, &lay);
+                self.dirty = true;
+            }
         }
-        if let Some(c) = picked {
+    }
+
+    fn accept_picker(&mut self) {
+        let Some(picker) = self.color_picker.take() else {
+            return;
+        };
+        if let Some(tool) = self.annot.option_tool().filter(|t| *t != Tool::Select) {
+            let c = picker.current;
             self.annot.set_style_value(tool, |s| s.color = c);
             crate::logutil::log(&format!("custom color {}", c.hex()));
+        }
+        self.relayout_toolbar();
+        self.mark_dirty();
+    }
+
+    fn close_picker(&mut self) {
+        if self.color_picker.take().is_some() {
+            crate::logutil::log("color picker cancel");
+            self.mark_dirty();
+        }
+    }
+
+    fn apply_sel_motion(&mut self, pt: Point) {
+        let moving = self.sel.state == SelState::Moving;
+        let before = self.sel.normalized();
+        self.sel.motion(pt, self.bounds());
+        if moving {
+            let after = self.sel.normalized();
+            let dx = (after.x - before.x) * self.dpr;
+            let dy = (after.y - before.y) * self.dpr;
+            if dx != 0.0 || dy != 0.0 {
+                self.annot.translate_all(dx, dy);
+            }
+        }
+    }
+
+    fn log_sel_translate(&mut self) {
+        if let Some(o) = self.sel_move0.take() {
+            let n = self.sel.normalized();
+            let dx = (n.x - o.x) * self.dpr;
+            let dy = (n.y - o.y) * self.dpr;
+            if dx != 0.0 || dy != 0.0 {
+                crate::logutil::log(&format!("annot translate {dx:.0},{dy:.0}"));
+            }
         }
     }
 
@@ -572,6 +643,41 @@ impl Overlay {
     }
 
     pub fn handle(&mut self, event: &WindowEvent) {
+        if self.color_picker.is_some() {
+            match event {
+                WindowEvent::CursorMoved { position, .. } => {
+                    self.cursor = Point::new(position.x as f32, position.y as f32);
+                    self.picker_drag(self.cursor);
+                }
+                WindowEvent::MouseInput {
+                    state,
+                    button: MouseButton::Left,
+                    ..
+                } => {
+                    if *state == ElementState::Pressed {
+                        self.picker_press(self.cursor);
+                    } else if let Some(p) = self.color_picker.as_mut() {
+                        p.release();
+                    }
+                }
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state == ElementState::Pressed =>
+                {
+                    match &event.logical_key {
+                        Key::Named(NamedKey::Escape) => self.close_picker(),
+                        Key::Named(NamedKey::Enter) => self.accept_picker(),
+                        _ => {}
+                    }
+                }
+                WindowEvent::RedrawRequested => self.redraw(),
+                WindowEvent::CloseRequested => self.cancel(),
+                _ => {}
+            }
+            if self.dirty {
+                self.window.request_redraw();
+            }
+            return;
+        }
         match event {
             WindowEvent::CursorMoved { position, .. } if self.confirm.is_some() => {
                 self.cursor = Point::new(position.x as f32, position.y as f32);
@@ -591,7 +697,7 @@ impl Overlay {
                     self.sel.state,
                     SelState::Creating | SelState::Moving | SelState::Resizing
                 ) {
-                    self.sel.motion(self.cursor, self.bounds());
+                    self.apply_sel_motion(self.cursor);
                     self.dirty = true;
                 } else {
                     let prev_hover = self.hover;
@@ -633,6 +739,10 @@ impl Overlay {
                     }
                     match self.sel.press(pt, self.bounds(), self.annot.tool.is_some()) {
                         PressKind::Ignore => {}
+                        PressKind::Move => {
+                            self.sel_move0 = Some(self.sel.normalized());
+                            self.toolbar = None;
+                        }
                         _ => self.toolbar = None,
                     }
                     self.dirty = true;
@@ -653,6 +763,7 @@ impl Overlay {
                         self.commit_annot_release(pt);
                     } else {
                         self.sel.release(pt, self.hover, self.bounds());
+                        self.log_sel_translate();
                         self.relayout_toolbar();
                         if self.translate_on_select && self.sel.has_sel() {
                             self.finish_ocr(true);
@@ -747,6 +858,14 @@ impl Overlay {
     }
 
     fn key(&mut self, key: &Key, text: Option<&str>) {
+        if self.color_picker.is_some() {
+            match key {
+                Key::Named(NamedKey::Enter) => self.accept_picker(),
+                Key::Named(NamedKey::Escape) => self.close_picker(),
+                _ => {}
+            }
+            return;
+        }
         if self.confirm.is_some() {
             match key {
                 Key::Named(NamedKey::Enter) => self.confirm_yes(),
@@ -921,7 +1040,17 @@ impl Overlay {
         } else {
             Nudge::Move
         };
+        let before = self.sel.normalized();
         self.sel.nudge(dx, dy, mode, self.bounds());
+        if mode == Nudge::Move {
+            let after = self.sel.normalized();
+            let adx = (after.x - before.x) * self.dpr;
+            let ady = (after.y - before.y) * self.dpr;
+            if adx != 0.0 || ady != 0.0 {
+                self.annot.translate_all(adx, ady);
+                crate::logutil::log(&format!("annot translate {adx:.0},{ady:.0}"));
+            }
+        }
         self.relayout_toolbar();
         self.dirty = true;
     }
@@ -988,6 +1117,7 @@ impl Overlay {
             self.show_cursor,
             &self.capture.composed,
             self.confirm.as_ref().map(|c| c.dont),
+            self.color_picker.as_ref(),
         );
         #[cfg(not(windows))]
         if let Some(surface) = &mut self.surface {
@@ -1025,7 +1155,7 @@ impl Overlay {
     /// no live — rect/ellipse/arrow draw nothing. MouseInput owns press;
     /// recover only continues or commits a stroke that already has extent.
     fn recover_pointer_drag(&mut self) {
-        if self.confirm.is_some() {
+        if self.confirm.is_some() || self.color_picker.is_some() {
             return;
         }
         let Some((x, y, down)) = native::pointer_in_window(&self.window) else {
@@ -1063,11 +1193,22 @@ impl Overlay {
             let _ = self.sel.press(pt, self.bounds(), false);
             crate::logutil::log(&format!("recover Button1 drag ({:.0},{:.0})", pt.x, pt.y));
             self.dirty = true;
-        } else if down && self.sel.state == SelState::Creating {
-            self.sel.motion(pt, self.bounds());
+        } else if down
+            && matches!(
+                self.sel.state,
+                SelState::Creating | SelState::Moving | SelState::Resizing
+            )
+        {
+            self.apply_sel_motion(pt);
             self.dirty = true;
-        } else if !down && self.sel.state == SelState::Creating {
+        } else if !down
+            && matches!(
+                self.sel.state,
+                SelState::Creating | SelState::Moving | SelState::Resizing
+            )
+        {
             self.sel.release(pt, self.hover, self.bounds());
+            self.log_sel_translate();
             self.relayout_toolbar();
             if self.sel.has_sel() {
                 let r = self.sel.normalized();

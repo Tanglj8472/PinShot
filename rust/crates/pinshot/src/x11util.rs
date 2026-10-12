@@ -227,7 +227,7 @@ pub fn set_opacity(window: &Window, opacity: f32) {
     let Some(xid) = xid_of(window) else {
         return;
     };
-    let Ok((c, _)) = conn() else {
+    let Ok((c, screen)) = conn() else {
         return;
     };
     let Ok(atom) = c.intern_atom(false, b"_NET_WM_WINDOW_OPACITY") else {
@@ -238,16 +238,34 @@ pub fn set_opacity(window: &Window, opacity: f32) {
     };
     let v = ((opacity.clamp(0.1, 1.0) as f64) * 0xffff_ffff_u32 as f64).round() as u32;
     let bytes = v.to_ne_bytes();
-    let _ = c.change_property(
-        PropMode::REPLACE,
-        xid,
-        atom.atom,
-        AtomEnum::CARDINAL,
-        32,
-        1,
-        &bytes,
-    );
+    let write = |wid: u32| {
+        let _ = c.change_property(
+            PropMode::REPLACE,
+            wid,
+            atom.atom,
+            AtomEnum::CARDINAL,
+            32,
+            1,
+            &bytes,
+        );
+    };
+    write(xid);
+    // picom / xfwm4 often read the property on the WM frame, not the client.
+    let root = c.setup().roots.get(screen).map(|s| s.root);
+    let mut frame = xid;
+    if let Ok(cookie) = c.query_tree(xid) {
+        if let Ok(tree) = cookie.reply() {
+            if root != Some(tree.parent) && tree.parent != 0 && tree.parent != xid {
+                write(tree.parent);
+                frame = tree.parent;
+            }
+        }
+    }
     let _ = c.flush();
+    crate::logutil::log(&format!(
+        "opacity set {:.2} client={xid:#x} frame={frame:#x}",
+        opacity.clamp(0.1, 1.0)
+    ));
 }
 
 pub fn focus_window(window: &Window) {
@@ -530,6 +548,7 @@ pub struct PointerState {
     pub win_x: i32,
     pub win_y: i32,
     pub btn1: bool,
+    pub ctrl: bool,
 }
 
 pub fn pointer_state(xid: u32) -> Option<PointerState> {
@@ -540,14 +559,28 @@ pub fn pointer_state(xid: u32) -> Option<PointerState> {
         .ok()
         .and_then(|c| c.reply().ok())
         .or_else(|| c.query_pointer(root).ok().and_then(|c| c.reply().ok()))?;
-    let btn1 = u16::from(q.mask) & 0x0100 != 0;
+    let mask = u16::from(q.mask);
+    let btn1 = mask & 0x0100 != 0;
+    let ctrl = mask & CONTROL != 0;
     Some(PointerState {
         root_x: i32::from(q.root_x),
         root_y: i32::from(q.root_y),
         win_x: i32::from(q.win_x),
         win_y: i32::from(q.win_y),
         btn1,
+        ctrl,
     })
+}
+
+/// Control from the X pointer mask (works when the pin is unfocused).
+pub fn pointer_ctrl_down() -> bool {
+    let Ok((c, screen)) = conn() else {
+        return false;
+    };
+    let Some(root) = c.setup().roots.get(screen).map(|s| s.root) else {
+        return false;
+    };
+    pointer_state(root).map(|p| p.ctrl).unwrap_or(false)
 }
 
 /// Root-relative pointer and Button1. Overlay recover uses the virtual origin.

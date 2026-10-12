@@ -303,6 +303,20 @@ impl UndoStack {
     pub fn redo_len(&self) -> usize {
         self.redo.len()
     }
+
+    pub fn translate_all(&mut self, dx: f32, dy: f32) {
+        if dx == 0.0 && dy == 0.0 {
+            return;
+        }
+        let d = Point::new(dx, dy);
+        for doc in self.undo.iter_mut().chain(self.redo.iter_mut()) {
+            for sh in doc {
+                for p in &mut sh.pts {
+                    *p = p.add(d);
+                }
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -451,6 +465,32 @@ impl Annotator {
 
     pub fn undo_len(&self) -> usize {
         self.undo.undo_len()
+    }
+
+    /// Shift every shape (and undo history) in image space so annotations
+    /// stay inside a moving selection hole.
+    pub fn translate_all(&mut self, dx: f32, dy: f32) {
+        if dx == 0.0 && dy == 0.0 {
+            return;
+        }
+        let d = Point::new(dx, dy);
+        fn shift(pts: &mut [Point], d: Point) {
+            for p in pts {
+                *p = p.add(d);
+            }
+        }
+        for sh in &mut self.shapes {
+            shift(&mut sh.pts, d);
+        }
+        if let Some(sh) = self.live.as_mut() {
+            shift(&mut sh.pts, d);
+        }
+        if let Some(ed) = self.text_edit.as_mut() {
+            ed.img_pt = ed.img_pt.add(d);
+        }
+        shift(&mut self.sel_pts0, d);
+        self.sel_origin = self.sel_origin.add(d);
+        self.undo.translate_all(dx, dy);
     }
 
     pub fn clear(&mut self) {
@@ -1388,6 +1428,25 @@ mod tests {
             let b = a.shapes[0].bounds();
             assert!(b.w >= 60.0 && b.h >= 40.0, "{tool:?} bounds {b:?}");
         }
+    }
+
+    #[test]
+    fn translate_all_keeps_undo_in_selection_space() {
+        let mut a = Annotator::new();
+        a.add(rect_shape());
+        a.add(Shape::new(
+            Tool::Ellipse,
+            vec![Point::new(10.0, 12.0), Point::new(30.0, 40.0)],
+            Style::default(),
+        ));
+        a.translate_all(8.0, -4.0);
+        assert_eq!(a.shapes[0].pts[0], Point::new(48.0, 36.0));
+        assert_eq!(a.shapes[1].pts[0], Point::new(18.0, 8.0));
+        a.undo();
+        assert_eq!(a.shapes.len(), 1);
+        assert_eq!(a.shapes[0].pts[0], Point::new(48.0, 36.0));
+        a.redo();
+        assert_eq!(a.shapes[1].pts[0], Point::new(18.0, 8.0));
     }
 
     #[test]

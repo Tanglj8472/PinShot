@@ -96,6 +96,21 @@ pub fn pointer_in_client(window: &Window) -> Option<(i32, i32, bool)> {
     crate::x11util::xid_of(window).and_then(crate::x11util::pointer_in_client)
 }
 
+pub fn pointer_ctrl_down() -> bool {
+    #[cfg(unix)]
+    {
+        crate::x11util::pointer_ctrl_down()
+    }
+    #[cfg(windows)]
+    {
+        crate::win32::pointer_ctrl_down()
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        false
+    }
+}
+
 #[cfg(unix)]
 pub fn configure_window_geom(window: &Window, x: i32, y: i32, w: u32, h: u32) -> bool {
     match crate::x11util::xid_of(window) {

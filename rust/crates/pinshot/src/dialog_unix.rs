@@ -5,6 +5,7 @@ use pinshot_core::i18n::tr;
 use pinshot_core::raster::Raster;
 use std::process::Command;
 
+#[allow(dead_code)]
 pub fn pick_color(_parent: (), current: Rgba) -> Option<Rgba> {
     let color = format!("#{:02x}{:02x}{:02x}", current.r, current.g, current.b);
     if let Ok(out) = Command::new("zenity")

@@ -133,6 +133,52 @@ impl Rgba {
     }
 }
 
+/// HSV: hue in degrees [0, 360), saturation/value in [0, 1].
+pub fn rgb_to_hsv(c: Rgba) -> (f32, f32, f32) {
+    let r = c.r as f32 / 255.0;
+    let g = c.g as f32 / 255.0;
+    let b = c.b as f32 / 255.0;
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let d = max - min;
+    let v = max;
+    let s = if max <= 0.0 { 0.0 } else { d / max };
+    let h = if d <= 1e-6 {
+        0.0
+    } else if max == r {
+        60.0 * (((g - b) / d) % 6.0)
+    } else if max == g {
+        60.0 * (((b - r) / d) + 2.0)
+    } else {
+        60.0 * (((r - g) / d) + 4.0)
+    };
+    let h = if h < 0.0 { h + 360.0 } else { h };
+    (h, s, v)
+}
+
+pub fn hsv_to_rgb(h: f32, s: f32, v: f32) -> Rgba {
+    let h = ((h % 360.0) + 360.0) % 360.0;
+    let s = s.clamp(0.0, 1.0);
+    let v = v.clamp(0.0, 1.0);
+    let c = v * s;
+    let sector = h / 60.0;
+    let x = c * (1.0 - (sector % 2.0 - 1.0).abs());
+    let m = v - c;
+    let (r, g, b) = match sector.floor() as i32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    Rgba::rgb(
+        ((r + m) * 255.0).round().clamp(0.0, 255.0) as u8,
+        ((g + m) * 255.0).round().clamp(0.0, 255.0) as u8,
+        ((b + m) * 255.0).round().clamp(0.0, 255.0) as u8,
+    )
+}
+
 /// Same 20-swatch palette as `pinshot/annotate.py`.
 pub const PALETTE: [&str; 20] = [
     "#ff0000", "#ff8800", "#ffd400", "#55cc00", "#00aa55", "#00c8c8", "#0088ff", "#2040ff",
@@ -200,5 +246,15 @@ mod tests {
         assert!(parse_color_text("255,136,0").is_some());
         assert!(parse_color_text("rgb(255, 136, 0)").is_some());
         assert!(parse_color_text("not a color").is_none());
+    }
+
+    #[test]
+    fn hsv_roundtrip_primaries() {
+        for c in [Rgba::RED, Rgba::rgb(0, 255, 0), Rgba::BLUE, Rgba::WHITE, Rgba::BLACK] {
+            let (h, s, v) = rgb_to_hsv(c);
+            let back = hsv_to_rgb(h, s, v);
+            assert_eq!(back, c, "hsv {h},{s},{v} for {c:?}");
+        }
+        assert_eq!(hsv_to_rgb(0.0, 1.0, 1.0), Rgba::RED);
     }
 }

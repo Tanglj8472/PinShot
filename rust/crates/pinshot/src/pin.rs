@@ -4,11 +4,12 @@ use std::num::NonZeroU32;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use crate::draw::{fill_rect, paint_pin, paint_toolbar, present, stroke_rect};
+use crate::draw::{fill_rect, paint_color_picker, paint_pin, paint_toolbar, present, stroke_rect};
 use crate::native;
 use crate::toolbar::{TbAction, Toolbar};
 use pinshot_core::annotation::{Annotator, Tool};
 use pinshot_core::color::Rgba;
+use pinshot_core::colorpicker::{color_picker_layout, ColorPicker, PickerAction};
 use pinshot_core::wheel::WheelGate;
 use pinshot_core::geom::{handle_points, HANDLE_SIZE};
 use pinshot_core::geom::{Point, Rect};
@@ -76,6 +77,7 @@ pub struct PinWin {
     pub shadow: bool,
     pub can_shadow: bool,
     pub thumb: bool,
+    color_picker: Option<ColorPicker>,
 }
 
 impl PinWin {
@@ -128,6 +130,7 @@ impl PinWin {
             can_shadow,
             shadow: can_shadow,
             thumb: false,
+            color_picker: None,
         };
         pin.redraw();
         Ok(pin)
@@ -167,6 +170,7 @@ impl PinWin {
         let _ = self.window.request_inner_size(PhysicalSize::new(w, h));
         self.window.set_outer_position(PhysicalPosition::new(x, y));
         let _ = native::configure_window_geom(&self.window, x, y, w, h);
+        native::set_opacity(&self.window, self.opacity);
     }
 
     pub fn hide(&self) {
@@ -404,10 +408,13 @@ impl PinWin {
             }
             TbAction::CustomColor => {
                 if let Some(tool) = self.annot.option_tool().filter(|t| *t != Tool::Select) {
-                    let cur = self.annot.style(tool).color;
-                    if let Some(c) = crate::dialog::pick_color(native::hwnd_of(&self.window), cur) {
-                        self.annot.set_style_value(tool, |s| s.color = c);
-                    }
+                    let cur = self
+                        .annot
+                        .option_style()
+                        .map(|s| s.color)
+                        .unwrap_or_else(|| self.annot.style(tool).color);
+                    self.color_picker = Some(ColorPicker::new(cur));
+                    crate::logutil::log(&format!("color picker open {}", cur.hex()));
                 }
             }
             TbAction::Fill(on) => {
@@ -448,8 +455,90 @@ impl PinWin {
         self.dirty = true;
     }
 
+    fn picker_layout(&self) -> pinshot_core::ColorPickerLayout {
+        let (ww, hh) = self.win_px();
+        color_picker_layout(ww as f32, hh as f32)
+    }
+
+    fn picker_press(&mut self, pt: Point) {
+        let lay = self.picker_layout();
+        let Some(picker) = self.color_picker.as_mut() else {
+            return;
+        };
+        let Some(hit) = lay.hit(pt) else {
+            return;
+        };
+        match picker.press(hit, pt, &lay) {
+            PickerAction::Accept => self.accept_picker(),
+            PickerAction::Cancel => self.close_picker(),
+            PickerAction::Continue => self.dirty = true,
+        }
+    }
+
+    fn accept_picker(&mut self) {
+        let Some(picker) = self.color_picker.take() else {
+            return;
+        };
+        if let Some(tool) = self.annot.option_tool().filter(|t| *t != Tool::Select) {
+            let c = picker.current;
+            self.annot.set_style_value(tool, |s| s.color = c);
+            crate::logutil::log(&format!("custom color {}", c.hex()));
+        }
+        if self.annotating {
+            self.relayout_tb();
+        }
+        self.persist_needed = true;
+        self.dirty = true;
+    }
+
+    fn close_picker(&mut self) {
+        if self.color_picker.take().is_some() {
+            crate::logutil::log("color picker cancel");
+            self.dirty = true;
+        }
+    }
+
     pub fn handle(&mut self, event: &WindowEvent) {
         if self.click_through {
+            return;
+        }
+        if self.color_picker.is_some() {
+            match event {
+                WindowEvent::CursorMoved { position, .. } => {
+                    let p = Point::new(position.x as f32, position.y as f32);
+                    self.last_cursor = p;
+                    let lay = self.picker_layout();
+                    if let Some(picker) = self.color_picker.as_mut() {
+                        if picker.drag.is_some() {
+                            picker.drag_to(p, &lay);
+                            self.dirty = true;
+                        }
+                    }
+                }
+                WindowEvent::MouseInput {
+                    state,
+                    button: MouseButton::Left,
+                    ..
+                } => {
+                    if *state == ElementState::Pressed {
+                        self.picker_press(self.last_cursor);
+                    } else if let Some(p) = self.color_picker.as_mut() {
+                        p.release();
+                    }
+                }
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state == ElementState::Pressed =>
+                {
+                    match &event.logical_key {
+                        Key::Named(NamedKey::Escape) => self.close_picker(),
+                        Key::Named(NamedKey::Enter) => self.accept_picker(),
+                        _ => {}
+                    }
+                }
+                WindowEvent::RedrawRequested => self.redraw(),
+                WindowEvent::CloseRequested => self.close(),
+                _ => {}
+            }
             return;
         }
         match event {
@@ -992,6 +1081,9 @@ impl PinWin {
                     stroke_rect(&mut pm, hr, Rgba::WHITE, 1.0);
                 }
             }
+        }
+        if let Some(picker) = &self.color_picker {
+            paint_color_picker(&mut pm, ww, hh, picker);
         }
         if let Some(t) = &self.toast {
             crate::draw::paint_toast(&mut pm, t, ww, hh);

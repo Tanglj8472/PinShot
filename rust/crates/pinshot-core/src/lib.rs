@@ -4,6 +4,7 @@
 
 pub mod annotation;
 pub mod color;
+pub mod colorpicker;
 pub mod confirm;
 pub mod config;
 pub mod font;
@@ -25,8 +26,11 @@ pub mod wheel;
 
 pub use annotation::{Annotator, DrawMode, Effect, LineStyleKind, Shape, Style, Tool, UndoStack};
 pub use confirm::{confirm_abort_layout, ConfirmAbortHit, ConfirmAbortLayout};
+pub use colorpicker::{
+    color_picker_layout, ColorPicker, ColorPickerLayout, PickerAction, PickerHit,
+};
 pub use wheel::WheelGate;
-pub use color::{parse_color_text, palette_colors, Rgba, PALETTE};
+pub use color::{hsv_to_rgb, parse_color_text, palette_colors, rgb_to_hsv, Rgba, PALETTE};
 pub use config::{config_dir, config_path, data_dir, Config, ConfigError};
 pub use geom::{hover_rect, phys_to_logical, Handle, Point, Rect};
 pub use groups::{label as group_label, DEFAULT_GROUP};
