@@ -5,9 +5,14 @@
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    #[cfg(windows)]
     if args.iter().any(|a| a == "--settings-window") {
         pinshot::run_preferences();
+        return;
+    }
+    if let Some(i) = args.iter().position(|a| a == "--ocr-window") {
+        let path = args.get(i + 1).cloned().unwrap_or_default();
+        let translate = args.iter().any(|a| a == "--ocr-translate");
+        pinshot::run_ocr_window(&path, translate);
         return;
     }
     if args.iter().any(|a| a == "--version" || a == "-V") {

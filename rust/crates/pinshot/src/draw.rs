@@ -749,8 +749,8 @@ impl OverlayFront {
         if let Some(ed) = &annot.text_edit {
             if let Some(r) = annot.text_edit_rect() {
                 fill_rect(&mut self.frame, r, Rgba::rgba(255, 255, 255, 90));
-                stroke_rect(&mut self.frame, r, ed_style_color(annot), 1.0);
-                let st = annot.style(Tool::Text);
+                let st = annot.text_edit_style();
+                stroke_rect(&mut self.frame, r, st.color, 1.0);
                 pinshot_core::font::blit_pixmap_ex(
                     &mut self.frame,
                     &ed.text,
@@ -763,19 +763,15 @@ impl OverlayFront {
                     st.bold,
                     st.italic,
                 );
-                let caret_x = r.x
-                    + 2.0
-                    + pinshot_core::font::measure(
-                        &ed.text,
-                        annot.style(Tool::Text).font_size.max(8) as f32,
-                    )
-                    .0;
-                stroke_rect(
-                    &mut self.frame,
-                    Rect::new(caret_x, r.y + 2.0, 1.0, r.h - 4.0),
-                    annot.style(Tool::Text).color,
-                    1.0,
-                );
+                if annot.caret_visible() {
+                    let caret_x = r.x + 2.0 + annot.caret_x();
+                    stroke_rect(
+                        &mut self.frame,
+                        Rect::new(caret_x, r.y + 2.0, 1.0, r.h - 4.0),
+                        st.color,
+                        1.0,
+                    );
+                }
                 chrome.push(r.inflated(2.0));
             }
         }
@@ -820,10 +816,6 @@ impl OverlayFront {
         }
         let _ = hwnd;
     }
-}
-
-fn ed_style_color(annot: &Annotator) -> Rgba {
-    annot.style(Tool::Text).color
 }
 
 fn fill_px(pm: &mut Pixmap, x: i32, y: i32, w: i32, h: i32, c: Rgba) {

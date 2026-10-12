@@ -1,14 +1,18 @@
-//! Download PP-OCRv5 ONNX models; run them when built with `--features ocr`.
+//! Download PP-OCRv5 ONNX models; run RapidOCR-style det/cls/rec.
 
 use std::fs;
 use std::io::Read;
 use std::path::Path;
 
 use pinshot_core::config::data_dir;
-use pinshot_core::ocr::{ctc_greedy, join_lines, load_keys, model_dir, ModelPaths};
+use pinshot_core::ocr::{ctc_greedy, db_boxes, join_lines, load_keys, model_dir, ModelPaths, TextBox};
 use pinshot_core::raster::Raster;
 
 pub fn recognize(image: &Raster) -> Result<String, String> {
+    crate::logutil::log(&format!(
+        "ocr recognize {}x{}",
+        image.width, image.height
+    ));
     let paths = ensure_models()?;
     infer(image, &paths)
 }
@@ -21,11 +25,11 @@ pub fn ensure_models() -> Result<ModelPaths, String> {
         copy_if_present(Path::new(&bundled), &paths);
     }
     if !paths.ready() {
-        for (url, dest) in paths.downloads() {
+        for (urls, dest) in paths.downloads() {
             if dest.is_file() {
                 continue;
             }
-            download(url, &dest)?;
+            download_first(&urls, &dest)?;
         }
     }
     if !paths.ready() {
@@ -39,6 +43,7 @@ fn copy_if_present(src: &Path, dest: &ModelPaths) {
         (src.join(dest.det.file_name().unwrap_or_default()), &dest.det),
         (src.join(dest.rec.file_name().unwrap_or_default()), &dest.rec),
         (src.join(dest.keys.file_name().unwrap_or_default()), &dest.keys),
+        (src.join(dest.cls.file_name().unwrap_or_default()), &dest.cls),
     ] {
         if from.is_file() && !to.is_file() {
             let _ = fs::copy(from, to);
@@ -46,9 +51,24 @@ fn copy_if_present(src: &Path, dest: &ModelPaths) {
     }
 }
 
+fn download_first(urls: &[&str], dest: &Path) -> Result<(), String> {
+    let mut last = "no urls".to_string();
+    for url in urls {
+        match download(url, dest) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                crate::logutil::log(&format!("ocr download fail {url}: {e}"));
+                last = e;
+            }
+        }
+    }
+    Err(last)
+}
+
 fn download(url: &str, dest: &Path) -> Result<(), String> {
+    crate::logutil::log(&format!("ocr download {url}"));
     let resp = ureq::get(url)
-        .timeout(std::time::Duration::from_secs(120))
+        .timeout(std::time::Duration::from_secs(180))
         .call()
         .map_err(|e| format!("download {url}: {e}"))?;
     let mut bytes = Vec::new();
@@ -64,34 +84,69 @@ fn download(url: &str, dest: &Path) -> Result<(), String> {
     let tmp = dest.with_extension("part");
     fs::write(&tmp, &bytes).map_err(|e| e.to_string())?;
     fs::rename(&tmp, dest).map_err(|e| e.to_string())?;
+    crate::logutil::log(&format!("ocr saved {} ({} bytes)", dest.display(), bytes.len()));
     Ok(())
 }
 
-#[cfg(feature = "ocr")]
+#[cfg(any(feature = "ocr", unix))]
 fn infer(image: &Raster, paths: &ModelPaths) -> Result<String, String> {
     use ort::session::Session;
 
+    if image.width < 8 || image.height < 8 {
+        return Err("image too small for OCR".into());
+    }
     let mut rec = Session::builder()
         .map_err(|e| e.to_string())?
         .commit_from_file(&paths.rec)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("rec model: {e}"))?;
     let keys = load_keys(&fs::read_to_string(&paths.keys).map_err(|e| e.to_string())?);
     if keys.is_empty() {
         return Err("empty OCR alphabet".into());
     }
+    let mut cls = if paths.cls.is_file() {
+        Session::builder()
+            .ok()
+            .and_then(|b| b.commit_from_file(&paths.cls).ok())
+    } else {
+        None
+    };
+    let boxes = detect_boxes(image, paths).unwrap_or_else(|e| {
+        crate::logutil::log(&format!("ocr det fallback: {e}"));
+        vec![TextBox {
+            x: 0,
+            y: 0,
+            w: image.width,
+            h: image.height,
+            score: 1.0,
+        }]
+    });
+    crate::logutil::log(&format!("ocr boxes {}", boxes.len()));
     let mut lines = Vec::new();
-    let boxes = detect_boxes(image, paths).unwrap_or_else(|_| vec![(0, 0, image.width, image.height)]);
-    for (x, y, w, h) in boxes {
-        let crop = image.crop(pinshot_core::geom::Rect::from_i32(
-            x as i32, y as i32, w as i32, h as i32,
+    for b in boxes {
+        let mut crop = image.crop(pinshot_core::geom::Rect::from_i32(
+            b.x as i32,
+            b.y as i32,
+            b.w as i32,
+            b.h as i32,
         ));
         if crop.width < 8 || crop.height < 8 {
             continue;
         }
-        if let Ok(text) = rec_line(&mut rec, &crop, &keys) {
-            if !text.is_empty() {
+        if crop.height as f32 > crop.width as f32 * 1.5 {
+            crop = crop.rotate90(1);
+        }
+        if let Some(session) = cls.as_mut() {
+            if cls_upside_down(session, &crop).unwrap_or(false) {
+                crop = crop.rotate90(2);
+            }
+        }
+        match rec_line(&mut rec, &crop, &keys) {
+            Ok(text) if !text.trim().is_empty() => {
+                crate::logutil::log(&format!("ocr line {:?}", text));
                 lines.push(text);
             }
+            Ok(_) => {}
+            Err(e) => crate::logutil::log(&format!("ocr rec: {e}")),
         }
     }
     let joined = join_lines(&lines);
@@ -102,113 +157,135 @@ fn infer(image: &Raster, paths: &ModelPaths) -> Result<String, String> {
     }
 }
 
-#[cfg(feature = "ocr")]
-fn detect_boxes(image: &Raster, paths: &ModelPaths) -> Result<Vec<(u32, u32, u32, u32)>, String> {
+#[cfg(any(feature = "ocr", unix))]
+fn detect_boxes(image: &Raster, paths: &ModelPaths) -> Result<Vec<TextBox>, String> {
     use ort::session::Session;
     let mut det = Session::builder()
         .map_err(|e| e.to_string())?
         .commit_from_file(&paths.det)
+        .map_err(|e| format!("det model: {e}"))?;
+    let packed = pack_det(image, 960)?;
+    let outputs = det
+        .run(ort::inputs![packed.tensor])
         .map_err(|e| e.to_string())?;
-    let (tensor, nw, nh, scale) = pack_nchw(image, 960, false)?;
-    let outputs = det.run(ort::inputs![tensor]).map_err(|e| e.to_string())?;
     if outputs.len() == 0 {
         return Err("det empty".into());
     }
-    let (_shape, data) = outputs[0]
+    let (shape, data) = outputs[0]
         .try_extract_tensor::<f32>()
         .map_err(|e| e.to_string())?;
-    let mut row_on = vec![false; nh as usize];
-    let hw = (nw * nh) as usize;
+    let dims: Vec<i64> = shape.iter().copied().collect();
+    let (oh, ow) = match dims.as_slice() {
+        [_, _, h, w] => (*h as u32, *w as u32),
+        [_, h, w] => (*h as u32, *w as u32),
+        [h, w] => (*h as u32, *w as u32),
+        _ => (packed.nh, packed.nw),
+    };
+    let hw = (ow * oh) as usize;
     if data.len() < hw {
-        return Err("det output short".into());
+        return Err(format!("det output short {} < {hw}", data.len()));
     }
-    for y in 0..nh as usize {
-        let mut s = 0.0f32;
-        for x in 0..nw as usize {
-            s += data[y * nw as usize + x];
-        }
-        row_on[y] = (s / nw as f32) > 0.3;
-    }
-    let mut boxes = Vec::new();
-    let mut y = 0;
-    while y < row_on.len() {
-        if !row_on[y] {
-            y += 1;
-            continue;
-        }
-        let y0 = y;
-        while y < row_on.len() && row_on[y] {
-            y += 1;
-        }
-        let src_y0 = ((y0 as f32) / scale).floor().max(0.0) as u32;
-        let src_y1 = ((y as f32) / scale).ceil().min(image.height as f32) as u32;
-        if src_y1 > src_y0 + 4 {
-            boxes.push((0, src_y0, image.width, src_y1 - src_y0));
-        }
-    }
+    // Use the last channel if the model emits (N, C, H, W) with C>1.
+    let offset = data.len() - hw;
+    let boxes = db_boxes(&data[offset..], ow, oh, image.width, image.height, packed.scale);
     if boxes.is_empty() {
-        Err("no text bands".into())
+        Err("no text boxes".into())
     } else {
         Ok(boxes)
     }
 }
 
-#[cfg(feature = "ocr")]
-fn pack_nchw(image: &Raster, max_side: u32, gray: bool) -> Result<(ort::value::Value, u32, u32, f32), String> {
-    let scale = (max_side as f32 / image.width.max(image.height).max(1) as f32).min(1.0);
-    let nw = ((image.width as f32 * scale) as u32).max(32) / 32 * 32;
-    let nh = if gray {
-        48
-    } else {
-        ((image.height as f32 * scale) as u32).max(32) / 32 * 32
-    };
-    let nw = if gray {
-        (((image.width as f32) * (48.0 / image.height.max(1) as f32)).round() as u32)
-            .clamp(16, 640)
-            / 8
-            * 8
-    } else {
-        nw
-    };
-    let resized = image.scale_nn(nw, nh);
+#[cfg(any(feature = "ocr", unix))]
+struct Packed {
+    tensor: ort::value::Value,
+    nw: u32,
+    nh: u32,
+    scale: f32,
+}
+
+#[cfg(any(feature = "ocr", unix))]
+fn pack_det(image: &Raster, max_side: u32) -> Result<Packed, String> {
+    let max_wh = image.width.max(image.height).max(1);
+    let scale = (max_side as f32 / max_wh as f32).min(1.0);
+    let rw = ((image.width as f32 * scale).round() as u32).max(1);
+    let rh = ((image.height as f32 * scale).round() as u32).max(1);
+    let nw = rw.div_ceil(32) * 32;
+    let nh = rh.div_ceil(32) * 32;
+    let resized = image.scale_nn(rw, rh);
+    let mut canvas = Raster::new(nw, nh);
+    canvas.fill(pinshot_core::Rgba::BLACK);
+    for y in 0..rh {
+        for x in 0..rw {
+            if let Some(c) = resized.get(x as i32, y as i32) {
+                canvas.set(x as i32, y as i32, c);
+            }
+        }
+    }
+    let tensor = nchw_imagenet(&canvas)?;
+    Ok(Packed {
+        tensor,
+        nw,
+        nh,
+        scale,
+    })
+}
+
+#[cfg(any(feature = "ocr", unix))]
+fn nchw_imagenet(image: &Raster) -> Result<ort::value::Value, String> {
+    let nw = image.width;
+    let nh = image.height;
     let mut chw = vec![0f32; (3 * nw * nh) as usize];
+    let mean = [0.485f32, 0.456, 0.406];
+    let std = [0.229f32, 0.224, 0.225];
+    let plane = (nw * nh) as usize;
     for y in 0..nh {
         for x in 0..nw {
-            let c = resized
-                .get(x as i32, y as i32)
-                .unwrap_or(if gray {
-                    pinshot_core::Rgba::WHITE
-                } else {
-                    pinshot_core::Rgba::BLACK
-                });
+            let c = image.get(x as i32, y as i32).unwrap_or(pinshot_core::Rgba::BLACK);
             let i = (y * nw + x) as usize;
-            if gray {
-                let v = (0.299 * c.r as f32 + 0.587 * c.g as f32 + 0.114 * c.b as f32) / 255.0;
-                let n = (v - 0.5) / 0.5;
-                chw[i] = n;
-                chw[(nw * nh) as usize + i] = n;
-                chw[(2 * nw * nh) as usize + i] = n;
-            } else {
-                let mean = [0.485f32, 0.456, 0.406];
-                let std = [0.229f32, 0.224, 0.225];
-                chw[i] = (c.r as f32 / 255.0 - mean[0]) / std[0];
-                chw[(nw * nh) as usize + i] = (c.g as f32 / 255.0 - mean[1]) / std[1];
-                chw[(2 * nw * nh) as usize + i] = (c.b as f32 / 255.0 - mean[2]) / std[2];
-            }
+            chw[i] = (c.r as f32 / 255.0 - mean[0]) / std[0];
+            chw[plane + i] = (c.g as f32 / 255.0 - mean[1]) / std[1];
+            chw[2 * plane + i] = (c.b as f32 / 255.0 - mean[2]) / std[2];
         }
     }
     let t = ort::value::Tensor::from_array((vec![1i64, 3, nh as i64, nw as i64], chw))
         .map_err(|e| e.to_string())?;
-    Ok((t.into(), nw, nh, scale))
+    Ok(t.into())
 }
 
-#[cfg(feature = "ocr")]
+#[cfg(any(feature = "ocr", unix))]
+fn pack_rec(crop: &Raster) -> Result<ort::value::Value, String> {
+    let h = crop.height.max(1) as f32;
+    let mut nw = ((crop.width as f32) * (48.0 / h)).round() as u32;
+    nw = nw.clamp(16, 320) / 8 * 8;
+    let nh = 48u32;
+    let resized = crop.scale_nn(nw, nh);
+    let mut chw = vec![0f32; (3 * nw * nh) as usize];
+    let plane = (nw * nh) as usize;
+    for y in 0..nh {
+        for x in 0..nw {
+            let c = resized
+                .get(x as i32, y as i32)
+                .unwrap_or(pinshot_core::Rgba::WHITE);
+            let v = (0.299 * c.r as f32 + 0.587 * c.g as f32 + 0.114 * c.b as f32) / 255.0;
+            let n = (v - 0.5) / 0.5;
+            let i = (y * nw + x) as usize;
+            chw[i] = n;
+            chw[plane + i] = n;
+            chw[2 * plane + i] = n;
+        }
+    }
+    let t = ort::value::Tensor::from_array((vec![1i64, 3, nh as i64, nw as i64], chw))
+        .map_err(|e| e.to_string())?;
+    Ok(t.into())
+}
+
+#[cfg(any(feature = "ocr", unix))]
 fn rec_line(
     session: &mut ort::session::Session,
     crop: &Raster,
     keys: &[String],
 ) -> Result<String, String> {
-    let (t, _w, _h, _) = pack_nchw(crop, 640, true)?;
+    let t = pack_rec(crop)?;
     let outputs = session.run(ort::inputs![t]).map_err(|e| e.to_string())?;
     if outputs.len() == 0 {
         return Err("rec empty".into());
@@ -240,7 +317,24 @@ fn rec_line(
     Ok(ctc_greedy(&idx, keys))
 }
 
-#[cfg(not(feature = "ocr"))]
+#[cfg(any(feature = "ocr", unix))]
+fn cls_upside_down(session: &mut ort::session::Session, crop: &Raster) -> Result<bool, String> {
+    let t = pack_rec(crop)?;
+    let outputs = session.run(ort::inputs![t]).map_err(|e| e.to_string())?;
+    if outputs.len() == 0 {
+        return Ok(false);
+    }
+    let (_shape, data) = outputs[0]
+        .try_extract_tensor::<f32>()
+        .map_err(|e| e.to_string())?;
+    if data.len() < 2 {
+        return Ok(false);
+    }
+    // Typical PP-OCR cls: [0° , 180°]. Rotate when 180° wins with margin.
+    Ok(data[1] > data[0] && data[1] > 0.9)
+}
+
+#[cfg(not(any(feature = "ocr", unix)))]
 fn infer(_image: &Raster, _paths: &ModelPaths) -> Result<String, String> {
     Err("OCR not available in this build. Use pinshot-ocr.exe.".into())
 }

@@ -683,6 +683,24 @@ pub fn measure(text: &str, px: f32) -> (f32, f32) {
     measure_picked(text, px, |_| font())
 }
 
+/// Annotation text: family face when it has the glyph, else the chrome CJK/Latin stack
+/// (Snipaste: default text annotation uses the interface font).
+fn pick_annot(ch: char, family: &str, bold: bool, italic: bool) -> Option<&'static fontdue::Font> {
+    if family.trim().is_empty() && !bold && !italic {
+        return pick_chrome(ch);
+    }
+    if let Some(f) = font_ex(family, bold, italic) {
+        if has_glyph(f, ch) {
+            return Some(f);
+        }
+    }
+    pick_chrome(ch).or_else(font)
+}
+
+pub fn measure_ex(text: &str, px: f32, family: &str, bold: bool, italic: bool) -> (f32, f32) {
+    measure_picked(text, px, |ch| pick_annot(ch, family, bold, italic))
+}
+
 /// Layout size for chrome labels (toolbar chips, menus, toasts, prefs).
 pub fn measure_chrome(text: &str, px: f32) -> (f32, f32) {
     measure_picked(text, px, pick_chrome)
@@ -886,52 +904,44 @@ pub fn blit_pixmap_ex(
         return;
     }
     let path = find_family_file(family, bold, italic);
-    let Some(font) = font_ex(family, bold, italic).or_else(font) else {
-        return;
-    };
     let name = path
         .as_ref()
         .map(|p| p.to_string_lossy().to_ascii_lowercase())
         .unwrap_or_default();
     let fake_bold = bold && !file_looks_bold(&name);
     let fake_italic = italic && !file_looks_italic(&name);
-    let (tw, th) = measure(text, px);
+    const SS: i32 = 2;
+    let px2 = (px.max(8.0) * SS as f32).max(8.0);
+    let (tw, th) = measure_ex(text, px2, family, bold, italic);
     let extra = if fake_italic {
-        (px * 0.4) as u32 + 8
+        (px2 * 0.4) as u32 + 16
     } else {
-        8
+        16
     };
     let tw = (tw.ceil() as u32 + extra).max(1);
-    let th = (th.ceil() as u32 + 8).max(1);
+    let th = (th.ceil() as u32 + 16).max(1);
     let mut rgba = vec![0u8; tw as usize * th as usize * 4];
-    blit_rgba_font(
-        font,
+    blit_rgba_picked(
+        |ch| pick_annot(ch, family, bold, italic),
         &mut rgba,
         tw,
         tw,
         th,
         text,
-        2.0,
-        2.0,
-        px,
+        4.0,
+        4.0,
+        px2,
         color,
         outline,
         fake_bold,
         fake_italic,
     );
-    let Some(mut src) = Pixmap::new(tw, th) else {
+    let dw = tw.div_ceil(2);
+    let dh = th.div_ceil(2);
+    let Some(mut src) = Pixmap::new(dw, dh) else {
         return;
     };
-    for (dst, s) in src.pixels_mut().iter_mut().zip(rgba.chunks_exact(4)) {
-        let a = s[3];
-        *dst = PremultipliedColorU8::from_rgba(
-            ((s[0] as u16 * a as u16) / 255) as u8,
-            ((s[1] as u16 * a as u16) / 255) as u8,
-            ((s[2] as u16 * a as u16) / 255) as u8,
-            a,
-        )
-        .unwrap_or(PremultipliedColorU8::TRANSPARENT);
-    }
+    downsample_box2(&rgba, tw, th, src.pixels_mut(), dw, dh);
     pm.draw_pixmap(
         x as i32 - 2,
         y as i32 - 2,
@@ -940,6 +950,51 @@ pub fn blit_pixmap_ex(
         tiny_skia::Transform::identity(),
         None,
     );
+}
+
+fn downsample_box2(
+    src: &[u8],
+    sw: u32,
+    sh: u32,
+    dst: &mut [PremultipliedColorU8],
+    dw: u32,
+    dh: u32,
+) {
+    for y in 0..dh {
+        for x in 0..dw {
+            let mut sr = 0u32;
+            let mut sg = 0u32;
+            let mut sb = 0u32;
+            let mut sa = 0u32;
+            for oy in 0..2 {
+                for ox in 0..2 {
+                    let sx = (x * 2 + ox).min(sw.saturating_sub(1));
+                    let sy = (y * 2 + oy).min(sh.saturating_sub(1));
+                    let i = ((sy * sw + sx) * 4) as usize;
+                    if i + 3 >= src.len() {
+                        continue;
+                    }
+                    let a = src[i + 3] as u32;
+                    sr += src[i] as u32 * a;
+                    sg += src[i + 1] as u32 * a;
+                    sb += src[i + 2] as u32 * a;
+                    sa += a;
+                }
+            }
+            let idx = (y * dw + x) as usize;
+            if sa == 0 {
+                dst[idx] = PremultipliedColorU8::TRANSPARENT;
+                continue;
+            }
+            dst[idx] = PremultipliedColorU8::from_rgba(
+                (sr / 4 / 255).min(255) as u8,
+                (sg / 4 / 255).min(255) as u8,
+                (sb / 4 / 255).min(255) as u8,
+                (sa / 4).min(255) as u8,
+            )
+            .unwrap_or(PremultipliedColorU8::TRANSPARENT);
+        }
+    }
 }
 
 pub fn blit_raster(
@@ -1265,5 +1320,31 @@ mod tests {
         img.fill(Rgba::WHITE);
         blit_raster(&mut img, "Hi", 4.0, 6.0, 18.0, Rgba::rgb(20, 20, 20), false);
         assert!(img.pixels.iter().any(|&p| p > 0 && p < 255));
+    }
+
+    #[test]
+    fn annot_default_paints_cjk_via_interface_font() {
+        let (w, h) = measure_ex("你好Pin", 22.0, "", false, false);
+        assert!(w > 40.0, "CJK+Latin width {w}");
+        assert!(h >= 22.0);
+        let mut pm = Pixmap::new(220, 64).unwrap();
+        blit_pixmap_ex(
+            &mut pm,
+            "你好",
+            4.0,
+            4.0,
+            22.0,
+            Rgba::RED,
+            false,
+            "",
+            false,
+            false,
+        );
+        assert!(
+            pm.pixels().iter().any(|p| p.alpha() > 16),
+            "default family must paint CJK"
+        );
+        let sans_w = measure_ex("你好", 22.0, "Sans", false, false).0;
+        assert!(sans_w > 24.0, "Sans CJK falls back, width {sans_w}");
     }
 }

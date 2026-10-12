@@ -58,6 +58,10 @@ pub fn write_text(s: &str) -> Result<(), String> {
     r
 }
 
+pub fn read_text() -> Result<String, String> {
+    with_owner(|cb| cb.get_text().map_err(|e| e.to_string()))
+}
+
 pub fn read_best() -> ClipContent {
     if let Ok(img) = with_owner(|cb| cb.get_image().map_err(|e| e.to_string())) {
         if let Some(r) = Raster::from_rgba(

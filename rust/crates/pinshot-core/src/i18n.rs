@@ -140,6 +140,7 @@ const PAIRS: &[(&str, &str)] = &[
     ("No snip history", "没有截图历史"),
     ("OK", "确定"),
     ("Run at login", "登录时启动"),
+    ("Start PinShot when you log in", "登录时启动 PinShot"),
     ("Snip delay:", "截图延时："),
     ("None (0 s)", "无（0 秒）"),
     ("Language:", "语言："),

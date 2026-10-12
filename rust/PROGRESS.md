@@ -2,16 +2,23 @@
 
 对照源：`main` 上的 Python/PySide6 PinShot。Rust 在 `rust/`，分支 `rust`。Python 源码不改。
 
-最后更新：2026-10-12（chrome 文字抗锯齿：芯片/菜单中文不再锯齿）。
+文字工具 / 设置窗 / OCR 的**交互与版式**对照 Snipaste 公开文档
+（[docs.snipaste.com](https://docs.snipaste.com/) Getting Started / Key Bindings / FAQ），
+洁净室实现，不拆二进制、不抄资源。Snipaste 无 OCR 结果窗时保留 PinShot 功能，UX 跟设置窗同一套 egui + CJK。
+
+最后更新：2026-10-12（文本 / 设置 / OCR 对齐 Snipaste 公开行为）。
 
 ---
 
 ## 当前进度
 
-HEAD 在本轮 chrome 文字 AA 修复。工具栏芯片「描边 / 默认 / 等宽」和 B/I 不再发虚、发硬：透明缓冲改为 straight-alpha source-over（不再把覆盖率糊到黑底再盖成不透明），去掉 `cov < 8` 切断，chrome 2× 栅格 + 2×2 盒滤。UI 标签走 Noto Sans CJK SC（TTC index 2）+ Liberation Sans，标注家族 B/I/Serif/Mono 未动。Python 不改。
+HEAD 在本轮 Snipaste 对齐：文字标注（点击落字、IME、光标、滚轮改号、右键结束、Esc 只结束文字）、设置窗改 egui 网格、OCR 走 PP-OCRv5 DBNet 并在独立 `--ocr-window` 进程里出结果。Python 不改。
 
 | 面 | 状态 |
 |---|---|
+| 文字标注（对照 Snipaste） | **已修**：点击落字；CJK IME（整段编辑 ungrab）；闪烁 caret；选中文字工具再点可回编；滚轮/`1`/`2`/`[`/`]` 改号；拖角缩放；右键结束；Esc 取消文字不退出截图；中键/Ctrl+V 粘贴；默认无描边、界面字体 |
+| 设置窗（对照 Snipaste 版式） | **已修**：`--settings-window` egui 网格（标签列 168、16×10 间距、Apply/OK/Cancel）；CJK Noto/文泉驿/雅黑；不再在 GTK 线程上跑 eframe |
+| OCR（Snipaste 无结果窗） | **已修**：Linux 默认 ort + PP-OCRv5 det/cls/rec；`--ocr-window` 结果窗（可编辑/复制/翻译）；Windows `pinshot-ocr.exe` 仍走 `--features ocr` |
 | chrome 文字（芯片 / 菜单 / toast / prefs） | **已修**：平滑 AA；CJK 优先 Noto/Source Han/Droid/文泉驿，拉丁 Liberation |
 | 标注工具栏 / 子面板视觉 | 上轮：近白底、6px 圆角、阴影、分隔线、选中 `#3D8FD1` 描边；中文芯片 12px |
 | 图钉右键菜单 / 新分组提示 | 本轮：浅色主题、inset 悬停、勾选刻度、输入框圆角蓝边 |
@@ -28,7 +35,7 @@ HEAD 在本轮 chrome 文字 AA 修复。工具栏芯片「描边 / 默认 / 等
 | Windows 实机 | **未关**：Linux-first 改动后尚未在真 Windows 上复测（CI 绿） |
 | AT-SPI / IME / 合成器 | 限制同前，见「已知限制」 |
 
-`PARITY.md`：done 111 / partial 1 / missing 0 / impossible 6（合计 118）。剩余 partial：RapidOCR 条带检测（非完整 DBNet）。
+`PARITY.md`：done 115 / partial 0 / missing 0 / impossible 6（合计 121）。文字/设置/OCR 的 UX 对照 Snipaste 公开文档。
 
 ---
 
@@ -38,8 +45,8 @@ HEAD 在本轮 chrome 文字 AA 修复。工具栏芯片「描边 / 默认 / 等
 |---|---|
 | 语言/运行时 | 用 Rust 重写宿主 + 可移植核心，去掉 PySide6/Qt |
 | 平台顺序 | **先 Linux X11**（Xfce / xfwm4，1920×1200；无托盘则 4 按钮 fallback），再 Windows |
-| 行为 | 与 Python PinShot **1:1 对齐**（快捷键、菜单、标注、会话、热键、i18n），对照表见 [`PARITY.md`](PARITY.md) |
-| 体积 | 单文件 `pinshot`；OCR 走 `--features ocr` / 独立 `pinshot-ocr`，默认包不绑模型 |
+| 行为 | 功能与 Python PinShot 对齐（[`PARITY.md`](PARITY.md)）；文字 / 设置 / OCR 的交互与版式对照 [Snipaste 公开文档](https://docs.snipaste.com/) |
+| 体积 | 单文件 `pinshot`；Linux 默认链 ort（模型仍按需下载）；Windows OCR 走 `--features ocr` / `pinshot-ocr.exe` |
 | 架构 | `pinshot-core` 可移植；`pinshot` 经 `native` 分叉 `linux_x11` / `windows` |
 
 非目标：纯 Wayland（无 XWayland）、macOS、改 Python。
@@ -50,7 +57,17 @@ HEAD 在本轮 chrome 文字 AA 修复。工具栏芯片「描边 / 默认 / 等
 
 时间按仓库提交顺序（均为 `rust` 线，除非注明）。
 
-### UI chrome 文字 AA（本轮）
+### 文本 / 设置 / OCR 对齐 Snipaste（本轮）
+
+公开对照：[Getting Started](https://docs.snipaste.com/getting-started)（右键结束当前形状、拖角缩放文字）、[Key Bindings](https://docs.snipaste.com/key-bindings)（编辑时滚轮/`1`/`2`/`[`/`]` 改宽）、[FAQ #9](https://docs.snipaste.com/faq)（右键结束文字输入）。Esc 结束文字而不是截图、中键粘贴、默认无描边、界面字体、选中文字工具再点可回编，来自 Snipaste changelog / 可见行为。洁净室：不 RE、不抄资源。
+
+| 项 | 原先坏在哪 | 改了什么 |
+|---|---|---|
+| 文字 | Linux `XGrabKeyboard` 吃掉 IME；caret/度量忽略 CJK；文字工具会偷选别的形状；右键清掉全部标注；默认描边；字号近似 `0.6*chars` | 编辑全程 ungrab；`insert_str`/IME/粘贴；闪烁 caret；点已有文字回编且保持 Text 工具；右键 `finish()`；默认 `outline=false` `font_size=22`；`measure_ex` + 2× AA + CJK 回退 |
+| 设置 | Linux 自制 `prefs_win` 乱；GTK 初始化后再起 eframe 静默失败 | 双平台 spawn `--settings-window`；egui Grid；CJK `ui_font`；Apply/OK/Cancel；`config.toml` 全保留 |
+| OCR | Linux 默认无 `ocr` feature；条带检测非 DBNet；结果窗同样踩 GTK+eframe | unix 始终链 ort；DBNet + letterbox + rec H=48 + cls 180°；`--ocr-window` 独立进程 |
+
+### UI chrome 文字 AA（上轮）
 
 | SHA | 内容 |
 |---|---|

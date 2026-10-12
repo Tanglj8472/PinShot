@@ -5,6 +5,14 @@ Statuses: **done** / **partial** / **missing** / **impossible**.
 
 Counts at the bottom. Python sources are not modified.
 
+**UX reference for text / settings / OCR (2026-10-12):** Snipaste public docs
+([Getting Started](https://docs.snipaste.com/getting-started),
+[Key Bindings](https://docs.snipaste.com/key-bindings),
+[FAQ](https://docs.snipaste.com/faq)), not the Python PinShot UI.
+Clean-room only — no binary analysis, no copied assets. Snipaste has no
+OCR result window (PRO copies to clipboard); PinShot keeps its result
+window but styles it like Snipaste prefs (egui, CJK, always-on-top).
+
 ## Platform layer
 
 | Python | Rust | Status | Notes |
@@ -88,7 +96,7 @@ Counts at the bottom. Python sources are not modified.
 | `adjust_width` + 0.5s undo merge | done |
 | `wheel` trunc(angle/120) | `Annotator::wheel` | done |
 | `start_text` / `commit_text` / `begin_edit_text` | done + painted dashed editor | done |
-| `key` Esc/Enter/IME | overlay + pin + `Ime::Commit` + Linux `XGrabKeyboard` | done | Cached keymap; Latin stays grabbed; IME preedit pauses; Esc join-ungrabs so F1 is not eaten |
+| `key` Esc/Enter/IME | overlay + pin + `Ime::Commit` + Linux `XGrabKeyboard` | done | Text editor ungrabs the whole time (Snipaste field). Esc cancels text, not snip ([FAQ #9](https://docs.snipaste.com/faq) + changelog). Right-click finishes. Mid-click / Ctrl+V paste. `T` text tool. Wheel / `1` `2` `[` `]` size. Corner-drag scales glyphs. Re-edit when text tool selected. Default not outlined; interface font. |
 | `press` select-on-click, mosaic no-steal | done |
 | `_resize_selected` number/polyline/rect | done |
 | `_push_edit` / undo 50 / redo | `UndoStack` | done |
@@ -136,7 +144,7 @@ Counts at the bottom. Python sources are not modified.
 
 | Python | Rust | Status |
 |---|---|---|
-| `prefs.PrefsDialog` General/Hotkeys/Output + Advanced | `prefs.rs` egui (Win) / `prefs_win.rs` main-loop (Linux) | done |
+| `prefs.PrefsDialog` General/Hotkeys/Output + Advanced | `prefs.rs` egui `--settings-window` (Linux + Windows) | done | Snipaste-like landscape grid (label col 168, 16×10 spacing, Apply/OK/Cancel). CJK: Noto/Source Han/wqy Linux, YaHei Windows. `gtk::init` is not called in the helper (eframe on a GTK-inited thread failed silently). `prefs_win.rs` remains as in-process fallback. |
 | zh/en only, light/dark/system | done | Linux prefs/fallback repaint on Apply; system ≈ GTK_THEME |
 | Hotkey conflict detection | `hotkey::find_conflicts` | done |
 | Groups add/rename/remove | done |
@@ -156,7 +164,7 @@ Counts at the bottom. Python sources are not modified.
 
 | Python | Rust | Status |
 |---|---|---|
-| `translation.recognize` RapidOCR | `--features ocr` ort + PP-OCRv5 | partial | Band detector, not full DB |
+| `translation.recognize` RapidOCR | Linux always / `--features ocr` ort + PP-OCRv5 | done | DBNet det + LCNet cls + CTC rec. Models from RapidOCR PP-OCRv5 mirrors. Result window is PinShot-only (Snipaste PRO copies to clipboard); spawned as `--ocr-window` so eframe is not on the GTK thread. |
 | Edge `translatetext` | `translate.rs` | done |
 | `ResultWindow` above pins | Win32 EDIT / egui | done |
 | `selection_text.send_copy` | `result_win::send_ctrl_c` | done (Windows) / impossible (Linux; Python same) |
@@ -197,10 +205,10 @@ Rust config default `language = "zh_CN"` (Phase 1) vs Python QSettings default `
 
 | Status | Rows |
 |---|---|
-| done | 114 |
-| partial | 1 |
+| done | 115 |
+| partial | 0 |
 | missing | 0 |
 | impossible | 6 |
 | **total** | **121** |
 
-Remaining partial: RapidOCR band detector (full DBNet is large). Xvfb `:26` covered font chips + B/I/family paint diffs and pin-menu New/Rename typing (empty Enter ignored). Hands-on still wanted: OCR-above-pins restack, AT-SPI `{role}:{name}` on a live a11y bus, 3×3 hit feel vs geometry slop. Custom color is in-process (no zenity).
+OCR is DBNet (no remaining partial). Xvfb `:26` covered font chips + B/I/family paint diffs and pin-menu New/Rename typing (empty Enter ignored). Hands-on still wanted: OCR-above-pins restack, AT-SPI `{role}:{name}` on a live a11y bus, 3×3 hit feel vs geometry slop. Custom color is in-process (no zenity).

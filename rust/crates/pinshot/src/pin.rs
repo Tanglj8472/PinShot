@@ -25,7 +25,7 @@ use softbuffer::{Context, Surface};
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
-use winit::keyboard::{Key, NamedKey};
+use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
 
 #[cfg(windows)]
@@ -82,6 +82,7 @@ pub struct PinWin {
     pub can_shadow: bool,
     pub thumb: bool,
     color_picker: Option<ColorPicker>,
+    mods: ModifiersState,
 }
 
 impl PinWin {
@@ -143,6 +144,7 @@ impl PinWin {
             shadow: can_shadow,
             thumb: false,
             color_picker: None,
+            mods: ModifiersState::empty(),
         };
         pin.redraw();
         crate::logutil::log(&format!(
@@ -640,8 +642,22 @@ impl PinWin {
                     native::raise_on_top(&self.window);
                 }
                 if *button == MouseButton::Right && *state == ElementState::Pressed {
+                    if self.annotating && self.annot.right_click() {
+                        self.relayout_tb();
+                        self.dirty = true;
+                        return;
+                    }
                     self.popup_menu();
                     return;
+                }
+                if *button == MouseButton::Middle && *state == ElementState::Pressed {
+                    if self.annot.text_edit.is_some() {
+                        if let Ok(s) = crate::clipboard::read_text() {
+                            self.annot.insert_str(&s);
+                            self.dirty = true;
+                        }
+                        return;
+                    }
                 }
                 if *button != MouseButton::Left {
                     return;
@@ -710,10 +726,12 @@ impl PinWin {
                     self.set_scale_at(self.scale / 1.1, Some(self.last_cursor));
                 }
             }
+            WindowEvent::ModifiersChanged(m) => {
+                self.mods = m.state();
+            }
             WindowEvent::Ime(winit::event::Ime::Commit(s)) => {
-                for ch in s.chars() {
-                    self.annot.type_text(ch);
-                }
+                crate::logutil::log(&format!("pin text ime commit {:?}", s));
+                self.annot.insert_str(s);
                 self.dirty = true;
             }
             WindowEvent::Focused(true) => {
@@ -721,14 +739,44 @@ impl PinWin {
             }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
                 if self.annot.text_edit.is_some() {
+                    let ctrl = self.mods.control_key();
+                    let shift = self.mods.shift_key();
                     match &event.logical_key {
                         Key::Named(NamedKey::Escape) => self.annot.commit_text(true),
-                        Key::Named(NamedKey::Enter) => self.annot.commit_text(false),
+                        Key::Named(NamedKey::Enter) if shift => self.annot.type_text('\n'),
+                        Key::Named(NamedKey::Enter) => {
+                            if let Some(ed) = &self.annot.text_edit {
+                                crate::logutil::log(&format!("text commit {:?}", ed.text));
+                            }
+                            self.annot.commit_text(false);
+                        }
                         Key::Named(NamedKey::Backspace) => self.annot.type_text('\u{8}'),
+                        Key::Named(NamedKey::Delete) => self.annot.type_text('\u{7f}'),
+                        Key::Named(NamedKey::ArrowLeft) => self.annot.move_caret(-1),
+                        Key::Named(NamedKey::ArrowRight) => self.annot.move_caret(1),
+                        Key::Named(NamedKey::Home) => self.annot.move_caret(-2),
+                        Key::Named(NamedKey::End) => self.annot.move_caret(2),
+                        Key::Character(c) if c.as_str() == "v" && ctrl => {
+                            if let Ok(s) = crate::clipboard::read_text() {
+                                self.annot.insert_str(&s);
+                            }
+                        }
+                        Key::Character(c)
+                            if (c.as_str() == "1" || c.as_str() == "[") && !ctrl =>
+                        {
+                            self.annot.adjust_width(-1);
+                            self.relayout_tb();
+                        }
+                        Key::Character(c)
+                            if (c.as_str() == "2" || c.as_str() == "]") && !ctrl =>
+                        {
+                            self.annot.adjust_width(1);
+                            self.relayout_tb();
+                        }
                         _ => {
-                            if let Some(t) = event.text.as_deref() {
-                                for ch in t.chars() {
-                                    self.annot.type_text(ch);
+                            if !ctrl {
+                                if let Some(t) = event.text.as_deref() {
+                                    self.annot.insert_str(t);
                                 }
                             }
                         }
@@ -783,18 +831,20 @@ impl PinWin {
                         self.annot.set_tool(Some(Tool::Number));
                         self.relayout_tb();
                     }
-                    Key::Character(c) if c == "1" => {
+                    Key::Character(c) if c == "1" || c == "[" => {
                         if self.annotating && self.annot.tool.is_some() {
                             self.annot.adjust_width(-1);
-                        } else {
+                            self.relayout_tb();
+                        } else if c == "1" {
                             self.rotate(-1);
                         }
                         self.dirty = true;
                     }
-                    Key::Character(c) if c == "2" => {
+                    Key::Character(c) if c == "2" || c == "]" => {
                         if self.annotating && self.annot.tool.is_some() {
                             self.annot.adjust_width(1);
-                        } else {
+                            self.relayout_tb();
+                        } else if c == "2" {
                             self.rotate(1);
                         }
                         self.dirty = true;
@@ -1127,8 +1177,8 @@ impl PinWin {
                         rr,
                         pinshot_core::color::Rgba::rgba(255, 255, 255, 90),
                     );
-                    crate::draw::stroke_rect(&mut pm, rr, self.annot.style(Tool::Text).color, 1.0);
-                    let st = self.annot.style(Tool::Text);
+                    let st = self.annot.text_edit_style();
+                    crate::draw::stroke_rect(&mut pm, rr, st.color, 1.0);
                     pinshot_core::font::blit_pixmap_ex(
                         &mut pm,
                         &ed.text,
@@ -1141,6 +1191,15 @@ impl PinWin {
                         st.bold,
                         st.italic,
                     );
+                    if self.annot.caret_visible() {
+                        let caret_x = rr.x + 2.0 + self.annot.caret_x() * self.scale;
+                        crate::draw::stroke_rect(
+                            &mut pm,
+                            Rect::new(caret_x, rr.y + 2.0, 1.0, rr.h - 4.0),
+                            st.color,
+                            1.0,
+                        );
+                    }
                 }
             }
         }
@@ -1182,12 +1241,18 @@ impl PinWin {
 
     pub fn pump_redraw(&mut self) {
         self.expire_toast();
+        if self.annot.text_edit.is_some() {
+            self.dirty = true;
+        }
         if self.dirty {
             self.window.request_redraw();
         }
     }
 
     pub fn next_wake(&self) -> Option<Instant> {
+        if self.annot.text_edit.is_some() {
+            return Some(Instant::now() + Duration::from_millis(80));
+        }
         self.toast_until
     }
 }

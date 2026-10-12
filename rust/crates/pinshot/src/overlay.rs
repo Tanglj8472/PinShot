@@ -264,7 +264,18 @@ impl Overlay {
     }
 
     fn sync_ime(&mut self) {
-        self.window.set_ime_allowed(self.annot.text_edit.is_some());
+        let editing = self.annot.text_edit.is_some();
+        self.window.set_ime_allowed(editing);
+        // Ungrab for the whole editor, not only IME preedit: CJK compose and
+        // the caret need XIM/winit to own the keys (Snipaste uses a real field).
+        self.set_ime_pause(editing);
+        if let Some(r) = self.annot.text_edit_rect() {
+            let dpr = self.dpr.max(0.01);
+            self.window.set_ime_cursor_area(
+                PhysicalPosition::new((r.x / dpr) as f64, (r.y / dpr) as f64),
+                PhysicalSize::new((r.w / dpr).max(8.0) as f64, (r.h / dpr).max(8.0) as f64),
+            );
+        }
     }
 
     fn commit_annot_release(&mut self, pt: Point) {
@@ -867,7 +878,22 @@ impl Overlay {
                         _ => self.toolbar = None,
                     }
                     self.dirty = true;
+                } else if *state == ElementState::Pressed && *button == MouseButton::Middle {
+                    if self.annot.text_edit.is_some() {
+                        if let Ok(s) = crate::clipboard::read_text() {
+                            self.annot.insert_str(&s);
+                            self.sync_ime();
+                            self.mark_dirty();
+                        }
+                    }
                 } else if *state == ElementState::Pressed && *button == MouseButton::Right {
+                    // Snipaste: right-click ends the current annotation (incl. text).
+                    if self.annot.right_click() {
+                        self.sync_ime();
+                        self.relayout_toolbar();
+                        self.mark_dirty();
+                        return;
+                    }
                     if self.sel.has_sel() {
                         self.sel.reset();
                         self.annot.set_tool(None);
@@ -914,18 +940,16 @@ impl Overlay {
             }
             WindowEvent::Ime(ime) => match ime {
                 winit::event::Ime::Commit(s) => {
-                    for ch in s.chars() {
-                        self.annot.type_text(ch);
-                    }
-                    self.set_ime_pause(false);
+                    crate::logutil::log(&format!("text ime commit {:?}", s));
+                    self.annot.insert_str(s);
                     self.sync_ime();
                     self.mark_dirty();
                 }
                 winit::event::Ime::Enabled | winit::event::Ime::Preedit(_, _) => {
-                    self.set_ime_pause(true);
+                    self.sync_ime();
                 }
                 winit::event::Ime::Disabled => {
-                    self.set_ime_pause(false);
+                    self.sync_ime();
                 }
             },
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
@@ -998,29 +1022,49 @@ impl Overlay {
             return;
         }
         if self.annot.text_edit.is_some() {
+            let ctrl = self.mods.control_key();
+            let shift = self.mods.shift_key();
             match key {
                 Key::Named(NamedKey::Escape) => self.annot.commit_text(true),
                 Key::Named(NamedKey::Enter) => {
-                    if let Some(ed) = &self.annot.text_edit {
-                        crate::logutil::log(&format!("text commit {:?}", ed.text));
+                    if shift {
+                        self.annot.type_text('\n');
+                    } else {
+                        if let Some(ed) = &self.annot.text_edit {
+                            crate::logutil::log(&format!("text commit {:?}", ed.text));
+                        }
+                        self.annot.commit_text(false);
                     }
-                    self.annot.commit_text(false);
                 }
                 Key::Named(NamedKey::Backspace) => self.annot.type_text('\u{8}'),
+                Key::Named(NamedKey::Delete) => self.annot.type_text('\u{7f}'),
+                Key::Named(NamedKey::ArrowLeft) => self.annot.move_caret(-1),
+                Key::Named(NamedKey::ArrowRight) => self.annot.move_caret(1),
+                Key::Named(NamedKey::Home) => self.annot.move_caret(-2),
+                Key::Named(NamedKey::End) => self.annot.move_caret(2),
                 Key::Named(NamedKey::F1) => {
                     self.annot.commit_text(true);
                     self.resnip();
                     return;
                 }
+                Key::Character(c) if c == "v" && ctrl => {
+                    if let Ok(s) = crate::clipboard::read_text() {
+                        self.annot.insert_str(&s);
+                    }
+                }
+                Key::Character(c) if (c == "1" || c == "[") && !ctrl => {
+                    self.annot.adjust_width(-1);
+                    self.relayout_toolbar();
+                }
+                Key::Character(c) if (c == "2" || c == "]") && !ctrl => {
+                    self.annot.adjust_width(1);
+                    self.relayout_toolbar();
+                }
                 _ => {
-                    // Insert printable chars even if Control is already down —
-                    // delayed X11Key after a fast "hello"+Ctrl+Enter must not drop 'l'/'o'.
-                    if let Some(t) = text {
-                        for ch in t.chars() {
-                            if !ch.is_control() {
-                                self.annot.type_text(ch);
-                            }
-                        }
+                    if ctrl {
+                        // Ctrl+Enter already handled; do not insert 'c' from Ctrl+C etc.
+                    } else if let Some(t) = text {
+                        self.annot.insert_str(t);
                     }
                 }
             }
@@ -1043,6 +1087,11 @@ impl Overlay {
             Key::Character(c) if c.eq_ignore_ascii_case("c") && ctrl => self.finish_copy(),
             Key::Named(NamedKey::F3) => self.finish_pin(),
             Key::Character(c) if c.eq_ignore_ascii_case("t") && ctrl => self.finish_pin(),
+            Key::Character(c) if c.eq_ignore_ascii_case("t") && self.sel.has_sel() => {
+                self.annot.set_tool(Some(Tool::Text));
+                self.relayout_toolbar();
+                self.dirty = true;
+            }
             Key::Character(c) if c.eq_ignore_ascii_case("s") && ctrl => self.finish_save(),
             Key::Character(c) if c.eq_ignore_ascii_case("z") && ctrl => {
                 self.annot.undo();
@@ -1105,11 +1154,11 @@ impl Overlay {
                 self.relayout_toolbar();
                 self.dirty = true;
             }
-            Key::Character(c) if c == "1" && self.annot.tool.is_some() => {
+            Key::Character(c) if (c == "1" || c == "[") && self.annot.tool.is_some() => {
                 self.annot.adjust_width(-1);
                 self.dirty = true;
             }
-            Key::Character(c) if c == "2" && self.annot.tool.is_some() => {
+            Key::Character(c) if (c == "2" || c == "]") && self.annot.tool.is_some() => {
                 self.annot.adjust_width(1);
                 self.dirty = true;
             }
@@ -1193,6 +1242,7 @@ impl Overlay {
             if let Some(i) = hit {
                 if self.annot.shapes.get(i).map(|s| s.kind) == Some(Tool::Text) {
                     self.annot.begin_edit_text(i);
+                    self.sync_ime();
                     self.dirty = true;
                     return;
                 }
@@ -1263,6 +1313,9 @@ impl Overlay {
         self.poll_elements();
         self.recover_pointer_drag();
         self.expire_toast();
+        if self.annot.text_edit.is_some() {
+            self.dirty = true;
+        }
         if self.dirty {
             self.window.request_redraw();
         }

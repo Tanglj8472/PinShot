@@ -395,9 +395,17 @@ impl App {
     }
 
     fn spawn_ocr(&self, img: Raster, translate: bool) {
+        crate::logutil::log(&format!(
+            "ocr start {}x{} translate={translate}",
+            img.width, img.height
+        ));
         let proxy = self.proxy.clone();
         std::thread::spawn(move || {
-            let text = crate::ocr_run::recognize(&img).unwrap_or_else(|e| e);
+            let text = crate::ocr_run::recognize(&img).unwrap_or_else(|e| {
+                crate::logutil::log(&format!("ocr fail: {e}"));
+                e
+            });
+            crate::logutil::log(&format!("ocr done {} chars", text.chars().count()));
             let _ = proxy.send_event(AppEvent::OcrDone(text, translate));
         });
     }

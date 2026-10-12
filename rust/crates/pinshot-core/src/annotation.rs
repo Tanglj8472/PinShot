@@ -187,6 +187,11 @@ impl Style {
                 s.filled = true;
                 s.font_size = 14;
             }
+            // Snipaste: default text annotation is not outlined; interface font.
+            Tool::Text => {
+                s.outline = false;
+                s.font_size = 22;
+            }
             _ => {}
         }
         s
@@ -224,9 +229,13 @@ impl Shape {
         }
         if self.kind == Tool::Text && !self.text.is_empty() {
             if let Some(p) = self.pts.first() {
-                let w = approx_text_width(&self.text, self.style.font_size);
-                let lines = self.text.lines().count().max(1) as f32;
-                let h = self.style.font_size as f32 * 1.25 * lines;
+                let (w, h) = crate::font::measure_ex(
+                    &self.text,
+                    self.style.font_size.max(8) as f32,
+                    &self.style.family,
+                    self.style.bold,
+                    self.style.italic,
+                );
                 return Rect::new(p.x, p.y, w + 4.0, h + 2.0);
             }
         }
@@ -248,10 +257,7 @@ impl Shape {
 }
 
 fn approx_text_width(text: &str, font_size: i32) -> f32 {
-    let fs = font_size.max(8) as f32;
-    text.lines()
-        .map(|l| l.chars().count() as f32 * fs * 0.6)
-        .fold(0.0, f32::max)
+    crate::font::measure_ex(text, font_size.max(8) as f32, "", false, false).0
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -330,7 +336,10 @@ pub struct TextEdit {
     pub img_pt: Point,
     pub text: String,
     pub existing: Option<usize>,
+    /// UTF-8 byte offset of the caret.
+    pub caret: usize,
     started: Instant,
+    blink: Instant,
 }
 
 #[derive(Clone, Debug)]
@@ -641,6 +650,25 @@ impl Annotator {
         if delta == 0 {
             return false;
         }
+        if self.text_edit.is_some() {
+            let existing = self.text_edit.as_ref().and_then(|e| e.existing);
+            if let Some(i) = existing {
+                let now = Instant::now();
+                if self.wheel_target != Some(i)
+                    || now.duration_since(self.wheel_time) > Duration::from_millis(500)
+                {
+                    self.push_edit();
+                }
+                self.wheel_target = Some(i);
+                self.wheel_time = now;
+                Self::nudge_style(&mut self.shapes[i].style, Tool::Text, delta);
+                let st = self.shapes[i].style.clone();
+                *self.style_mut(Tool::Text) = st;
+            } else {
+                Self::nudge_style(self.style_mut(Tool::Text), Tool::Text, delta);
+            }
+            return true;
+        }
         if let Some(live) = self.live.as_mut() {
             let kind = live.kind;
             Self::nudge_style(&mut live.style, kind, delta);
@@ -742,6 +770,7 @@ impl Annotator {
                 }
             }
             Tool::Select => false,
+            Tool::Text => b.contains(p) || crate::render::shape_paints_at(sh, p),
             _ => crate::render::shape_paints_at(sh, p),
         }
     }
@@ -812,11 +841,13 @@ impl Annotator {
     pub fn press(&mut self, img_pt: Point, shift: bool) -> bool {
         let tool = self.tool;
 
-        // Python: Select, or any tool except eraser/mosaic, steals a hit on an
-        // existing shape (edge / handle) so the 8 handles appear.
+        // Select, or any drawing tool except eraser/mosaic/text, steals a hit
+        // on an existing shape so the 8 handles appear. Text follows Snipaste:
+        // click existing text to re-edit; click elsewhere to place a new box.
         let steal = tool == Some(Tool::Select)
             || (tool != Some(Tool::Eraser)
                 && tool != Some(Tool::Mosaic)
+                && tool != Some(Tool::Text)
                 && (self.hit_test(img_pt).is_some()
                     || self.hit_handle_of_selected(img_pt).is_some()));
         if steal {
@@ -854,6 +885,15 @@ impl Annotator {
         let st = self.style(tool).clone();
         match tool {
             Tool::Text => {
+                if let Some(i) = self.hit_test(img_pt) {
+                    if self.shapes.get(i).map(|s| s.kind) == Some(Tool::Text) {
+                        if self.text_edit.is_some() {
+                            self.commit_text(false);
+                        }
+                        self.begin_edit_text(i);
+                        return true;
+                    }
+                }
                 if let Some(ed) = &self.text_edit {
                     if ed.text.trim().is_empty()
                         || ed.started.elapsed() < Duration::from_millis(200)
@@ -862,7 +902,6 @@ impl Annotator {
                         return true;
                     }
                     self.commit_text(false);
-                    return true;
                 }
                 self.start_text(img_pt, None);
                 true
@@ -903,17 +942,58 @@ impl Annotator {
         } else {
             (String::new(), None)
         };
+        let caret = text.len();
         self.text_edit = Some(TextEdit {
             img_pt: pt,
             text,
             existing,
+            caret,
             started: Instant::now(),
+            blink: Instant::now(),
         });
     }
 
+    /// Style used by the live editor (existing shape, else the text tool default).
+    pub fn text_edit_style(&self) -> Style {
+        let ed = match &self.text_edit {
+            Some(ed) => ed,
+            None => return self.style(Tool::Text).clone(),
+        };
+        if let Some(i) = ed.existing {
+            if let Some(sh) = self.shapes.get(i) {
+                return sh.style.clone();
+            }
+        }
+        self.style(Tool::Text).clone()
+    }
+
+    pub fn caret_visible(&self) -> bool {
+        let Some(ed) = &self.text_edit else {
+            return false;
+        };
+        (ed.blink.elapsed().as_millis() / 530) % 2 == 0
+    }
+
+    pub fn caret_x(&self) -> f32 {
+        let Some(ed) = &self.text_edit else {
+            return 0.0;
+        };
+        let st = self.text_edit_style();
+        let prefix = ed.text.get(..ed.caret.min(ed.text.len())).unwrap_or("");
+        crate::font::measure_ex(
+            prefix,
+            st.font_size.max(8) as f32,
+            &st.family,
+            st.bold,
+            st.italic,
+        )
+        .0
+    }
+
     /// Wheel over a shape selects it (so width/font follow the hit) then adjusts.
+    /// While typing, the wheel changes the live text size (Snipaste).
     pub fn wheel_at(&mut self, img_pt: Point, angle_delta: i32) -> bool {
-        if self.live.is_none() && self.text_edit.is_none() && self.selected.is_none() {
+        if self.text_edit.is_none() && self.live.is_none() && self.selected.is_none() {
             if let Some(i) = self.hit_test(img_pt) {
                 self.selected = Some(i);
                 self.edit_target = Some(i);
@@ -931,37 +1011,127 @@ impl Annotator {
             return;
         }
         let pt = sh.pts.first().copied().unwrap_or(Point::ZERO);
-        self.set_tool(Some(Tool::Select));
+        // Snipaste FAQ / changelog: re-edit while the text icon is selected.
+        // Double-click from Select still stays on Select so the 8 handles remain.
+        if self.tool != Some(Tool::Text) {
+            self.set_tool(Some(Tool::Select));
+        }
         self.selected = Some(idx);
         self.edit_target = Some(idx);
         self.start_text(pt, Some(idx));
     }
 
-    /// Dashed editor box in image coordinates (Python QLineEdit size).
+    /// Dashed editor box in image coordinates (grows with the glyphs, min 80px).
     pub fn text_edit_rect(&self) -> Option<Rect> {
         let ed = self.text_edit.as_ref()?;
-        let st = if let Some(i) = ed.existing {
-            self.shapes
-                .get(i)
-                .map(|s| s.style.clone())
-                .unwrap_or_else(|| self.style(Tool::Text).clone())
-        } else {
-            self.style(Tool::Text).clone()
-        };
+        let st = self.text_edit_style();
         let fs = st.font_size.max(8) as f32;
-        let w = (approx_text_width(&(ed.text.clone() + "MM"), st.font_size)).max(80.0);
-        let h = fs * 1.25 + 4.0;
-        Some(Rect::new(ed.img_pt.x, ed.img_pt.y, w, h))
+        let sample = if ed.text.is_empty() {
+            "MM".to_string()
+        } else {
+            format!("{}MM", ed.text)
+        };
+        let (w, h) = crate::font::measure_ex(&sample, fs, &st.family, st.bold, st.italic);
+        Some(Rect::new(ed.img_pt.x, ed.img_pt.y, w.max(80.0) + 8.0, h.max(fs) + 6.0))
+    }
+
+    fn clamp_caret(ed: &mut TextEdit) {
+        if ed.caret > ed.text.len() {
+            ed.caret = ed.text.len();
+        }
+        while ed.caret > 0 && !ed.text.is_char_boundary(ed.caret) {
+            ed.caret -= 1;
+        }
     }
 
     pub fn type_text(&mut self, ch: char) {
-        if let Some(ed) = &mut self.text_edit {
-            if ch == '\u{8}' {
-                ed.text.pop();
-            } else if !ch.is_control() && ch != '\u{2013}' && ch != '\u{2014}' && ch != '\u{ffe3}' {
-                ed.text.push(ch);
+        self.insert_str(&ch.to_string());
+    }
+
+    /// IME commit / clipboard paste. Newlines stay (Shift+Enter); other control
+    /// chars and the overlay dash artefacts are dropped.
+    pub fn insert_str(&mut self, s: &str) {
+        let Some(ed) = self.text_edit.as_mut() else {
+            return;
+        };
+        Self::clamp_caret(ed);
+        for ch in s.chars() {
+            if ch == '\n' {
+                ed.text.insert(ed.caret, ch);
+                ed.caret += 1;
+                continue;
             }
+            if ch == '\u{8}' {
+                if ed.caret == 0 {
+                    continue;
+                }
+                let prev = ed.text[..ed.caret]
+                    .chars()
+                    .next_back()
+                    .map(|c| c.len_utf8())
+                    .unwrap_or(0);
+                let start = ed.caret - prev;
+                ed.text.replace_range(start..ed.caret, "");
+                ed.caret = start;
+                continue;
+            }
+            if ch == '\u{7f}' {
+                if ed.caret >= ed.text.len() {
+                    continue;
+                }
+                let n = ed.text[ed.caret..]
+                    .chars()
+                    .next()
+                    .map(|c| c.len_utf8())
+                    .unwrap_or(0);
+                ed.text.replace_range(ed.caret..ed.caret + n, "");
+                continue;
+            }
+            if ch.is_control() || ch == '\u{2013}' || ch == '\u{2014}' || ch == '\u{ffe3}' {
+                continue;
+            }
+            ed.text.insert(ed.caret, ch);
+            ed.caret += ch.len_utf8();
         }
+        ed.blink = Instant::now();
+    }
+
+    pub fn move_caret(&mut self, dir: i32) {
+        let Some(ed) = self.text_edit.as_mut() else {
+            return;
+        };
+        Self::clamp_caret(ed);
+        match dir {
+            -2 => ed.caret = 0,
+            2 => ed.caret = ed.text.len(),
+            -1 if ed.caret > 0 => {
+                let prev = ed.text[..ed.caret]
+                    .chars()
+                    .next_back()
+                    .map(|c| c.len_utf8())
+                    .unwrap_or(0);
+                ed.caret -= prev;
+            }
+            1 if ed.caret < ed.text.len() => {
+                let n = ed.text[ed.caret..]
+                    .chars()
+                    .next()
+                    .map(|c| c.len_utf8())
+                    .unwrap_or(0);
+                ed.caret += n;
+            }
+            _ => {}
+        }
+        ed.blink = Instant::now();
+    }
+
+    /// Snipaste: right-click ends the current annotation (including text).
+    pub fn right_click(&mut self) -> bool {
+        if self.tool.is_none() && self.text_edit.is_none() && self.live.is_none() {
+            return false;
+        }
+        self.finish();
+        true
     }
 
     pub fn commit_text(&mut self, cancel: bool) {
@@ -1065,6 +1235,8 @@ impl Annotator {
         }
         let b = b.normalized();
         if sh.kind == Tool::Text {
+            // Snipaste: drag the corners of the text box to scale the glyphs.
+            sh.style.font_size = ((b.h - 6.0) / 1.25).round().clamp(8.0, 120.0) as i32;
             sh.pts = vec![b.top_left()];
         } else {
             sh.pts = vec![b.top_left(), b.bottom_right()];
@@ -1393,11 +1565,72 @@ mod tests {
         a.press(Point::new(0.0, 0.0), false);
         a.move_to(Point::new(40.0, 0.0), false);
         a.release(Point::new(40.0, 0.0));
-        a.set_tool(Some(Tool::Text));
+        a.set_tool(Some(Tool::Rect));
         assert!(a.press(Point::new(20.0, 0.0), false));
         assert_eq!(a.selected, Some(0));
         assert!(a.text_edit.is_none());
         assert!(a.live.is_none());
+    }
+
+    #[test]
+    fn text_tool_click_existing_reedits() {
+        let mut a = Annotator::new();
+        a.set_tool(Some(Tool::Text));
+        a.press(Point::new(8.0, 8.0), false);
+        a.insert_str("Hi");
+        a.commit_text(false);
+        assert_eq!(a.shapes[0].text, "Hi");
+        a.set_tool(Some(Tool::Text));
+        assert!(a.press(Point::new(10.0, 10.0), false));
+        let ed = a.text_edit.as_ref().expect("re-edit");
+        assert_eq!(ed.text, "Hi");
+        assert_eq!(ed.existing, Some(0));
+        assert_eq!(a.tool, Some(Tool::Text));
+    }
+
+    #[test]
+    fn text_default_style_matches_snipaste() {
+        let a = Annotator::new();
+        let st = a.style(Tool::Text);
+        assert!(!st.outline, "Snipaste default text is not outlined");
+        assert_eq!(st.font_size, 22);
+    }
+
+    #[test]
+    fn text_tool_right_click_commits() {
+        let mut a = Annotator::new();
+        a.set_tool(Some(Tool::Text));
+        a.press(Point::new(8.0, 8.0), false);
+        a.insert_str("你好");
+        assert!(a.right_click());
+        assert_eq!(a.shapes.len(), 1);
+        assert_eq!(a.shapes[0].text, "你好");
+        assert!(a.text_edit.is_none());
+    }
+
+    #[test]
+    fn text_caret_and_backspace_at_middle() {
+        let mut a = Annotator::new();
+        a.set_tool(Some(Tool::Text));
+        a.press(Point::new(8.0, 8.0), false);
+        a.insert_str("abc");
+        a.move_caret(-1);
+        a.type_text('\u{8}');
+        a.commit_text(false);
+        assert_eq!(a.shapes[0].text, "ac");
+    }
+
+    #[test]
+    fn text_wheel_while_editing_changes_font_size() {
+        let mut a = Annotator::new();
+        a.set_tool(Some(Tool::Text));
+        a.press(Point::new(8.0, 8.0), false);
+        let before = a.style(Tool::Text).font_size;
+        assert!(a.wheel_at(Point::new(10.0, 10.0), 120));
+        assert_eq!(a.style(Tool::Text).font_size, before + 2);
+        a.insert_str("A");
+        a.commit_text(false);
+        assert_eq!(a.shapes[0].style.font_size, before + 2);
     }
 
     #[test]

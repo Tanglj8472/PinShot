@@ -13,6 +13,7 @@ mod pin_menu;
 mod prefs;
 mod prefs_win;
 mod text;
+mod ui_font;
 mod toolbar;
 mod tray;
 mod fallback;
@@ -62,8 +63,8 @@ mod result_win;
 mod result_win;
 
 pub use app::run;
-#[cfg(windows)]
 pub use prefs::run_preferences;
+pub use result_win::run_ocr_window;
 
 pub fn logutil_ensure() {
     crate::logutil::ensure_stdio();

@@ -43,6 +43,13 @@ fn cell() -> &'static Mutex<Option<WinState>> {
     STATE.get_or_init(|| Mutex::new(None))
 }
 
+pub fn run_ocr_window(path: &str, auto_translate: bool) {
+    crate::logutil::init(&[]);
+    crate::native::init_process();
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    open(text, auto_translate);
+}
+
 pub fn open(text: String, auto_translate: bool) {
     unsafe {
         let class = w!("PinShotOcrResult");

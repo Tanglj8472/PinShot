@@ -27,7 +27,12 @@ jobs:
             libxcb-randr0-dev libxcb-shm0-dev libxrandr-dev libxi-dev \
             libxext-dev libxcursor-dev libxinerama-dev libxdo-dev \
             libgtk-3-dev libayatana-appindicator3-dev \
-            libclang-dev fonts-wqy-microhei
+            libclang-dev libssl-dev fonts-wqy-microhei
+          # rust-lld looks for libstdc++.so in the multiarch dir (ort on Linux).
+          if [ ! -e /usr/lib/x86_64-linux-gnu/libstdc++.so ]; then
+            so=$(ls /usr/lib/gcc/x86_64-linux-gnu/*/libstdc++.so 2>/dev/null | head -1)
+            if [ -n "$so" ]; then sudo ln -sf "$so" /usr/lib/x86_64-linux-gnu/libstdc++.so; fi
+          fi
       - uses: dtolnay/rust-toolchain@stable
       - name: cargo test --workspace
         run: cargo test --workspace
