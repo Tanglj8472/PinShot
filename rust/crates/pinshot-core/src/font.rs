@@ -74,6 +74,160 @@ fn font() -> Option<&'static fontdue::Font> {
     loaded_default().map(|l| &l.font)
 }
 
+/// Chrome UI faces: Noto/Source Han CJK + Liberation/Noto/DejaVu Latin.
+/// Annotation default (`candidates()` / B/I/family) is unchanged.
+fn chrome_cjk_paths() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if let Ok(p) = std::env::var("PINSHOT_CHROME_FONT") {
+        out.push(PathBuf::from(p));
+    }
+    out.extend(
+        [
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.otf",
+            "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/truetype/noto/NotoSansSC-Regular.otf",
+            "/usr/share/fonts/opentype/source-han-sans-sc/SourceHanSansSC-Regular.otf",
+            "/usr/share/fonts/adobe-source-han-sans/SourceHanSansCN-Regular.otf",
+            "/usr/share/fonts/truetype/source-han-sans/SourceHanSansCN-Regular.otf",
+            "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+            "/usr/share/fonts/truetype/droid/DroidSansFallback.ttf",
+            "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+            "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+            "C:\\Windows\\Fonts\\msyh.ttc",
+            "C:\\Windows\\Fonts\\msyh.ttf",
+        ]
+        .iter()
+        .map(PathBuf::from),
+    );
+    out
+}
+
+fn chrome_latin_paths() -> Vec<PathBuf> {
+    [
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "C:\\Windows\\Fonts\\segoeui.ttf",
+        "C:\\Windows\\Fonts\\arial.ttf",
+        "C:\\Windows\\Fonts\\tahoma.ttf",
+    ]
+    .iter()
+    .map(PathBuf::from)
+    .collect()
+}
+
+fn looks_like_cjk_collection(path: &Path) -> bool {
+    let n = path.to_string_lossy().to_ascii_lowercase();
+    n.contains("notosanscjk") || n.contains("sourcehan") || n.contains("wqy")
+}
+
+fn load_font_index(path: &Path, index: u32) -> Option<fontdue::Font> {
+    let bytes = std::fs::read(path).ok()?;
+    let settings = fontdue::FontSettings {
+        collection_index: index,
+        scale: 40.0,
+        ..Default::default()
+    };
+    fontdue::Font::from_bytes(bytes, settings).ok()
+}
+
+fn has_glyph(font: &fontdue::Font, ch: char) -> bool {
+    ch == ' ' || ch == '\t' || font.lookup_glyph_index(ch) != 0
+}
+
+/// Prefer Simplified Chinese face (TTC index 2 on Noto/Source Han).
+fn load_cjk_face(path: &Path) -> Option<fontdue::Font> {
+    if !path.is_file() {
+        return None;
+    }
+    let indices: &[u32] = if looks_like_cjk_collection(path) {
+        &[2, 3, 0, 1, 4]
+    } else {
+        &[0]
+    };
+    for &idx in indices {
+        if let Some(font) = load_font_index(path, idx) {
+            if has_glyph(&font, '描') || has_glyph(&font, '中') {
+                return Some(font);
+            }
+        }
+    }
+    None
+}
+
+struct ChromeStack {
+    cjk: Option<&'static fontdue::Font>,
+    latin: Option<&'static fontdue::Font>,
+    cjk_path: Option<PathBuf>,
+    latin_path: Option<PathBuf>,
+}
+
+fn leak_font(font: fontdue::Font) -> &'static fontdue::Font {
+    &*Box::leak(Box::new(font))
+}
+
+fn chrome_stack() -> &'static ChromeStack {
+    static STACK: OnceLock<ChromeStack> = OnceLock::new();
+    STACK.get_or_init(|| {
+        let mut cjk = None;
+        let mut cjk_path = None;
+        for p in chrome_cjk_paths() {
+            if let Some(font) = load_cjk_face(&p) {
+                cjk = Some(leak_font(font));
+                cjk_path = Some(p);
+                break;
+            }
+        }
+        let mut latin = None;
+        let mut latin_path = None;
+        for p in chrome_latin_paths() {
+            if p.is_file() {
+                if let Some(font) = load_font(&p) {
+                    latin = Some(leak_font(font));
+                    latin_path = Some(p);
+                    break;
+                }
+            }
+        }
+        ChromeStack {
+            cjk,
+            latin,
+            cjk_path,
+            latin_path,
+        }
+    })
+}
+
+fn pick_chrome(ch: char) -> Option<&'static fontdue::Font> {
+    let s = chrome_stack();
+    if ch.is_ascii() {
+        if let Some(f) = s.latin {
+            if has_glyph(f, ch) {
+                return Some(f);
+            }
+        }
+    }
+    if let Some(f) = s.cjk {
+        if has_glyph(f, ch) {
+            return Some(f);
+        }
+    }
+    if let Some(f) = s.latin {
+        if has_glyph(f, ch) {
+            return Some(f);
+        }
+    }
+    font()
+}
+
+/// Resolved chrome faces (CJK, Latin). Used by tests / diagnostics.
+pub fn chrome_font_paths() -> (Option<PathBuf>, Option<PathBuf>) {
+    let s = chrome_stack();
+    (s.cjk_path.clone(), s.latin_path.clone())
+}
+
 fn compact_name(path: &Path) -> String {
     path.to_string_lossy()
         .to_ascii_lowercase()
@@ -99,11 +253,7 @@ fn file_stem_lower(name: &str) -> String {
 
 fn file_looks_bold(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
-    if n.contains("bold")
-        || n.contains("heavy")
-        || n.contains("black")
-        || n.contains("semibold")
-    {
+    if n.contains("bold") || n.contains("heavy") || n.contains("black") || n.contains("semibold") {
         return true;
     }
     let stem = file_stem_lower(&n);
@@ -303,9 +453,19 @@ fn preferred_fonts(family: &str, bold: bool, italic: bool) -> Vec<PathBuf> {
         (false, false) => djv_reg,
     };
     let (win_reg, win_bold, win_italic, win_bi) = match kind {
-        "Sans" => ("segoeui.ttf", "segoeuib.ttf", "segoeuii.ttf", "segoeuiz.ttf"),
+        "Sans" => (
+            "segoeui.ttf",
+            "segoeuib.ttf",
+            "segoeuii.ttf",
+            "segoeuiz.ttf",
+        ),
         "Serif" => ("times.ttf", "timesbd.ttf", "timesi.ttf", "timesbi.ttf"),
-        _ => ("consola.ttf", "consolab.ttf", "consolai.ttf", "consolaz.ttf"),
+        _ => (
+            "consola.ttf",
+            "consolab.ttf",
+            "consolai.ttf",
+            "consolaz.ttf",
+        ),
     };
     let win = match (bold, italic) {
         (true, true) => win_bi,
@@ -372,7 +532,10 @@ fn walk_fonts(dir: &Path, depth: u32, max: u32, out: &mut Vec<PathBuf>) {
         if p.is_dir() {
             walk_fonts(&p, depth + 1, max, out);
         } else if matches!(
-            p.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref(),
+            p.extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.to_ascii_lowercase())
+                .as_deref(),
             Some("ttf" | "ttc" | "otf")
         ) {
             out.push(p);
@@ -480,24 +643,25 @@ pub fn available() -> bool {
     font().is_some()
 }
 
-pub fn measure(text: &str, px: f32) -> (f32, f32) {
-    let Some(font) = font() else {
-        let fs = px.max(8.0);
-        let w = text
-            .lines()
-            .map(|l| l.chars().count() as f32 * fs * 0.6)
-            .fold(0.0_f32, f32::max);
-        let lines = text.lines().count().max(1) as f32;
-        return (w, fs * 1.25 * lines);
-    };
+fn measure_picked<'a>(
+    text: &str,
+    px: f32,
+    mut pick: impl FnMut(char) -> Option<&'a fontdue::Font>,
+) -> (f32, f32) {
+    let fs = px.max(8.0);
+    let line_h = fs * 1.25;
     let mut max_w = 0.0_f32;
     let mut h = 0.0_f32;
-    let line_h = px * 1.25;
+    let mut any = false;
     for line in text.lines() {
         let mut w = 0.0_f32;
         for ch in line.chars() {
-            let m = font.metrics(ch, px);
-            w += m.advance_width;
+            if let Some(font) = pick(ch) {
+                any = true;
+                w += font.metrics(ch, fs).advance_width;
+            } else {
+                w += fs * 0.6;
+            }
         }
         max_w = max_w.max(w);
         h += line_h;
@@ -505,18 +669,43 @@ pub fn measure(text: &str, px: f32) -> (f32, f32) {
     if text.is_empty() {
         h = line_h;
     }
-    (max_w, h.max(px))
+    if !any && font().is_none() {
+        let w = text
+            .lines()
+            .map(|l| l.chars().count() as f32 * fs * 0.6)
+            .fold(0.0_f32, f32::max);
+        return (w, fs * 1.25 * text.lines().count().max(1) as f32);
+    }
+    (max_w, h.max(fs))
 }
 
+pub fn measure(text: &str, px: f32) -> (f32, f32) {
+    measure_picked(text, px, |_| font())
+}
+
+/// Layout size for chrome labels (toolbar chips, menus, toasts, prefs).
+pub fn measure_chrome(text: &str, px: f32) -> (f32, f32) {
+    measure_picked(text, px, pick_chrome)
+}
+
+/// Straight-alpha source-over. Destination may be transparent (temp glyph
+/// buffers) or already opaque (cards painted in-place).
 fn blend(dst: &mut [u8], i: usize, r: u8, g: u8, b: u8, a: u8) {
     if i + 3 >= dst.len() || a == 0 {
         return;
     }
-    let ia = 255 - a as u16;
-    dst[i] = ((r as u16 * a as u16 + dst[i] as u16 * ia) / 255) as u8;
-    dst[i + 1] = ((g as u16 * a as u16 + dst[i + 1] as u16 * ia) / 255) as u8;
-    dst[i + 2] = ((b as u16 * a as u16 + dst[i + 2] as u16 * ia) / 255) as u8;
-    dst[i + 3] = 255;
+    let src_a = a as u32;
+    let dst_a = dst[i + 3] as u32;
+    let out_a = src_a + dst_a * (255 - src_a) / 255;
+    if out_a == 0 {
+        return;
+    }
+    dst[i] = ((r as u32 * src_a + dst[i] as u32 * dst_a * (255 - src_a) / 255) / out_a) as u8;
+    dst[i + 1] =
+        ((g as u32 * src_a + dst[i + 1] as u32 * dst_a * (255 - src_a) / 255) / out_a) as u8;
+    dst[i + 2] =
+        ((b as u32 * src_a + dst[i + 2] as u32 * dst_a * (255 - src_a) / 255) / out_a) as u8;
+    dst[i + 3] = out_a as u8;
 }
 
 pub fn blit_rgba(
@@ -539,8 +728,8 @@ pub fn blit_rgba(
     );
 }
 
-fn blit_rgba_font(
-    font: &fontdue::Font,
+fn blit_rgba_picked<'a>(
+    mut pick: impl FnMut(char) -> Option<&'a fontdue::Font>,
     pixels: &mut [u8],
     stride_px: u32,
     dest_w: u32,
@@ -561,18 +750,22 @@ fn blit_rgba_font(
         let mut pen_x = x;
         let baseline = y + px + li as f32 * line_h;
         for ch in line.chars() {
+            let Some(font) = pick(ch) else {
+                pen_x += px * 0.6;
+                continue;
+            };
             let (metrics, bitmap) = font.rasterize(ch, px);
             let gx = pen_x + metrics.xmin as f32;
             let gy = baseline - metrics.height as f32 - metrics.ymin as f32;
             for by in 0..metrics.height {
                 for bx in 0..metrics.width {
                     let cov = bitmap[by * metrics.width + bx];
-                    if cov < 8 {
+                    if cov == 0 {
                         continue;
                     }
-                    let dy = gy as i32 + by as i32;
+                    let dy = gy.round() as i32 + by as i32;
                     let slant = ((baseline - (gy + by as f32)) * shear).round() as i32;
-                    let dx = gx as i32 + bx as i32 + slant;
+                    let dx = gx.round() as i32 + bx as i32 + slant;
                     if dx < 0 || dy < 0 || dx >= dest_w as i32 || dy >= dest_h as i32 {
                         continue;
                     }
@@ -604,7 +797,76 @@ fn blit_rgba_font(
     }
 }
 
-pub fn blit_pixmap(pm: &mut Pixmap, text: &str, x: f32, y: f32, px: f32, color: Rgba, outline: bool) {
+fn blit_rgba_font(
+    font: &fontdue::Font,
+    pixels: &mut [u8],
+    stride_px: u32,
+    dest_w: u32,
+    dest_h: u32,
+    text: &str,
+    x: f32,
+    y: f32,
+    px: f32,
+    color: Rgba,
+    outline: bool,
+    fake_bold: bool,
+    fake_italic: bool,
+) {
+    blit_rgba_picked(
+        |_| Some(font),
+        pixels,
+        stride_px,
+        dest_w,
+        dest_h,
+        text,
+        x,
+        y,
+        px,
+        color,
+        outline,
+        fake_bold,
+        fake_italic,
+    );
+}
+
+/// Chrome labels: CJK + Latin pairing, coverage kept (no crunchy cutoff).
+pub fn blit_rgba_chrome(
+    pixels: &mut [u8],
+    stride_px: u32,
+    dest_w: u32,
+    dest_h: u32,
+    text: &str,
+    x: f32,
+    y: f32,
+    px: f32,
+    color: Rgba,
+) {
+    blit_rgba_picked(
+        pick_chrome,
+        pixels,
+        stride_px,
+        dest_w,
+        dest_h,
+        text,
+        x,
+        y,
+        px,
+        color,
+        false,
+        false,
+        false,
+    );
+}
+
+pub fn blit_pixmap(
+    pm: &mut Pixmap,
+    text: &str,
+    x: f32,
+    y: f32,
+    px: f32,
+    color: Rgba,
+    outline: bool,
+) {
     blit_pixmap_ex(pm, text, x, y, px, color, outline, "", false, false);
 }
 
@@ -634,7 +896,11 @@ pub fn blit_pixmap_ex(
     let fake_bold = bold && !file_looks_bold(&name);
     let fake_italic = italic && !file_looks_italic(&name);
     let (tw, th) = measure(text, px);
-    let extra = if fake_italic { (px * 0.4) as u32 + 8 } else { 8 };
+    let extra = if fake_italic {
+        (px * 0.4) as u32 + 8
+    } else {
+        8
+    };
     let tw = (tw.ceil() as u32 + extra).max(1);
     let th = (th.ceil() as u32 + 8).max(1);
     let mut rgba = vec![0u8; tw as usize * th as usize * 4];
@@ -676,7 +942,15 @@ pub fn blit_pixmap_ex(
     );
 }
 
-pub fn blit_raster(img: &mut Raster, text: &str, x: f32, y: f32, px: f32, color: Rgba, outline: bool) {
+pub fn blit_raster(
+    img: &mut Raster,
+    text: &str,
+    x: f32,
+    y: f32,
+    px: f32,
+    color: Rgba,
+    outline: bool,
+) {
     blit_rgba(
         &mut img.pixels,
         img.width,
@@ -707,8 +981,24 @@ pub fn color_card(c: Rgba) -> Raster {
     }
     for (i, (k, v)) in rows.iter().enumerate() {
         let y = 10.0 + i as f32 * lh as f32;
-        blit_raster(&mut img, k, (sw + 22) as f32, y, 12.0, Rgba::rgb(85, 85, 85), false);
-        blit_raster(&mut img, v, (sw + 92) as f32, y, 12.0, Rgba::rgb(17, 17, 17), false);
+        blit_raster(
+            &mut img,
+            k,
+            (sw + 22) as f32,
+            y,
+            12.0,
+            Rgba::rgb(85, 85, 85),
+            false,
+        );
+        blit_raster(
+            &mut img,
+            v,
+            (sw + 92) as f32,
+            y,
+            12.0,
+            Rgba::rgb(17, 17, 17),
+            false,
+        );
     }
     let _ = Rect::EMPTY;
     img
@@ -755,10 +1045,7 @@ fn color_lines(c: Rgba) -> Vec<(String, String)> {
     let si = if i == 0.0 { 0.0 } else { 1.0 - min / i };
     vec![
         ("RGB".into(), format!("{}, {}, {}", c.r, c.g, c.b)),
-        (
-            "RGB float".into(),
-            format!("{rf:.3}, {gf:.3}, {bf:.3}"),
-        ),
+        ("RGB float".into(), format!("{rf:.3}, {gf:.3}, {bf:.3}")),
         (
             "HSV".into(),
             format!("{:.0}°, {:.0}%, {:.0}%", h, s * 100.0, v * 100.0),
@@ -848,7 +1135,11 @@ mod tests {
             assert!(!n.ends_with(".pfb") && !n.ends_with(".pfa") && !n.ends_with(".t1"));
         }
         let sc = compact_name(&sans);
-        assert!(!sc.contains("mono"), "Sans must not be Mono: {}", sans.display());
+        assert!(
+            !sc.contains("mono"),
+            "Sans must not be Mono: {}",
+            sans.display()
+        );
         assert_ne!(compact_name(&sans), compact_name(&mono));
         assert_ne!(compact_name(&serif), compact_name(&sans));
         let sl = sans.to_string_lossy().to_ascii_lowercase();
@@ -888,5 +1179,91 @@ mod tests {
         let def_italic = paint_text("", false, true);
         assert_ne!(def, def_bold, "Default Bold must change pixels");
         assert_ne!(def, def_italic, "Default Italic must change pixels");
+    }
+
+    fn count_alpha_bins(pixels: &[u8]) -> (u32, u32, u32) {
+        let mut empty = 0u32;
+        let mut mid = 0u32;
+        let mut solid = 0u32;
+        for px in pixels.chunks_exact(4) {
+            match px[3] {
+                0 => empty += 1,
+                1..=239 => mid += 1,
+                _ => solid += 1,
+            }
+        }
+        (empty, mid, solid)
+    }
+
+    #[test]
+    fn chrome_cjk_keeps_coverage_fringes() {
+        let (cjk, latin) = chrome_font_paths();
+        assert!(
+            cjk.is_some() || latin.is_some() || font().is_some(),
+            "need a chrome or default face"
+        );
+        if let Some(p) = &cjk {
+            let n = p.to_string_lossy().to_ascii_lowercase();
+            assert!(
+                n.contains("notosanscjk")
+                    || n.contains("sourcehan")
+                    || n.contains("droid")
+                    || n.contains("wqy")
+                    || n.contains("msyh"),
+                "chrome CJK should be Noto/Source Han/Droid/WenQuanYi/msyh, got {}",
+                p.display()
+            );
+        }
+        let mut rgba = vec![0u8; 220 * 56 * 4];
+        blit_rgba_chrome(
+            &mut rgba,
+            220,
+            220,
+            56,
+            "描边 默认 等宽",
+            6.0,
+            8.0,
+            12.0,
+            Rgba::rgb(32, 32, 36),
+        );
+        let (_empty, mid, solid) = count_alpha_bins(&rgba);
+        assert!(
+            mid + solid > 80,
+            "CJK ink, mid={mid} solid={solid} cjk={cjk:?}"
+        );
+        assert!(
+            mid > 80 && mid > solid,
+            "chrome CJK must keep AA coverage (not opaque-only blit), mid={mid} solid={solid} cjk={cjk:?}"
+        );
+    }
+
+    #[test]
+    fn chrome_latin_has_aa_and_pairs_with_cjk() {
+        let mut rgba = vec![0u8; 120 * 48 * 4];
+        blit_rgba_chrome(
+            &mut rgba,
+            120,
+            120,
+            48,
+            "BI",
+            8.0,
+            8.0,
+            16.0,
+            Rgba::rgb(32, 32, 36),
+        );
+        let (_empty, mid, solid) = count_alpha_bins(&rgba);
+        assert!(solid > 8, "B/I ink, solid={solid}");
+        assert!(mid > 8, "B/I glyphs need AA fringes, mid={mid}");
+        let (w_cjk, _) = measure_chrome("描边", 12.0);
+        let (w_latin, _) = measure_chrome("BI", 12.0);
+        assert!(w_cjk > 16.0 && w_latin > 8.0);
+    }
+
+    #[test]
+    fn blend_on_opaque_still_covers() {
+        let mut img = Raster::new(80, 40);
+        img.fill(Rgba::WHITE);
+        blit_raster(&mut img, "Hi", 4.0, 6.0, 18.0, Rgba::rgb(20, 20, 20), false);
+        assert!(img.pixels.iter().any(|&p| p > 0 && p < 255));
     }
 }

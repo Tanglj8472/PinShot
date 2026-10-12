@@ -16,7 +16,9 @@ use pinshot_core::magnifier::{layout_magnifier, Magnifier, MAG_N, MAG_ZOOM};
 use pinshot_core::raster::Raster;
 use pinshot_core::render::{compose, paint_shapes};
 use pinshot_core::selection::{SelState, Selection};
-use tiny_skia::{FillRule, Paint, Path, PathBuilder, Pixmap, PremultipliedColorU8, Stroke, Transform};
+use tiny_skia::{
+    FillRule, Paint, Path, PathBuilder, Pixmap, PremultipliedColorU8, Stroke, Transform,
+};
 #[cfg(windows)]
 use windows::Win32::Foundation::HWND;
 #[cfg(windows)]
@@ -27,7 +29,6 @@ use windows::Win32::Graphics::Gdi::{
 };
 
 use crate::native::NativeWin;
-use crate::text::blit_text;
 use crate::toolbar::{TbAction, Toolbar};
 
 /// Fallback / prefs / pin-menu chrome colours (Python `theme.py` light/dark).
@@ -47,12 +48,14 @@ impl UiTheme {
         let dark = match name {
             "dark" => true,
             "light" => false,
-            _ => std::env::var("GTK_THEME")
-                .map(|t| t.to_ascii_lowercase().contains("dark"))
-                .unwrap_or(false)
-                || std::env::var("GTK_APPLICATION_PREFER_DARK_THEME")
-                    .map(|v| v == "1")
-                    .unwrap_or(false),
+            _ => {
+                std::env::var("GTK_THEME")
+                    .map(|t| t.to_ascii_lowercase().contains("dark"))
+                    .unwrap_or(false)
+                    || std::env::var("GTK_APPLICATION_PREFER_DARK_THEME")
+                        .map(|v| v == "1")
+                        .unwrap_or(false)
+            }
         };
         if dark {
             Self {
@@ -301,16 +304,28 @@ fn clip_rect(r: Rect, bounds: Rect) -> Rect {
 }
 
 fn copy_rect(dst: &mut Pixmap, src: &Pixmap, r: Rect) {
-    let bounds = Rect::new(0.0, 0.0, dst.width() as f32, dst.height() as f32)
-        .intersect(Rect::new(0.0, 0.0, src.width() as f32, src.height() as f32));
+    let bounds = Rect::new(0.0, 0.0, dst.width() as f32, dst.height() as f32).intersect(Rect::new(
+        0.0,
+        0.0,
+        src.width() as f32,
+        src.height() as f32,
+    ));
     let r = clip_rect(r, bounds);
     if r.is_empty() {
         return;
     }
     let x0 = r.x.floor().max(0.0) as u32;
     let y0 = r.y.floor().max(0.0) as u32;
-    let x1 = r.right().ceil().min(dst.width() as f32).min(src.width() as f32) as u32;
-    let y1 = r.bottom().ceil().min(dst.height() as f32).min(src.height() as f32) as u32;
+    let x1 = r
+        .right()
+        .ceil()
+        .min(dst.width() as f32)
+        .min(src.width() as f32) as u32;
+    let y1 = r
+        .bottom()
+        .ceil()
+        .min(dst.height() as f32)
+        .min(src.height() as f32) as u32;
     if x0 >= x1 || y0 >= y1 {
         return;
     }
@@ -330,10 +345,25 @@ pub fn blit_raster(pm: &mut Pixmap, img: &Raster, dest: Rect) {
     let Some(src) = img.to_skia() else {
         return;
     };
-    let sx = if dest.w > 0.0 { dest.w / img.width as f32 } else { 1.0 };
-    let sy = if dest.h > 0.0 { dest.h / img.height as f32 } else { 1.0 };
+    let sx = if dest.w > 0.0 {
+        dest.w / img.width as f32
+    } else {
+        1.0
+    };
+    let sy = if dest.h > 0.0 {
+        dest.h / img.height as f32
+    } else {
+        1.0
+    };
     let t = Transform::from_translate(dest.x, dest.y).pre_scale(sx, sy);
-    pm.draw_pixmap(0, 0, src.as_ref(), &tiny_skia::PixmapPaint::default(), t, None);
+    pm.draw_pixmap(
+        0,
+        0,
+        src.as_ref(),
+        &tiny_skia::PixmapPaint::default(),
+        t,
+        None,
+    );
 }
 
 /// Persistent overlay compositor: cached capture + dirty GDI present.
@@ -405,8 +435,12 @@ impl GdiBits {
     }
 
     fn write_rect(&self, pm: &Pixmap, r: Rect) {
-        let bounds = Rect::new(0.0, 0.0, self.w as f32, self.h as f32)
-            .intersect(Rect::new(0.0, 0.0, pm.width() as f32, pm.height() as f32));
+        let bounds = Rect::new(0.0, 0.0, self.w as f32, self.h as f32).intersect(Rect::new(
+            0.0,
+            0.0,
+            pm.width() as f32,
+            pm.height() as f32,
+        ));
         let r = clip_rect(r, bounds);
         if r.is_empty() || self.bits.is_null() {
             return;
@@ -492,7 +526,12 @@ impl OverlayFront {
     }
 
     fn bounds(&self) -> Rect {
-        Rect::new(0.0, 0.0, self.frame.width() as f32, self.frame.height() as f32)
+        Rect::new(
+            0.0,
+            0.0,
+            self.frame.width() as f32,
+            self.frame.height() as f32,
+        )
     }
 
     /// Swap the frozen desktop (history replay). Same virtual size expected.
@@ -505,7 +544,12 @@ impl OverlayFront {
         }
         self.shot = shot_pm;
         self.frame = self.shot.clone();
-        let bounds = Rect::new(0.0, 0.0, self.frame.width() as f32, self.frame.height() as f32);
+        let bounds = Rect::new(
+            0.0,
+            0.0,
+            self.frame.width() as f32,
+            self.frame.height() as f32,
+        );
         fill_rect(&mut self.frame, bounds, Rgba::rgba(0, 0, 0, self.dim));
         self.last_hole = Rect::EMPTY;
         self.last_chrome.clear();
@@ -670,7 +714,14 @@ impl OverlayFront {
         if mag_on {
             let (color, phys) = pinshot_core::sample_color(shot, cursor, dpr);
             let mag = layout_magnifier(cursor, bounds, color, phys);
-            chrome.push(paint_magnifier(&mut self.frame, shot, cursor, dpr, hex, mag));
+            chrome.push(paint_magnifier(
+                &mut self.frame,
+                shot,
+                cursor,
+                dpr,
+                hex,
+                mag,
+            ));
         }
 
         if let Some(tb) = toolbar {
@@ -712,7 +763,13 @@ impl OverlayFront {
                     st.bold,
                     st.italic,
                 );
-                let caret_x = r.x + 2.0 + pinshot_core::font::measure(&ed.text, annot.style(Tool::Text).font_size.max(8) as f32).0;
+                let caret_x = r.x
+                    + 2.0
+                    + pinshot_core::font::measure(
+                        &ed.text,
+                        annot.style(Tool::Text).font_size.max(8) as f32,
+                    )
+                    .0;
                 stroke_rect(
                     &mut self.frame,
                     Rect::new(caret_x, r.y + 2.0, 1.0, r.h - 4.0),
@@ -799,7 +856,11 @@ fn fill_px(pm: &mut Pixmap, x: i32, y: i32, w: i32, h: i32, c: Rgba) {
 
 fn paint_size_label(pm: &mut Pixmap, hole: Rect, label: &str, ow: u32, oh: u32) -> Rect {
     let lw = (label.len() as f32) * 7.5 + 12.0;
-    let ly = if hole.y >= 22.0 { hole.y - 22.0 } else { hole.y + 2.0 };
+    let ly = if hole.y >= 22.0 {
+        hole.y - 22.0
+    } else {
+        hole.y + 2.0
+    };
     let lx = if hole.x + lw < ow as f32 {
         hole.x
     } else {
@@ -807,7 +868,15 @@ fn paint_size_label(pm: &mut Pixmap, hole: Rect, label: &str, ow: u32, oh: u32) 
     };
     let boxr = Rect::new(lx, ly, lw, 20.0);
     fill_rounded_rect(pm, boxr, 4.0, Rgba::rgba(0, 0, 0, 170));
-    blit_into(pm, label, lx as i32 + 6, ly as i32 + 3, 12, Rgba::WHITE, false);
+    blit_into(
+        pm,
+        label,
+        lx as i32 + 6,
+        ly as i32 + 3,
+        12,
+        Rgba::WHITE,
+        false,
+    );
     let _ = oh;
     boxr.inflated(1.0)
 }
@@ -897,12 +966,7 @@ pub fn paint_toolbar(pm: &mut Pixmap, tb: &Toolbar, cursor: Option<Point>) -> Re
     let tool_end = tb
         .buttons
         .iter()
-        .position(|b| {
-            !matches!(
-                b.action,
-                TbAction::Tool(_) | TbAction::Arrow
-            )
-        })
+        .position(|b| !matches!(b.action, TbAction::Tool(_) | TbAction::Arrow))
         .unwrap_or(tb.buttons.len());
     if tool_end > 0 && tool_end < tb.buttons.len() {
         let left = tb.buttons[tool_end - 1].rect.right();
@@ -927,7 +991,11 @@ pub fn paint_toolbar(pm: &mut Pixmap, tb: &Toolbar, cursor: Option<Point>) -> Re
                 stroke_rounded_rect(pm, b.rect.inflated(-1.0), 4.0, CHROME_SELECTED_EDGE, 1.0);
             }
         }
-        let ink = if b.checked { CHROME_ICON_ON } else { CHROME_ICON };
+        let ink = if b.checked {
+            CHROME_ICON_ON
+        } else {
+            CHROME_ICON
+        };
         draw_icon(pm, b.icon, b.rect.adjusted(2.0, 2.0, -2.0, -2.0), Some(ink));
     }
     let mut dirty = tb.bar;
@@ -935,9 +1003,8 @@ pub fn paint_toolbar(pm: &mut Pixmap, tb: &Toolbar, cursor: Option<Point>) -> Re
         paint_chrome_surface(pm, pr, 6.0);
         for (r, c, _) in &tb.swatches {
             fill_rounded_rect(pm, *r, 2.0, *c);
-            let selected = c.r == tb.custom_value.r
-                && c.g == tb.custom_value.g
-                && c.b == tb.custom_value.b;
+            let selected =
+                c.r == tb.custom_value.r && c.g == tb.custom_value.g && c.b == tb.custom_value.b;
             if selected {
                 stroke_rounded_rect(pm, r.inflated(1.0), 2.5, CHROME_SELECTED_EDGE, 1.5);
             } else {
@@ -1021,36 +1088,7 @@ pub fn paint_toast(pm: &mut Pixmap, text: &str, w: u32, h: u32) -> Rect {
 }
 
 fn blit_into(pm: &mut Pixmap, text: &str, x: i32, y: i32, px: i32, color: Rgba, bold: bool) {
-    if text.is_empty() {
-        return;
-    }
-    let (tw, th) = crate::text::measure(text, px, bold);
-    if tw == 0 || th == 0 {
-        return;
-    }
-    let mut rgba = vec![0u8; tw as usize * th as usize * 4];
-    blit_text(&mut rgba, tw, tw, th, text, 0, 0, px, color, bold);
-    let Some(mut src) = Pixmap::new(tw, th) else {
-        return;
-    };
-    for (dst, s) in src.pixels_mut().iter_mut().zip(rgba.chunks_exact(4)) {
-        let a = s[3];
-        *dst = PremultipliedColorU8::from_rgba(
-            ((s[0] as u16 * a as u16) / 255) as u8,
-            ((s[1] as u16 * a as u16) / 255) as u8,
-            ((s[2] as u16 * a as u16) / 255) as u8,
-            a,
-        )
-        .unwrap_or(PremultipliedColorU8::TRANSPARENT);
-    }
-    pm.draw_pixmap(
-        x,
-        y,
-        src.as_ref(),
-        &tiny_skia::PixmapPaint::default(),
-        Transform::identity(),
-        None,
-    );
+    crate::text::blit_into_pm(pm, text, x as f32, y as f32, px, color, bold);
 }
 
 /// Arrow pointer baked into the freeze when `` ` `` toggles `show_cursor`.
@@ -1167,8 +1205,17 @@ pub fn paint_color_picker(
     blit_hue_strip(pm, lay.hue);
     stroke_rect(pm, lay.hue, Rgba::rgb(40, 40, 40), 1.0);
     let hy = lay.hue.y + (picker.hsv.0 / 360.0) * lay.hue.h;
-    fill_rect(pm, Rect::new(lay.hue.x - 2.0, hy - 2.0, lay.hue.w + 4.0, 4.0), Rgba::WHITE);
-    stroke_rect(pm, Rect::new(lay.hue.x - 2.0, hy - 2.0, lay.hue.w + 4.0, 4.0), Rgba::BLACK, 1.0);
+    fill_rect(
+        pm,
+        Rect::new(lay.hue.x - 2.0, hy - 2.0, lay.hue.w + 4.0, 4.0),
+        Rgba::WHITE,
+    );
+    stroke_rect(
+        pm,
+        Rect::new(lay.hue.x - 2.0, hy - 2.0, lay.hue.w + 4.0, 4.0),
+        Rgba::BLACK,
+        1.0,
+    );
     fill_rect(pm, lay.preview, picker.current);
     stroke_rect(pm, lay.preview, Rgba::rgb(40, 40, 40), 1.0);
     fill_rect(pm, lay.initial, picker.initial);
@@ -1298,12 +1345,7 @@ pub fn paint_pin(
             3.0,
         );
     } else if click_through {
-        stroke_rect(
-            &mut pm,
-            stroke_r,
-            Rgba::rgba(180, 40, 220, 200),
-            2.0,
-        );
+        stroke_rect(&mut pm, stroke_r, Rgba::rgba(180, 40, 220, 200), 2.0);
         fill_rect(
             &mut pm,
             Rect::new(m + w as f32 - 88.0, m + 2.0, 86.0, 18.0),
@@ -1453,7 +1495,11 @@ mod tests {
         let mut pm = Pixmap::new(1920, 1200).unwrap();
         pm.fill(tiny_skia::Color::from_rgba8(80, 80, 80, 255));
         paint_toolbar(&mut pm, &tb, None);
-        let btn = tb.buttons.iter().find(|b| b.checked).expect("text selected");
+        let btn = tb
+            .buttons
+            .iter()
+            .find(|b| b.checked)
+            .expect("text selected");
         let px = pm
             .pixel((btn.rect.x + 2.0) as u32, (btn.rect.y + 2.0) as u32)
             .expect("px")
@@ -1513,5 +1559,128 @@ mod tests {
                 let _ = out.save_png(format!("{dir}/toolbar_text.png"));
             }
         }
+    }
+
+    fn crop_rect(src: &Pixmap, crop: Rect, fill: [u8; 3]) -> Option<Pixmap> {
+        let cw = crop.w.ceil().max(8.0) as u32;
+        let ch = crop.h.ceil().max(8.0) as u32;
+        let mut out = Pixmap::new(cw, ch)?;
+        out.fill(tiny_skia::Color::from_rgba8(fill[0], fill[1], fill[2], 255));
+        let x0 = crop.x.max(0.0) as i32;
+        let y0 = crop.y.max(0.0) as i32;
+        out.draw_pixmap(
+            -x0,
+            -y0,
+            src.as_ref(),
+            &tiny_skia::PixmapPaint::default(),
+            Transform::identity(),
+            None,
+        );
+        Some(out)
+    }
+
+    fn luma_bins(pm: &Pixmap, r: Rect) -> u32 {
+        let mut bins = [0u32; 16];
+        let x0 = r.x.max(0.0) as u32;
+        let y0 = r.y.max(0.0) as u32;
+        let x1 = r.right().min(pm.width() as f32).max(0.0) as u32;
+        let y1 = r.bottom().min(pm.height() as f32).max(0.0) as u32;
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let p = pm.pixel(x, y).expect("px").demultiply();
+                let luma = (p.red() as u16 + p.green() as u16 + p.blue() as u16) / 3;
+                bins[(luma / 16) as usize] += 1;
+            }
+        }
+        bins.iter().filter(|&&c| c > 0).count() as u32
+    }
+
+    fn dump_ui_dir() -> std::path::PathBuf {
+        let dir = std::env::var("PINSHOT_DUMP_UI")
+            .unwrap_or_else(|_| "/opt/cursor/artifacts/chrome-aa".into());
+        let _ = std::fs::create_dir_all(&dir);
+        std::path::PathBuf::from(dir)
+    }
+
+    #[test]
+    fn chrome_chip_and_menu_text_is_antialiased() {
+        use crate::toolbar::Toolbar;
+        use pinshot_core::annotation::{Style, Tool};
+        use pinshot_core::font::chrome_font_paths;
+        use pinshot_core::i18n::tr;
+
+        let sel = Rect::new(200.0, 160.0, 520.0, 280.0);
+        let over = Rect::new(0.0, 0.0, 1920.0, 1200.0);
+        let st = Style::for_tool(Tool::Text);
+        let tb = Toolbar::layout(sel, over, Some(Tool::Text), false, Some(&st));
+        let mut pm = Pixmap::new(1920, 1200).unwrap();
+        pm.fill(tiny_skia::Color::from_rgba8(60, 64, 72, 255));
+        paint_toolbar(&mut pm, &tb, None);
+
+        let outline = tb
+            .extras
+            .iter()
+            .find(|e| e.label.contains('描') || e.label == "Outline")
+            .expect("outline chip");
+        let default = tb
+            .extras
+            .iter()
+            .find(|e| e.label.contains('默') || e.label == "Default")
+            .expect("default chip");
+        let mono = tb
+            .extras
+            .iter()
+            .find(|e| e.label.contains('等') || e.label == "Mono")
+            .expect("mono chip");
+        let bins_outline = luma_bins(&pm, outline.rect.inflated(-2.0));
+        let bins_default = luma_bins(&pm, default.rect.inflated(-2.0));
+        let bins_mono = luma_bins(&pm, mono.rect.inflated(-2.0));
+        assert!(
+            bins_outline >= 6 && bins_default >= 6 && bins_mono >= 6,
+            "CJK chips need smooth luma ramps, got outline={bins_outline} default={bins_default} mono={bins_mono} fonts={:?}",
+            chrome_font_paths()
+        );
+
+        let mut menu = Pixmap::new(280, 220).unwrap();
+        menu.fill(tiny_skia::Color::from_rgba8(248, 248, 250, 255));
+        let rows = [
+            tr("New group…"),
+            tr("Click-through"),
+            tr("Shadow"),
+            tr("Close pin"),
+            tr("Zoom"),
+        ];
+        for (i, lab) in rows.iter().enumerate() {
+            crate::text::blit_into_pm(
+                &mut menu,
+                lab,
+                16.0,
+                14.0 + i as f32 * 36.0,
+                12,
+                CHROME_TEXT,
+                false,
+            );
+        }
+        let menu_bins = luma_bins(&menu, Rect::new(8.0, 8.0, 240.0, 200.0));
+        assert!(
+            menu_bins >= 6,
+            "pin-menu Chinese labels need AA, bins={menu_bins}"
+        );
+
+        let dir = dump_ui_dir();
+        if let Some(panel) = tb.panel {
+            let crop = panel.inflated(8.0);
+            if let Some(out) = crop_rect(&pm, crop, [60, 64, 72]) {
+                let _ = out.save_png(dir.join("texttool-chips.png"));
+            }
+            let bar_panel = tb.bar.union(panel).inflated(12.0);
+            if let Some(out) = crop_rect(&pm, bar_panel, [60, 64, 72]) {
+                let _ = out.save_png(dir.join("toolbar-text.png"));
+            }
+            if let Some(out) = crop_rect(&pm, outline.rect.inflated(4.0), [60, 64, 72]) {
+                let _ = out.save_png(dir.join("chip-outline.png"));
+            }
+        }
+        let _ = menu.save_png(dir.join("pin-menu-labels.png"));
     }
 }

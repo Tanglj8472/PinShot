@@ -2,17 +2,18 @@
 
 对照源：`main` 上的 Python/PySide6 PinShot。Rust 在 `rust/`，分支 `rust`。Python 源码不改。
 
-最后更新：2026-10-12（Rust UI chrome：工具栏/图钉菜单/分组提示向公开 Snipaste 观感靠拢；功能未改）。
+最后更新：2026-10-12（chrome 文字抗锯齿：芯片/菜单中文不再锯齿）。
 
 ---
 
 ## 当前进度
 
-HEAD 在 `rust`。本轮只改自绘 chrome（clean-room，未拆 Snipaste 资源）：工具栏更密（CELL 24 / PAD 3）、圆角+软阴影、选中工具蓝边、芯片选中实心蓝、直线/箭头图标区分、图钉菜单圆角悬停+勾选、分组名称框焦点描边。F1 / B/I/家族 / New·Rename KeyboardInput / 滚轮改宽 / 托盘路径未动。Python 源码不改。用户提交保留。
+HEAD 在本轮 chrome 文字 AA 修复。工具栏芯片「描边 / 默认 / 等宽」和 B/I 不再发虚、发硬：透明缓冲改为 straight-alpha source-over（不再把覆盖率糊到黑底再盖成不透明），去掉 `cov < 8` 切断，chrome 2× 栅格 + 2×2 盒滤。UI 标签走 Noto Sans CJK SC（TTC index 2）+ Liberation Sans，标注家族 B/I/Serif/Mono 未动。Python 不改。
 
 | 面 | 状态 |
 |---|---|
-| 标注工具栏 / 子面板视觉 | 本轮：近白底、6px 圆角、阴影、分隔线、选中 `#3D8FD1` 描边；中文芯片 12px |
+| chrome 文字（芯片 / 菜单 / toast / prefs） | **已修**：平滑 AA；CJK 优先 Noto/Source Han/Droid/文泉驿，拉丁 Liberation |
+| 标注工具栏 / 子面板视觉 | 上轮：近白底、6px 圆角、阴影、分隔线、选中 `#3D8FD1` 描边；中文芯片 12px |
 | 图钉右键菜单 / 新分组提示 | 本轮：浅色主题、inset 悬停、勾选刻度、输入框圆角蓝边 |
 | 确认放弃 / 取色 / toast / 尺寸条 / fallback·prefs 按钮 | 本轮：同一套圆角 chrome（prefs 有余力带过） |
 | Linux 框选 / 矩形·椭圆·箭头 / 点边 8 手柄 / 滚轮改宽与面板数字 | 实机过（`7ef18fe`） |
@@ -49,11 +50,17 @@ HEAD 在 `rust`。本轮只改自绘 chrome（clean-room，未拆 Snipaste 资�
 
 时间按仓库提交顺序（均为 `rust` 线，除非注明）。
 
-### UI chrome（本轮）
+### UI chrome 文字 AA（本轮）
 
 | SHA | 内容 |
 |---|---|
-| `21b37dc` + 本轮补记 | 工具栏 CELL 24 / 高 30、圆角阴影、选中蓝边、芯片实心蓝、直线/箭头图标区分、菜单勾选+悬停、分组框蓝边。`cargo test --workspace --lib`：pinshot-core 123 + pinshot 22。Xvfb `:28` 1920×1200：F1 框选 → `tb bar 559,708 422x30` → Text/Pin → 菜单 268×816 → New group 提示。截图 `/opt/cursor/artifacts/ui-polish/` |
+| 本轮 | chrome 标签不再锯齿：`blend` 正确累加 alpha；chrome 字体栈 Noto Sans CJK SC + Liberation；2× 超采样。标注 `blit_pixmap_ex` / 家族解析未改。`cargo test --workspace --lib`：pinshot-core 126 + pinshot 23。截图 `/opt/cursor/artifacts/chrome-aa/` |
+
+### UI chrome（上轮）
+
+| SHA | 内容 |
+|---|---|
+| `21b37dc` + 上轮补记 | 工具栏 CELL 24 / 高 30、圆角阴影、选中蓝边、芯片实心蓝、直线/箭头图标区分、菜单勾选+悬停、分组框蓝边。`cargo test --workspace --lib`：pinshot-core 123 + pinshot 22。Xvfb `:28` 1920×1200：F1 框选 → `tb bar 559,708 422x30` → Text/Pin → 菜单 268×816 → New group 提示。截图 `/opt/cursor/artifacts/ui-polish/` |
 
 ### P1 骨架（Windows-only workspace）
 
