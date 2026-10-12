@@ -2,7 +2,7 @@
 
 对照源：`main` 上的 Python/PySide6 PinShot。Rust 在 `rust/`，分支 `rust`。Python 源码不改。
 
-最后更新：2026-10-12（b791ea3 实机回归：recover annot.press 导致矩形/椭圆/箭头画不出；本轮改回事件路径 press）。
+最后更新：2026-10-12（`876fc4f`：b791ea3 实机 6 项已关；Xvfb 实机节拍 18/18）。
 
 ---
 
@@ -102,7 +102,7 @@ PASS：文字快打+Ctrl+Enter；`,` `.` 历史 + 重启后 R；toast 淡出；�
 | 2 | pin 滚轮缩小锚在左上：算出 nx,ny 但窗停在 148,100；多出的格滚到 Chrome | 已修 | 跟踪 `geom_pos`（不重读过期 `outer_position`）；始终 `set_outer_position` + `request_inner_size` + EWMH；滚轮时 raise/focus |
 | 3 | overlay 里 Tab 漏到 Chrome（Jump to content） | 已修 | 根窗口 `XGrabKey` Tab/ISO_Left_Tab（`owner_events=false`）；默认 `set_ime_allowed(false)`；抓键 1ms 重试 |
 | 4 | R 后背景是旧截图（应为当前屏幕 + 上次选区） | 已修 | `reuse_last` 只 `set_rect`，不 `replace_shot` |
-| 5 | Esc 关 pin 菜单也关掉 pin，其它已恢复的 pin 消失 | 已修 | 菜单开着或刚关 450ms 内 pin 不处理 Esc；菜单 Esc 只关菜单 |
+| 5 | Esc 关 pin 菜单也关掉 pin，其它已恢复的 pin 消失 | 已修 | 菜单开着或刚关 450ms 内 pin 不处理 Esc；fallback **不再** Esc=Quit（Python 也没有，焦点落到四按钮会把整个进程杀掉） |
 | 6 | pin 右键菜单很高，末项下大块空白 | 已修 | 高度按行真实高度求和（Sep=8，其它=22），不再 `len*ROW_H` |
 
 未测：选中图形滚轮改线宽（被 #1 挡住；#1 修后事件路径单测覆盖绘制）。
@@ -214,9 +214,20 @@ PASS：文字快打+Ctrl+Enter；`,` `.` 历史 + 重启后 R；toast 淡出；�
 
 验证约定：Linux 改动必须在 **Xvfb + xfwm4 + xdotool**（以及有桌面时的 `:1` Xfce）上做焦点/按键/菜单回归。本轮用 `type --delay 20`、两步快拖、连续滚轮格。
 
-### Xvfb b791ea3 六项（实机节拍，`:21` 1920×1200 + xfwm4）
+### Xvfb `876fc4f` 六项（实机节拍，`:21` 1920×1200 + xfwm4）
 
-见本轮提交后的 `/tmp/pinshot-b791-verify.sh` 结果（绘制走事件路径、pin 缩放位移、Tab 不漏、R 活截图、Esc 只关菜单、菜单高度）。
+脚本 `/tmp/pinshot-b791-verify.sh`，`type --delay 20`、快拖、连续滚轮。`pass=18 fail=0`。
+
+| 检查 | 结果 |
+|---|---|
+| 1 矩形/椭圆/箭头 | PASS（`annot Rect 260x220` / `Ellipse 200x180` / `Line 270x180`；无 `recover annot press`） |
+| 2 pin 连续缩小锚光标 | PASS（320×240+600+220 → 123×93+731+318；每格 `geom_pos` 不同） |
+| 3 Tab | PASS（`overlay Tab swallowed`；xev 无 KeyPress） |
+| 4 R 套在当前截图 | PASS（`R last rect 560x460 on live capture 1920x1200`） |
+| 5 Esc 只关菜单 | PASS（菜单后仍 2 个 pin；fallback 不再 Esc=Quit） |
+| 6 菜单高度 | PASS（`pin menu 268x772`，分隔行 8px；末项下无空洞） |
+
+工件：`/opt/cursor/artifacts/b791-verify/`（`03-shapes.png` 可见三笔标注）。
 
 ### Xvfb 0098973 十一项（`:20` 1920×1200 + xfwm4）
 
