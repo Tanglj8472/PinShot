@@ -3,6 +3,19 @@ __pycache__/
 .venv/
 .venv-win/
 .syslibs/
+
+# SnipClone (VS / MSBuild)
+SnipClone/bin/
+SnipClone/obj/
+SnipClone/.vs/
+*.aps
+*.user
+*.suo
+*.ncb
+*.sdf
+*.opensdf
+*.VC.db
+*.VC.opendb
 build/
 dist/
 ver.txt
