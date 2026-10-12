@@ -342,6 +342,10 @@ fn copy_rect(dst: &mut Pixmap, src: &Pixmap, r: Rect) {
 }
 
 pub fn blit_raster(pm: &mut Pixmap, img: &Raster, dest: Rect) {
+    blit_raster_ex(pm, img, dest, false);
+}
+
+pub fn blit_raster_ex(pm: &mut Pixmap, img: &Raster, dest: Rect, smooth: bool) {
     let Some(src) = img.to_skia() else {
         return;
     };
@@ -356,14 +360,13 @@ pub fn blit_raster(pm: &mut Pixmap, img: &Raster, dest: Rect) {
         1.0
     };
     let t = Transform::from_translate(dest.x, dest.y).pre_scale(sx, sy);
-    pm.draw_pixmap(
-        0,
-        0,
-        src.as_ref(),
-        &tiny_skia::PixmapPaint::default(),
-        t,
-        None,
-    );
+    let mut paint = tiny_skia::PixmapPaint::default();
+    paint.quality = if smooth {
+        tiny_skia::FilterQuality::Bilinear
+    } else {
+        tiny_skia::FilterQuality::Nearest
+    };
+    pm.draw_pixmap(0, 0, src.as_ref(), &paint, t, None);
 }
 
 /// Persistent overlay compositor: cached capture + dirty GDI present.
@@ -640,7 +643,7 @@ impl OverlayFront {
         // Hole interior: undimmed capture + vector annotations (no full compose).
         if !hole.is_empty() {
             copy_rect(&mut self.frame, &self.shot, hole);
-            let shapes: Vec<_> = annot.all_shapes().cloned().collect();
+            let shapes = annot.visible_shapes();
             if !shapes.is_empty() {
                 let needs_fx = shapes
                     .iter()
@@ -657,7 +660,7 @@ impl OverlayFront {
         }
 
         let mut chrome: Vec<Rect> = Vec::new();
-        for sh in annot.all_shapes() {
+        for sh in &annot.visible_shapes() {
             let pad = sh.style.width.max(8) as f32 + 8.0;
             chrome.push(sh.bounds().inflated(pad).intersect(bounds));
         }
@@ -765,11 +768,10 @@ impl OverlayFront {
                 );
                 if annot.caret_visible() {
                     let caret_x = r.x + 2.0 + annot.caret_x();
-                    stroke_rect(
+                    fill_rect(
                         &mut self.frame,
-                        Rect::new(caret_x, r.y + 2.0, 1.0, r.h - 4.0),
+                        Rect::new(caret_x, r.y + 2.0, 2.0, (r.h - 4.0).max(8.0)),
                         st.color,
-                        1.0,
                     );
                 }
                 chrome.push(r.inflated(2.0));
@@ -989,6 +991,13 @@ pub fn paint_toolbar(pm: &mut Pixmap, tb: &Toolbar, cursor: Option<Point>) -> Re
             CHROME_ICON
         };
         draw_icon(pm, b.icon, b.rect.adjusted(2.0, 2.0, -2.0, -2.0), Some(ink));
+        if b.checked {
+            fill_rect(
+                pm,
+                Rect::new(b.rect.right() - 7.0, b.rect.y + 3.0, 4.0, 4.0),
+                Rgba::rgb(220, 40, 40),
+            );
+        }
     }
     let mut dirty = tb.bar;
     if let Some(pr) = tb.panel {
@@ -1029,21 +1038,49 @@ pub fn paint_toolbar(pm: &mut Pixmap, tb: &Toolbar, cursor: Option<Point>) -> Re
                 (CHROME_CHIP, CHROME_TEXT)
             };
             fill_rounded_rect(pm, extra.rect, 4.0, fill);
-            crate::text::blit_into_pm(
-                pm,
-                &extra.label,
-                extra.rect.x + 5.0,
-                extra.rect.y + 3.0,
-                12,
-                ink,
-                extra.checked,
-            );
+            if extra.checked {
+                stroke_rounded_rect(pm, extra.rect, 4.0, CHROME_SELECTED_EDGE, 1.0);
+            }
+            if let Some(icon) = extra.icon {
+                draw_icon(pm, icon, extra.rect.adjusted(2.0, 2.0, -2.0, -2.0), Some(ink));
+            } else {
+                crate::text::blit_into_pm(
+                    pm,
+                    &extra.label,
+                    extra.rect.x + 5.0,
+                    extra.rect.y + 3.0,
+                    12,
+                    ink,
+                    extra.checked,
+                );
+            }
         }
         if !tb.custom_color.is_empty() {
             fill_rounded_rect(pm, tb.custom_color, 4.0, tb.custom_value);
             stroke_rounded_rect(pm, tb.custom_color, 4.0, Rgba::rgb(40, 40, 44), 1.0);
         }
         dirty = dirty.union(pr);
+    }
+    if let Some(cursor) = cursor {
+        for b in &tb.buttons {
+            if b.rect.contains(cursor) {
+                let tip = tr(b.tip);
+                let (tw, th) = crate::text::measure(&tip, 11, false);
+                let tw = tw as f32 + 12.0;
+                let th = th as f32 + 8.0;
+                let mut tx = b.rect.x;
+                let mut ty = b.rect.bottom() + 4.0;
+                if ty + th > pm.height() as f32 {
+                    ty = b.rect.y - th - 4.0;
+                }
+                tx = tx.min(pm.width() as f32 - tw - 2.0).max(2.0);
+                let tip_r = Rect::new(tx, ty, tw, th);
+                fill_rounded_rect(pm, tip_r, 4.0, Rgba::rgba(20, 20, 24, 230));
+                crate::text::blit_into_pm(pm, &tip, tx + 6.0, ty + 3.0, 11, Rgba::WHITE, false);
+                dirty = dirty.union(tip_r.inflated(2.0));
+                break;
+            }
+        }
     }
     let _ = IconKind::Rect;
     dirty.inflated(8.0)
@@ -1299,7 +1336,29 @@ pub fn paint_pin(
     shadow: bool,
     thumb: bool,
 ) -> Pixmap {
-    let composed = compose(img, &annot.shapes);
+    paint_pin_ex(img, annot, scale, click_through, glow, shadow, thumb, true, false, false)
+}
+
+pub fn paint_pin_ex(
+    img: &Raster,
+    annot: &Annotator,
+    scale: f32,
+    click_through: bool,
+    glow: f32,
+    shadow: bool,
+    thumb: bool,
+    smooth: bool,
+    grayscale: bool,
+    invert: bool,
+) -> Pixmap {
+    let shapes = annot.visible_shapes();
+    let mut composed = compose(img, &shapes);
+    if grayscale {
+        composed = composed.grayscale();
+    }
+    if invert {
+        composed = composed.invert_color();
+    }
     let (content, w, h) = if thumb {
         let s = composed.width.min(composed.height) as f32;
         let src = Rect::new(
@@ -1325,7 +1384,7 @@ pub fn paint_pin(
     }
     // Image over the shadow (Python clips to `img_rect`) so the +2 drop
     // offset cannot darken the photo's top/left edge.
-    blit_raster(&mut pm, &content, img_r);
+    blit_raster_ex(&mut pm, &content, img_r, smooth);
     // Python `QRectF(r).adjusted(-0.5, -0.5, -0.5, -0.5)` — hairline on the
     // image box, not an inset that eats the first pixel row/column.
     let stroke_r = Rect::new(m - 0.5, m - 0.5, w as f32, h as f32);
@@ -1612,7 +1671,7 @@ mod tests {
         let outline = tb
             .extras
             .iter()
-            .find(|e| e.label.contains('描') || e.label == "Outline")
+            .find(|e| e.label == "A" || e.label.contains('描') || e.label == "Outline")
             .expect("outline chip");
         let default = tb
             .extras

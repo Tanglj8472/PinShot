@@ -43,12 +43,23 @@ fn cell() -> &'static Mutex<Option<WinState>> {
     STATE.get_or_init(|| Mutex::new(None))
 }
 
-pub fn run_ocr_window(path: &str, auto_translate: bool) {
+pub fn run_ocr_window(path: &str, auto_translate: bool, is_error: bool) {
     crate::logutil::init(&[]);
     crate::native::init_process();
     let text = std::fs::read_to_string(path).unwrap_or_default();
-    open(text, auto_translate);
+    if is_error {
+        open_error(text);
+    } else {
+        open(text, auto_translate);
+    }
 }
+
+pub fn open_error(_err: String) {
+    // Keep the editable field empty; the window title names the failure.
+    open(String::new(), false);
+}
+
+pub fn reap_child() {}
 
 pub fn open(text: String, auto_translate: bool) {
     unsafe {

@@ -6,7 +6,7 @@
 （[docs.snipaste.com](https://docs.snipaste.com/) Getting Started / Key Bindings / FAQ），
 洁净室实现，不拆二进制、不抄资源。Snipaste 无 OCR 结果窗时保留 PinShot 功能，UX 跟设置窗同一套 egui + CJK。
 
-最后更新：2026-10-12（文本 / 设置 / OCR 对齐 Snipaste 公开行为）。
+最后更新：2026-10-12（文本 14 项 + 工具栏/贴图菜单对齐 Snipaste 截图）。
 
 ---
 
@@ -16,12 +16,12 @@ HEAD 在本轮 Snipaste 对齐：文字标注（点击落字、IME、光标、�
 
 | 面 | 状态 |
 |---|---|
-| 文字标注（对照 Snipaste） | **已修**：点击落字；CJK IME（整段编辑 ungrab）；闪烁 caret；选中文字工具再点可回编；滚轮/`1`/`2`/`[`/`]` 改号；拖角缩放；右键结束；Esc 取消文字不退出截图；中键/Ctrl+V 粘贴；默认无描边、界面字体 |
-| 设置窗（对照 Snipaste 版式） | **已修**：标签 General/Interface/Snip/Paste/Output/Control/About（无 Update）；窗口按表单实测高度贴紧（480 宽；界面 115 / 关于 148 / 输出 157 / 截图 188 / 常规 229 / 粘贴 274 / 控制 299）；每页恢复默认；底栏应用/确定/取消；CJK；不再在 GTK 线程上跑 eframe |
-| OCR（Snipaste 无结果窗） | **已修**：Linux 默认 ort + PP-OCRv5 det/cls/rec；`--ocr-window` 结果窗（可编辑/复制/翻译）；Windows `pinshot-ocr.exe` 仍走 `--features ocr` |
+| 文字标注（对照 Snipaste） | **已修**：xdotool CJK（Unicode keysym，编辑时保持 grab）；caret 落笔即可见（2px 填充）；框贴紧字形；点框外只提交（无手柄、不新开空框）；回编隐藏已提交副本；caret 跟点击；拖已提交文字是移动 |
+| 设置窗（对照 Snipaste 版式） | **已修**：七个标签固定 480×300（按最高的 Control 页）；主题下拉与其它 `form_combo` 同宽同箭头；每页恢复默认；底栏应用/确定/取消 |
+| OCR（Snipaste 无结果窗） | **已修**：rec RGB + 宽至 1280 + 方向自适应 CTC；失败进状态栏不进编辑框；`--ocr-window` 子进程 reap；关闭后释放 stray grab（F1 可再用）；OCR 独立图标+tooltip |
 | chrome 文字（芯片 / 菜单 / toast / prefs） | **已修**：平滑 AA；CJK 优先 Noto/Source Han/Droid/文泉驿，拉丁 Liberation |
-| 标注工具栏 / 子面板视觉 | 上轮：近白底、6px 圆角、阴影、分隔线、选中 `#3D8FD1` 描边；中文芯片 12px |
-| 图钉右键菜单 / 新分组提示 | 本轮：浅色主题、inset 悬停、勾选刻度、输入框圆角蓝边 |
+| 标注工具栏 / 子面板视觉 | **本轮**：单行 ~36px 子面板；Fill/Outline/Dash 图标；文字 B/I/A；马赛克/模糊图标；橡皮在栏上；选中红点；悬停 tooltip |
+| 图钉右键菜单 / 贴图编辑 | **本轮**：Zoom / 图像处理 / 分组 / 尺寸 四级菜单；33.3% + 平滑；旋转翻转；灰度/反色；双线性缩放 |
 | 确认放弃 / 取色 / toast / 尺寸条 / fallback·prefs 按钮 | 本轮：同一套圆角 chrome（prefs 有余力带过） |
 | Linux 框选 / 矩形·椭圆·箭头 / 点边 8 手柄 / 滚轮改宽与面板数字 | 实机过（`7ef18fe`） |
 | 文字快打 `hello world` + Ctrl+Enter、Ctrl+C PNG、prefs、`,` `.` 历史 | 实机过 |
@@ -57,7 +57,21 @@ HEAD 在本轮 Snipaste 对齐：文字标注（点击落字、IME、光标、�
 
 时间按仓库提交顺序（均为 `rust` 线，除非注明）。
 
-### 文本 / 设置 / OCR 对齐 Snipaste（本轮）
+### 工具栏 / 贴图菜单 + 14 项实机 bug（本轮）
+
+对照 Snipaste 截图：overlay 工具栏子面板（矩形填充/描边图标、直线线型、画笔色盘、马赛克尺寸、文字 B/I/A、橡皮）和贴图右键（Copy/Save/Show toolbar/Shadow/Zoom 33.3·50·100·200+Smoothing/Image processing/Paste/Replace by file/Move to group/View in folder/Close/Destroy/尺寸子菜单）。保留 PinShot 的 OCR/翻译、椭圆、序号、记号笔。
+
+| 项 | 改了什么 |
+|---|---|
+| 文字 1–7 | Unicode keysym；编辑时不整段 ungrab；2px caret 立刻可见；框 hug 字形；点框外只提交；回编隐藏原稿；caret 跟点击；拖已有文字是移动 |
+| OCR 8–12 | rec RGB + 宽 1280 + (N,C,T)/(N,T,C) + 双 blank CTC；失败只进状态栏；reap `--ocr-window`；Drop grab + stray ungrab；OCR 独立图标 |
+| 设置 13–14 | 固定 480×300；Theme 走 `form_combo` |
+| 工具栏 | 单行图标子面板、橡皮、红点、tooltip |
+| 贴图 | 飞出子菜单；灰度/反色/平滑 |
+
+验证：`cargo test --workspace --lib`；`cargo build --release --bin pinshot`。截图 `/opt/cursor/artifacts/snipaste-toolbar/`。
+
+### 文本 / 设置 / OCR 对齐 Snipaste（上轮）
 
 公开对照：[Getting Started](https://docs.snipaste.com/getting-started)（右键结束当前形状、拖角缩放文字）、[Key Bindings](https://docs.snipaste.com/key-bindings)（编辑时滚轮/`1`/`2`/`[`/`]` 改宽）、[FAQ #9](https://docs.snipaste.com/faq)（右键结束文字输入）。Esc 结束文字而不是截图、中键粘贴、默认无描边、界面字体、选中文字工具再点可回编，来自 Snipaste changelog / 可见行为。洁净室：不 RE、不抄资源。
 

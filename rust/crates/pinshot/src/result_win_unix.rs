@@ -12,7 +12,19 @@ use crate::clipboard;
 
 static OPEN: AtomicBool = AtomicBool::new(false);
 
+static CHILD: std::sync::Mutex<Option<std::process::Child>> =
+    std::sync::Mutex::new(None);
+
 pub fn open(text: String, auto_translate: bool) {
+    spawn_window(&text, auto_translate, false);
+}
+
+pub fn open_error(err: String) {
+    spawn_window(&err, false, true);
+}
+
+fn spawn_window(text: &str, auto_translate: bool, is_error: bool) {
+    reap_child();
     let dir = pinshot_core::config::data_dir();
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join(format!(
@@ -33,8 +45,16 @@ pub fn open(text: String, auto_translate: bool) {
             if auto_translate {
                 cmd.arg("--ocr-translate");
             }
+            if is_error {
+                cmd.arg("--ocr-error");
+            }
             match cmd.spawn() {
-                Ok(_) => crate::logutil::log(&format!("ocr window spawn {}", path.display())),
+                Ok(proc) => {
+                    crate::logutil::log(&format!("ocr window spawn {}", path.display()));
+                    if let Ok(mut slot) = CHILD.lock() {
+                        *slot = Some(proc);
+                    }
+                }
                 Err(e) => crate::logutil::log(&format!("ocr window spawn: {e}")),
             }
         }
@@ -42,7 +62,23 @@ pub fn open(text: String, auto_translate: bool) {
     }
 }
 
-pub fn run_ocr_window(path: &str, auto_translate: bool) {
+pub fn reap_child() {
+    if let Ok(mut slot) = CHILD.lock() {
+        if let Some(child) = slot.as_mut() {
+            match child.try_wait() {
+                Ok(Some(_)) => {
+                    *slot = None;
+                    #[cfg(unix)]
+                    crate::x11util::release_stray_grabs();
+                }
+                Ok(None) => {}
+                Err(_) => *slot = None,
+            }
+        }
+    }
+}
+
+pub fn run_ocr_window(path: &str, auto_translate: bool, is_error: bool) {
     crate::logutil::init(&[]);
     let text = std::fs::read_to_string(path).unwrap_or_else(|_| path.to_string());
     let _ = std::fs::remove_file(path);
@@ -50,6 +86,18 @@ pub fn run_ocr_window(path: &str, auto_translate: bool) {
     schedule_raises();
     let cfg = pinshot_core::config::load().unwrap_or_default();
     let theme = cfg.theme.clone();
+    let orig = if is_error { String::new() } else { text.clone() };
+    let status0 = if is_error {
+        if text.trim().is_empty() {
+            tr("OCR failed")
+        } else {
+            text
+        }
+    } else if auto_translate {
+        tr("Translating…")
+    } else {
+        tr("OCR done. Edit, copy, or translate.")
+    };
     let opts = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(tr("PinShot OCR"))
@@ -76,16 +124,12 @@ pub fn run_ocr_window(path: &str, auto_translate: bool) {
                 egui::Visuals::light()
             });
             Ok(Box::new(OcrWin {
-                orig: text,
+                orig,
                 trans: String::new(),
                 target: 0,
-                status: if auto_translate {
-                    tr("Translating…")
-                } else {
-                    tr("OCR done. Edit, copy, or translate.")
-                },
-                auto: auto_translate,
-                busy: auto_translate,
+                status: status0,
+                auto: auto_translate && !is_error,
+                busy: auto_translate && !is_error,
                 raised: false,
             }))
         }),

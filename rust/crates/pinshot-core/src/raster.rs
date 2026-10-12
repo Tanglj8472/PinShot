@@ -284,6 +284,27 @@ impl Raster {
         out
     }
 
+    pub fn grayscale(&self) -> Self {
+        let mut out = self.clone();
+        for px in out.pixels.chunks_exact_mut(4) {
+            let y = (0.299 * px[0] as f32 + 0.587 * px[1] as f32 + 0.114 * px[2] as f32).round() as u8;
+            px[0] = y;
+            px[1] = y;
+            px[2] = y;
+        }
+        out
+    }
+
+    pub fn invert_color(&self) -> Self {
+        let mut out = self.clone();
+        for px in out.pixels.chunks_exact_mut(4) {
+            px[0] = 255 - px[0];
+            px[1] = 255 - px[1];
+            px[2] = 255 - px[2];
+        }
+        out
+    }
+
     pub fn flip(&self, horizontal: bool) -> Self {
         let mut out = Self::new(self.width, self.height);
         for y in 0..self.height {
@@ -362,6 +383,16 @@ mod tests {
     }
 
     #[test]
+    fn grayscale_and_invert() {
+        let mut r = Raster::new(1, 1);
+        r.set(0, 0, Rgba::rgb(255, 0, 0));
+        let g = r.grayscale().get(0, 0).unwrap();
+        assert_eq!(g.r, g.g);
+        assert_eq!(g.g, g.b);
+        let inv = r.invert_color().get(0, 0).unwrap();
+        assert_eq!(inv, Rgba::rgb(0, 255, 255));
+    }
+
     #[test]
     fn rotate_and_flip() {
         let mut r = Raster::new(2, 1);

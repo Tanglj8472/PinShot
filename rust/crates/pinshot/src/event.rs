@@ -8,7 +8,7 @@ pub enum AppEvent {
     PrefsApplied(Config),
     RaisePrefs,
     Ipc(String),
-    OcrDone(String, bool),
+    OcrDone(Result<String, String>, bool),
     OpenPrefs,
     X11Key {
         keysym: u32,
@@ -41,6 +41,9 @@ pub enum PinMenuAction {
     Destroy,
     CopySize,
     ResetZoom,
+    ToggleSmooth,
+    ToggleGrayscale,
+    ToggleInvert,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

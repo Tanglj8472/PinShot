@@ -83,6 +83,7 @@ pub struct Overlay {
     key_grab: Option<crate::x11util::OverlayKeyGrab>,
     #[cfg(not(windows))]
     surface: Option<softbuffer::Surface<Rc<Window>, Rc<Window>>>,
+    ime_preedit: bool,
 }
 
 impl Overlay {
@@ -170,6 +171,7 @@ impl Overlay {
             key_grab: None,
             #[cfg(not(windows))]
             surface,
+            ime_preedit: false,
         };
         s.window.set_visible(true);
         native::focus_window(&s.window);
@@ -266,9 +268,9 @@ impl Overlay {
     fn sync_ime(&mut self) {
         let editing = self.annot.text_edit.is_some();
         self.window.set_ime_allowed(editing);
-        // Ungrab for the whole editor, not only IME preedit: CJK compose and
-        // the caret need XIM/winit to own the keys (Snipaste uses a real field).
-        self.set_ime_pause(editing);
+        // Keep XGrabKeyboard while typing so xdotool / Unicode keysyms reach
+        // the overlay. Pause only during IME preedit so XIM can compose.
+        self.set_ime_pause(editing && self.ime_preedit);
         if let Some(r) = self.annot.text_edit_rect() {
             let dpr = self.dpr.max(0.01);
             self.window.set_ime_cursor_area(
@@ -906,7 +908,10 @@ impl Overlay {
                     self.dirty = true;
                 } else if *state == ElementState::Released && *button == MouseButton::Left {
                     self.held_btn1 = false;
-                    if self.annot.live.is_some() || self.annot.is_selecting() {
+                    if self.annot.live.is_some()
+                        || self.annot.is_selecting()
+                        || self.annot.is_editing_text()
+                    {
                         self.commit_annot_release(pt);
                     } else {
                         self.finish_sel_drag(pt);
@@ -942,13 +947,19 @@ impl Overlay {
                 winit::event::Ime::Commit(s) => {
                     crate::logutil::log(&format!("text ime commit {:?}", s));
                     self.annot.insert_str(s);
+                    self.ime_preedit = false;
                     self.sync_ime();
                     self.mark_dirty();
                 }
-                winit::event::Ime::Enabled | winit::event::Ime::Preedit(_, _) => {
+                winit::event::Ime::Preedit(s, _) => {
+                    self.ime_preedit = !s.is_empty();
+                    self.sync_ime();
+                }
+                winit::event::Ime::Enabled => {
                     self.sync_ime();
                 }
                 winit::event::Ime::Disabled => {
+                    self.ime_preedit = false;
                     self.sync_ime();
                 }
             },
@@ -963,12 +974,14 @@ impl Overlay {
                     if let Some(g) = &self.key_grab {
                         g.kick();
                     }
+                    self.sync_ime();
                 } else if self.result.is_none() {
                     native::focus_window(&self.window);
                     #[cfg(unix)]
                     if let Some(g) = &self.key_grab {
                         g.kick();
                     }
+                    self.sync_ime();
                 }
             }
             WindowEvent::ModifiersChanged(m) => {
@@ -1484,10 +1497,16 @@ fn keysym_to_winit(keysym: u32) -> Option<(Key, Option<String>)> {
     }
     // X11 function-key range (0xff00–0xffff): never treat as Unicode text.
     // Control_L is 0xffe3; char::from_u32 maps that to '￣' and used to leak into text.
-    if keysym >= 0xff00 {
+    if keysym >= 0xff00 && keysym <= 0xffff {
         return None;
     }
-    let ch = char::from_u32(keysym)?;
+    // Unicode keysym: 0x01000000 | codepoint (xdotool CJK, X11 UTF-8).
+    let cp = if keysym & 0xff000000 == 0x01000000 {
+        keysym & 0x00ffffff
+    } else {
+        keysym
+    };
+    let ch = char::from_u32(cp)?;
     if ch.is_control() {
         return None;
     }
@@ -1517,6 +1536,13 @@ mod keysym_tests {
         let (k, t) = keysym_to_winit(b'h' as u32).unwrap();
         assert!(matches!(k, Key::Character(c) if c.as_str() == "h"));
         assert_eq!(t.as_deref(), Some("h"));
+    }
+
+    #[test]
+    fn unicode_keysym_inserts_cjk() {
+        let (k, t) = keysym_to_winit(0x01004f60).unwrap();
+        assert!(matches!(k, Key::Character(c) if c.as_str() == "你"));
+        assert_eq!(t.as_deref(), Some("你"));
     }
 
     #[test]

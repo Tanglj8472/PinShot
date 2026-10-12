@@ -21,22 +21,19 @@ use crate::event::AppEvent;
 
 static OPEN: AtomicBool = AtomicBool::new(false);
 
-/// Window hugs the form: width is the tab strip + fields, height is measured
-/// from the widgets each frame (not a leftover empty square).
+/// Snipaste Preferences uses one fixed height (tallest tab). Width hugs the form.
 const PREFS_W: f32 = 480.0;
+const PREFS_H: f32 = 300.0;
 const PREFS_MIN_W: f32 = 420.0;
-const PREFS_MIN_H: f32 = 100.0;
-const PREFS_MAX_H: f32 = 320.0;
+const PREFS_MIN_H: f32 = PREFS_H;
+const PREFS_MAX_H: f32 = PREFS_H;
 const FOOTER_H: f32 = 32.0;
-const BODY_MARGIN_Y: f32 = 8.0;
-const SIZE_SLACK: f32 = 18.0;
 const FORM_LABEL_W: f32 = 104.0;
 const ROW_H: f32 = 20.0;
 const CONTROL_W: f32 = 260.0;
 
-fn prefs_inner_size(body_h: f32) -> egui::Vec2 {
-    let h = (body_h + FOOTER_H + BODY_MARGIN_Y + SIZE_SLACK).clamp(PREFS_MIN_H, PREFS_MAX_H);
-    egui::vec2(PREFS_W, h)
+fn prefs_inner_size() -> egui::Vec2 {
+    egui::vec2(PREFS_W, PREFS_H)
 }
 
 const TABS: &[&str] = &[
@@ -117,13 +114,13 @@ pub fn run_preferences() {
     crate::native::init_process();
     let cfg = config::load().unwrap_or_default();
     i18n::set_lang(cfg.lang());
-    let size = prefs_inner_size(72.0);
+    let size = prefs_inner_size();
     let opts = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(tr("PinShot Preferences"))
             .with_inner_size([size.x, size.y])
-            .with_min_inner_size([PREFS_MIN_W, PREFS_MIN_H])
-            .with_max_inner_size([PREFS_W, PREFS_MAX_H])
+            .with_min_inner_size([PREFS_MIN_W, PREFS_H])
+            .with_max_inner_size([PREFS_W, PREFS_H])
             .with_resizable(false)
             .with_always_on_top(),
         persist_window: false,
@@ -152,8 +149,6 @@ pub fn run_preferences() {
                 group_sel: 0,
                 group_edit: String::new(),
                 status: String::new(),
-                size_key: usize::MAX,
-                last_h: 0.0,
             }))
         }),
     ) {
@@ -236,8 +231,6 @@ struct PrefsApp {
     group_sel: usize,
     group_edit: String,
     status: String,
-    size_key: usize,
-    last_h: f32,
 }
 
 impl PrefsApp {
@@ -355,50 +348,34 @@ impl eframe::App for PrefsApp {
                     });
                 });
             });
-        let mut body_h = 0.0;
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::central_panel(&ctx.style()).inner_margin(egui::Margin::symmetric(8, 4)),
             )
             .show(ctx, |ui| {
-                // Height 0 so the child grows with widgets instead of filling
-                // the leftover CentralPanel square (that was the empty band).
-                let inner = ui.allocate_ui(egui::vec2(ui.available_width(), 0.0), |ui| {
-                    ui.spacing_mut().item_spacing = egui::vec2(4.0, 3.0);
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 2.0;
-                        for (i, name) in TABS.iter().enumerate() {
-                            let selected = self.tab == i;
-                            if ui.selectable_label(selected, tr(name)).clicked() {
-                                self.tab = i;
-                            }
+                ui.spacing_mut().item_spacing = egui::vec2(4.0, 3.0);
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 2.0;
+                    for (i, name) in TABS.iter().enumerate() {
+                        let selected = self.tab == i;
+                        if ui.selectable_label(selected, tr(name)).clicked() {
+                            self.tab = i;
                         }
-                    });
-                    ui.add_space(1.0);
-                    ui.separator();
-                    ui.add_space(4.0);
-                    match self.tab {
-                        0 => self.ui_general(ui),
-                        1 => self.ui_interface(ui),
-                        2 => self.ui_snip(ui),
-                        3 => self.ui_paste(ui),
-                        4 => self.ui_output(ui),
-                        5 => self.ui_control(ui),
-                        _ => self.ui_about(ui),
-                    };
+                    }
                 });
-                body_h = inner.response.rect.height();
+                ui.add_space(1.0);
+                ui.separator();
+                ui.add_space(4.0);
+                match self.tab {
+                    0 => self.ui_general(ui),
+                    1 => self.ui_interface(ui),
+                    2 => self.ui_snip(ui),
+                    3 => self.ui_paste(ui),
+                    4 => self.ui_output(ui),
+                    5 => self.ui_control(ui),
+                    _ => self.ui_about(ui),
+                };
             });
-        let size = prefs_inner_size(body_h);
-        if self.size_key != self.tab || (self.last_h - size.y).abs() > 1.0 {
-            crate::logutil::log(&format!(
-                "prefs hug tab={} body={:.0} inner={:.0}x{:.0}",
-                self.tab, body_h, size.x, size.y
-            ));
-            self.size_key = self.tab;
-            self.last_h = size.y;
-            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
-        }
     }
 }
 
@@ -440,20 +417,17 @@ impl PrefsApp {
     }
 
     fn ui_interface(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            ui.label(tr("Theme:"));
+        form_grid(ui, "prefs_iface", |ui| {
             let theme_txt = match self.draft.theme.as_str() {
                 "light" => tr("Light"),
                 "dark" => tr("Dark"),
                 _ => tr("System"),
             };
-            egui::ComboBox::from_id_salt("theme")
-                .selected_text(theme_txt)
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.draft.theme, "system".into(), tr("System"));
-                    ui.selectable_value(&mut self.draft.theme, "light".into(), tr("Light"));
-                    ui.selectable_value(&mut self.draft.theme, "dark".into(), tr("Dark"));
-                });
+            form_combo(ui, tr("Theme:"), "theme", theme_txt, |ui| {
+                ui.selectable_value(&mut self.draft.theme, "system".into(), tr("System"));
+                ui.selectable_value(&mut self.draft.theme, "light".into(), tr("Light"));
+                ui.selectable_value(&mut self.draft.theme, "dark".into(), tr("Dark"));
+            });
         });
     }
 
@@ -700,19 +674,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn prefs_window_hugs_each_tab() {
-        let interface = prefs_inner_size(48.0);
-        let about = prefs_inner_size(64.0);
-        let general = prefs_inner_size(148.0);
-        let control = prefs_inner_size(236.0);
-        assert_eq!(interface.x, PREFS_W);
-        assert!(interface.y < 160.0, "short tabs must not keep a tall square");
-        assert!(about.y < general.y);
-        assert!(interface.y < general.y);
-        assert!(control.y > general.y);
-        assert!(control.y <= PREFS_MAX_H);
+    fn prefs_window_fixed_height() {
+        let size = prefs_inner_size();
+        assert_eq!(size.x, PREFS_W);
+        assert_eq!(size.y, PREFS_H);
+        assert!(PREFS_H >= 280.0, "must fit the Control tab");
         assert!(PREFS_W < 500.0);
         assert_eq!(TABS.len(), 7);
+        assert_eq!(PREFS_MIN_H, PREFS_MAX_H);
     }
 
     #[test]
@@ -735,8 +704,6 @@ mod tests {
             group_sel: 0,
             group_edit: String::new(),
             status: String::new(),
-            size_key: 0,
-            last_h: 0.0,
         };
         app.restore_tab();
         let d = Config::default();

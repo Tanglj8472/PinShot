@@ -79,6 +79,14 @@ pub fn focus_window(window: &Window) {
 }
 
 #[cfg(unix)]
+pub fn release_stray_grabs() {
+    crate::x11util::release_stray_grabs();
+}
+
+#[cfg(not(unix))]
+pub fn release_stray_grabs() {}
+
+#[cfg(unix)]
 pub fn grab_overlay_keys(
     window: &Window,
     proxy: winit::event_loop::EventLoopProxy<crate::event::AppEvent>,

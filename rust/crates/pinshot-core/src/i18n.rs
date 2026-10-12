@@ -305,6 +305,20 @@ const PAIRS: &[(&str, &str)] = &[
     ("Quick-save folder", "快速保存文件夹"),
     ("Numbered marker (N)", "序号标记 (N)"),
     ("Save image as", "图像另存为"),
+    ("Smoothing", "平滑"),
+    ("Current", "当前"),
+    ("Image processing", "图像处理"),
+    ("Horizontal flip", "水平翻转"),
+    ("Vertical flip", "垂直翻转"),
+    ("Replace by file...", "用文件替换..."),
+    ("Group", "分组"),
+    ("Rotation", "旋转"),
+    ("Opacity", "不透明度"),
+    ("X-mirror", "水平镜像"),
+    ("Y-mirror", "垂直镜像"),
+    ("Grayscale", "灰度"),
+    ("Color inverted", "反色"),
+    ("OCR failed", "识别失败"),
 ];
 
 const PATTERNS: &[(&str, &str)] = &[

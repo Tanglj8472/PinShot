@@ -32,6 +32,13 @@ pub enum IconKind {
     Eraser,
     Check,
     App,
+    Ocr,
+    Translate,
+    Fill,
+    Outline,
+    Dash,
+    Dot,
+    Blur,
 }
 
 impl IconKind {
@@ -56,6 +63,13 @@ impl IconKind {
             "eraser" => Self::Eraser,
             "check" => Self::Check,
             "app" => Self::App,
+            "ocr" => Self::Ocr,
+            "translate" => Self::Translate,
+            "fill" => Self::Fill,
+            "outline" => Self::Outline,
+            "dash" => Self::Dash,
+            "dot" => Self::Dot,
+            "blur" => Self::Blur,
             _ => return None,
         })
     }
@@ -295,6 +309,71 @@ pub fn draw_icon(pixmap: &mut Pixmap, kind: IconKind, cell: Rect, color: Option<
                 pixmap.stroke_path(&path, &paint(green), &stroke(2.2), t, None);
             }
         }
+        IconKind::Ocr => {
+            if let Some(r) = tiny_skia::Rect::from_xywh(4.0, 3.0, 12.0, 14.0) {
+                pixmap.stroke_path(&PathBuilder::from_rect(r), &p, &st, t, None);
+            }
+            for y in [7.0, 10.0, 13.0] {
+                if let Some(path) = line_path((6.5, y), (13.5, y)) {
+                    pixmap.stroke_path(&path, &p, &stroke(1.2), t, None);
+                }
+            }
+        }
+        IconKind::Translate => {
+            if let Some(path) = line_path((5.0, 5.0), (11.0, 5.0)) {
+                pixmap.stroke_path(&path, &p, &stroke(1.6), t, None);
+            }
+            if let Some(path) = line_path((8.0, 5.0), (8.0, 14.0)) {
+                pixmap.stroke_path(&path, &p, &stroke(1.6), t, None);
+            }
+            let mut pb = PathBuilder::new();
+            pb.move_to(12.0, 10.0);
+            pb.line_to(16.0, 16.0);
+            pb.line_to(12.5, 16.0);
+            pb.close();
+            if let Some(path) = pb.finish() {
+                pixmap.fill_path(&path, &p, FillRule::Winding, t, None);
+            }
+        }
+        IconKind::Fill => {
+            if let Some(r) = tiny_skia::Rect::from_xywh(4.0, 5.0, 12.0, 10.0) {
+                pixmap.fill_rect(r, &p, t, None);
+            }
+        }
+        IconKind::Outline => {
+            if let Some(r) = tiny_skia::Rect::from_xywh(4.0, 5.0, 12.0, 10.0) {
+                pixmap.stroke_path(&PathBuilder::from_rect(r), &p, &st, t, None);
+            }
+        }
+        IconKind::Dash => {
+            for (a, b) in [((4.0, 16.0), (8.0, 12.0)), ((11.0, 9.0), (16.0, 4.0))] {
+                if let Some(path) = line_path(a, b) {
+                    pixmap.stroke_path(&path, &p, &st, t, None);
+                }
+            }
+        }
+        IconKind::Dot => {
+            for (x, y) in [(5.0, 15.0), (10.0, 10.0), (15.0, 5.0)] {
+                if let Some(r) = tiny_skia::Rect::from_xywh(x - 1.2, y - 1.2, 2.4, 2.4) {
+                    pixmap.fill_path(
+                        &PathBuilder::from_oval(r).unwrap(),
+                        &p,
+                        FillRule::Winding,
+                        t,
+                        None,
+                    );
+                }
+            }
+        }
+        IconKind::Blur => {
+            if let Some(r) = tiny_skia::Rect::from_xywh(4.0, 4.0, 12.0, 12.0) {
+                pixmap.stroke_path(&PathBuilder::from_rect(r), &p, &stroke(1.0), t, None);
+            }
+            let soft = paint(color.with_alpha(90));
+            if let Some(r) = tiny_skia::Rect::from_xywh(6.0, 6.0, 8.0, 8.0) {
+                pixmap.fill_rect(r, &soft, t, None);
+            }
+        }
         IconKind::App => {
             if let Some(r) = tiny_skia::Rect::from_xywh(1.0, 1.0, 18.0, 18.0) {
                 pixmap.fill_rect(r, &paint(Rgba::BLUE), t, None);
@@ -393,6 +472,11 @@ mod tests {
             IconKind::Pin,
             IconKind::Save,
             IconKind::Copy,
+            IconKind::Ocr,
+            IconKind::Translate,
+            IconKind::Fill,
+            IconKind::Outline,
+            IconKind::Eraser,
         ] {
             pm.fill(tiny_skia::Color::TRANSPARENT);
             draw_icon(&mut pm, kind, Rect::new(2.0, 2.0, 20.0, 20.0), None);

@@ -197,7 +197,8 @@ fn merge_line_boxes(boxes: &[TextBox]) -> Vec<TextBox> {
                 (cy as i32 - ly as i32).unsigned_abs() < last.h.max(b.h) / 2 + 4
             };
             let gap = b.x.saturating_sub(last.x + last.w);
-            if same_line && gap < last.h.max(8) * 2 {
+            // Tight gap so neighbouring columns (Wikipedia infobox, etc.) stay separate.
+            if same_line && gap < last.h.max(b.h).max(8) / 2 + 4 {
                 let x2 = (last.x + last.w).max(b.x + b.w);
                 let y2 = (last.y + last.h).max(b.y + b.h);
                 last.x = last.x.min(b.x);
@@ -215,15 +216,26 @@ fn merge_line_boxes(boxes: &[TextBox]) -> Vec<TextBox> {
 
 /// CTC greedy decode: skip blanks (`0`) and consecutive repeats.
 pub fn ctc_greedy(indices: &[usize], alphabet: &[String]) -> String {
+    ctc_greedy_blank(indices, alphabet, 0)
+}
+
+/// `blank` is the CTC blank class. When blank is 0, alphabet[i-1] is the glyph
+/// (PP-OCR). When blank is last, alphabet[i] is the glyph.
+pub fn ctc_greedy_blank(indices: &[usize], alphabet: &[String], blank: usize) -> String {
     let mut out = String::new();
     let mut prev = usize::MAX;
     for &i in indices {
-        if i == 0 || i == prev {
+        if i == blank || i == prev {
             prev = i;
             continue;
         }
         prev = i;
-        if let Some(ch) = alphabet.get(i.saturating_sub(1)) {
+        let ch = if blank == 0 {
+            alphabet.get(i.saturating_sub(1))
+        } else {
+            alphabet.get(i)
+        };
+        if let Some(ch) = ch {
             out.push_str(ch);
         }
     }

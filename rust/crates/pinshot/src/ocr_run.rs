@@ -5,7 +5,9 @@ use std::io::Read;
 use std::path::Path;
 
 use pinshot_core::config::data_dir;
-use pinshot_core::ocr::{ctc_greedy, db_boxes, join_lines, load_keys, model_dir, ModelPaths, TextBox};
+use pinshot_core::ocr::{
+    ctc_greedy, ctc_greedy_blank, db_boxes, join_lines, load_keys, model_dir, ModelPaths, TextBox,
+};
 use pinshot_core::raster::Raster;
 
 pub fn recognize(image: &Raster) -> Result<String, String> {
@@ -123,11 +125,12 @@ fn infer(image: &Raster, paths: &ModelPaths) -> Result<String, String> {
     crate::logutil::log(&format!("ocr boxes {}", boxes.len()));
     let mut lines = Vec::new();
     for b in boxes {
+        let pad = 3i32;
         let mut crop = image.crop(pinshot_core::geom::Rect::from_i32(
-            b.x as i32,
-            b.y as i32,
-            b.w as i32,
-            b.h as i32,
+            b.x as i32 - pad,
+            b.y as i32 - pad,
+            b.w as i32 + pad * 2,
+            b.h as i32 + pad * 2,
         ));
         if crop.width < 8 || crop.height < 8 {
             continue;
@@ -256,7 +259,7 @@ fn nchw_imagenet(image: &Raster) -> Result<ort::value::Value, String> {
 fn pack_rec(crop: &Raster) -> Result<ort::value::Value, String> {
     let h = crop.height.max(1) as f32;
     let mut nw = ((crop.width as f32) * (48.0 / h)).round() as u32;
-    nw = nw.clamp(16, 320) / 8 * 8;
+    nw = (nw.clamp(16, 1280) / 8 * 8).max(8);
     let nh = 48u32;
     let resized = crop.scale_nn(nw, nh);
     let mut chw = vec![0f32; (3 * nw * nh) as usize];
@@ -266,12 +269,10 @@ fn pack_rec(crop: &Raster) -> Result<ort::value::Value, String> {
             let c = resized
                 .get(x as i32, y as i32)
                 .unwrap_or(pinshot_core::Rgba::WHITE);
-            let v = (0.299 * c.r as f32 + 0.587 * c.g as f32 + 0.114 * c.b as f32) / 255.0;
-            let n = (v - 0.5) / 0.5;
             let i = (y * nw + x) as usize;
-            chw[i] = n;
-            chw[plane + i] = n;
-            chw[2 * plane + i] = n;
+            chw[i] = (c.r as f32 / 255.0 - 0.5) / 0.5;
+            chw[plane + i] = (c.g as f32 / 255.0 - 0.5) / 0.5;
+            chw[2 * plane + i] = (c.b as f32 / 255.0 - 0.5) / 0.5;
         }
     }
     let t = ort::value::Tensor::from_array((vec![1i64, 3, nh as i64, nw as i64], chw))
@@ -294,27 +295,47 @@ fn rec_line(
         .try_extract_tensor::<f32>()
         .map_err(|e| e.to_string())?;
     let dims: Vec<i64> = shape.iter().copied().collect();
-    let (tlen, classes) = if dims.len() >= 3 {
-        (dims[dims.len() - 2] as usize, dims[dims.len() - 1] as usize)
-    } else if dims.len() == 2 {
-        (dims[0] as usize, dims[1] as usize)
-    } else {
-        return Err("unexpected rec shape".into());
+    let nclass = keys.len();
+    let (tlen, classes, transposed) = match dims.as_slice() {
+        [_, t, c] if (*c as usize) >= nclass => (*t as usize, *c as usize, false),
+        [_, c, t] if (*c as usize) >= nclass => (*t as usize, *c as usize, true),
+        [_, _, t, c] if (*c as usize) >= nclass => (*t as usize, *c as usize, false),
+        [_, _, c, t] if (*c as usize) >= nclass => (*t as usize, *c as usize, true),
+        d if d.len() >= 3 => (
+            d[d.len() - 2] as usize,
+            d[d.len() - 1] as usize,
+            false,
+        ),
+        d if d.len() == 2 => (d[0] as usize, d[1] as usize, false),
+        _ => return Err("unexpected rec shape".into()),
     };
+    crate::logutil::log(&format!(
+        "ocr rec shape={dims:?} t={tlen} classes={classes} keys={} transposed={transposed}",
+        keys.len()
+    ));
     let mut idx = Vec::with_capacity(tlen);
     for ti in 0..tlen {
-        let row = &data[ti * classes..(ti + 1) * classes];
         let mut best = 0usize;
         let mut bv = f32::NEG_INFINITY;
-        for (i, v) in row.iter().enumerate() {
-            if *v > bv {
-                bv = *v;
-                best = i;
+        for c in 0..classes {
+            let v = if transposed {
+                data[c * tlen + ti]
+            } else {
+                data[ti * classes + c]
+            };
+            if v > bv {
+                bv = v;
+                best = c;
             }
         }
         idx.push(best);
     }
-    Ok(ctc_greedy(&idx, keys))
+    let standard = ctc_greedy(&idx, keys);
+    if !standard.trim().is_empty() {
+        return Ok(standard);
+    }
+    let alt = ctc_greedy_blank(&idx, keys, classes.saturating_sub(1));
+    Ok(if alt.trim().is_empty() { standard } else { alt })
 }
 
 #[cfg(any(feature = "ocr", unix))]

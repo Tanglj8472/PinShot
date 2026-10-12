@@ -5,7 +5,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use crate::draw::{
-    fill_rect, paint_color_picker, paint_pin, paint_toolbar, present_argb, stroke_rect,
+    fill_rect, paint_color_picker, paint_toolbar, present_argb, stroke_rect,
     PIN_SHADOW_M,
 };
 use crate::native;
@@ -83,6 +83,12 @@ pub struct PinWin {
     pub thumb: bool,
     color_picker: Option<ColorPicker>,
     mods: ModifiersState,
+    pub smooth: bool,
+    pub grayscale: bool,
+    pub invert: bool,
+    pub rotation: i32,
+    pub mirror_x: bool,
+    pub mirror_y: bool,
 }
 
 impl PinWin {
@@ -145,6 +151,12 @@ impl PinWin {
             thumb: false,
             color_picker: None,
             mods: ModifiersState::empty(),
+            smooth: true,
+            grayscale: false,
+            invert: false,
+            rotation: 0,
+            mirror_x: false,
+            mirror_y: false,
         };
         pin.redraw();
         crate::logutil::log(&format!(
@@ -685,7 +697,11 @@ impl PinWin {
                     }
                     self.drag = Some((p, self.current_tl()));
                 } else {
-                    if self.annotating && (self.annot.live.is_some() || self.annot.is_selecting()) {
+                    if self.annotating
+                        && (self.annot.live.is_some()
+                            || self.annot.is_selecting()
+                            || self.annot.is_editing_text())
+                    {
                         self.annot.release(self.img_pt(p));
                         self.persist_needed = true;
                         self.dirty = true;
@@ -889,6 +905,7 @@ impl PinWin {
 
     pub fn rotate(&mut self, turns: i32) {
         self.img = self.rendered().rotate90(turns);
+        self.rotation = ((self.rotation + turns * 90) % 360 + 360) % 360;
         self.annot.clear();
         self.apply_size();
         self.persist_needed = true;
@@ -897,6 +914,11 @@ impl PinWin {
 
     pub fn flip(&mut self, horizontal: bool) {
         self.img = self.rendered().flip(horizontal);
+        if horizontal {
+            self.mirror_x = !self.mirror_x;
+        } else {
+            self.mirror_y = !self.mirror_y;
+        }
         self.annot.clear();
         self.apply_size();
         self.persist_needed = true;
@@ -987,7 +1009,10 @@ impl PinWin {
             PinMenuAction::ToggleToolbar => self.show_toolbar(!self.annotating),
             PinMenuAction::ToggleClickThrough => self.set_click_through(!self.click_through),
             PinMenuAction::ToggleShadow => self.set_shadow(!self.shadow),
-            PinMenuAction::Zoom(pct) => self.set_scale(pct as f32 / 100.0),
+            PinMenuAction::Zoom(pct) => {
+                let s = if pct == 33 { 1.0 / 3.0 } else { pct as f32 / 100.0 };
+                self.set_scale(s);
+            }
             PinMenuAction::Rotate(t) => self.rotate(t),
             PinMenuAction::FlipH => self.flip(true),
             PinMenuAction::FlipV => self.flip(false),
@@ -1011,6 +1036,18 @@ impl PinWin {
                 ));
             }
             PinMenuAction::ResetZoom => self.set_scale(1.0),
+            PinMenuAction::ToggleSmooth => {
+                self.smooth = !self.smooth;
+                self.dirty = true;
+            }
+            PinMenuAction::ToggleGrayscale => {
+                self.grayscale = !self.grayscale;
+                self.dirty = true;
+            }
+            PinMenuAction::ToggleInvert => {
+                self.invert = !self.invert;
+                self.dirty = true;
+            }
         }
     }
 
@@ -1128,7 +1165,7 @@ impl PinWin {
         {
             return;
         }
-        let img_pm = paint_pin(
+        let img_pm = crate::draw::paint_pin_ex(
             &self.img,
             &self.annot,
             self.scale,
@@ -1136,6 +1173,9 @@ impl PinWin {
             self.glow,
             self.shadow,
             self.thumb,
+            self.smooth,
+            self.grayscale,
+            self.invert,
         );
         let mut pm =
             tiny_skia::Pixmap::new(ww, hh).unwrap_or_else(|| tiny_skia::Pixmap::new(8, 8).unwrap());
@@ -1193,11 +1233,10 @@ impl PinWin {
                     );
                     if self.annot.caret_visible() {
                         let caret_x = rr.x + 2.0 + self.annot.caret_x() * self.scale;
-                        crate::draw::stroke_rect(
+                        crate::draw::fill_rect(
                             &mut pm,
-                            Rect::new(caret_x, rr.y + 2.0, 1.0, rr.h - 4.0),
+                            Rect::new(caret_x, rr.y + 2.0, 2.0, (rr.h - 4.0).max(8.0)),
                             st.color,
-                            1.0,
                         );
                     }
                 }

@@ -12,7 +12,8 @@ fn main() {
     if let Some(i) = args.iter().position(|a| a == "--ocr-window") {
         let path = args.get(i + 1).cloned().unwrap_or_default();
         let translate = args.iter().any(|a| a == "--ocr-translate");
-        pinshot::run_ocr_window(&path, translate);
+        let error = args.iter().any(|a| a == "--ocr-error");
+        pinshot::run_ocr_window(&path, translate, error);
         return;
     }
     if args.iter().any(|a| a == "--version" || a == "-V") {

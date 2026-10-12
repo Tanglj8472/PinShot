@@ -359,6 +359,7 @@ impl App {
         self.history.entries.truncate(self.cfg.history_max as usize);
         self.persist_history();
         self.overlay = None;
+        crate::native::release_stray_grabs();
         let resnip = matches!(res, OverlayResult::Resnip);
         match res {
             OverlayResult::Copy(img, _) => {
@@ -401,12 +402,15 @@ impl App {
         ));
         let proxy = self.proxy.clone();
         std::thread::spawn(move || {
-            let text = crate::ocr_run::recognize(&img).unwrap_or_else(|e| {
+            let result = crate::ocr_run::recognize(&img).map_err(|e| {
                 crate::logutil::log(&format!("ocr fail: {e}"));
                 e
             });
-            crate::logutil::log(&format!("ocr done {} chars", text.chars().count()));
-            let _ = proxy.send_event(AppEvent::OcrDone(text, translate));
+            match &result {
+                Ok(text) => crate::logutil::log(&format!("ocr done {} chars", text.chars().count())),
+                Err(e) => crate::logutil::log(&format!("ocr empty: {e}")),
+            }
+            let _ = proxy.send_event(AppEvent::OcrDone(result, translate));
         });
     }
 
@@ -464,7 +468,10 @@ impl App {
             std::thread::spawn(move || {
                 let backup = clipboard::read_best();
                 if crate::result_win::send_ctrl_c().is_err() {
-                    let _ = proxy.send_event(AppEvent::OcrDone(String::new(), true));
+                    let _ = proxy.send_event(AppEvent::OcrDone(
+                        Err(tr("Could not copy selected text.")),
+                        true,
+                    ));
                     return;
                 }
                 std::thread::sleep(Duration::from_millis(80));
@@ -476,7 +483,12 @@ impl App {
                 if let ClipContent::Image(img) = backup {
                     let _ = clipboard::write_image(&img);
                 }
-                let _ = proxy.send_event(AppEvent::OcrDone(text, true));
+                let result = if text.trim().is_empty() {
+                    Err(tr("Could not copy selected text."))
+                } else {
+                    Ok(text)
+                };
+                let _ = proxy.send_event(AppEvent::OcrDone(result, true));
             });
         }
     }
@@ -668,6 +680,12 @@ impl App {
             groups: self.cfg.groups.clone(),
             img_w: p.img.width,
             img_h: p.img.height,
+            smooth: p.smooth,
+            grayscale: p.grayscale,
+            invert: p.invert,
+            rotation: p.rotation,
+            mirror_x: p.mirror_x,
+            mirror_y: p.mirror_y,
         };
         let (mw, mh) = crate::pin_menu::menu_pixel_size(&state);
         let (mx, my) = crate::pin_menu::clamp_menu_pos(
@@ -905,7 +923,10 @@ impl ApplicationHandler<AppEvent> for App {
                 }
             }
             AppEvent::Ipc(_) => {}
-            AppEvent::OcrDone(text, translate) => crate::result_win::open(text, translate),
+            AppEvent::OcrDone(result, translate) => match result {
+                Ok(text) => crate::result_win::open(text, translate),
+                Err(err) => crate::result_win::open_error(err),
+            },
         }
     }
 
@@ -1058,6 +1079,7 @@ impl ApplicationHandler<AppEvent> for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        crate::result_win::reap_child();
         event_loop.set_control_flow(ControlFlow::Wait);
         if self.hotkeys.is_none() {
             if let Ok(h) = native::install_hotkeys(self.proxy.clone(), &self.cfg) {

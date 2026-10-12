@@ -474,6 +474,19 @@ impl Drop for OverlayKeyGrab {
     }
 }
 
+/// Best-effort ungrab if a previous overlay/OCR helper left the pointer or
+/// keyboard grabbed. Only the grabbing client can truly ungrab; this still
+/// helps when that client has already disconnected.
+pub fn release_stray_grabs() {
+    let Ok((c, screen)) = conn() else {
+        return;
+    };
+    let _ = screen;
+    let _ = c.ungrab_keyboard(x11rb::CURRENT_TIME);
+    let _ = c.ungrab_pointer(x11rb::CURRENT_TIME);
+    let _ = c.flush();
+}
+
 struct KeyMap {
     min: u8,
     stride: usize,
