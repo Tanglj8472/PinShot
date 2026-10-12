@@ -2,10 +2,10 @@
 // SnipClone — entry / state machine
 //
 // 装配对齐 PinShot App.snip：
-//   Idle → Selection → Capture(region) → Annotation(Annotator+Toolbar)
+//   Idle → Capture(virtual freeze) → Selection(on freeze) → crop → Annotation
 //        → copy / save / pin → Idle
 //
-// 底层：ZoomIt 风格 GDI 捕获 + D2D 矢量批注 + WIC/剪贴板
+// 底层：ZoomIt 风格 GDI BitBlt|CAPTUREBLT + D2D 矢量批注 + WIC/剪贴板
 // UX：PinShot 工具栏动作与 Annotator 所有权拆分
 //==============================================================================
 #include "AnnotationOverlay/AnnotationOverlay.h"
@@ -35,21 +35,16 @@ bool Busy()
 
 void BeginAnnotationFromSelection()
 {
-    const auto& sel = snip::SelectionOverlay::LastSelection();
-    if (!sel.hasSelection)
-    {
-        return;
-    }
-
-    auto captured = snip::ScreenCapture::CaptureRegion(sel.screenRect);
-    if (captured.Empty())
+    // Crop from the freeze taken before the overlay — not a second live BitBlt.
+    auto cropped = snip::SelectionOverlay::LastCrop();
+    if (cropped.Empty())
     {
         MessageBoxW(g_mainWnd, L"Screen capture failed.", L"SnipClone", MB_ICONERROR | MB_OK);
         return;
     }
 
     g_annotation = std::make_unique<snip::AnnotationOverlay>();
-    if (!g_annotation->Start(g_instance, g_mainWnd, std::move(captured)))
+    if (!g_annotation->Start(g_instance, g_mainWnd, std::move(cropped)))
     {
         g_annotation.reset();
         MessageBoxW(g_mainWnd, L"Failed to open annotation overlay.", L"SnipClone", MB_ICONERROR | MB_OK);
@@ -63,8 +58,16 @@ void BeginSelection()
         return;
     }
 
+    // PinShot: grab virtual desktop first, then show overlay on that freeze.
+    auto freeze = snip::ScreenCapture::CaptureVirtualScreen();
+    if (freeze.Empty())
+    {
+        MessageBoxW(g_mainWnd, L"Screen capture failed.", L"SnipClone", MB_ICONERROR | MB_OK);
+        return;
+    }
+
     g_selection = std::make_unique<snip::SelectionOverlay>();
-    if (!g_selection->Start(g_instance, g_mainWnd))
+    if (!g_selection->Start(g_instance, g_mainWnd, std::move(freeze)))
     {
         g_selection.reset();
         MessageBoxW(g_mainWnd, L"Failed to create selection overlay.", L"SnipClone", MB_ICONERROR | MB_OK);

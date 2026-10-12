@@ -1,10 +1,12 @@
 //==============================================================================
-// SnipClone — region screen capture (GDI BitBlt)
+// SnipClone — GDI BitBlt capture (ZoomIt Utility / Zoomit.cpp pattern)
 //
-// BitBlt-from-screen pattern inspired by PowerToys ZoomIt Utility /
-// CreateGdiplusBitmap helpers (MIT). Rewritten for region-first snip.
+// Upstream ZoomIt uses CreateCompatibleDC + BitBlt(... SRCCOPY|CAPTUREBLT)
+// into a 32bpp top-down DIB, then forces usable alpha for layered/D2D paths.
 //==============================================================================
 #include "ScreenCapture.h"
+
+#include "../Common/DpiHelper.h"
 
 #include <cstring>
 
@@ -14,10 +16,76 @@ namespace
 {
 int AlignStride(int widthPixels)
 {
-    // 32bpp → width*4 already 4-byte aligned; keep explicit for clarity.
     return widthPixels * 4;
 }
+
+void ForceOpaqueAlpha(CaptureResult& out)
+{
+    // BitBlt / CAPTUREBLT often leaves alpha=0; layered ULW_ALPHA needs opaque.
+    for (int y = 0; y < out.height; ++y)
+    {
+        auto* row = reinterpret_cast<std::uint32_t*>(
+            out.bgra.data() + static_cast<size_t>(y) * out.stride);
+        for (int x = 0; x < out.width; ++x)
+        {
+            row[x] |= 0xFF000000u;
+        }
+    }
+}
 } // namespace
+
+CaptureResult CaptureResult::CropToScreenRect(const RECT& want) const
+{
+    CaptureResult out{};
+    if (Empty())
+    {
+        return out;
+    }
+
+    RECT src = screenRect;
+    RECT clipped = want;
+    if (clipped.left < src.left)
+    {
+        clipped.left = src.left;
+    }
+    if (clipped.top < src.top)
+    {
+        clipped.top = src.top;
+    }
+    if (clipped.right > src.right)
+    {
+        clipped.right = src.right;
+    }
+    if (clipped.bottom > src.bottom)
+    {
+        clipped.bottom = src.bottom;
+    }
+
+    const int w = clipped.right - clipped.left;
+    const int h = clipped.bottom - clipped.top;
+    if (w <= 0 || h <= 0)
+    {
+        return out;
+    }
+
+    const int x0 = clipped.left - src.left;
+    const int y0 = clipped.top - src.top;
+
+    out.width = w;
+    out.height = h;
+    out.stride = AlignStride(w);
+    out.screenRect = clipped;
+    out.bgra.resize(static_cast<size_t>(out.stride) * static_cast<size_t>(h));
+
+    for (int y = 0; y < h; ++y)
+    {
+        const auto* s = bgra.data() + static_cast<size_t>(y0 + y) * stride
+            + static_cast<size_t>(x0) * 4;
+        auto* d = out.bgra.data() + static_cast<size_t>(y) * out.stride;
+        memcpy(d, s, static_cast<size_t>(w) * 4);
+    }
+    return out;
+}
 
 CaptureResult ScreenCapture::CaptureRegion(const RECT& screenRect)
 {
@@ -62,30 +130,35 @@ CaptureResult ScreenCapture::CaptureRegion(const RECT& screenRect)
     }
 
     HGDIOBJ old = SelectObject(memDc, dib);
-    // SRCCOPY from virtual-desktop coordinates (multi-monitor safe with SM_*VIRTUALSCREEN origin).
-    BitBlt(memDc, 0, 0, width, height, screenDc, screenRect.left, screenRect.top, SRCCOPY);
+    // ZoomIt: SRCCOPY | CAPTUREBLT so layered desktop composition is included.
+    BitBlt(
+        memDc,
+        0,
+        0,
+        width,
+        height,
+        screenDc,
+        screenRect.left,
+        screenRect.top,
+        SRCCOPY | CAPTUREBLT);
 
     out.width = width;
     out.height = height;
     out.stride = AlignStride(width);
     out.bgra.resize(static_cast<size_t>(out.stride) * static_cast<size_t>(height));
     memcpy(out.bgra.data(), bits, out.bgra.size());
-
-    // Force opaque alpha — BitBlt often leaves alpha=0 which breaks layered/D2D previews.
-    for (int y = 0; y < height; ++y)
-    {
-        auto* row = reinterpret_cast<std::uint32_t*>(out.bgra.data() + static_cast<size_t>(y) * out.stride);
-        for (int x = 0; x < width; ++x)
-        {
-            row[x] |= 0xFF000000u;
-        }
-    }
+    ForceOpaqueAlpha(out);
 
     SelectObject(memDc, old);
     DeleteObject(dib);
     DeleteDC(memDc);
     ReleaseDC(nullptr, screenDc);
     return out;
+}
+
+CaptureResult ScreenCapture::CaptureVirtualScreen()
+{
+    return CaptureRegion(GetVirtualScreenRect());
 }
 
 } // namespace snip

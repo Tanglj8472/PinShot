@@ -1,14 +1,10 @@
 //==============================================================================
-// SnipClone — fullscreen selection overlay (V0)
+// SnipClone — fullscreen selection overlay on a frozen capture
 //
-// Uses UpdateLayeredWindow + D2D DC render target for per-pixel alpha
-// (true dim mask with a clear selection hole). Avoids the V0 skeleton pitfalls:
-//   - no WS_EX_TRANSPARENT while selecting (must receive mouse)
-//   - no LWA_COLORKEY with HwndRenderTarget
-//   - virtual screen, not primary-only SM_CXSCREEN
+// PinShot: capture virtual desktop first, paint that pixmap, dim outside the
+// selection (selection shows the freeze undimmed — not a live desktop hole).
 //
-// Drag / ESC interaction inspired by PowerToys ZoomIt SelectRectangle
-// (MIT License, Microsoft / Sysinternals).
+// ZoomIt SelectRectangle: drag / ESC / topmost layered chrome (MIT patterns).
 //==============================================================================
 #include "SelectionOverlay.h"
 
@@ -18,6 +14,7 @@
 #include <windowsx.h>
 
 #include <cwchar>
+#include <vector>
 
 #pragma comment(lib, "d2d1.lib")
 #pragma comment(lib, "dwrite.lib")
@@ -26,12 +23,50 @@ namespace snip
 {
 
 SelectionModel SelectionOverlay::s_lastSelection{};
+CaptureResult SelectionOverlay::s_lastCrop{};
 
 namespace
 {
 constexpr wchar_t kClassName[] = L"SnipCloneSelectionOverlay";
 constexpr LONG kMinSelectionPx = 2;
+
+ID2D1Bitmap* CreatePremulBitmap(ID2D1RenderTarget* rt, const CaptureResult& image)
+{
+    if (!rt || image.Empty())
+    {
+        return nullptr;
+    }
+
+    std::vector<std::uint8_t> premul(image.bgra.size());
+    for (int y = 0; y < image.height; ++y)
+    {
+        const auto* src = image.bgra.data() + static_cast<size_t>(y) * image.stride;
+        auto* dst = premul.data() + static_cast<size_t>(y) * image.stride;
+        for (int x = 0; x < image.width; ++x)
+        {
+            const std::uint8_t b = src[x * 4 + 0];
+            const std::uint8_t g = src[x * 4 + 1];
+            const std::uint8_t r = src[x * 4 + 2];
+            const std::uint8_t a = src[x * 4 + 3] ? src[x * 4 + 3] : 255;
+            dst[x * 4 + 0] = static_cast<std::uint8_t>(b * a / 255);
+            dst[x * 4 + 1] = static_cast<std::uint8_t>(g * a / 255);
+            dst[x * 4 + 2] = static_cast<std::uint8_t>(r * a / 255);
+            dst[x * 4 + 3] = a;
+        }
+    }
+
+    D2D1_BITMAP_PROPERTIES props = D2D1::BitmapProperties(
+        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+    ID2D1Bitmap* bmp = nullptr;
+    rt->CreateBitmap(
+        D2D1::SizeU(static_cast<UINT32>(image.width), static_cast<UINT32>(image.height)),
+        premul.data(),
+        static_cast<UINT32>(image.stride),
+        props,
+        &bmp);
+    return bmp;
 }
+} // namespace
 
 SelectionOverlay::SelectionOverlay() = default;
 
@@ -50,9 +85,18 @@ const SelectionModel& SelectionOverlay::LastSelection()
     return s_lastSelection;
 }
 
-bool SelectionOverlay::Start(HINSTANCE instance, HWND owner, DoneCallback callback)
+const CaptureResult& SelectionOverlay::LastCrop()
 {
-    if (m_hwnd)
+    return s_lastCrop;
+}
+
+bool SelectionOverlay::Start(
+    HINSTANCE instance,
+    HWND owner,
+    CaptureResult freezeFrame,
+    DoneCallback callback)
+{
+    if (m_hwnd || freezeFrame.Empty())
     {
         return false;
     }
@@ -62,6 +106,7 @@ bool SelectionOverlay::Start(HINSTANCE instance, HWND owner, DoneCallback callba
     m_callback = std::move(callback);
     m_dragging = false;
     m_model.Clear();
+    m_freeze = std::move(freezeFrame);
 
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
@@ -81,7 +126,6 @@ bool SelectionOverlay::Start(HINSTANCE instance, HWND owner, DoneCallback callba
         return false;
     }
 
-    // Exclude overlay from future Graphics Capture (V1+); harmless on older builds.
     SetWindowDisplayAffinity(m_hwnd, WDA_EXCLUDEFROMCAPTURE);
 
     ShowWindow(m_hwnd, SW_SHOW);
@@ -101,10 +145,12 @@ void SelectionOverlay::Stop(bool confirmed)
     if (confirmed && m_model.hasSelection)
     {
         s_lastSelection = m_model;
+        s_lastCrop = m_freeze.CropToScreenRect(m_model.screenRect);
     }
     else
     {
         m_model.Clear();
+        s_lastCrop = {};
     }
 
     const HWND hwnd = m_hwnd;
@@ -127,7 +173,7 @@ void SelectionOverlay::Stop(bool confirmed)
         PostMessageW(
             m_owner,
             WM_SNIP_SELECTION_DONE,
-            confirmed && s_lastSelection.hasSelection ? 1 : 0,
+            confirmed && s_lastSelection.hasSelection && !s_lastCrop.Empty() ? 1 : 0,
             0);
     }
 }
@@ -142,7 +188,6 @@ LRESULT CALLBACK SelectionOverlay::StaticWndProc(HWND hwnd, UINT msg, WPARAM wPa
         self->m_hwnd = hwnd;
         return TRUE;
     }
-
     auto* self = reinterpret_cast<SelectionOverlay*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
     if (!self)
     {
@@ -208,7 +253,6 @@ LRESULT SelectionOverlay::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
         OffsetRect(&screen, m_screenOrigin.left, m_screenOrigin.top);
         m_model.Set(screen);
 
-        // V0: confirm selection then close (capture arrives in V1).
         Stop(m_model.hasSelection);
         return 0;
     }
@@ -261,6 +305,20 @@ LRESULT SelectionOverlay::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
     return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
+bool SelectionOverlay::EnsureFreezeBitmap()
+{
+    if (m_freezeBmp)
+    {
+        return true;
+    }
+    if (!m_rt || m_freeze.Empty())
+    {
+        return false;
+    }
+    m_freezeBmp = CreatePremulBitmap(m_rt, m_freeze);
+    return m_freezeBmp != nullptr;
+}
+
 bool SelectionOverlay::EnsureRenderResources(int width, int height)
 {
     if (width <= 0 || height <= 0)
@@ -268,7 +326,7 @@ bool SelectionOverlay::EnsureRenderResources(int width, int height)
         return false;
     }
 
-    if (m_bitmapW == width && m_bitmapH == height && m_rt && m_dib && m_d2dFactory)
+    if (m_bitmapW == width && m_bitmapH == height && m_rt && m_dib && m_d2dFactory && m_freezeBmp)
     {
         return true;
     }
@@ -332,8 +390,8 @@ bool SelectionOverlay::EnsureRenderResources(int width, int height)
     D2D1_RENDER_TARGET_PROPERTIES props = D2D1::RenderTargetProperties(
         D2D1_RENDER_TARGET_TYPE_DEFAULT,
         D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED),
-        0,
-        0,
+        static_cast<FLOAT>(kDpiBaseline),
+        static_cast<FLOAT>(kDpiBaseline),
         D2D1_RENDER_TARGET_USAGE_NONE,
         D2D1_FEATURE_LEVEL_DEFAULT);
 
@@ -355,11 +413,22 @@ bool SelectionOverlay::EnsureRenderResources(int width, int height)
 
     m_bitmapW = width;
     m_bitmapH = height;
+
+    if (!EnsureFreezeBitmap())
+    {
+        ReleaseSurfaceResources();
+        return false;
+    }
     return m_brushWhite && m_brushDim;
 }
 
 void SelectionOverlay::ReleaseSurfaceResources()
 {
+    if (m_freezeBmp)
+    {
+        m_freezeBmp->Release();
+        m_freezeBmp = nullptr;
+    }
     if (m_brushWhite)
     {
         m_brushWhite->Release();
@@ -420,23 +489,24 @@ void SelectionOverlay::ReleaseAllResources()
         m_d2dFactory->Release();
         m_d2dFactory = nullptr;
     }
+    m_freeze = {};
 }
 
 void SelectionOverlay::RenderToBitmap()
 {
-    if (!m_rt)
+    if (!m_rt || !m_freezeBmp)
     {
         return;
     }
 
-    m_rt->BeginDraw();
-    m_rt->Clear(D2D1::ColorF(0, 0, 0, 0));
-
     const float w = static_cast<float>(m_bitmapW);
     const float h = static_cast<float>(m_bitmapH);
 
-    // Full-screen dim.
-    m_rt->FillRectangle(D2D1::RectF(0, 0, w, h), m_brushDim);
+    m_rt->BeginDraw();
+    m_rt->Clear(D2D1::ColorF(0, 0, 0, 0));
+
+    // Frozen desktop (PinShot paintEvent: drawPixmap(shot)).
+    m_rt->DrawBitmap(m_freezeBmp, D2D1::RectF(0, 0, w, h));
 
     if (m_model.hasSelection)
     {
@@ -445,15 +515,27 @@ void SelectionOverlay::RenderToBitmap()
         const float r = static_cast<float>(m_model.screenRect.right - m_screenOrigin.left);
         const float b = static_cast<float>(m_model.screenRect.bottom - m_screenOrigin.top);
 
-        // Punch a transparent hole so the desktop shows through the selection.
-        m_rt->PushAxisAlignedClip(D2D1::RectF(l, t, r, b), D2D1_ANTIALIAS_MODE_ALIASED);
-        m_rt->Clear(D2D1::ColorF(0, 0, 0, 0));
-        m_rt->PopAxisAlignedClip();
+        // Dim outside selection — keep freeze visible inside (no transparent hole).
+        if (t > 0.f)
+        {
+            m_rt->FillRectangle(D2D1::RectF(0, 0, w, t), m_brushDim);
+        }
+        if (b < h)
+        {
+            m_rt->FillRectangle(D2D1::RectF(0, b, w, h), m_brushDim);
+        }
+        if (l > 0.f && b > t)
+        {
+            m_rt->FillRectangle(D2D1::RectF(0, t, l, b), m_brushDim);
+        }
+        if (r < w && b > t)
+        {
+            m_rt->FillRectangle(D2D1::RectF(r, t, w, b), m_brushDim);
+        }
 
         const float stroke = static_cast<float>(ScaleForDpi(2, m_dpi));
         m_rt->DrawRectangle(D2D1::RectF(l, t, r, b), m_brushWhite, stroke);
 
-        // Corner ticks for visibility.
         const float tick = static_cast<float>(ScaleForDpi(8, m_dpi));
         m_rt->DrawLine(D2D1::Point2F(l, t), D2D1::Point2F(l + tick, t), m_brushWhite, stroke);
         m_rt->DrawLine(D2D1::Point2F(l, t), D2D1::Point2F(l, t + tick), m_brushWhite, stroke);
@@ -464,7 +546,6 @@ void SelectionOverlay::RenderToBitmap()
         m_rt->DrawLine(D2D1::Point2F(r, b), D2D1::Point2F(r - tick, b), m_brushWhite, stroke);
         m_rt->DrawLine(D2D1::Point2F(r, b), D2D1::Point2F(r, b - tick), m_brushWhite, stroke);
 
-        // Live size label: "W × H"
         if (m_textFormat)
         {
             wchar_t label[64]{};
@@ -508,6 +589,11 @@ void SelectionOverlay::RenderToBitmap()
             }
         }
     }
+    else
+    {
+        // No selection yet: full dim over freeze (PinShot idle).
+        m_rt->FillRectangle(D2D1::RectF(0, 0, w, h), m_brushDim);
+    }
 
     HRESULT hr = m_rt->EndDraw();
     if (hr == D2DERR_RECREATE_TARGET)
@@ -532,7 +618,6 @@ void SelectionOverlay::Present()
         return;
     }
 
-    // Re-bind DC each frame (required after GDI ops / size).
     RECT bind{ 0, 0, width, height };
     if (FAILED(m_rt->BindDC(m_memDc, &bind)))
     {

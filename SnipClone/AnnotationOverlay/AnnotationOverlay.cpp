@@ -75,6 +75,15 @@ bool AnnotationOverlay::Start(HINSTANCE instance, HWND owner, CaptureResult imag
 
     SetWindowDisplayAffinity(m_hwnd, WDA_EXCLUDEFROMCAPTURE);
 
+    // Must have a visible freeze crop before the toolbar appears (blank-host bug).
+    if (!EnsureSurface())
+    {
+        DestroyWindow(m_hwnd);
+        m_hwnd = nullptr;
+        ReleaseSurface();
+        return false;
+    }
+
     m_ann.SetChangedCallback([this]() {
         Present();
         if (m_toolbar)
@@ -88,6 +97,10 @@ bool AnnotationOverlay::Start(HINSTANCE instance, HWND owner, CaptureResult imag
     });
     m_ann.SetTool(ToolKind::Pen);
 
+    ShowWindow(m_hwnd, SW_SHOW);
+    SetForegroundWindow(m_hwnd);
+    Present();
+
     m_toolbar = std::make_unique<Toolbar>();
     m_toolbar->Create(instance, m_hwnd, &m_ann, [this](ToolbarAction a, ToolKind t) {
         OnToolbarAction(a, t);
@@ -96,10 +109,6 @@ bool AnnotationOverlay::Start(HINSTANCE instance, HWND owner, CaptureResult imag
     m_toolbar->PlaceBelow(m_base.screenRect);
 
     m_textEditor = std::make_unique<TextEditor>();
-
-    ShowWindow(m_hwnd, SW_SHOW);
-    SetForegroundWindow(m_hwnd);
-    Present();
     return true;
 }
 
@@ -617,14 +626,23 @@ bool AnnotationOverlay::EnsureSurface()
 
     D2D1_RENDER_TARGET_PROPERTIES props = D2D1::RenderTargetProperties(
         D2D1_RENDER_TARGET_TYPE_DEFAULT,
-        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED),
+        96.f,
+        96.f);
     if (FAILED(m_renderer.Factory()->CreateDCRenderTarget(&props, &m_rt)))
     {
         return false;
     }
     RECT bind{ 0, 0, w, h };
-    m_rt->BindDC(m_memDc, &bind);
+    if (FAILED(m_rt->BindDC(m_memDc, &bind)))
+    {
+        return false;
+    }
     m_baseBmp = m_renderer.CreateBitmapFromCapture(m_rt, m_base);
+    if (!m_baseBmp)
+    {
+        return false;
+    }
     m_w = w;
     m_h = h;
     return true;
@@ -673,11 +691,22 @@ void AnnotationOverlay::Present()
         return;
     }
     RECT bind{ 0, 0, m_w, m_h };
-    m_rt->BindDC(m_memDc, &bind);
+    if (FAILED(m_rt->BindDC(m_memDc, &bind)))
+    {
+        return;
+    }
     m_rt->BeginDraw();
     m_rt->Clear(D2D1::ColorF(0, 0, 0, 0));
     m_renderer.DrawScene(m_rt, m_baseBmp, &m_base, m_ann);
-    m_rt->EndDraw();
+    const HRESULT hr = m_rt->EndDraw();
+    if (FAILED(hr))
+    {
+        if (hr == D2DERR_RECREATE_TARGET)
+        {
+            ReleaseSurface();
+        }
+        return;
+    }
 
     POINT ptSrc{ 0, 0 };
     SIZE size{ m_w, m_h };

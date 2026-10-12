@@ -6,12 +6,15 @@ SnipClone is a **clean redesign** that references public APIs and interaction
 patterns from Microsoft PowerToys ZoomIt (`src/modules/ZoomIt/`), especially:
 
 - DPI / monitor helpers (`Utility.cpp` concepts)
+- GDI screen copy via `BitBlt(... SRCCOPY|CAPTUREBLT)` into a 32bpp DIB
+  (`Zoomit.cpp` / Utility capture helpers)
 - Rectangle selection drag / ESC cancel (`SelectRectangle`)
 - Layered topmost overlay window style
 - Per-Monitor DPI awareness manifest settings
 
-This repository does **not** vendor the ZoomIt sources wholesale. Logic was
-rewritten for Snipaste-style “select region first, then capture”.
+This repository does **not** vendor the ZoomIt sources wholesale. Capture and
+selection chrome were rewritten; the snip assembly follows PinShot/Snipaste
+(“freeze virtual desktop → select on freeze → crop → annotate”).
 
 ```
 The MIT License

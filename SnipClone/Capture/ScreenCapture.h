@@ -1,8 +1,9 @@
 //==============================================================================
-// SnipClone — region screen capture
+// SnipClone — screen capture (GDI BitBlt, ZoomIt-style)
 //
-// V1: GDI BitBlt fallback (ZoomIt-style screen DC copy).
-// Later: Windows.Graphics.Capture preferred path.
+// PinShot / Snipaste assembly: capture virtual desktop first (freeze), then
+// select a region on that frozen frame. ZoomIt Draw mode similarly works from
+// a screen-compatible DC buffer (BitBlt + CAPTUREBLT).
 //==============================================================================
 #pragma once
 
@@ -14,7 +15,10 @@ namespace snip
 class ScreenCapture
 {
 public:
-    // Capture an absolute virtual-desktop rectangle into a top-down BGRA buffer.
+    // Full virtual desktop (all monitors). Call before showing any overlay.
+    static CaptureResult CaptureVirtualScreen();
+
+    // Absolute virtual-desktop rectangle → top-down BGRA.
     static CaptureResult CaptureRegion(const RECT& screenRect);
 };
 

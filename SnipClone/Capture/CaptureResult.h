@@ -22,6 +22,9 @@ struct CaptureResult
     bool Empty() const { return bgra.empty() || width <= 0 || height <= 0; }
 
     SIZE Size() const { return { width, height }; }
+
+    // Crop a virtual-desktop rect out of this buffer (PinShot freeze → region).
+    CaptureResult CropToScreenRect(const RECT& screenRect) const;
 };
 
 } // namespace snip

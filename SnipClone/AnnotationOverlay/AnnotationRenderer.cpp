@@ -410,8 +410,21 @@ void AnnotationRenderer::DrawScene(
     EnsureBrushes(rt);
     if (baseBitmap)
     {
-        const auto sz = rt->GetSize();
-        rt->DrawBitmap(baseBitmap, D2D1::RectF(0, 0, sz.width, sz.height));
+        // Prefer pixel size from capture; GetSize() is DIP and can mismatch if DPI unset.
+        float dw = 0.f;
+        float dh = 0.f;
+        if (basePixels && !basePixels->Empty())
+        {
+            dw = static_cast<float>(basePixels->width);
+            dh = static_cast<float>(basePixels->height);
+        }
+        else
+        {
+            const auto px = baseBitmap->GetPixelSize();
+            dw = static_cast<float>(px.width);
+            dh = static_cast<float>(px.height);
+        }
+        rt->DrawBitmap(baseBitmap, D2D1::RectF(0, 0, dw, dh));
     }
     for (const auto& cmd : stack.Shapes())
     {

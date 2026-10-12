@@ -4,32 +4,34 @@
 
 | 层 | 参考 | SnipClone 落点 |
 |----|------|----------------|
-| 屏幕捕获 / DPI / Layered / 矢量绘制底层 | PowerToys ZoomIt（MIT） | `Capture/` · `Common/DpiHelper` · D2D `AnnotationRenderer` · `ImageUtil` |
+| 屏幕捕获 / DPI / Layered / 矢量绘制底层 | PowerToys ZoomIt（MIT，模式级参考，未整棵 vendoring） | `Capture/` · `Common/DpiHelper` · D2D `AnnotationRenderer` · `ImageUtil` |
 | 批注功能组装（谁拥有什么、工具栏怎么对话、导出） | PinShot（自研 Snipaste 式） | `AnnotationOverlay` + `DrawStack` + `Toolbar` + `PinManager` |
 
 ## PinShot 对位
 
 | PinShot | SnipClone |
 |---------|-----------|
-| `App.snip` → capture → `SnipOverlay` | `main` → `SelectionOverlay` → `ScreenCapture` → `AnnotationOverlay` |
+| `App.snip` → `capture_virtual()` → `SnipOverlay(shot)` | `main` → `CaptureVirtualScreen` → `SelectionOverlay(freeze)` → crop → `AnnotationOverlay` |
 | `Annotator`（shapes/undo/tool） | `DrawStack` |
 | `ToolDock.action` / `set_tool` | `Toolbar` → `OnToolbarAction` / `DrawStack::SetTool` |
-| `ann.composed()` + crop | `AnnotationRenderer::Compose`（区域捕获后已是选区大小，无需再裁） |
+| `ann.composed()` + crop | `LastCrop()` 已是选区；`AnnotationRenderer::Compose` 叠批注 |
 | `copied` / `pinned` / `saved` | `DoCopy` / `DoPin` / `DoSave` |
 | `PinWindow` + `ALL_PINS` | `PinWindow` + `PinManager` |
 
-## 与 ZoomIt 的流程差
+## 与 ZoomIt 的关系（诚实说明）
 
-ZoomIt：全屏抓图 → 全屏批注。  
-SnipClone / PinShot 式：先框选 →（本工程）只捕获选区 → 选区尺寸 Overlay + 底部工具栏批注 → 复制/保存/贴图。
+- **有参考**：ZoomIt `Utility`/`Zoomit.cpp` 的 GDI `BitBlt(... SRCCOPY\|CAPTUREBLT)`、32bpp DIB、DPI 辅助、以及 `SelectRectangle` 的拖拽/ESC 交互思路（MIT，见 `THIRD_PARTY_NOTICES.md`）。
+- **没有**：把 ZoomIt 源码整目录拷进仓库；也没有复用 ZoomIt 的全屏画布批注状态机。
+- **流程差**：ZoomIt Draw 多为全屏缓冲上批注；SnipClone / PinShot 式是 **先冻结虚拟桌面 → 在冻结图上框选 → 裁切 → 选区 Overlay + 底部工具栏**。
 
 ## 数据流
 
 ```
 Ctrl+Shift+S
-  → SelectionOverlay（只画选框）
-  → ScreenCapture::CaptureRegion(screenRect)   // GDI BitBlt，ZoomIt 风格
-  → AnnotationOverlay 拥有 base 位图
+  → ScreenCapture::CaptureVirtualScreen()     // 先冻结（PinShot）
+  → SelectionOverlay 画冻结图 + 区外变暗 + 选框
+  → freeze.CropToScreenRect(selection)
+  → AnnotationOverlay 拥有 crop 位图
        ├─ DrawStack（笔/矩形/椭圆/箭头/文字/马赛克 + undo）
        ├─ Toolbar（工具 + w-/w+/clr + undo/redo + close/pin/save/copy）
        └─ Compose → ImageUtil 剪贴板/PNG 或 PinManager::CreatePin

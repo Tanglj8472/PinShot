@@ -1,17 +1,18 @@
 //==============================================================================
-// SnipClone — fullscreen selection overlay (V0)
+// SnipClone — fullscreen selection overlay
 //
-// Snipaste-style: dim mask + clear hole + border + live pixel size.
-// Does NOT capture the screen (capture lands in V1).
+// PinShot assembly: paint a frozen virtual-desktop capture, dim outside the
+// selection (do NOT punch through to the live desktop), border + size label.
 //
-// Interaction pattern inspired by PowerToys ZoomIt SelectRectangle
-// (MIT License, Microsoft / Sysinternals) — rewritten for region-first snip.
+// Interaction drag/ESC inspired by PowerToys ZoomIt SelectRectangle (MIT).
 //==============================================================================
 #pragma once
 
 #include "SelectionModel.h"
 
+#include "../Capture/CaptureResult.h"
 #include "../Common/WinCompat.h"
+
 #include <d2d1.h>
 #include <dwrite.h>
 
@@ -21,7 +22,6 @@ namespace snip
 {
 
 // Posted to owner when overlay closes. wParam: 1=confirmed, 0=cancelled.
-// lParam: unused (read LastSelection() for rect).
 inline constexpr UINT WM_SNIP_SELECTION_DONE = WM_APP + 0x51;
 
 class SelectionOverlay
@@ -35,24 +35,26 @@ public:
     SelectionOverlay(const SelectionOverlay&) = delete;
     SelectionOverlay& operator=(const SelectionOverlay&) = delete;
 
-    // Create + show overlay. owner receives WM_SNIP_SELECTION_DONE on close.
-    bool Start(HINSTANCE instance, HWND owner, DoneCallback callback = {});
+    // freezeFrame: full virtual-desktop capture taken BEFORE this overlay shows.
+    bool Start(HINSTANCE instance, HWND owner, CaptureResult freezeFrame, DoneCallback callback = {});
     void Stop(bool confirmed);
 
     HWND Window() const { return m_hwnd; }
     bool IsActive() const { return m_hwnd != nullptr; }
     const SelectionModel& Model() const { return m_model; }
 
-    // Last confirmed selection (survives overlay destroy until next Start).
     static const SelectionModel& LastSelection();
+    // Crop of the freeze frame for the last confirmed selection.
+    static const CaptureResult& LastCrop();
 
 private:
     static LRESULT CALLBACK StaticWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
     LRESULT WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
     bool EnsureRenderResources(int width, int height);
-    void ReleaseSurfaceResources(); // brushes + DC RT + DIB (keep factories)
-    void ReleaseAllResources();     // everything including D2D/DWrite factories
+    bool EnsureFreezeBitmap();
+    void ReleaseSurfaceResources();
+    void ReleaseAllResources();
     void Present();
     void RenderToBitmap();
 
@@ -62,14 +64,16 @@ private:
     DoneCallback m_callback;
 
     bool m_dragging = false;
-    POINT m_ptStart{};   // client coords
-    POINT m_ptCurrent{}; // client coords
+    POINT m_ptStart{};
+    POINT m_ptCurrent{};
     RECT m_clientBounds{};
-    RECT m_screenOrigin{}; // virtual screen top-left stored as left/top
+    RECT m_screenOrigin{};
     UINT m_dpi = 96;
     SelectionModel m_model;
 
-    // D2D / DWrite / GDI layered staging
+    CaptureResult m_freeze;
+    ID2D1Bitmap* m_freezeBmp = nullptr;
+
     ID2D1Factory* m_d2dFactory = nullptr;
     ID2D1DCRenderTarget* m_rt = nullptr;
     ID2D1SolidColorBrush* m_brushWhite = nullptr;
@@ -86,6 +90,7 @@ private:
     int m_bitmapH = 0;
 
     static SelectionModel s_lastSelection;
+    static CaptureResult s_lastCrop;
 };
 
 } // namespace snip
