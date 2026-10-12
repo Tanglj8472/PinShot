@@ -36,11 +36,14 @@ public:
         bool includeSelectionChrome = true,
         bool includeLive = true);
 
+    // On any WIC/D2D failure returns Empty() — never a silent base copy (A02).
+    // ok: optional; set false on failure, true on success.
     CaptureResult Compose(
         const CaptureResult& base,
         const DrawStack& stack,
         bool includeSelectionChrome = true,
-        bool includeLive = true);
+        bool includeLive = true,
+        bool* ok = nullptr);
 
     ID2D1Bitmap* CreateBitmapFromCapture(ID2D1RenderTarget* rt, const CaptureResult& image);
 

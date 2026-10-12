@@ -85,15 +85,32 @@ bool AppSettings::Save() const
     {
         return false;
     }
-    CreateDirectoryW(dir.c_str(), nullptr);
+    if (!CreateDirectoryW(dir.c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS)
+    {
+        return false;
+    }
     const auto path = SettingsPath();
     WriteUint(L"Hotkey", L"SnipVk", snip.vk, path.c_str());
     WriteUint(L"Hotkey", L"SnipMods", snip.mods, path.c_str());
     WriteUint(L"Hotkey", L"PinsVk", pins.vk, path.c_str());
     WriteUint(L"Hotkey", L"PinsMods", pins.mods, path.c_str());
     WriteUint(L"General", L"StartWithWindows", startWithWindows ? 1u : 0u, path.c_str());
-    WritePrivateProfileStringW(L"General", L"OutputDir", outputDir.c_str(), path.c_str());
+    if (!WritePrivateProfileStringW(L"General", L"OutputDir", outputDir.c_str(), path.c_str()))
+    {
+        return false;
+    }
     return true;
+}
+
+AppSettings& LiveSettings()
+{
+    static AppSettings live;
+    return live;
+}
+
+void LoadLiveSettings()
+{
+    LiveSettings() = AppSettings::Load();
 }
 
 std::wstring AppSettings::FormatHotkey(const HotkeySpec& hk)

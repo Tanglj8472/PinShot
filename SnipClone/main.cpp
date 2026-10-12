@@ -38,7 +38,6 @@ HWND g_mainWnd = nullptr;
 std::unique_ptr<snip::SelectionOverlay> g_selection;
 std::unique_ptr<snip::AnnotationOverlay> g_annotation;
 std::unique_ptr<snip::TrayIcon> g_tray;
-snip::AppSettings g_settings;
 bool g_snipHotkeyOk = false;
 bool g_pinsHotkeyOk = false;
 
@@ -105,17 +104,17 @@ void ChooseOutputDir()
 {
     // Minimal: open settings dir and tell user to edit OutputDir= in settings.ini
     // plus create default Documents\SnipClone if empty.
-    if (g_settings.outputDir.empty())
+    if (snip::LiveSettings().outputDir.empty())
     {
         wchar_t docs[MAX_PATH]{};
         if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_MYDOCUMENTS, nullptr, SHGFP_TYPE_CURRENT, docs)))
         {
-            g_settings.outputDir = std::wstring(docs) + L"\\SnipClone";
-            CreateDirectoryW(g_settings.outputDir.c_str(), nullptr);
-            g_settings.Save();
+            snip::LiveSettings().outputDir = std::wstring(docs) + L"\\SnipClone";
+            CreateDirectoryW(snip::LiveSettings().outputDir.c_str(), nullptr);
+            snip::LiveSettings().Save();
         }
     }
-    OpenDirectory(g_settings.outputDir);
+    OpenDirectory(snip::LiveSettings().outputDir);
 }
 
 void ShowAbout()
@@ -123,13 +122,13 @@ void ShowAbout()
     std::wstring body = L"SnipClone ";
     body += kVersion;
     body += L"\n\n截图: ";
-    body += snip::AppSettings::FormatHotkey(g_settings.snip);
+    body += snip::AppSettings::FormatHotkey(snip::LiveSettings().snip);
     if (!g_snipHotkeyOk)
     {
         body += L" （注册失败）";
     }
     body += L"\n贴图穿透退出: ";
-    body += snip::AppSettings::FormatHotkey(g_settings.pins);
+    body += snip::AppSettings::FormatHotkey(snip::LiveSettings().pins);
     if (!g_pinsHotkeyOk)
     {
         body += L" （注册失败）";
@@ -175,21 +174,21 @@ void OnTrayCommand(snip::TrayIcon::Command cmd)
 bool RegisterConfiguredHotkeys()
 {
     g_snipHotkeyOk = snip::GlobalHotkey::Register(
-        g_settings.snip.vk, g_settings.snip.mods, kHotkeySnip, g_mainWnd);
+        snip::LiveSettings().snip.vk, snip::LiveSettings().snip.mods, kHotkeySnip, g_mainWnd);
     g_pinsHotkeyOk = snip::GlobalHotkey::Register(
-        g_settings.pins.vk, g_settings.pins.mods, kHotkeyPins, g_mainWnd);
+        snip::LiveSettings().pins.vk, snip::LiveSettings().pins.mods, kHotkeyPins, g_mainWnd);
 
     if (!g_snipHotkeyOk)
     {
         std::wstring msg = L"热键 ";
-        msg += snip::AppSettings::FormatHotkey(g_settings.snip);
+        msg += snip::AppSettings::FormatHotkey(snip::LiveSettings().snip);
         msg += L" 注册失败，可能被其他程序占用。\n可编辑 %APPDATA%\\SnipClone\\settings.ini 后重启。";
         MessageBoxW(nullptr, msg.c_str(), L"SnipClone", MB_ICONWARNING | MB_OK);
     }
     if (!g_pinsHotkeyOk)
     {
         std::wstring msg = L"热键 ";
-        msg += snip::AppSettings::FormatHotkey(g_settings.pins);
+        msg += snip::AppSettings::FormatHotkey(snip::LiveSettings().pins);
         msg += L" 注册失败（贴图穿透退出）。";
         MessageBoxW(nullptr, msg.c_str(), L"SnipClone", MB_ICONWARNING | MB_OK);
     }
@@ -328,9 +327,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR cmdLine, int)
 
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
-    g_settings = snip::AppSettings::Load();
+    snip::LoadLiveSettings(); // A04: single in-process settings instance
     // Ensure settings file exists with defaults on first run.
-    g_settings.Save();
+    snip::LiveSettings().Save();
 
     if (!RegisterMainClass(hInstance))
     {
@@ -359,7 +358,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR cmdLine, int)
 
     g_tray = std::make_unique<snip::TrayIcon>();
     std::wstring tip = L"SnipClone — ";
-    tip += snip::AppSettings::FormatHotkey(g_settings.snip);
+    tip += snip::AppSettings::FormatHotkey(snip::LiveSettings().snip);
     if (!g_tray->Create(g_mainWnd, hInstance, tip, OnTrayCommand))
     {
         // Headless CI / no shell: continue without tray.
@@ -391,7 +390,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR cmdLine, int)
     snip::GlobalHotkey::Unregister(kHotkeyPins, g_mainWnd);
     snip::GlobalHotkey::Unregister(kHotkeySnip, g_mainWnd);
     snip::PinManager::Instance().CloseAll();
-    g_settings.Save();
+    snip::LiveSettings().Save();
     CoUninitialize();
     return static_cast<int>(msg.wParam);
 }

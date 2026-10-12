@@ -588,12 +588,20 @@ CaptureResult AnnotationRenderer::Compose(
     const CaptureResult& base,
     const DrawStack& stack,
     bool includeSelectionChrome,
-    bool includeLive)
+    bool includeLive,
+    bool* ok)
 {
-    CaptureResult out = base;
+    auto fail = [&]() -> CaptureResult {
+        if (ok)
+        {
+            *ok = false;
+        }
+        return {};
+    };
+
     if (base.Empty() || !Initialize())
     {
-        return out;
+        return fail();
     }
 
     IWICBitmap* wicBmp = nullptr;
@@ -602,9 +610,10 @@ CaptureResult AnnotationRenderer::Compose(
             static_cast<UINT>(base.height),
             GUID_WICPixelFormat32bppPBGRA,
             WICBitmapCacheOnLoad,
-            &wicBmp)))
+            &wicBmp)) ||
+        !wicBmp)
     {
-        return out;
+        return fail();
     }
 
     D2D1_RENDER_TARGET_PROPERTIES props = D2D1::RenderTargetProperties(
@@ -612,10 +621,10 @@ CaptureResult AnnotationRenderer::Compose(
         D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
 
     ID2D1RenderTarget* rt = nullptr;
-    if (FAILED(m_factory->CreateWicBitmapRenderTarget(wicBmp, props, &rt)))
+    if (FAILED(m_factory->CreateWicBitmapRenderTarget(wicBmp, props, &rt)) || !rt)
     {
         wicBmp->Release();
-        return out;
+        return fail();
     }
 
     ID2D1Bitmap* baseBmp = CreateBitmapFromCapture(rt, base);
@@ -627,7 +636,7 @@ CaptureResult AnnotationRenderer::Compose(
     rt->BeginDraw();
     rt->Clear(D2D1::ColorF(0, 0, 0, 0));
     DrawScene(rt, baseBmp, &base, stack, includeSelectionChrome, includeLive);
-    rt->EndDraw();
+    const HRESULT endHr = rt->EndDraw();
 
     if (baseBmp)
     {
@@ -635,10 +644,27 @@ CaptureResult AnnotationRenderer::Compose(
     }
     rt->Release();
 
+    if (FAILED(endHr))
+    {
+        wicBmp->Release();
+        return fail();
+    }
+
+    CaptureResult out = base;
     const UINT stride = static_cast<UINT>(base.stride);
     const UINT bufSize = stride * static_cast<UINT>(base.height);
-    out.bgra.resize(bufSize);
-    wicBmp->CopyPixels(nullptr, stride, bufSize, out.bgra.data());
+    out.bgra.assign(bufSize, 0);
+    const HRESULT copyHr = wicBmp->CopyPixels(nullptr, stride, bufSize, out.bgra.data());
+    wicBmp->Release();
+    if (m_brush)
+    {
+        m_brush->Release();
+        m_brush = nullptr;
+    }
+    if (FAILED(copyHr))
+    {
+        return fail();
+    }
 
     // Flatten to opaque BGRA for layered ULW / GDI. Transparent holes must fall
     // back to the freeze crop — NOT opaque black (that caused the "blank snip").
@@ -665,11 +691,9 @@ CaptureResult AnnotationRenderer::Compose(
         }
     }
 
-    wicBmp->Release();
-    if (m_brush)
+    if (ok)
     {
-        m_brush->Release();
-        m_brush = nullptr;
+        *ok = true;
     }
     return out;
 }

@@ -5,6 +5,8 @@
 
 #include "DrawCommand.h"
 
+#include "../Common/WinCompat.h"
+
 #include <functional>
 #include <string>
 #include <vector>
@@ -19,9 +21,22 @@ class DrawStack
 public:
     using ChangedFn = std::function<void()>;
 
+    // One undo step: shapes + optional crop viewport (A01 unified document history).
+    struct HistoryFrame
+    {
+        std::vector<DrawCommand> shapes;
+        RECT crop{};
+        bool hasCrop = false;
+    };
+
     DrawStack();
 
     void SetChangedCallback(ChangedFn fn) { m_changed = std::move(fn); }
+
+    // Bind current crop viewport so every undo frame can restore it with shapes.
+    void SetViewport(RECT cropScreen);
+    RECT Viewport() const { return m_viewport; }
+    bool HasViewport() const { return m_viewportBound; }
 
     ToolKind Tool() const { return m_tool; }
     void SetTool(ToolKind tool);
@@ -53,6 +68,7 @@ public:
     bool DeleteAt(int index);
 
     // Crop origin moved by (dx,dy) in image space: translate all shapes once (undoable).
+    // Always pushes history (even if dx=dy=0) so edge-only crop changes are undoable.
     // Does NOT delete shapes — outside the new crop is clipped at render and returns if crop grows.
     void RemapForCrop(float dx, float dy);
     void TranslateAll(float dx, float dy);
@@ -71,8 +87,10 @@ public:
     void ToggleOutline();
     void ToggleFilled();
 
-    void Undo();
-    void Redo();
+    // Returns true if a step was applied. When outHasCrop is set and the frame
+    // stored a viewport, *outHasCrop=true and *outCrop receives that RECT.
+    bool Undo(RECT* outCrop = nullptr, bool* outHasCrop = nullptr);
+    bool Redo(RECT* outCrop = nullptr, bool* outHasCrop = nullptr);
     void Clear();
 
     bool CanUndo() const { return !m_undo.empty(); }
@@ -90,8 +108,11 @@ private:
     ToolKind m_tool = ToolKind::Pen;
     DrawStyle m_styles[static_cast<int>(ToolKind::Count)]{};
     std::vector<DrawCommand> m_shapes;
-    std::vector<std::vector<DrawCommand>> m_undo;
-    std::vector<std::vector<DrawCommand>> m_redo;
+    std::vector<HistoryFrame> m_undo;
+    std::vector<HistoryFrame> m_redo;
+
+    RECT m_viewport{};
+    bool m_viewportBound = false;
 
     struct LiveState
     {

@@ -68,6 +68,7 @@ bool PinWindow::CreateFromSnapshot(HINSTANCE instance, PinSnapshot snap)
 
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
+    wc.style = CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS; // A05: double-click closes pin
     wc.lpfnWndProc = StaticWndProc;
     wc.hInstance = instance;
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
@@ -193,7 +194,7 @@ void PinWindow::CopyImage()
 
 void PinWindow::SaveImage()
 {
-    auto settings = AppSettings::Load();
+    auto& settings = LiveSettings();
     auto path = ImageUtil::BrowseSavePng(m_hwnd, settings.outputDir);
     if (path.empty())
     {
@@ -208,7 +209,10 @@ void PinWindow::SaveImage()
     if (slash != std::wstring::npos)
     {
         settings.outputDir = path.substr(0, slash);
-        settings.Save();
+        if (!settings.Save())
+        {
+            MessageBoxW(m_hwnd, L"图片已保存，但写入设置失败。", L"SnipClone", MB_ICONWARNING | MB_OK);
+        }
     }
 }
 
@@ -332,6 +336,19 @@ LRESULT CALLBACK PinWindow::StaticWndProc(HWND hwnd, UINT msg, WPARAM wParam, LP
         self->m_hwnd = hwnd;
         return TRUE;
     }
+    // A03: keep USERDATA until NCDESTROY so the manager can recycle the C++ object.
+    if (msg == WM_NCDESTROY)
+    {
+        auto* self = reinterpret_cast<PinWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+        if (self)
+        {
+            self->m_hwnd = nullptr;
+            self->ReleaseSurface();
+            PinManager::Instance().OnNcDestroy(self); // deletes self
+        }
+        return 0;
+    }
     auto* self = reinterpret_cast<PinWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
     return self ? self->WndProc(hwnd, msg, wParam, lParam) : DefWindowProcW(hwnd, msg, wParam, lParam);
 }
@@ -454,12 +471,7 @@ LRESULT PinWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         DestroyWindow(hwnd);
         return 0;
     case WM_DESTROY:
-        m_hwnd = nullptr;
-        ReleaseSurface();
-        SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
-        return 0;
-    case WM_NCDESTROY:
-        PinManager::Instance().OnNcDestroy(this);
+        // Do not clear GWLP_USERDATA here — NCDESTROY (StaticWndProc) needs it (A03).
         return 0;
     default:
         break;

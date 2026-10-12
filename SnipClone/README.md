@@ -7,6 +7,8 @@
 
 装配对照见 [`docs/ASSEMBLY.md`](docs/ASSEMBLY.md)。分阶段计划见 [`docs/ROADMAP.md`](docs/ROADMAP.md)；桌面验收见 [`docs/DESKTOP_CHECKLIST.md`](docs/DESKTOP_CHECKLIST.md)；发布见 [`docs/RELEASE.md`](docs/RELEASE.md)。
 
+基于 `62bd2f2` 的架构、界面与产品评审及三批改正方案见 [`docs/ARCHITECTURE_UI_PRODUCT_REVIEW.md`](docs/ARCHITECTURE_UI_PRODUCT_REVIEW.md)，包含源码证据、验证边界和验收要求。
+
 **版本 0.2.0** · Windows 10 x64 · 解压运行 `SnipClone.exe`
 
 ## 当前进度
