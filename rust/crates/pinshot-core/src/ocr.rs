@@ -448,7 +448,19 @@ fn restore_note_brackets(s: &str) -> String {
                     out.pop();
                 }
                 out.push('[');
-                out.extend(chars[i..i + n].iter());
+                let body = &chars[i..i + n];
+                // OCR often drops the space in `[note 5]` → `note5]`.
+                if body.get(4).is_some_and(|c| c.is_ascii_digit()) {
+                    out.extend(body.iter().take(4));
+                    out.push(' ');
+                    out.extend(body.iter().skip(4).take_while(|c| c.is_ascii_digit()));
+                } else {
+                    out.extend(
+                        body.iter()
+                            .take_while(|c| !matches!(*c, ']' | '】'))
+                            .copied(),
+                    );
+                }
                 out.push(']');
                 i += n;
                 continue;
@@ -461,7 +473,7 @@ fn restore_note_brackets(s: &str) -> String {
 }
 
 fn note_cite_len(chars: &[char]) -> Option<usize> {
-    if chars.len() < 6 {
+    if chars.len() < 5 {
         return None;
     }
     let head: String = chars
@@ -473,18 +485,20 @@ fn note_cite_len(chars: &[char]) -> Option<usize> {
         return None;
     }
     let mut i = 4;
-    if i >= chars.len() || !chars[i].is_whitespace() {
-        return None;
-    }
-    while i < chars.len() && chars[i].is_whitespace() {
-        i += 1;
+    if i < chars.len() && chars[i].is_whitespace() {
+        while i < chars.len() && chars[i].is_whitespace() {
+            i += 1;
+        }
     }
     let digits = chars[i..].iter().take_while(|c| c.is_ascii_digit()).count();
-    if (1..=3).contains(&digits) {
-        Some(i + digits)
-    } else {
-        None
+    if !(1..=3).contains(&digits) {
+        return None;
     }
+    i += digits;
+    if i < chars.len() && matches!(chars[i], ']' | '】') {
+        i += 1;
+    }
+    Some(i)
 }
 
 fn repair_unmatched_cites(s: &str) -> String {
@@ -1224,6 +1238,17 @@ mod tests {
         assert!(
             sel.contains("[26][note 5]"),
             "copy must keep [26][note 5], got {sel:?}"
+        );
+        let glued = page_from_blocks(vec![(quad(0, 0, 120, 16), "[26]note5]".into())]);
+        assert!(
+            glued.text.contains("[26][note 5]"),
+            "OCR-glued note5 after a cite, got {:?}",
+            glued.text
+        );
+        assert!(
+            !glued.text.contains("[note 5]]"),
+            "must not double the closing bracket, got {:?}",
+            glued.text
         );
         let split = page_from_blocks(vec![
             (quad(0, 0, 40, 16), "[26]".into()),
