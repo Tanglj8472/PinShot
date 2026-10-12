@@ -459,7 +459,7 @@ impl PrefsApp {
                 });
         });
         ui.weak(tr(
-            "Mobile models download first (~20 MB). Switch to Server for Traditional / small type.",
+            "Server models download once (~170 MB). Mobile is faster but weaker on English / small type.",
         ));
         ui.add_space(4.0);
         ui.label(RichText::new(tr("Configuration")).strong());

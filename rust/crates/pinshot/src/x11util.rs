@@ -10,7 +10,7 @@ use winit::window::Window;
 use x11rb::connection::{Connection, RequestConnection};
 use x11rb::protocol::xproto::{
     AtomEnum, ChangeWindowAttributesAux, ClientMessageEvent, ConnectionExt, EventMask, GrabMode,
-    InputFocus, KeyPressEvent, ModMask, PropMode,
+    GrabStatus, InputFocus, KeyPressEvent, MapState, ModMask, PropMode, StackMode,
 };
 use x11rb::protocol::Event;
 use x11rb::COPY_DEPTH_FROM_PARENT;
@@ -757,7 +757,26 @@ pub fn set_click_through(window: &Window, on: bool, _opacity: f32) {
     let _ = c.flush();
 }
 
+/// Pointer event from the overlay grab. Coordinates are the X event's
+/// `root_x`/`root_y` (ButtonPress), never a later `QueryPointer` sample.
+#[derive(Clone, Copy, Debug)]
+pub struct PtrEv {
+    pub root_x: i32,
+    pub root_y: i32,
+    pub detail: u8,
+    pub kind: PtrKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PtrKind {
+    Move,
+    Press,
+    Release,
+}
+
 /// Grab pointer+keyboard on the root until the overlay maps (Python `InputHold`).
+/// The same connection then re-grabs the pointer on the overlay window so
+/// there is no UngrabPointer gap Chrome can eat.
 pub struct InputHold {
     conn: Option<x11rb::rust_connection::RustConnection>,
 }
@@ -788,6 +807,94 @@ impl InputHold {
         );
         let _ = c.flush();
         Self { conn: Some(c) }
+    }
+
+    /// Map `overlay_xid` and move the pointer grab onto it (same client:
+    /// XGrabPointer replaces the root grab, no UngrabPointer). Ungrab the
+    /// keyboard so [`OverlayKeyGrab`] can take keys.
+    pub fn grab_overlay_pointer(&mut self, overlay_xid: u32) -> bool {
+        let Some(c) = self.conn.as_ref() else {
+            return false;
+        };
+        let aux = x11rb::protocol::xproto::ConfigureWindowAux::new().stack_mode(StackMode::ABOVE);
+        for _ in 0..40 {
+            let _ = c.map_window(overlay_xid);
+            let _ = c.configure_window(overlay_xid, &aux);
+            let viewable = c
+                .get_window_attributes(overlay_xid)
+                .ok()
+                .and_then(|k| k.reply().ok())
+                .is_some_and(|a| a.map_state == MapState::VIEWABLE);
+            if viewable {
+                break;
+            }
+            let _ = c.get_input_focus().ok().and_then(|k| k.reply().ok());
+        }
+        let mask = EventMask::BUTTON_PRESS | EventMask::BUTTON_RELEASE | EventMask::POINTER_MOTION;
+        let mut ok = false;
+        for _ in 0..20 {
+            match c.grab_pointer(
+                false,
+                overlay_xid,
+                mask,
+                GrabMode::ASYNC,
+                GrabMode::ASYNC,
+                x11rb::NONE,
+                x11rb::NONE,
+                x11rb::CURRENT_TIME,
+            ) {
+                Ok(cookie) => match cookie.reply() {
+                    Ok(r) if r.status == GrabStatus::SUCCESS => {
+                        ok = true;
+                        break;
+                    }
+                    Ok(r) => {
+                        crate::logutil::log(&format!("overlay XGrabPointer status={:?}", r.status));
+                    }
+                    Err(e) => crate::logutil::log(&format!("overlay XGrabPointer: {e}")),
+                },
+                Err(e) => crate::logutil::log(&format!("overlay XGrabPointer: {e}")),
+            }
+            let _ = c.get_input_focus().ok().and_then(|k| k.reply().ok());
+        }
+        let _ = c.ungrab_keyboard(x11rb::CURRENT_TIME);
+        let _ = c.flush();
+        if ok {
+            crate::logutil::log("overlay XGrabPointer ok (before first frame)");
+        }
+        ok
+    }
+
+    /// Drain ButtonPress / Motion / Release from the grabbing connection.
+    pub fn poll_pointer(&mut self) -> Vec<PtrEv> {
+        let mut out = Vec::new();
+        let Some(c) = self.conn.as_ref() else {
+            return out;
+        };
+        while let Ok(Some(ev)) = c.poll_for_event() {
+            match ev {
+                Event::ButtonPress(e) => out.push(PtrEv {
+                    root_x: i32::from(e.root_x),
+                    root_y: i32::from(e.root_y),
+                    detail: e.detail,
+                    kind: PtrKind::Press,
+                }),
+                Event::ButtonRelease(e) => out.push(PtrEv {
+                    root_x: i32::from(e.root_x),
+                    root_y: i32::from(e.root_y),
+                    detail: e.detail,
+                    kind: PtrKind::Release,
+                }),
+                Event::MotionNotify(e) => out.push(PtrEv {
+                    root_x: i32::from(e.root_x),
+                    root_y: i32::from(e.root_y),
+                    detail: 0,
+                    kind: PtrKind::Move,
+                }),
+                _ => {}
+            }
+        }
+        out
     }
 
     pub fn release(&mut self) {

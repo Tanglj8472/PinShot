@@ -6,14 +6,14 @@ use crate::geom::{Point, Rect};
 
 pub const MODEL_DIR_NAME: &str = "ocr-models";
 
-/// RapidOCR PP-OCRv5 ONNX (ModelScope v3.9.2). Mobile is the default download
-/// (~20 MB); server (~170 MB) is more accurate on Traditional / small type.
+/// RapidOCR PP-OCRv5 ONNX (ModelScope v3.9.2). Server (~170 MB) is the
+/// default: mobile (~20 MB) loses English stems on real Chrome text.
 pub const MOBILE_DET_FILE: &str = "ch_PP-OCRv5_mobile_det.onnx";
 pub const MOBILE_REC_FILE: &str = "ch_PP-OCRv5_mobile_rec.onnx";
 pub const SERVER_DET_FILE: &str = "ch_PP-OCRv5_server_det.onnx";
 pub const SERVER_REC_FILE: &str = "ch_PP-OCRv5_server_rec.onnx";
-pub const DET_FILE: &str = MOBILE_DET_FILE;
-pub const REC_FILE: &str = MOBILE_REC_FILE;
+pub const DET_FILE: &str = SERVER_DET_FILE;
+pub const REC_FILE: &str = SERVER_REC_FILE;
 pub const CLS_FILE: &str = "ch_PP-LCNet_x0_25_textline_ori.onnx";
 pub const KEYS_FILE: &str = "ppocr_keys_v5.txt";
 
@@ -26,8 +26,8 @@ pub enum OcrModelKind {
 impl OcrModelKind {
     pub fn parse(s: &str) -> Self {
         match s.trim() {
-            "server" => Self::Server,
-            _ => Self::Mobile,
+            "mobile" => Self::Mobile,
+            _ => Self::Server,
         }
     }
 
@@ -54,8 +54,9 @@ impl OcrModelKind {
 }
 
 /// RapidOCR defaults: padding, max side, box_score_thresh, box_thresh, unclip.
+/// Unclip stays 1.6: 2.0 merged adjacent Latin words into one blob.
 pub const DET_PADDING: u32 = 50;
-pub const DET_MAX_SIDE: u32 = 1920;
+pub const DET_MAX_SIDE: u32 = 2560;
 pub const DET_BOX_SCORE: f32 = 0.5;
 pub const DET_BOX_THRESH: f32 = 0.3;
 pub const DET_UNCLIP: f32 = 1.6;
@@ -65,6 +66,16 @@ pub const DET_UNCLIP: f32 = 1.6;
 pub fn det_padding(width: u32, height: u32) -> u32 {
     let side = width.min(height).max(8);
     DET_PADDING.min(side / 4).max(8)
+}
+
+/// paddle-ocr-rs rec is hardcoded to H=48. 2× only a thin clip (short side
+/// < 200): 2× on a 400px article merged visual lines and lost Latin spaces.
+pub fn ocr_upsample(width: u32, height: u32) -> u32 {
+    if width.min(height) < 200 {
+        2
+    } else {
+        1
+    }
 }
 
 /// RapidOCR / PaddleOCR v5 ONNX. First URL is ModelScope v3.9.2.
@@ -84,8 +95,8 @@ pub const SERVER_REC_URLS: &[&str] = &[
     "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv5/rec/ch_PP-OCRv5_rec_server.onnx",
     "https://huggingface.co/RapidAI/RapidOCR/resolve/main/onnx/PP-OCRv5/rec/ch_PP-OCRv5_rec_server.onnx",
 ];
-pub const DET_URLS: &[&str] = MOBILE_DET_URLS;
-pub const REC_URLS: &[&str] = MOBILE_REC_URLS;
+pub const DET_URLS: &[&str] = SERVER_DET_URLS;
+pub const REC_URLS: &[&str] = SERVER_REC_URLS;
 pub const CLS_URLS: &[&str] = &[
     "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv5/cls/ch_PP-LCNet_x0_25_textline_ori_cls_mobile.onnx",
     "https://huggingface.co/RapidAI/RapidOCR/resolve/main/onnx/PP-OCRv5/cls/ch_PP-LCNet_x0_25_textline_ori_cls_mobile.onnx",
@@ -107,7 +118,7 @@ pub struct ModelPaths {
 
 impl ModelPaths {
     pub fn in_dir(dir: impl Into<PathBuf>) -> Self {
-        Self::for_kind(dir, OcrModelKind::Mobile)
+        Self::for_kind(dir, OcrModelKind::Server)
     }
 
     pub fn for_kind(dir: impl Into<PathBuf>, kind: OcrModelKind) -> Self {
@@ -203,7 +214,8 @@ pub fn aabb_from_quad(pts: &[(u32, u32)]) -> Rect {
     )
 }
 
-/// Drop OCR wrap spaces that split CJK (`編譯 器`, `2009 年`, `Rust 語言`).
+/// Drop OCR wrap spaces that split CJK (`編譯 器`, `2009 年`).
+/// Keep CJK–Latin spaces as they appear (`Mozilla 員工`, `Rust 語言`).
 /// Latin word spaces (`In 2009`, `Mozilla officially`) stay.
 pub fn collapse_cjk_spaces(s: &str) -> String {
     let chars: Vec<char> = s.chars().collect();
@@ -229,8 +241,8 @@ pub fn collapse_cjk_spaces(s: &str) -> String {
 fn glue_cjk_gap(prev: Option<char>, next: Option<char>) -> bool {
     match (prev, next) {
         (Some(a), Some(b)) if is_cjk(a) && is_cjk(b) => true,
-        (Some(a), Some(b)) if is_cjk(a) && b.is_ascii_alphanumeric() => true,
-        (Some(a), Some(b)) if is_cjk(b) && a.is_ascii_alphanumeric() => true,
+        (Some(a), Some(b)) if a.is_ascii_digit() && is_cjk(b) => true,
+        (Some(a), Some(b)) if is_cjk(a) && b.is_ascii_digit() => true,
         _ => false,
     }
 }
@@ -313,9 +325,62 @@ fn needs_space(prev: Option<char>, next: Option<char>) -> bool {
     }
 }
 
+fn y_overlap_ratio(a: Rect, b: Rect) -> f32 {
+    let top = a.y.max(b.y);
+    let bot = a.bottom().min(b.bottom());
+    let ov = (bot - top).max(0.0);
+    ov / a.h.min(b.h).max(1.0)
+}
+
+/// Cluster detector boxes into visual lines (y-overlap, then x). Never merge
+/// a box onto a later line just because the y-gap is small.
+fn cluster_lines(mut items: Vec<(Rect, String)>) -> Vec<Vec<(Rect, String)>> {
+    items.sort_by(|a, b| {
+        a.0.y
+            .partial_cmp(&b.0.y)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(
+                a.0.x
+                    .partial_cmp(&b.0.x)
+                    .unwrap_or(std::cmp::Ordering::Equal),
+            )
+    });
+    let mut lines: Vec<(Rect, Vec<(Rect, String)>)> = Vec::new();
+    for item in items {
+        let mut best: Option<(usize, f32)> = None;
+        for (i, (band, _)) in lines.iter().enumerate() {
+            let ov = y_overlap_ratio(item.0, *band);
+            if ov >= 0.5 {
+                if best.map(|(_, r)| ov > r).unwrap_or(true) {
+                    best = Some((i, ov));
+                }
+            }
+        }
+        if let Some((i, _)) = best {
+            lines[i].0 = lines[i].0.union(item.0);
+            lines[i].1.push(item);
+        } else {
+            lines.push((item.0, vec![item]));
+        }
+    }
+    lines.sort_by(|a, b| {
+        a.0.y
+            .partial_cmp(&b.0.y)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    for (_, boxes) in &mut lines {
+        boxes.sort_by(|a, b| {
+            a.0.x
+                .partial_cmp(&b.0.x)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+    }
+    lines.into_iter().map(|(_, boxes)| boxes).collect()
+}
+
 /// Build a page from detector quadrilaterals + recognized line strings.
 pub fn page_from_blocks(blocks: Vec<(Vec<(u32, u32)>, String)>) -> OcrPage {
-    let mut items: Vec<(Rect, String)> = blocks
+    let items: Vec<(Rect, String)> = blocks
         .into_iter()
         .filter_map(|(pts, text)| {
             let r = aabb_from_quad(&pts);
@@ -327,45 +392,18 @@ pub fn page_from_blocks(blocks: Vec<(Vec<(u32, u32)>, String)>) -> OcrPage {
             }
         })
         .collect();
-    items.sort_by(|a, b| {
-        a.0.y
-            .partial_cmp(&b.0.y)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then(
-                a.0.x
-                    .partial_cmp(&b.0.x)
-                    .unwrap_or(std::cmp::Ordering::Equal),
-            )
-    });
 
     let mut tokens = Vec::new();
     let mut lines: Vec<String> = Vec::new();
-    let mut line_i = 0usize;
-    let mut prev_mid = None::<f32>;
-    let mut prev_h = 0f32;
-    let mut line_parts: Vec<String> = Vec::new();
-
-    for (rect, text) in items {
-        let mid = rect.y + rect.h * 0.5;
-        // Wrapped visual lines sit ~1 line-height below the previous box.
-        // Keep them on the same `line_i` so CJK joins without a space/newline
-        // (`編譯器`, `Rust語言`) while Latin still gets `needs_space`.
-        let gap_ratio = match prev_mid {
-            None => 0.0,
-            Some(py) => (mid - py).abs() / prev_h.max(rect.h).max(1.0),
-        };
-        if gap_ratio > 1.55 && !line_parts.is_empty() {
-            lines.push(collapse_cjk_spaces(&join_line_parts(&line_parts)));
-            line_parts.clear();
-            line_i += 1;
+    for (line_i, line_boxes) in cluster_lines(items).into_iter().enumerate() {
+        let mut line_parts: Vec<String> = Vec::new();
+        for (rect, text) in line_boxes {
+            tokens.extend(tokenize_line(line_i, &text, rect));
+            line_parts.push(text);
         }
-        prev_mid = Some(mid);
-        prev_h = rect.h;
-        tokens.extend(tokenize_line(line_i, &text, rect));
-        line_parts.push(text);
-    }
-    if !line_parts.is_empty() {
-        lines.push(collapse_cjk_spaces(&join_line_parts(&line_parts)));
+        if !line_parts.is_empty() {
+            lines.push(collapse_cjk_spaces(&join_line_parts(&line_parts)));
+        }
     }
     OcrPage {
         tokens,
@@ -487,11 +525,12 @@ mod tests {
     #[test]
     fn model_paths_under_data() {
         let p = ModelPaths::in_dir("/tmp/ocr-models");
-        assert!(p.det.ends_with(MOBILE_DET_FILE));
+        assert!(p.det.ends_with(SERVER_DET_FILE));
         assert_eq!(p.downloads().len(), 4);
-        let s = ModelPaths::for_kind("/tmp/ocr-models", OcrModelKind::Server);
-        assert!(s.det.ends_with(SERVER_DET_FILE));
-        assert!(s.downloads()[0].0[0].contains("det_server"));
+        assert!(p.downloads()[0].0[0].contains("det_server"));
+        let m = ModelPaths::for_kind("/tmp/ocr-models", OcrModelKind::Mobile);
+        assert!(m.det.ends_with(MOBILE_DET_FILE));
+        assert!(m.downloads()[0].0[0].contains("det_mobile"));
     }
 
     #[test]
@@ -499,6 +538,14 @@ mod tests {
         assert_eq!(det_padding(1295, 58), 14);
         assert_eq!(det_padding(1100, 400), 50);
         assert_eq!(det_padding(8, 8), 8);
+    }
+
+    #[test]
+    fn ocr_upsample_lifts_short_chrome_clips() {
+        assert_eq!(ocr_upsample(1100, 400), 1);
+        assert_eq!(ocr_upsample(900, 120), 2);
+        assert_eq!(ocr_upsample(1920, 1200), 1);
+        assert_eq!(ocr_upsample(2000, 300), 1);
     }
 
     #[test]
@@ -562,7 +609,8 @@ mod tests {
     fn collapse_cjk_wrap_spaces_keeps_latin() {
         assert_eq!(collapse_cjk_spaces("編譯 器"), "編譯器");
         assert_eq!(collapse_cjk_spaces("2009 年"), "2009年");
-        assert_eq!(collapse_cjk_spaces("Rust 語言"), "Rust語言");
+        assert_eq!(collapse_cjk_spaces("Rust 語言"), "Rust 語言");
+        assert_eq!(collapse_cjk_spaces("Mozilla 員工"), "Mozilla 員工");
         assert_eq!(
             collapse_cjk_spaces("In 2009, Mozilla officially"),
             "In 2009, Mozilla officially"
@@ -570,14 +618,51 @@ mod tests {
     }
 
     #[test]
-    fn page_joins_wrapped_cjk_without_space() {
+    fn page_keeps_visual_lines_by_y_overlap() {
         let a = vec![(0, 0), (80, 0), (80, 16), (0, 16)];
         let b = vec![(0, 20), (48, 20), (48, 36), (0, 36)];
         let page = page_from_blocks(vec![(a, "Rust語".into()), (b, "言".into())]);
-        assert_eq!(page.text, "Rust語言");
-        assert!(page.tokens.iter().all(|t| t.line == 0));
+        assert_eq!(page.text, "Rust語\n言");
+        assert!(page.tokens.iter().any(|t| t.line == 0));
+        assert!(page.tokens.iter().any(|t| t.line == 1));
         let sel = selected_text(&page.tokens, 0, page.tokens.len() - 1);
-        assert_eq!(sel, "Rust語言");
+        assert_eq!(sel, "Rust語\n言");
+    }
+
+    #[test]
+    fn page_does_not_merge_rustc_into_a_later_line() {
+        let l1 = vec![(0, 0), (200, 0), (200, 18), (0, 18)];
+        let l2 = vec![(0, 22), (240, 22), (240, 40), (0, 40)];
+        let l3a = vec![(0, 44), (40, 44), (40, 62), (0, 62)];
+        let l3b = vec![(48, 45), (120, 45), (120, 61), (48, 61)];
+        let page = page_from_blocks(vec![
+            (l1, "並且在2010年首次發布".into()),
+            (l2, "官方實現稱做「rustc」".into()),
+            (l3a, "在架".into()),
+            (l3b, "構上".into()),
+        ]);
+        assert!(
+            page.text.contains("稱做「rustc」"),
+            "rustc left its line: {:?}",
+            page.text
+        );
+        assert!(
+            !page.text.contains("在架稱做"),
+            "rustc jumped into a later line: {:?}",
+            page.text
+        );
+        let lines: Vec<&str> = page.text.lines().collect();
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("稱做「rustc」") && !l.contains("在架")),
+            "expected rustc on its own visual line, got {lines:?}"
+        );
+        assert!(
+            page.text.contains("在架構上"),
+            "same-line CJK should still join, got {:?}",
+            page.text
+        );
     }
 
     #[test]

@@ -68,7 +68,7 @@ window but styles it like Snipaste prefs (egui, CJK, always-on-top).
 | Dim + hole + handles + size label | `draw::OverlayFront` | done |
 | Window hover / Tab element | `selection` + `detect` | done | Drag/move/resize also magnet-snaps edges to window + control rects (`snap.rs`, 8 px) |
 | Magnifier 15×15 @ 8×, C / Shift | `magnifier.rs` + overlay keys | done |
-| Drag / move / 8 handles | `selection.rs` | done | Click adopts hover window; press-and-drag always draws a fresh rect (even over a window). Recover debounce: two QueryPointer ups, never window-adopt from recover. Large-rect edge-band handle hit so screen-edge corners resize. Pending press origin only for Create (not handle/move). |
+| Drag / move / 8 handles | `selection.rs` | done | Click adopts hover window; press-and-drag always draws a fresh rect (even over a window). Overlay `XGrabPointer` on the InputHold connection **before the first frame** (replaces the root grab; no Chrome gap). Press origin is winit CursorMoved / grab ButtonPress, never QueryPointer. Recover only finishes a live drag if Release was dropped. Large-rect edge-band handle hit so screen-edge corners resize. Live handle hit beats a stale idle corner. |
 | Toolbar + OCR/Translate | `toolbar.rs` | done |
 | `,` `.` history / Shift+R last rect | `history.rs` + overlay + `data_dir/history` | done | `,`/`.` replay image+rect; **R applies last rect on the live capture** (not the old PNG); persist so R works after restart |
 | Esc confirm abort | in-overlay ConfirmAbort | done | Y/N / Esc / “Do not show again”; skip via prefs |
@@ -164,7 +164,7 @@ window but styles it like Snipaste prefs (egui, CJK, always-on-top).
 
 | Python | Rust | Status |
 |---|---|---|
-| `translation.recognize` RapidOCR | Linux always / `--features ocr` paddle-ocr-rs PP-OCRv5 **mobile default** | done | In-place on the pin: drag-select text, C copies. Prefetch on launch; pin shows download % then Recognizing. Brief highlight when text is ready. Settings: Mobile (~20 MB) or Server (~170 MB). Pin right-click: Recognize text / Translate. F5 on a pin translates (OCR first if needed). |
+| `translation.recognize` RapidOCR | Linux always / `--features ocr` paddle-ocr-rs PP-OCRv5 **server default** | done | In-place on the pin: drag-select text, C copies. Prefetch on launch; pin shows download % then Recognizing. Brief highlight when text is ready. Settings: Server (~170 MB, default) or Mobile (~20 MB). Boxes clustered by y-overlap then x; CJK–Latin spaces kept as they appear. Pin right-click: Recognize text / Translate. F5 on a pin translates (OCR first if needed). |
 | Edge `translatetext` | `translate_run.rs` | done | Overlay F5 pins + OCR + a wrapping translation strip. Settings → Translate: provider (Edge free / OpenAI-compatible / DeepL), API URL, key, model, target. Test button. Key never logged. |
 | `ResultWindow` above pins | in-place pin overlay | done | `--ocr-window` / egui result window removed. |
 | `selection_text.send_copy` | `win32::send_ctrl_c` | done (Windows) / impossible (Linux; Python same) |

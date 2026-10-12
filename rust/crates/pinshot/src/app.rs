@@ -1309,8 +1309,8 @@ impl ApplicationHandler<AppEvent> for App {
         }
         self.finish_overlay(event_loop);
         if self.overlay.is_some() {
-            // Poll while the overlay is up so QueryPointer can adopt a
-            // Button1 that XTEST / a pre-map drag never delivered to winit.
+            // Poll while the overlay is up so the InputHold connection can
+            // drain ButtonPress/Motion from the overlay pointer grab.
             event_loop.set_control_flow(ControlFlow::Poll);
         } else {
             let mut wake = self.snip_at;

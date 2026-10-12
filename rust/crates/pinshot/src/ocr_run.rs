@@ -6,8 +6,8 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use pinshot_core::ocr::{
-    det_padding, model_dir, page_from_blocks, ModelPaths, OcrModelKind, OcrPage, DET_BOX_SCORE,
-    DET_BOX_THRESH, DET_MAX_SIDE, DET_UNCLIP,
+    det_padding, model_dir, ocr_upsample, page_from_blocks, ModelPaths, OcrModelKind, OcrPage,
+    DET_BOX_SCORE, DET_BOX_THRESH, DET_MAX_SIDE, DET_UNCLIP,
 };
 use pinshot_core::raster::Raster;
 
@@ -221,16 +221,26 @@ fn infer(image: &Raster, paths: &ModelPaths) -> Result<OcrPage, String> {
     if image.width < 8 || image.height < 8 {
         return Err("image too small for OCR".into());
     }
-    let rgb = raster_to_rgb(image);
+    let scale = ocr_upsample(image.width, image.height);
+    let up = if scale > 1 {
+        Some(image.scale_bilinear(image.width * scale, image.height * scale))
+    } else {
+        None
+    };
+    let (rgb, pad_w, pad_h) = match &up {
+        Some(u) => (raster_to_rgb(u), u.width, u.height),
+        None => (raster_to_rgb(image), image.width, image.height),
+    };
     with_engine(paths, |ocr| {
         let result = ocr
             // paddle-ocr-rs AngleNet is 48×192 (PP-OCRv2 cls). RapidOCR v5
             // orientation is 80×160, so skip angle; screenshot lines are upright.
-            // RapidOCR det: box_score 0.5 / thresh 0.3 / unclip 1.6. max_side
-            // 1920 so Wikipedia-sized crops do not drop lines to 960.
+            // Unclip 1.6 (RapidOCR). 2× only thin clips (short side < 200)
+            // so rec (H=48) sees more than 13px; article-sized crops stay 1×
+            // because 2× merged lines. max_side 2560.
             .detect(
                 &rgb,
-                det_padding(image.width, image.height),
+                det_padding(pad_w, pad_h),
                 DET_MAX_SIDE,
                 DET_BOX_SCORE,
                 DET_BOX_THRESH,
@@ -239,7 +249,10 @@ fn infer(image: &Raster, paths: &ModelPaths) -> Result<OcrPage, String> {
                 false,
             )
             .map_err(|e| format!("ocr detect: {e:?}"))?;
-        crate::logutil::log(&format!("ocr blocks {}", result.text_blocks.len()));
+        crate::logutil::log(&format!(
+            "ocr blocks {} scale={scale} {pad_w}x{pad_h}",
+            result.text_blocks.len()
+        ));
         let mut blocks = Vec::new();
         for b in result.text_blocks {
             crate::logutil::log(&format!("ocr line score={:.3} {:?}", b.text_score, b.text));
@@ -247,7 +260,17 @@ fn infer(image: &Raster, paths: &ModelPaths) -> Result<OcrPage, String> {
             if b.text.trim().is_empty() {
                 continue;
             }
-            let pts: Vec<(u32, u32)> = b.box_points.iter().map(|p| (p.x, p.y)).collect();
+            let pts: Vec<(u32, u32)> = b
+                .box_points
+                .iter()
+                .map(|p| {
+                    if scale <= 1 {
+                        (p.x, p.y)
+                    } else {
+                        (p.x / scale, p.y / scale)
+                    }
+                })
+                .collect();
             blocks.push((pts, b.text));
         }
         let page = page_from_blocks(blocks);
@@ -367,20 +390,30 @@ mod tests {
         if std::env::var("PINSHOT_OCR_SMOKE").ok().as_deref() != Some("1") {
             return;
         }
-        let mut img = Raster::new(900, 120);
-        img.fill(Rgba::WHITE);
-        font::blit_rgba_chrome(
-            &mut img.pixels,
-            img.width,
-            img.width,
-            img.height,
+        let line = [
             "In 2009, Mozilla officially sponsored the project.",
-            16.0,
-            36.0,
-            28.0,
-            Rgba::BLACK,
-        );
-        img.force_opaque();
+            "The Firefox logo and the first full-time MacOS engineers.",
+            "See [note 5] and [21] After 2010s (i.e., later).",
+        ];
+        let img = pango_article_raster(&line, "Liberation Sans 13")
+            .or_else(|| pango_article_raster(&line, "DejaVu Sans 13"))
+            .unwrap_or_else(|| {
+                let mut img = Raster::new(1100, 360);
+                img.fill(Rgba::WHITE);
+                font::blit_rgba_chrome(
+                    &mut img.pixels,
+                    img.width,
+                    img.width,
+                    img.height,
+                    line[0],
+                    36.0,
+                    64.0,
+                    16.0,
+                    Rgba::BLACK,
+                );
+                img.force_opaque();
+                img
+            });
         let text = page_text(&img);
         eprintln!("ocr space smoke => {text:?}");
         let lower = text.to_ascii_lowercase();
@@ -433,8 +466,8 @@ mod tests {
     fn pango_article_raster(lines: &[&str], font: &str) -> Option<Raster> {
         let dir = std::env::temp_dir();
         let tag = font.replace([' ', '/'], "-");
-        let txt = dir.join(format!("pinshot-ocr-stem-{tag}.txt"));
-        let png = dir.join(format!("pinshot-ocr-stem-{tag}.png"));
+        let txt = dir.join(format!("pinshot-ocr-{n}-{tag}.txt", n = lines.len()));
+        let png = dir.join(format!("pinshot-ocr-{n}-{tag}.png", n = lines.len()));
         std::fs::write(&txt, lines.join("\n")).ok()?;
         let st = std::process::Command::new("pango-view")
             .args([
@@ -646,5 +679,69 @@ mod tests {
                 "dropped CJK lines in {text:?}"
             );
         }
+    }
+
+    #[test]
+    fn ocr_wikipedia_work_shifted_paragraph_when_requested() {
+        if std::env::var("PINSHOT_OCR_SMOKE").ok().as_deref() != Some("1") {
+            return;
+        }
+        let para = [
+            "Work shifted from the OCaml compiler to a self-hosting compiler",
+            "(i.e., written in Rust) targeting LLVM.",
+        ];
+        let img = pango_article_raster(&para, "Liberation Sans 13")
+            .or_else(|| pango_article_raster(&para, "DejaVu Sans 13"))
+            .unwrap_or_else(|| {
+                let mut img = Raster::new(1100, 160);
+                img.fill(Rgba::WHITE);
+                for (i, line) in para.iter().enumerate() {
+                    font::blit_rgba_chrome(
+                        &mut img.pixels,
+                        img.width,
+                        img.width,
+                        img.height,
+                        line,
+                        24.0,
+                        48.0 + i as f32 * 28.0,
+                        16.0,
+                        Rgba::BLACK,
+                    );
+                }
+                img.force_opaque();
+                img
+            });
+        let text = page_text(&img);
+        eprintln!("ocr work-shifted {}x{} => {text:?}", img.width, img.height);
+        let lower = text.to_ascii_lowercase();
+        for needle in [
+            "work shifted",
+            "ocaml compiler",
+            "self-hosting",
+            "written in rust",
+            "targeting",
+        ] {
+            assert!(
+                lower.contains(needle),
+                "missing {needle:?} in Wikipedia paragraph {text:?}"
+            );
+        }
+        assert!(
+            text.contains("LLVM") || lower.contains("llvm"),
+            "missing LLVM in {text:?}"
+        );
+        assert!(
+            !lower.contains("theaml")
+                && !lower.contains("cmpile")
+                && !lower.contains("writen inrust")
+                && !lower.contains("tareting"),
+            "mobile-quality English garble in {text:?}"
+        );
+        let joined = lower.replace('\n', " ");
+        assert!(
+            joined.contains("work shifted from the ocaml compiler to a self-hosting compiler")
+                && joined.contains("(i.e., written in rust) targeting llvm."),
+            "Wikipedia paragraph not verbatim enough: {text:?}"
+        );
     }
 }

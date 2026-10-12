@@ -73,14 +73,11 @@ pub struct Overlay {
     mods: ModifiersState,
     history_max: u32,
     held_btn1: bool,
-    /// Consecutive QueryPointer Button1-up samples. XGrab often reports a
-    /// single false `!down`; two in a row is a real release.
+    /// Consecutive QueryPointer Button1-up samples. Used only to finish an
+    /// in-progress drag if Release was dropped — never as a press origin.
     btn1_up_streak: u8,
-    /// QueryPointer sample from the Button1 rising edge. A late winit press
-    /// (XGrab) must not start a text box at the drop point.
-    pending_press: Option<Point>,
-    /// Last QueryPointer sample while Button1 was up. A 2-point handle drag
-    /// can skip the press pixel; this is the real corner.
+    /// Last CursorMoved / grab motion while Button1 was up. A 2-point handle
+    /// drag can skip the press pixel; this is the real corner.
     last_idle_pointer: Option<Point>,
     wheel: WheelGate,
     confirm: Option<ConfirmAbort>,
@@ -90,6 +87,8 @@ pub struct Overlay {
     proxy: winit::event_loop::EventLoopProxy<crate::event::AppEvent>,
     #[cfg(unix)]
     key_grab: Option<crate::x11util::OverlayKeyGrab>,
+    #[cfg(unix)]
+    ptr_hold: Option<crate::x11util::InputHold>,
     #[cfg(not(windows))]
     surface: Option<softbuffer::Surface<Rc<Window>, Rc<Window>>>,
     ime_preedit: bool,
@@ -103,7 +102,7 @@ impl Overlay {
         history_max: u32,
         translate_on_select: bool,
         proxy: winit::event_loop::EventLoopProxy<crate::event::AppEvent>,
-        #[cfg(unix)] pre_hold: Option<crate::x11util::InputHold>,
+        #[cfg(unix)] mut pre_hold: Option<crate::x11util::InputHold>,
     ) -> Result<Self, String> {
         let (vx, vy) = capture.virtual_origin;
         let w = capture.composed.width;
@@ -171,7 +170,6 @@ impl Overlay {
             history_max: history_max.max(1),
             held_btn1: false,
             btn1_up_streak: 0,
-            pending_press: None,
             last_idle_pointer: None,
             wheel: WheelGate::new(),
             confirm: None,
@@ -181,6 +179,8 @@ impl Overlay {
             proxy: proxy.clone(),
             #[cfg(unix)]
             key_grab: None,
+            #[cfg(unix)]
+            ptr_hold: None,
             #[cfg(not(windows))]
             surface,
             ime_preedit: false,
@@ -192,27 +192,23 @@ impl Overlay {
         }
         #[cfg(unix)]
         {
-            // Release InputHold *before* the exclusive overlay grab, otherwise
-            // the first XGrabKeyboard fails (AlreadyGrabbed) and Tab leaks to
-            // Chrome for ~80 ms.
-            drop(pre_hold);
+            // Grab the pointer on the overlay *before* the first frame, on the
+            // same connection as InputHold (replaces the root grab; no gap for
+            // Chrome). Ungrab keyboard inside grab_overlay_pointer so
+            // OverlayKeyGrab can take keys.
+            if let Some(xid) = crate::x11util::xid_of(&s.window) {
+                if let Some(hold) = pre_hold.as_mut() {
+                    let _ = hold.grab_overlay_pointer(xid);
+                }
+            }
+            s.ptr_hold = pre_hold;
             s.key_grab = native::grab_overlay_keys(&s.window, proxy);
-            crate::logutil::log("overlay mapped (pointer left on winit window)");
+            crate::logutil::log("overlay mapped (pointer grabbed before first frame)");
+            s.poll_overlay_pointer();
         }
         #[cfg(not(unix))]
         {
             let _ = proxy;
-        }
-        if let Some((x, y, down)) = native::pointer_in_window(&s.window) {
-            let (vx, vy) = s.capture.virtual_origin;
-            s.cursor = Point::new((x - vx) as f32, (y - vy) as f32);
-            if down && s.sel.state == pinshot_core::selection::SelState::Idle {
-                let _ = s.sel.press(s.cursor, s.bounds(), false);
-                crate::logutil::log(&format!(
-                    "recover Button1 at start ({:.0},{:.0})",
-                    s.cursor.x, s.cursor.y
-                ));
-            }
         }
         s.redraw();
         Ok(s)
@@ -255,6 +251,10 @@ impl Overlay {
         #[cfg(unix)]
         if let Some(mut g) = self.key_grab.take() {
             g.release();
+        }
+        #[cfg(unix)]
+        {
+            self.ptr_hold = None;
         }
     }
 
@@ -765,6 +765,205 @@ impl Overlay {
         }
     }
 
+    #[cfg(unix)]
+    fn overlay_pt_from_root(&self, root_x: i32, root_y: i32) -> Point {
+        let (vx, vy) = self.capture.virtual_origin;
+        Point::new((root_x - vx) as f32, (root_y - vy) as f32)
+    }
+
+    #[cfg(unix)]
+    fn poll_overlay_pointer(&mut self) {
+        let evs = match self.ptr_hold.as_mut() {
+            Some(hold) => hold.poll_pointer(),
+            None => return,
+        };
+        for ev in evs {
+            let pt = self.overlay_pt_from_root(ev.root_x, ev.root_y);
+            match ev.kind {
+                crate::x11util::PtrKind::Move => self.on_cursor_moved(pt),
+                crate::x11util::PtrKind::Press => {
+                    if let Some(btn) = xbutton(ev.detail) {
+                        self.cursor = pt;
+                        self.on_mouse_button(btn, true);
+                    } else {
+                        self.on_cursor_moved(pt);
+                    }
+                }
+                crate::x11util::PtrKind::Release => {
+                    if let Some(btn) = xbutton(ev.detail) {
+                        self.cursor = pt;
+                        self.on_mouse_button(btn, false);
+                    } else {
+                        self.on_cursor_moved(pt);
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    fn poll_overlay_pointer(&mut self) {}
+
+    fn on_cursor_moved(&mut self, next: Point) {
+        if self.color_picker.is_some() {
+            self.cursor = next;
+            self.picker_drag(self.cursor);
+            return;
+        }
+        if !self.held_btn1 {
+            self.last_idle_pointer = Some(next);
+        }
+        if self.confirm.is_some() {
+            self.cursor = next;
+            return;
+        }
+        let same_px =
+            next.x.round() == self.cursor.x.round() && next.y.round() == self.cursor.y.round();
+        self.cursor = next;
+        if self.annot.is_brush_live()
+            || self.annot.is_selecting()
+            || self.annot.is_dragging_text()
+            || self.annot.live.is_some()
+        {
+            self.annot.move_to(self.img_pt(self.cursor), false);
+            self.dirty = true;
+        } else if self
+            .toolbar
+            .as_ref()
+            .is_some_and(|t| t.contains(self.cursor))
+        {
+            self.dirty = true;
+        } else if matches!(
+            self.sel.state,
+            SelState::Creating | SelState::Moving | SelState::Resizing
+        ) {
+            self.apply_sel_motion(self.cursor);
+            self.dirty = true;
+        } else {
+            let prev_hover = self.hover;
+            self.update_hover();
+            if !same_px || prev_hover != self.hover {
+                self.dirty = true;
+            }
+        }
+    }
+
+    fn on_mouse_button(&mut self, button: MouseButton, pressed: bool) {
+        if self.color_picker.is_some() {
+            if pressed && button == MouseButton::Left {
+                self.picker_press(self.cursor);
+            } else if !pressed && button == MouseButton::Left {
+                if let Some(p) = self.color_picker.as_mut() {
+                    p.release();
+                }
+            }
+            return;
+        }
+        let live_sel = matches!(
+            self.sel.state,
+            SelState::Creating | SelState::Moving | SelState::Resizing
+        );
+        let pt = self.cursor;
+        if pressed && self.confirm.is_some() {
+            if !self.held_btn1 {
+                let _ = self.hit_confirm(pt);
+            }
+            self.held_btn1 = button == MouseButton::Left;
+            return;
+        }
+        if pressed {
+            native::focus_window(&self.window);
+        }
+        if pressed && button == MouseButton::Left {
+            self.held_btn1 = true;
+            if let Some(tb) = &self.toolbar {
+                if let Some(a) = tb.hit(pt) {
+                    self.apply_tb(a);
+                    return;
+                }
+            }
+            if live_sel {
+                self.apply_sel_motion(pt);
+                self.dirty = true;
+                return;
+            }
+            if self.sel.has_sel() && self.annot.press(self.img_pt(pt), false) {
+                self.sync_ime();
+                self.relayout_toolbar();
+                self.mark_dirty();
+                return;
+            }
+            let anchor = handle_press_point(
+                self.last_idle_pointer,
+                pt,
+                self.sel.has_sel(),
+                self.sel.normalized(),
+            );
+            let mut kind = self
+                .sel
+                .press(anchor, self.bounds(), self.annot.tool.is_some());
+            if kind == PressKind::Ignore && self.sel.has_sel() {
+                kind = self.sel.press(pt, self.bounds(), self.annot.tool.is_some());
+            }
+            match kind {
+                PressKind::Ignore => {}
+                PressKind::Move => {
+                    self.sel_move0 = Some(self.sel.normalized());
+                    self.toolbar = None;
+                }
+                _ => self.toolbar = None,
+            }
+            if matches!(
+                self.sel.state,
+                SelState::Creating | SelState::Moving | SelState::Resizing
+            ) {
+                self.apply_sel_motion(pt);
+            }
+            self.dirty = true;
+        } else if pressed && button == MouseButton::Middle {
+            if self.annot.text_edit.is_some() {
+                if let Ok(s) = crate::clipboard::read_text() {
+                    self.annot.insert_str(&s);
+                    self.sync_ime();
+                    self.mark_dirty();
+                }
+            }
+        } else if pressed && button == MouseButton::Right {
+            if self.annot.right_click() {
+                self.sync_ime();
+                self.relayout_toolbar();
+                self.mark_dirty();
+                return;
+            }
+            if self.sel.has_sel() {
+                self.sel.reset();
+                self.annot.set_tool(None);
+                self.annot.clear();
+                self.toolbar = None;
+                self.update_hover();
+            } else {
+                self.cancel();
+            }
+            self.dirty = true;
+        } else if !pressed && button == MouseButton::Left {
+            self.held_btn1 = false;
+            if self.annot.live.is_some()
+                || self.annot.is_selecting()
+                || self.annot.is_dragging_text()
+                || self.annot.is_swallowing_text_click()
+                || self.annot.is_editing_text()
+            {
+                self.commit_annot_release(pt);
+            } else {
+                self.finish_sel_drag(pt);
+                if self.translate_on_select && self.sel.has_sel() {
+                    self.finish_ocr(true);
+                }
+            }
+            self.dirty = true;
+        }
+    }
+
     fn request_abort(&mut self) {
         if !self.sel.has_sel() {
             self.cancel();
@@ -830,6 +1029,7 @@ impl Overlay {
 
     pub fn handle(&mut self, event: &WindowEvent) {
         self.poll_elements();
+        self.poll_overlay_pointer();
         if self.color_picker.is_some() {
             match event {
                 WindowEvent::CursorMoved { position, .. } => {
@@ -869,151 +1069,11 @@ impl Overlay {
             return;
         }
         match event {
-            WindowEvent::CursorMoved { position, .. } if self.confirm.is_some() => {
-                self.cursor = Point::new(position.x as f32, position.y as f32);
-            }
             WindowEvent::CursorMoved { position, .. } => {
-                let next = Point::new(position.x as f32, position.y as f32);
-                let same_px = next.x.round() == self.cursor.x.round()
-                    && next.y.round() == self.cursor.y.round();
-                self.cursor = next;
-                if self.annot.is_brush_live()
-                    || self.annot.is_selecting()
-                    || self.annot.is_dragging_text()
-                    || self.annot.live.is_some()
-                {
-                    self.annot.move_to(self.img_pt(self.cursor), false);
-                    self.dirty = true;
-                } else if self
-                    .toolbar
-                    .as_ref()
-                    .is_some_and(|t| t.contains(self.cursor))
-                {
-                    self.dirty = true;
-                } else if matches!(
-                    self.sel.state,
-                    SelState::Creating | SelState::Moving | SelState::Resizing
-                ) {
-                    self.apply_sel_motion(self.cursor);
-                    self.dirty = true;
-                } else {
-                    let prev_hover = self.hover;
-                    self.update_hover();
-                    if !same_px || prev_hover != self.hover {
-                        self.dirty = true;
-                    }
-                }
+                self.on_cursor_moved(Point::new(position.x as f32, position.y as f32));
             }
             WindowEvent::MouseInput { state, button, .. } => {
-                let live_sel = matches!(
-                    self.sel.state,
-                    SelState::Creating | SelState::Moving | SelState::Resizing
-                );
-                // ButtonPress-time location: QueryPointer now, never a stale
-                // idle sample from the previous cursor position.
-                self.sync_pointer();
-                let pt = self.cursor;
-                if *state == ElementState::Pressed && self.confirm.is_some() {
-                    // Recover may already have taken this rising edge.
-                    if !self.held_btn1 {
-                        let _ = self.hit_confirm(pt);
-                    }
-                    self.held_btn1 = *button == MouseButton::Left;
-                    return;
-                }
-                if *state == ElementState::Pressed {
-                    native::focus_window(&self.window);
-                }
-                if *state == ElementState::Pressed && *button == MouseButton::Left {
-                    self.held_btn1 = true;
-                    if let Some(tb) = &self.toolbar {
-                        if let Some(a) = tb.hit(pt) {
-                            self.apply_tb(a);
-                            return;
-                        }
-                    }
-                    if live_sel {
-                        self.apply_sel_motion(pt);
-                        self.dirty = true;
-                        return;
-                    }
-                    if self.sel.has_sel() && self.annot.press(self.img_pt(pt), false) {
-                        self.sync_ime();
-                        self.relayout_toolbar();
-                        self.mark_dirty();
-                        return;
-                    }
-                    let anchor = handle_press_point(
-                        self.last_idle_pointer,
-                        pt,
-                        self.sel.has_sel(),
-                        self.sel.normalized(),
-                    );
-                    let mut kind = self
-                        .sel
-                        .press(anchor, self.bounds(), self.annot.tool.is_some());
-                    if kind == PressKind::Ignore && self.sel.has_sel() {
-                        kind = self.sel.press(pt, self.bounds(), self.annot.tool.is_some());
-                    }
-                    match kind {
-                        PressKind::Ignore => {}
-                        PressKind::Move => {
-                            self.sel_move0 = Some(self.sel.normalized());
-                            self.toolbar = None;
-                        }
-                        _ => self.toolbar = None,
-                    }
-                    self.sync_pointer();
-                    if matches!(
-                        self.sel.state,
-                        SelState::Creating | SelState::Moving | SelState::Resizing
-                    ) {
-                        self.apply_sel_motion(self.cursor);
-                    }
-                    self.dirty = true;
-                } else if *state == ElementState::Pressed && *button == MouseButton::Middle {
-                    if self.annot.text_edit.is_some() {
-                        if let Ok(s) = crate::clipboard::read_text() {
-                            self.annot.insert_str(&s);
-                            self.sync_ime();
-                            self.mark_dirty();
-                        }
-                    }
-                } else if *state == ElementState::Pressed && *button == MouseButton::Right {
-                    // Snipaste: right-click ends the current annotation (incl. text).
-                    if self.annot.right_click() {
-                        self.sync_ime();
-                        self.relayout_toolbar();
-                        self.mark_dirty();
-                        return;
-                    }
-                    if self.sel.has_sel() {
-                        self.sel.reset();
-                        self.annot.set_tool(None);
-                        self.annot.clear();
-                        self.toolbar = None;
-                        self.update_hover();
-                    } else {
-                        self.cancel();
-                    }
-                    self.dirty = true;
-                } else if *state == ElementState::Released && *button == MouseButton::Left {
-                    self.held_btn1 = false;
-                    if self.annot.live.is_some()
-                        || self.annot.is_selecting()
-                        || self.annot.is_dragging_text()
-                        || self.annot.is_swallowing_text_click()
-                        || self.annot.is_editing_text()
-                    {
-                        self.commit_annot_release(pt);
-                    } else {
-                        self.finish_sel_drag(pt);
-                        if self.translate_on_select && self.sel.has_sel() {
-                            self.finish_ocr(true);
-                        }
-                    }
-                    self.dirty = true;
-                }
+                self.on_mouse_button(*button, *state == ElementState::Pressed);
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 if self.confirm.is_some() {
@@ -1436,6 +1496,7 @@ impl Overlay {
 
     pub fn pump_redraw(&mut self) {
         self.poll_elements();
+        self.poll_overlay_pointer();
         self.recover_pointer_drag();
         self.expire_toast();
         if self.annot.text_edit.is_some() {
@@ -1454,145 +1515,39 @@ impl Overlay {
         }
     }
 
-    /// If ButtonPress landed on the window underneath before the overlay
-    /// mapped, adopt the still-held Button1 as a selection drag.
-    ///
-    /// Recover must **not** start `annot.press`. A QueryPointer rising edge
-    /// plus the real winit press (or a same-point recover release) `finish()`es
-    /// an empty live shape, after which the physical drag has `held_btn1` and
-    /// no live — rect/ellipse/arrow draw nothing. MouseInput owns press;
-    /// recover only continues or commits a stroke that already has extent.
-    ///
-    /// Create origin is the live pointer (ButtonPress / QueryPointer now),
-    /// never a leftover idle sample. Click vs drag is movement from that
-    /// origin, not how long the button was down. Two QueryPointer ups still
-    /// debounce a false XGrab release for an in-progress drag.
+    /// QueryPointer is never the press origin. The overlay grab delivers
+    /// ButtonPress / Motion; recover only finishes a live drag if Release
+    /// was dropped (two consecutive ups).
     fn recover_pointer_drag(&mut self) {
-        if self.color_picker.is_some() {
+        if self.color_picker.is_some() || self.confirm.is_some() {
             return;
         }
-        let Some((x, y, down)) = native::pointer_in_window(&self.window) else {
+        let Some((_, _, down)) = native::pointer_in_window(&self.window) else {
             return;
         };
-        let vx = self.capture.virtual_origin.0;
-        let vy = self.capture.virtual_origin.1;
-        let pt = Point::new((x - vx) as f32, (y - vy) as f32);
         if down {
             self.btn1_up_streak = 0;
-        } else {
-            self.btn1_up_streak = self.btn1_up_streak.saturating_add(1);
-        }
-        let rising = down && !self.held_btn1;
-        if self.confirm.is_some() {
-            if rising {
-                let _ = self.hit_confirm(pt);
-            }
-            self.cursor = pt;
-            self.held_btn1 = down;
             return;
         }
+        self.btn1_up_streak = self.btn1_up_streak.saturating_add(1);
         let drawing = self.annot.live.is_some()
             || self.annot.is_selecting()
             || self.annot.is_dragging_text()
             || self.annot.is_brush_live();
-        let live_sel = matches!(
-            self.sel.state,
-            SelState::Creating | SelState::Moving | SelState::Resizing
-        );
-        if !down {
-            self.last_idle_pointer = Some(pt);
-        }
-        if rising {
-            self.pending_press = Some(pt);
-        }
-        self.cursor = pt;
-        let over_tb = self
-            .toolbar
-            .as_ref()
-            .map(|t| t.contains(self.cursor))
-            .unwrap_or(false);
-        if self.sel.has_sel() && self.annot.tool.is_some() && !over_tb {
-            match recover_stroke_action(down, drawing, annot_stroke_extent(&self.annot)) {
-                RecoverStroke::Move => {
-                    self.annot.move_to(self.img_pt(pt), false);
-                    self.dirty = true;
-                }
-                RecoverStroke::Release => {
-                    self.commit_annot_release(pt);
-                    self.dirty = true;
-                }
-                RecoverStroke::Idle => {}
-            }
-        } else if rising
-            && self.sel.state == SelState::Idle
-            && !self.sel.has_sel()
-            && self.annot.tool.is_none()
+        if drawing
+            && recover_stroke_action(false, drawing, annot_stroke_extent(&self.annot))
+                == RecoverStroke::Release
         {
-            let origin = pt;
-            let _ = self.sel.press(origin, self.bounds(), false);
-            crate::logutil::log(&format!(
-                "recover Button1 drag ({:.0},{:.0})",
-                origin.x, origin.y
-            ));
-            self.apply_sel_motion(pt);
+            self.commit_annot_release(self.cursor);
             self.dirty = true;
-        } else if rising
-            && self.sel.state == SelState::Idle
-            && self.sel.has_sel()
-            && self.annot.tool.is_none()
-            && !over_tb
-        {
-            let origin =
-                handle_press_point(self.last_idle_pointer, pt, true, self.sel.normalized());
-            let mut kind = self.sel.press(origin, self.bounds(), false);
-            if kind == PressKind::Ignore {
-                kind = self.sel.press(pt, self.bounds(), false);
-            }
-            match kind {
-                PressKind::Ignore => {}
-                PressKind::Move => {
-                    self.sel_move0 = Some(self.sel.normalized());
-                    self.toolbar = None;
-                    crate::logutil::log(&format!(
-                        "recover Button1 move ({:.0},{:.0})",
-                        origin.x, origin.y
-                    ));
-                }
-                PressKind::Resize(h) => {
-                    self.toolbar = None;
-                    crate::logutil::log(&format!(
-                        "recover Button1 resize {} ({:.0},{:.0})",
-                        h.name(),
-                        origin.x,
-                        origin.y
-                    ));
-                }
-                PressKind::Create => self.toolbar = None,
-            }
-            if matches!(
-                self.sel.state,
-                SelState::Creating | SelState::Moving | SelState::Resizing
-            ) {
-                self.apply_sel_motion(pt);
-            }
-            self.dirty = true;
-        } else if down && live_sel {
-            self.apply_sel_motion(pt);
-            self.dirty = true;
-        } else if recover_should_commit_sel(down, self.btn1_up_streak, self.sel.state) {
-            self.apply_sel_motion(pt);
-            self.finish_sel_drag(pt);
+        } else if recover_should_commit_sel(false, self.btn1_up_streak, self.sel.state) {
+            self.finish_sel_drag(self.cursor);
             if self.sel.has_sel() {
                 let r = self.sel.normalized();
                 crate::logutil::log(&format!("recover release sel {:.0}x{:.0}", r.w, r.h));
             }
-            self.pending_press = None;
             self.dirty = true;
         }
-        if !down && self.btn1_up_streak >= 2 && !live_sel {
-            self.pending_press = None;
-        }
-        self.held_btn1 = down;
     }
 
     pub fn next_wake(&self) -> Option<Instant> {
@@ -1612,10 +1567,14 @@ enum RecoverStroke {
     Release,
 }
 
-/// Create uses the live ButtonPress / QueryPointer point. A 2-point handle
-/// grab still uses the last idle pixel if that pixel sits on a handle.
+/// Create uses the live ButtonPress / MouseInput cursor. A 2-point handle
+/// grab still uses the last idle pixel if the press skipped the handle;
+/// a press that itself hits a handle wins over a stale idle corner.
 fn handle_press_point(idle: Option<Point>, live: Point, has_sel: bool, sel: Rect) -> Point {
     if has_sel {
+        if hit_sel_handle(sel, live).is_some() {
+            return live;
+        }
         if let Some(p) = idle {
             if hit_sel_handle(sel, p).is_some() {
                 return p;
@@ -1623,6 +1582,16 @@ fn handle_press_point(idle: Option<Point>, live: Point, has_sel: bool, sel: Rect
         }
     }
     live
+}
+
+#[cfg(unix)]
+fn xbutton(detail: u8) -> Option<MouseButton> {
+    match detail {
+        1 => Some(MouseButton::Left),
+        2 => Some(MouseButton::Middle),
+        3 => Some(MouseButton::Right),
+        _ => None,
+    }
 }
 
 /// Two consecutive QueryPointer ups commit Creating (window-adopt if the
@@ -1811,6 +1780,14 @@ mod keysym_tests {
         let sel = pinshot_core::geom::Rect::new(100.0, 80.0, 200.0, 120.0);
         assert_eq!(handle_press_point(Some(handle), drop, true, sel), handle);
         assert_eq!(handle_press_point(Some(drop), drop, true, sel), drop);
+    }
+
+    #[test]
+    fn live_handle_beats_stale_idle_handle() {
+        let br = Point::new(300.0, 200.0);
+        let tl = Point::new(100.0, 80.0);
+        let sel = pinshot_core::geom::Rect::new(100.0, 80.0, 200.0, 120.0);
+        assert_eq!(handle_press_point(Some(br), tl, true, sel), tl);
     }
 
     #[test]
