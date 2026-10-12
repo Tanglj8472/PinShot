@@ -41,12 +41,29 @@ pub fn ensure_models() -> Result<ModelPaths, String> {
     ensure_models_with_progress(&mut |_| {})
 }
 
-fn configured_kind() -> OcrModelKind {
-    if let Ok(v) = std::env::var("PINSHOT_OCR_MODEL") {
-        return OcrModelKind::parse(&v);
+fn force_mobile() -> bool {
+    std::env::var("PINSHOT_OCR_MODEL")
+        .ok()
+        .is_some_and(|v| OcrModelKind::parse(&v) == OcrModelKind::Mobile)
+}
+
+fn extra_model_dirs(data_models: &Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    if let Ok(bundled) = std::env::var("PINSHOT_OCR_MODELS") {
+        out.push(std::path::PathBuf::from(bundled));
     }
-    let cfg = pinshot_core::config::load().unwrap_or_default();
-    OcrModelKind::parse(&cfg.ocr_model)
+    if let Ok(home) = std::env::var("HOME") {
+        out.push(
+            std::path::PathBuf::from(home)
+                .join(".local")
+                .join("share")
+                .join("PinShot")
+                .join("ocr-models"),
+        );
+    }
+    out.into_iter()
+        .filter(|p| p != data_models && p.is_dir())
+        .collect()
 }
 
 fn ensure_models_with_progress(progress: &mut dyn FnMut(&str)) -> Result<ModelPaths, String> {
@@ -54,34 +71,32 @@ fn ensure_models_with_progress(progress: &mut dyn FnMut(&str)) -> Result<ModelPa
     let _g = LOCK.lock().map_err(|e| e.to_string())?;
     let dir = model_dir(&pinshot_core::config::data_dir());
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let kind = configured_kind();
-    let preferred = ModelPaths::for_kind(&dir, kind);
-    let fallback = ModelPaths::for_kind(
-        &dir,
-        match kind {
-            OcrModelKind::Mobile => OcrModelKind::Server,
-            OcrModelKind::Server => OcrModelKind::Mobile,
-        },
-    );
-    if let Ok(bundled) = std::env::var("PINSHOT_OCR_MODELS") {
-        copy_if_present(Path::new(&bundled), &preferred);
-        copy_if_present(Path::new(&bundled), &fallback);
+    let server = ModelPaths::for_kind(&dir, OcrModelKind::Server);
+    let mobile = ModelPaths::for_kind(&dir, OcrModelKind::Mobile);
+    for src in extra_model_dirs(&dir) {
+        copy_if_present(&src, &server);
+        copy_if_present(&src, &mobile);
     }
-    if preferred.ready() {
-        return Ok(preferred);
-    }
-    if fallback.ready() {
+    // Saved config from 88c3e4e still says mobile. Server is required for
+    // English on real Chrome; PINSHOT_OCR_MODEL=mobile is the only force.
+    if !force_mobile() && server.ready() {
         crate::logutil::log(&format!(
-            "ocr using {} models ({} not downloaded yet)",
-            fallback
-                .det
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy(),
-            kind.as_str()
+            "ocr using server det={} rec={}",
+            server.det.display(),
+            server.rec.display()
         ));
-        return Ok(fallback);
+        return Ok(server);
     }
+    if mobile.ready() && (force_mobile() || !server.ready()) {
+        crate::logutil::log(&format!(
+            "ocr using mobile det={} rec={} (server ready={})",
+            mobile.det.display(),
+            mobile.rec.display(),
+            server.ready()
+        ));
+        return Ok(mobile);
+    }
+    let preferred = if force_mobile() { mobile } else { server };
     for (urls, dest) in preferred.downloads() {
         if dest.is_file() {
             continue;
@@ -100,25 +115,23 @@ fn ensure_models_with_progress(progress: &mut dyn FnMut(&str)) -> Result<ModelPa
 }
 
 fn copy_if_present(src: &Path, dest: &ModelPaths) {
+    let server = dest
+        .det
+        .file_name()
+        .is_some_and(|n| n == pinshot_core::ocr::SERVER_DET_FILE);
+    let det_names: &[&str] = if server {
+        &["ch_PP-OCRv5_server_det.onnx", "ch_PP-OCRv5_det_server.onnx"]
+    } else {
+        &["ch_PP-OCRv5_mobile_det.onnx", "ch_PP-OCRv5_det_mobile.onnx"]
+    };
+    let rec_names: &[&str] = if server {
+        &["ch_PP-OCRv5_server_rec.onnx", "ch_PP-OCRv5_rec_server.onnx"]
+    } else {
+        &["ch_PP-OCRv5_mobile_rec.onnx", "ch_PP-OCRv5_rec_mobile.onnx"]
+    };
     let aliases = [
-        (
-            &dest.det,
-            &[
-                "ch_PP-OCRv5_server_det.onnx",
-                "ch_PP-OCRv5_det_server.onnx",
-                "ch_PP-OCRv5_mobile_det.onnx",
-                "ch_PP-OCRv5_det_mobile.onnx",
-            ][..],
-        ),
-        (
-            &dest.rec,
-            &[
-                "ch_PP-OCRv5_server_rec.onnx",
-                "ch_PP-OCRv5_rec_server.onnx",
-                "ch_PP-OCRv5_mobile_rec.onnx",
-                "ch_PP-OCRv5_rec_mobile.onnx",
-            ][..],
-        ),
+        (&dest.det, det_names),
+        (&dest.rec, rec_names),
         (&dest.keys, &["ppocr_keys_v5.txt", "ppocrv5_dict.txt"][..]),
         (
             &dest.cls,
@@ -250,8 +263,11 @@ fn infer(image: &Raster, paths: &ModelPaths) -> Result<OcrPage, String> {
             )
             .map_err(|e| format!("ocr detect: {e:?}"))?;
         crate::logutil::log(&format!(
-            "ocr blocks {} scale={scale} {pad_w}x{pad_h}",
-            result.text_blocks.len()
+            "ocr blocks {} scale={scale} pad={} max_side={DET_MAX_SIDE} unclip={DET_UNCLIP} {pad_w}x{pad_h} det={} rec={}",
+            result.text_blocks.len(),
+            det_padding(pad_w, pad_h),
+            paths.det.display(),
+            paths.rec.display()
         ));
         let mut blocks = Vec::new();
         for b in result.text_blocks {

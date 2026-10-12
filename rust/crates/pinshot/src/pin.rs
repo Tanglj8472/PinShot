@@ -1506,7 +1506,7 @@ impl PinWin {
                 }
             }
             if let Some(sr) = self.strip_rect() {
-                fill_rect(&mut pm, sr, Rgba::rgba(252, 252, 253, 230));
+                fill_rect(&mut pm, sr, Rgba::rgba(252, 252, 253, 255));
                 stroke_rect(&mut pm, sr, Rgba::rgba(206, 208, 214, 255), 1.0);
                 let lines = self.strip_lines();
                 for (i, line) in lines.iter().enumerate() {

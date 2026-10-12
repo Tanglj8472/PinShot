@@ -788,16 +788,37 @@ impl InputHold {
         };
         let root = c.setup().roots[screen].root;
         let mask = EventMask::BUTTON_PRESS | EventMask::BUTTON_RELEASE | EventMask::POINTER_MOTION;
-        let _ = c.grab_pointer(
-            false,
-            root,
-            mask,
-            GrabMode::ASYNC,
-            GrabMode::ASYNC,
-            x11rb::NONE,
-            x11rb::NONE,
-            x11rb::CURRENT_TIME,
-        );
+        let mut ptr_ok = false;
+        for _ in 0..25 {
+            match c.grab_pointer(
+                false,
+                root,
+                mask,
+                GrabMode::ASYNC,
+                GrabMode::ASYNC,
+                x11rb::NONE,
+                x11rb::NONE,
+                x11rb::CURRENT_TIME,
+            ) {
+                Ok(cookie) => match cookie.reply() {
+                    Ok(r) if r.status == GrabStatus::SUCCESS => {
+                        ptr_ok = true;
+                        break;
+                    }
+                    Ok(r) => crate::logutil::log(&format!(
+                        "InputHold XGrabPointer status={:?}",
+                        r.status
+                    )),
+                    Err(e) => crate::logutil::log(&format!("InputHold XGrabPointer: {e}")),
+                },
+                Err(e) => crate::logutil::log(&format!("InputHold XGrabPointer: {e}")),
+            }
+            let _ = c.get_input_focus().ok().and_then(|k| k.reply().ok());
+        }
+        if !ptr_ok {
+            crate::logutil::log("InputHold pointer grab failed; first drag may leak to Chrome");
+            return Self { conn: None };
+        }
         let _ = c.grab_keyboard(
             false,
             root,
@@ -806,6 +827,7 @@ impl InputHold {
             GrabMode::ASYNC,
         );
         let _ = c.flush();
+        crate::logutil::log("InputHold XGrabPointer ok (root)");
         Self { conn: Some(c) }
     }
 
@@ -857,11 +879,13 @@ impl InputHold {
             }
             let _ = c.get_input_focus().ok().and_then(|k| k.reply().ok());
         }
-        let _ = c.ungrab_keyboard(x11rb::CURRENT_TIME);
-        let _ = c.flush();
         if ok {
+            let _ = c.ungrab_keyboard(x11rb::CURRENT_TIME);
             crate::logutil::log("overlay XGrabPointer ok (before first frame)");
+        } else {
+            crate::logutil::log("overlay XGrabPointer failed; keeping root grab");
         }
+        let _ = c.flush();
         ok
     }
 

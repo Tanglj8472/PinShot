@@ -67,6 +67,12 @@ pub fn window_rects() -> Vec<(Rect, String)> {
         .ok()
         .and_then(|c| c.reply().ok())
         .map(|a| a.atom);
+    let type_atom = c
+        .intern_atom(false, b"_NET_WM_WINDOW_TYPE")
+        .ok()
+        .and_then(|c| c.reply().ok())
+        .map(|a| a.atom);
+    let skip_types = shell_type_atoms(&c);
     let self_pid = std::process::id();
     let mut out = Vec::new();
     for wid in wids.into_iter().rev() {
@@ -89,6 +95,9 @@ pub fn window_rects() -> Vec<(Rect, String)> {
                     }
                 }
             }
+        }
+        if is_shell_window(&c, wid, type_atom, &skip_types) {
+            continue;
         }
         let Ok(g) = c.get_geometry(wid) else {
             continue;
@@ -125,7 +134,7 @@ pub fn window_rects() -> Vec<(Rect, String)> {
         }
         let mut title = String::new();
         if let Some(na) = name_atom {
-                    if let Ok(p) = c.get_property(false, wid, na, AtomEnum::STRING, 0, 256) {
+            if let Ok(p) = c.get_property(false, wid, na, AtomEnum::STRING, 0, 256) {
                 if let Ok(r) = p.reply() {
                     title = String::from_utf8_lossy(&r.value).into_owned();
                 }
@@ -135,6 +144,52 @@ pub fn window_rects() -> Vec<(Rect, String)> {
     }
     LAST_SOURCE.store(0, Ordering::Relaxed);
     out
+}
+
+fn shell_type_atoms(c: &x11rb::rust_connection::RustConnection) -> Vec<u32> {
+    const NAMES: &[&[u8]] = &[
+        b"_NET_WM_WINDOW_TYPE_DOCK",
+        b"_NET_WM_WINDOW_TYPE_DESKTOP",
+        b"_NET_WM_WINDOW_TYPE_TOOLBAR",
+        b"_NET_WM_WINDOW_TYPE_MENU",
+        b"_NET_WM_WINDOW_TYPE_UTILITY",
+        b"_NET_WM_WINDOW_TYPE_SPLASH",
+        b"_NET_WM_WINDOW_TYPE_DROPDOWN_MENU",
+        b"_NET_WM_WINDOW_TYPE_POPUP_MENU",
+        b"_NET_WM_WINDOW_TYPE_TOOLTIP",
+        b"_NET_WM_WINDOW_TYPE_NOTIFICATION",
+    ];
+    NAMES
+        .iter()
+        .filter_map(|n| {
+            c.intern_atom(false, n)
+                .ok()
+                .and_then(|c| c.reply().ok())
+                .map(|a| a.atom)
+        })
+        .collect()
+}
+
+fn is_shell_window(
+    c: &x11rb::rust_connection::RustConnection,
+    wid: u32,
+    type_atom: Option<u32>,
+    skip: &[u32],
+) -> bool {
+    let Some(ty) = type_atom else {
+        return false;
+    };
+    if skip.is_empty() {
+        return false;
+    }
+    let Ok(p) = c.get_property(false, wid, ty, AtomEnum::ATOM, 0, 16) else {
+        return false;
+    };
+    let Ok(r) = p.reply() else {
+        return false;
+    };
+    let types: Vec<u32> = r.value32().into_iter().flatten().collect();
+    types.iter().any(|a| skip.iter().any(|s| s == a))
 }
 
 fn parse_windows(bytes: &[u8]) -> Vec<u32> {
@@ -238,11 +293,19 @@ fn walk_viewable(
     if attrs.map_state != x11rb::protocol::xproto::MapState::VIEWABLE {
         return;
     }
-    if let (Ok(g), Ok(t)) = (c.get_geometry(wid), c.translate_coordinates(wid, root, 0, 0)) {
+    if let (Ok(g), Ok(t)) = (
+        c.get_geometry(wid),
+        c.translate_coordinates(wid, root, 0, 0),
+    ) {
         if let (Ok(g), Ok(t)) = (g.reply(), t.reply()) {
             if g.width >= 8 && g.height >= 8 && g.width < 20000 && g.height < 20000 {
                 out.push((
-                    Rect::from_i32(t.dst_x as i32, t.dst_y as i32, g.width as i32, g.height as i32),
+                    Rect::from_i32(
+                        t.dst_x as i32,
+                        t.dst_y as i32,
+                        g.width as i32,
+                        g.height as i32,
+                    ),
                     format!("x11:{wid:#x}"),
                 ));
             }
@@ -411,7 +474,10 @@ mod tests {
     #[test]
     fn atspi_line_keeps_role_name() {
         let (r, label) = parse_atspi_line("10,20,30,40\tpush button:OK").unwrap();
-        assert_eq!((r.x as i32, r.y as i32, r.w as i32, r.h as i32), (10, 20, 30, 40));
+        assert_eq!(
+            (r.x as i32, r.y as i32, r.w as i32, r.h as i32),
+            (10, 20, 30, 40)
+        );
         assert_eq!(label, "push button:OK");
         let (_, fallback) = parse_atspi_line("1,2,3,4").unwrap();
         assert_eq!(fallback, "atspi");

@@ -68,10 +68,12 @@ pub fn det_padding(width: u32, height: u32) -> u32 {
     DET_PADDING.min(side / 4).max(8)
 }
 
-/// paddle-ocr-rs rec is hardcoded to H=48. 2× only a thin clip (short side
-/// < 200): 2× on a 400px article merged visual lines and lost Latin spaces.
+/// paddle-ocr-rs rec is hardcoded to H=48. Chrome Wikipedia is ~13px; at 1×
+/// the det boxes are a few pixels tall and rec drops Latin spaces / stems.
+/// 2× article-sized clips (short side < 720). Full-screen stays 1× so det
+/// does not melt columns. Unclip stays 1.6 (2.0 merged adjacent words).
 pub fn ocr_upsample(width: u32, height: u32) -> u32 {
-    if width.min(height) < 200 {
+    if width.min(height) < 720 {
         2
     } else {
         1
@@ -310,8 +312,16 @@ fn join_line_parts(parts: &[String]) -> String {
     s
 }
 
+fn is_bracket(c: char) -> bool {
+    matches!(
+        c,
+        '[' | ']' | '【' | '】' | '(' | ')' | '（' | '）' | '「' | '」'
+    )
+}
+
 fn needs_space(prev: Option<char>, next: Option<char>) -> bool {
     match (prev, next) {
+        (Some(a), Some(b)) if is_bracket(a) || is_bracket(b) => false,
         (Some(a), Some(b))
             if !a.is_whitespace()
                 && !b.is_whitespace()
@@ -325,6 +335,88 @@ fn needs_space(prev: Option<char>, next: Option<char>) -> bool {
     }
 }
 
+/// `[16]`, `16]`, `[15`, `5]` — superscript citation fragments. These must
+/// not expand a line's body band, or the next paragraph (`5]，並於2011年`)
+/// merges onto `稱做「rustc」`.
+fn is_citation_fragment(text: &str) -> bool {
+    let stripped: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+    if stripped.is_empty() || stripped.chars().count() > 8 {
+        return false;
+    }
+    if stripped.chars().all(is_bracket) {
+        return true;
+    }
+    let core: String = stripped.chars().filter(|c| !is_bracket(*c)).collect();
+    !core.is_empty() && core.chars().all(|c| c.is_ascii_digit())
+}
+
+fn translate_join_space(prev: Option<char>, next: Option<char>) -> bool {
+    match (prev, next) {
+        (Some(a), Some(b)) if a.is_whitespace() || b.is_whitespace() => false,
+        (Some(a), Some(b)) if is_cjk(a) || is_cjk(b) => false,
+        (Some(_), Some(_)) => true,
+        _ => false,
+    }
+}
+
+fn ends_sentence(s: &str) -> bool {
+    s.chars()
+        .rev()
+        .find(|c| !c.is_whitespace())
+        .is_some_and(|c| matches!(c, '.' | '!' | '?' | '。' | '！' | '？' | '…'))
+}
+
+/// Merge wrapped OCR lines into sentences before sending to a translator.
+/// Line-by-line Edge/OpenAI calls split paragraphs and drop context.
+pub fn page_for_translate(text: &str) -> String {
+    let mut paras: Vec<String> = Vec::new();
+    let mut buf = String::new();
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.is_empty() {
+            if !buf.is_empty() {
+                paras.push(std::mem::take(&mut buf));
+            }
+            continue;
+        }
+        if buf.is_empty() {
+            buf.push_str(line);
+            continue;
+        }
+        if ends_sentence(&buf) {
+            paras.push(std::mem::take(&mut buf));
+            buf.push_str(line);
+        } else {
+            if translate_join_space(buf.chars().last(), line.chars().next()) {
+                buf.push(' ');
+            }
+            buf.push_str(line);
+        }
+    }
+    if !buf.is_empty() {
+        paras.push(buf);
+    }
+    paras.join("\n")
+}
+
+/// If det cropped `[15]` into `15]`, put the bracket back. Only at line
+/// start so years (`2011年`) stay untouched.
+fn repair_leading_cite(s: &str) -> String {
+    let t = s.trim_start();
+    if t.starts_with('[') || t.starts_with('【') {
+        return s.to_string();
+    }
+    let digits = t.chars().take_while(|c| c.is_ascii_digit()).count();
+    if digits > 0 && digits <= 3 {
+        let rest: String = t.chars().skip(digits).collect();
+        if rest.starts_with(']') || rest.starts_with('】') {
+            let ws = s.len() - t.len();
+            return format!("{}[{}", &s[..ws], t);
+        }
+    }
+    s.to_string()
+}
+
 fn y_overlap_ratio(a: Rect, b: Rect) -> f32 {
     let top = a.y.max(b.y);
     let bot = a.bottom().min(b.bottom());
@@ -332,9 +424,7 @@ fn y_overlap_ratio(a: Rect, b: Rect) -> f32 {
     ov / a.h.min(b.h).max(1.0)
 }
 
-/// Cluster detector boxes into visual lines (y-overlap, then x). Never merge
-/// a box onto a later line just because the y-gap is small.
-fn cluster_lines(mut items: Vec<(Rect, String)>) -> Vec<Vec<(Rect, String)>> {
+fn sort_boxes_yx(items: &mut [(Rect, String)]) {
     items.sort_by(|a, b| {
         a.0.y
             .partial_cmp(&b.0.y)
@@ -345,15 +435,73 @@ fn cluster_lines(mut items: Vec<(Rect, String)>) -> Vec<Vec<(Rect, String)>> {
                     .unwrap_or(std::cmp::Ordering::Equal),
             )
     });
+}
+
+/// Cluster body boxes by y-overlap. Citation fragments attach afterwards by
+/// y-center so a superscript `[16]` cannot widen the band onto the next line.
+fn cluster_lines(items: Vec<(Rect, String)>) -> Vec<Vec<(Rect, String)>> {
+    let mut body = Vec::new();
+    let mut cites = Vec::new();
+    for item in items {
+        if is_citation_fragment(&item.1) {
+            cites.push(item);
+        } else {
+            body.push(item);
+        }
+    }
+    if body.is_empty() {
+        return cluster_by_overlap(cites);
+    }
+    let mut lines = cluster_by_overlap(body);
+    for cite in cites {
+        let ic = cite.0.center().y;
+        let mut best: Option<(usize, f32)> = None;
+        for (i, line) in lines.iter().enumerate() {
+            let band = line_band(line);
+            if band.is_empty() {
+                continue;
+            }
+            let dist = (ic - band.center().y).abs();
+            let lim = band.h.max(12.0) * 1.1;
+            if dist <= lim && best.map(|(_, d)| dist < d).unwrap_or(true) {
+                best = Some((i, dist));
+            }
+        }
+        if let Some((i, _)) = best {
+            lines[i].push(cite);
+        } else {
+            lines.push(vec![cite]);
+        }
+    }
+    lines.sort_by(|a, b| {
+        line_band(a)
+            .y
+            .partial_cmp(&line_band(b).y)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    for boxes in &mut lines {
+        boxes.sort_by(|a, b| {
+            a.0.x
+                .partial_cmp(&b.0.x)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+    }
+    lines
+}
+
+fn line_band(boxes: &[(Rect, String)]) -> Rect {
+    boxes.iter().fold(Rect::EMPTY, |acc, (r, _)| acc.union(*r))
+}
+
+fn cluster_by_overlap(mut items: Vec<(Rect, String)>) -> Vec<Vec<(Rect, String)>> {
+    sort_boxes_yx(&mut items);
     let mut lines: Vec<(Rect, Vec<(Rect, String)>)> = Vec::new();
     for item in items {
         let mut best: Option<(usize, f32)> = None;
         for (i, (band, _)) in lines.iter().enumerate() {
             let ov = y_overlap_ratio(item.0, *band);
-            if ov >= 0.5 {
-                if best.map(|(_, r)| ov > r).unwrap_or(true) {
-                    best = Some((i, ov));
-                }
+            if ov >= 0.5 && best.map(|(_, r)| ov > r).unwrap_or(true) {
+                best = Some((i, ov));
             }
         }
         if let Some((i, _)) = best {
@@ -402,7 +550,9 @@ pub fn page_from_blocks(blocks: Vec<(Vec<(u32, u32)>, String)>) -> OcrPage {
             line_parts.push(text);
         }
         if !line_parts.is_empty() {
-            lines.push(collapse_cjk_spaces(&join_line_parts(&line_parts)));
+            lines.push(repair_leading_cite(&collapse_cjk_spaces(&join_line_parts(
+                &line_parts,
+            ))));
         }
     }
     OcrPage {
@@ -542,10 +692,12 @@ mod tests {
 
     #[test]
     fn ocr_upsample_lifts_short_chrome_clips() {
-        assert_eq!(ocr_upsample(1100, 400), 1);
+        assert_eq!(ocr_upsample(1100, 400), 2);
         assert_eq!(ocr_upsample(900, 120), 2);
         assert_eq!(ocr_upsample(1920, 1200), 1);
-        assert_eq!(ocr_upsample(2000, 300), 1);
+        assert_eq!(ocr_upsample(2000, 300), 2);
+        assert_eq!(ocr_upsample(800, 719), 2);
+        assert_eq!(ocr_upsample(800, 720), 1);
     }
 
     #[test]
@@ -672,5 +824,67 @@ mod tests {
         assert_eq!(compiler.text, "編譯器");
         let year = page_from_blocks(vec![(a, "2009 年".into())]);
         assert_eq!(year.text, "2009年");
+    }
+
+    #[test]
+    fn page_does_not_merge_citation_onto_next_paragraph() {
+        let rustc = vec![(0, 0), (220, 0), (220, 18), (0, 18)];
+        let cite = vec![(200, 0), (218, 0), (218, 12), (200, 12)];
+        let next = vec![(0, 22), (280, 22), (280, 40), (0, 40)];
+        let page = page_from_blocks(vec![
+            (rustc, "官方實現稱做「rustc」的編譯器。".into()),
+            (cite, "[16]".into()),
+            (next, "5]，並於2011年首次發布".into()),
+        ]);
+        assert!(
+            !page.text.contains("rustc」[16] 5]"),
+            "citation swallowed the next line: {:?}",
+            page.text
+        );
+        assert!(
+            !page.text.contains("[16]5]"),
+            "citation glued onto next fragment: {:?}",
+            page.text
+        );
+        let lines: Vec<&str> = page.text.lines().collect();
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("稱做「rustc」") && l.contains("[16]") && !l.contains("並於")),
+            "expected [16] on the rustc line, got {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("並於2011年")),
+            "expected the next paragraph on its own line, got {lines:?}"
+        );
+    }
+
+    #[test]
+    fn page_restores_dropped_cite_bracket() {
+        let a = vec![(0, 0), (80, 0), (80, 16), (0, 16)];
+        let page = page_from_blocks(vec![(a, "15] 仍在使用".into())]);
+        assert!(
+            page.text.contains("[15]"),
+            "expected restored [, got {:?}",
+            page.text
+        );
+    }
+
+    #[test]
+    fn page_for_translate_joins_wrapped_sentences() {
+        let src = "Work shifted from the OCaml compiler\n(i.e., written in Rust) targeting LLVM.\n官方實現稱做「rustc」的編譯器。\n5]，並於2011年首次發布";
+        let out = page_for_translate(src);
+        assert!(
+            out.contains("compiler (i.e., written in Rust) targeting LLVM."),
+            "expected wrapped English sentence joined, got {out:?}"
+        );
+        assert!(
+            out.contains("編譯器。\n"),
+            "CJK sentence end must stay a paragraph break, got {out:?}"
+        );
+        assert!(
+            !out.contains("compiler\n(i.e."),
+            "must not translate line-by-line"
+        );
     }
 }

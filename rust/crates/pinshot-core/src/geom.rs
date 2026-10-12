@@ -457,7 +457,20 @@ pub fn resize_rect(r: Rect, handle: Handle, p: Point) -> Rect {
     r.normalized()
 }
 
-/// Window / element hover: smallest containing element, else first containing window, else full screen.
+/// Panel / dock / taskbar: full-width short strip or full-height thin bar.
+pub fn is_shell_strip(r: Rect, full: Rect) -> bool {
+    if r.is_empty() || full.is_empty() {
+        return false;
+    }
+    let full_w = r.w >= full.w * 0.85;
+    let full_h = r.h >= full.h * 0.85;
+    let short_h = r.h <= full.h.max(1.0) * 0.18 && r.h <= 220.0;
+    let thin_w = r.w <= full.w.max(1.0) * 0.18 && r.w <= 220.0;
+    (full_w && short_h) || (full_h && thin_w)
+}
+
+/// Window / element hover: smallest containing element, else the topmost
+/// non-dock window under the cursor (`windows` is topmost-first), else full screen.
 pub fn hover_rect(cursor: Point, windows: &[Rect], elements: &[Rect], full: Rect) -> Rect {
     if let Some(r) = elements
         .iter()
@@ -471,12 +484,17 @@ pub fn hover_rect(cursor: Point, windows: &[Rect], elements: &[Rect], full: Rect
     {
         return r;
     }
-    windows
+    let under: Vec<Rect> = windows
         .iter()
         .copied()
-        .find(|r| r.contains(cursor))
         .map(|r| r.intersect(full))
-        .filter(|r| !r.is_empty())
+        .filter(|r| !r.is_empty() && r.contains(cursor))
+        .collect();
+    under
+        .iter()
+        .copied()
+        .find(|r| !is_shell_strip(*r, full))
+        .or_else(|| under.first().copied())
         .unwrap_or(full)
 }
 
@@ -633,6 +651,21 @@ mod tests {
             hover_rect(Point::new(90.0, 90.0), &windows, &[], full),
             full
         );
+    }
+
+    #[test]
+    fn hover_skips_dock_strip_for_window_under_cursor() {
+        let full = Rect::new(0.0, 0.0, 1920.0, 1200.0);
+        let dock = Rect::new(0.0, 1063.0, 1920.0, 137.0);
+        let chrome = Rect::new(0.0, 0.0, 1920.0, 1063.0);
+        // Topmost-first list: always-on-top panel, then Chrome.
+        let windows = [dock, chrome];
+        let h = hover_rect(Point::new(400.0, 720.0), &windows, &[], full);
+        assert_eq!(h, chrome);
+        let over_dock = hover_rect(Point::new(400.0, 1100.0), &windows, &[], full);
+        assert_eq!(over_dock, dock);
+        assert!(is_shell_strip(dock, full));
+        assert!(!is_shell_strip(chrome, full));
     }
 
     #[test]

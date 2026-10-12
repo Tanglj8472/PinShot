@@ -456,6 +456,7 @@ impl App {
     }
 
     fn spawn_translate(&self, pin: winit::window::WindowId, text: String) {
+        let text = pinshot_core::ocr::page_for_translate(&text);
         let proxy = self.proxy.clone();
         let settings = self.cfg.translate.clone();
         let ui_lang = self.cfg.language.clone();

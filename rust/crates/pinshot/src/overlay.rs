@@ -73,6 +73,10 @@ pub struct Overlay {
     mods: ModifiersState,
     history_max: u32,
     held_btn1: bool,
+    /// Left-button gesture started on this overlay (Esc then asks 放弃截图?).
+    interacted: bool,
+    #[cfg(unix)]
+    ptr_grab_ok: bool,
     /// Consecutive QueryPointer Button1-up samples. Used only to finish an
     /// in-progress drag if Release was dropped — never as a press origin.
     btn1_up_streak: u8,
@@ -169,6 +173,9 @@ impl Overlay {
             mods: ModifiersState::empty(),
             history_max: history_max.max(1),
             held_btn1: false,
+            interacted: false,
+            #[cfg(unix)]
+            ptr_grab_ok: false,
             btn1_up_streak: 0,
             last_idle_pointer: None,
             wheel: WheelGate::new(),
@@ -196,14 +203,25 @@ impl Overlay {
             // same connection as InputHold (replaces the root grab; no gap for
             // Chrome). Ungrab keyboard inside grab_overlay_pointer so
             // OverlayKeyGrab can take keys.
+            if pre_hold.is_none() {
+                pre_hold = Some(crate::x11util::InputHold::grab());
+            }
             if let Some(xid) = crate::x11util::xid_of(&s.window) {
                 if let Some(hold) = pre_hold.as_mut() {
-                    let _ = hold.grab_overlay_pointer(xid);
+                    s.ptr_grab_ok = hold.grab_overlay_pointer(xid);
+                    if !s.ptr_grab_ok {
+                        s.ptr_grab_ok = hold.grab_overlay_pointer(xid);
+                    }
                 }
             }
             s.ptr_hold = pre_hold;
             s.key_grab = native::grab_overlay_keys(&s.window, proxy);
-            crate::logutil::log("overlay mapped (pointer grabbed before first frame)");
+            crate::logutil::log(&format!(
+                "overlay mapped (pointer grab ok={})",
+                s.ptr_grab_ok
+            ));
+            s.sync_pointer();
+            s.update_hover();
             s.poll_overlay_pointer();
         }
         #[cfg(not(unix))]
@@ -366,16 +384,20 @@ impl Overlay {
         SnapGuides::from_rects(rects)
     }
 
-    fn update_hover(&mut self) {
-        if self.sel.state != SelState::Idle || self.sel.has_sel() {
-            return;
-        }
+    fn hover_at(&self, pt: Point) -> Rect {
         let elems = if self.detect == DetectMode::Element {
             self.elements.as_slice()
         } else {
             &[]
         };
-        self.hover = hover_rect(self.cursor, &self.windows, elems, self.bounds());
+        hover_rect(pt, &self.windows, elems, self.bounds())
+    }
+
+    fn update_hover(&mut self) {
+        if self.sel.state != SelState::Idle || self.sel.has_sel() {
+            return;
+        }
+        self.hover = self.hover_at(self.cursor);
     }
 
     fn relayout_toolbar(&mut self) {
@@ -718,8 +740,12 @@ impl Overlay {
 
     fn finish_sel_drag(&mut self, pt: Point) {
         let guides = self.snap_guides();
+        // Recompute at the click, not a stale hover from before the overlay
+        // mapped (that is how a dock strip was adopted over Chrome).
+        let hover = self.hover_at(pt);
+        self.hover = hover;
         self.sel
-            .release_snapped(pt, self.hover, self.bounds(), Some(&guides));
+            .release_snapped(pt, hover, self.bounds(), Some(&guides));
         if self.sel.has_sel() {
             let r = self.sel.normalized();
             crate::logutil::log(&format!(
@@ -769,6 +795,25 @@ impl Overlay {
     fn overlay_pt_from_root(&self, root_x: i32, root_y: i32) -> Point {
         let (vx, vy) = self.capture.virtual_origin;
         Point::new((root_x - vx) as f32, (root_y - vy) as f32)
+    }
+
+    #[cfg(unix)]
+    fn ensure_overlay_grab(&mut self) {
+        if self.ptr_grab_ok {
+            return;
+        }
+        let Some(xid) = crate::x11util::xid_of(&self.window) else {
+            return;
+        };
+        if self.ptr_hold.is_none() {
+            self.ptr_hold = Some(crate::x11util::InputHold::grab());
+        }
+        if let Some(hold) = self.ptr_hold.as_mut() {
+            self.ptr_grab_ok = hold.grab_overlay_pointer(xid);
+            if self.ptr_grab_ok {
+                crate::logutil::log("overlay XGrabPointer recovered");
+            }
+        }
     }
 
     #[cfg(unix)]
@@ -876,6 +921,7 @@ impl Overlay {
         }
         if pressed && button == MouseButton::Left {
             self.held_btn1 = true;
+            self.interacted = true;
             if let Some(tb) = &self.toolbar {
                 if let Some(a) = tb.hit(pt) {
                     self.apply_tb(a);
@@ -965,7 +1011,11 @@ impl Overlay {
     }
 
     fn request_abort(&mut self) {
-        if !self.sel.has_sel() {
+        let gesturing = self.sel.has_sel()
+            || self.interacted
+            || self.held_btn1
+            || !matches!(self.sel.state, SelState::Idle);
+        if !gesturing {
             self.cancel();
             return;
         }
@@ -1496,6 +1546,8 @@ impl Overlay {
 
     pub fn pump_redraw(&mut self) {
         self.poll_elements();
+        #[cfg(unix)]
+        self.ensure_overlay_grab();
         self.poll_overlay_pointer();
         self.recover_pointer_drag();
         self.expire_toast();
