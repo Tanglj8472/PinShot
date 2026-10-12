@@ -139,21 +139,22 @@ void Toolbar::BuildButtons()
         m_buttons.push_back(b);
     };
 
-    // Main bar mirrors PinShot: tools | undo redo | finish
-    addTool(ToolKind::Select, L"Select (S)");
-    addTool(ToolKind::Pen, L"Pen (P)");
-    addTool(ToolKind::Rect, L"Rectangle (R)");
-    addTool(ToolKind::Ellipse, L"Ellipse (E)");
-    addTool(ToolKind::Arrow, L"Arrow (A)");
-    addTool(ToolKind::Text, L"Text (X)");
-    addTool(ToolKind::Mosaic, L"Mosaic (M)");
-    addTool(ToolKind::Eraser, L"Eraser (K)");
-    addAct(ToolbarAction::Undo, L"undo", L"Undo (Ctrl+Z)");
-    addAct(ToolbarAction::Redo, L"redo", L"Redo (Ctrl+Y)");
-    addAct(ToolbarAction::Close, L"close", L"Cancel (Esc)");
-    addAct(ToolbarAction::Pin, L"pin", L"Pin (Ctrl+T)");
-    addAct(ToolbarAction::Save, L"save", L"Save (Ctrl+S)");
-    addAct(ToolbarAction::Copy, L"copy", L"Copy (Ctrl+C)");
+    // Snipaste-like order: select | shapes | arrow | pen | mosaic | text | eraser
+    // | undo redo | cancel pin save copy. Highlighter deferred.
+    addTool(ToolKind::Select, L"选择 (S) — 选中/移动/缩放图形");
+    addTool(ToolKind::Rect, L"矩形 (R)  Shift=正方形");
+    addTool(ToolKind::Ellipse, L"椭圆 (E)  Shift=正圆");
+    addTool(ToolKind::Arrow, L"箭头 (A)  Shift=约束方向");
+    addTool(ToolKind::Pen, L"画笔 (P)");
+    addTool(ToolKind::Mosaic, L"马赛克 (M)");
+    addTool(ToolKind::Text, L"文字 (X)");
+    addTool(ToolKind::Eraser, L"橡皮 (K)");
+    addAct(ToolbarAction::Undo, L"undo", L"撤销 (Ctrl+Z)");
+    addAct(ToolbarAction::Redo, L"redo", L"重做 (Ctrl+Y)");
+    addAct(ToolbarAction::Close, L"close", L"取消 (Esc)");
+    addAct(ToolbarAction::Pin, L"pin", L"贴图 (Ctrl+T)");
+    addAct(ToolbarAction::Save, L"save", L"保存 (Ctrl+S)");
+    addAct(ToolbarAction::Copy, L"copy", L"复制 (Ctrl+C)");
 }
 
 void Toolbar::LayoutButtons()

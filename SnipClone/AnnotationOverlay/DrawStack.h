@@ -52,10 +52,11 @@ public:
     bool DeleteSelected();
     bool DeleteAt(int index);
 
-    // Crop refine: one undo step — shift shapes with crop origin; drop fully outside.
-    void RemapForCrop(float dx, float dy, float left, float top, float right, float bottom);
+    // Crop origin moved by (dx,dy) in image space: translate all shapes once (undoable).
+    // Does NOT delete shapes — outside the new crop is clipped at render and returns if crop grows.
+    void RemapForCrop(float dx, float dy);
     void TranslateAll(float dx, float dy);
-    void CullOutside(float left, float top, float right, float bottom);
+    void CullOutside(float left, float top, float right, float bottom); // optional hard delete
 
     void AdjustWidth(int delta);
     void AdjustFontSize(int delta);

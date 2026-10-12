@@ -789,10 +789,10 @@ void SelectionOverlay::RenderToBitmap()
         if (r < w && b > t)
             m_rt->FillRectangle(D2D1::RectF(r, t, w, b), m_brushDim);
 
-        const float stroke = static_cast<float>(ScaleForDpi(2, m_dpi));
-        m_rt->DrawRectangle(D2D1::RectF(l, t, r, b), m_brushWhite, stroke);
+        // Snipaste-like: thin blue selection border + 8 handles; size at top-left.
+        const float stroke = static_cast<float>(ScaleForDpi(1, m_dpi));
+        m_rt->DrawRectangle(D2D1::RectF(l + 0.5f, t + 0.5f, r - 0.5f, b - 0.5f), m_brushAccent, stroke);
 
-        // 8 handles
         const float hs = static_cast<float>(ScaleForDpi(kHandle, m_dpi));
         const float midx = (l + r) * 0.5f;
         const float midy = (t + b) * 0.5f;
@@ -810,24 +810,19 @@ void SelectionOverlay::RenderToBitmap()
                 1.f);
         }
 
-        // Size label
         if (m_textFormat)
         {
-            wchar_t label[96]{};
-            swprintf_s(
-                label,
-                L"%ld × %ld   Enter确认  Esc取消",
-                m_model.Width(),
-                m_model.Height());
+            wchar_t label[64]{};
+            swprintf_s(label, L"%ld × %ld", m_model.Width(), m_model.Height());
             ID2D1SolidColorBrush* bg = nullptr;
-            m_rt->CreateSolidColorBrush(D2D1::ColorF(0.f, 0.f, 0.f, 0.75f), &bg);
-            const float labelW = 260.f;
-            const float labelH = 22.f;
+            m_rt->CreateSolidColorBrush(D2D1::ColorF(0.f, 0.f, 0.f, 0.7f), &bg);
+            const float labelW = 96.f;
+            const float labelH = 20.f;
             float lx = l;
-            float ly = t - labelH - 6.f;
+            float ly = t - labelH - 4.f;
             if (ly < 4.f)
             {
-                ly = t + 6.f;
+                ly = t + 4.f;
             }
             if (bg)
             {
@@ -836,7 +831,7 @@ void SelectionOverlay::RenderToBitmap()
                     label,
                     static_cast<UINT32>(wcslen(label)),
                     m_textFormat,
-                    D2D1::RectF(lx + 8.f, ly, lx + labelW, ly + labelH),
+                    D2D1::RectF(lx + 6.f, ly, lx + labelW, ly + labelH),
                     m_brushWhite);
                 bg->Release();
             }

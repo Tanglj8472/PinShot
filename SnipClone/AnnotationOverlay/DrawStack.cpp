@@ -349,11 +349,16 @@ void DrawStack::UpdateText(int index, const std::wstring& text, const DrawStyle*
     Notify();
 }
 
-void DrawStack::RemapForCrop(float dx, float dy, float left, float top, float right, float bottom)
+void DrawStack::RemapForCrop(float dx, float dy)
 {
+    // Keep annotations at stable screen positions: only compensate crop origin shift.
+    // Clipping to the visible crop is the renderer's job (D2D RT bounds).
+    if (dx == 0.f && dy == 0.f)
+    {
+        return;
+    }
     PushUndoSnapshot();
     TranslateAll(dx, dy);
-    CullOutside(left, top, right, bottom);
     Notify();
 }
 
@@ -572,6 +577,37 @@ void DrawStack::Move(D2D1_POINT_2F pt)
     {
         return;
     }
+
+    const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+    if (shift && !m_live.cmd.pts.empty() && IsTwoPointTool(m_live.cmd.kind))
+    {
+        const D2D1_POINT_2F o = m_live.cmd.pts.front();
+        float dx = pt.x - o.x;
+        float dy = pt.y - o.y;
+        if (m_live.cmd.kind == ToolKind::Rect || m_live.cmd.kind == ToolKind::Ellipse ||
+            m_live.cmd.kind == ToolKind::Mosaic)
+        {
+            // Square / circle: equal side lengths, preserve quadrant.
+            const float side = (std::max)(std::abs(dx), std::abs(dy));
+            dx = (dx < 0.f ? -side : side);
+            dy = (dy < 0.f ? -side : side);
+            pt = D2D1::Point2F(o.x + dx, o.y + dy);
+        }
+        else if (m_live.cmd.kind == ToolKind::Arrow)
+        {
+            // Snap to 0° / 45° / 90° …
+            const float len = std::sqrt(dx * dx + dy * dy);
+            if (len > 1.f)
+            {
+                constexpr float kPi = 3.14159265f;
+                const float ang = std::atan2(dy, dx);
+                const float step = kPi / 4.f;
+                const float snapped = std::round(ang / step) * step;
+                pt = D2D1::Point2F(o.x + std::cos(snapped) * len, o.y + std::sin(snapped) * len);
+            }
+        }
+    }
+
     if (IsPenLikeTool(m_live.cmd.kind))
     {
         const auto& last = m_live.cmd.pts.back();

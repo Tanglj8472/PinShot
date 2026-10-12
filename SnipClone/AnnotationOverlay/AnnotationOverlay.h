@@ -36,7 +36,7 @@ private:
     enum class CropHit
     {
         None,
-        Body, // unused — body is for shapes
+        Body, // Select tool + empty hit: drag moves the crop rect
         N,
         S,
         E,

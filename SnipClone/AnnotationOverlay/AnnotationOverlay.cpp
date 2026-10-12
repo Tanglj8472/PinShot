@@ -106,7 +106,8 @@ bool AnnotationOverlay::Start(HINSTANCE instance, HWND owner, CaptureResult crop
             m_textEditor->ApplyStyle(m_ann.Style(ToolKind::Text));
         }
     });
-    m_ann.SetTool(ToolKind::Pen);
+    // Start in Select: drag empty interior moves crop; pick a draw tool to annotate.
+    m_ann.SetTool(ToolKind::Select);
 
     ShowWindow(m_hwnd, SW_SHOW);
     SetForegroundWindow(m_hwnd);
@@ -289,6 +290,25 @@ LRESULT AnnotationOverlay::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             }
             OpenTextEditorAt(pt, -1);
             return 0;
+        }
+
+        // Select tool: hit annotation (or its handles) → move/resize shape;
+        // empty interior → move the crop rect (Snipaste: no-draw-tool moves selection).
+        if (m_ann.Tool() == ToolKind::Select && !m_freeze.Empty())
+        {
+            const int sel = m_ann.SelectedIndex();
+            const bool onHandle = sel >= 0 && m_ann.HitResizeHandle(sel, pt) > 0;
+            const bool onShape = m_ann.HitTest(pt) >= 0;
+            if (!onHandle && !onShape)
+            {
+                SetCapture(hwnd);
+                m_cropDrag = CropHit::Body;
+                m_cropDragStart = { m_base.screenRect.left + client.x, m_base.screenRect.top + client.y };
+                m_cropDragStartScreen = m_base.screenRect;
+                m_cropPreviewScreen = m_base.screenRect;
+                UpdateCropCursor(CropHit::Body);
+                return 0;
+            }
         }
 
         SetCapture(hwnd);
@@ -762,6 +782,9 @@ void AnnotationOverlay::UpdateCropCursor(CropHit hit)
     LPCWSTR id = IDC_ARROW;
     switch (hit)
     {
+    case CropHit::Body:
+        id = IDC_SIZEALL;
+        break;
     case CropHit::N:
     case CropHit::S:
         id = IDC_SIZENS;
@@ -816,16 +839,10 @@ bool AnnotationOverlay::CommitCropRect(RECT newScreenRect)
 
     const float dx = static_cast<float>(cropped.screenRect.left - m_base.screenRect.left);
     const float dy = static_cast<float>(cropped.screenRect.top - m_base.screenRect.top);
-    // Shapes are crop-local: shift when origin moves, then drop fully outside.
-    // Policy: fully outside → removed; partially outside → kept (may clip at edges).
+    // Shapes stay at stable screen positions: compensate crop-origin shift only.
+    // Outside the new crop is clipped while drawing; expanding the crop reveals them again.
     m_ann.Finish();
-    m_ann.RemapForCrop(
-        -dx,
-        -dy,
-        0.f,
-        0.f,
-        static_cast<float>(cropped.width),
-        static_cast<float>(cropped.height));
+    m_ann.RemapForCrop(-dx, -dy);
 
     m_base = std::move(cropped);
     ReleaseSurface();
@@ -851,6 +868,43 @@ void AnnotationOverlay::ApplyCropDrag(POINT client)
 
     switch (m_cropDrag)
     {
+    case CropHit::Body:
+    {
+        const LONG w = r.right - r.left;
+        const LONG h = r.bottom - r.top;
+        r.left += ddx;
+        r.top += ddy;
+        r.right = r.left + w;
+        r.bottom = r.top + h;
+        // Keep full size; clamp so the crop stays inside the freeze.
+        if (r.left < m_freeze.screenRect.left)
+        {
+            const LONG s = m_freeze.screenRect.left - r.left;
+            r.left += s;
+            r.right += s;
+        }
+        if (r.top < m_freeze.screenRect.top)
+        {
+            const LONG s = m_freeze.screenRect.top - r.top;
+            r.top += s;
+            r.bottom += s;
+        }
+        if (r.right > m_freeze.screenRect.right)
+        {
+            const LONG s = r.right - m_freeze.screenRect.right;
+            r.left -= s;
+            r.right -= s;
+        }
+        if (r.bottom > m_freeze.screenRect.bottom)
+        {
+            const LONG s = r.bottom - m_freeze.screenRect.bottom;
+            r.top -= s;
+            r.bottom -= s;
+        }
+        m_cropPreviewScreen = r;
+        Present();
+        return;
+    }
     case CropHit::N:
         r.top += ddy;
         break;

@@ -222,15 +222,16 @@ void TestRemapForCrop()
     Expect(stack.ShapeAt(0)->pts[0].x == 5.f && stack.ShapeAt(0)->pts[0].y == 5.f, "seed at 5,5");
 
     // RemapForCrop applies TranslateAll(dx,dy) literally (caller negates crop delta).
-    stack.RemapForCrop(10.f, 10.f, 0.f, 0.f, 200.f, 200.f);
-    Expect(stack.Shapes().size() == 1, "remap keeps in-bounds shape");
+    // Shrinking the crop must NOT delete shapes — they stay for restore on expand.
+    stack.RemapForCrop(10.f, 10.f);
+    Expect(stack.Shapes().size() == 1, "remap keeps shape");
     const auto* moved = stack.ShapeAt(0);
     Expect(moved && moved->pts[0].x == 15.f && moved->pts[0].y == 15.f, "remap translates");
-
-    // Fully above the cull rect → removed.
-    stack.RemapForCrop(0.f, 0.f, 50.f, 50.f, 100.f, 100.f);
-    Expect(stack.Shapes().empty(), "cull outside removes shape");
     Expect(stack.CanUndo(), "remap pushes undo");
+
+    // Optional hard cull still available for tests / future tools.
+    stack.CullOutside(50.f, 50.f, 100.f, 100.f);
+    Expect(stack.Shapes().empty(), "CullOutside removes fully outside shape");
 }
 
 void TestComposeExportOmitsSelectionChrome()
