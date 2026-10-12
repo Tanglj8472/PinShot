@@ -7,29 +7,37 @@
 #include "../Common/DpiHelper.h"
 #include "../Common/WinHelper.h"
 
+#include <commctrl.h>
 #include <windowsx.h>
 
 #include <string>
 
 #pragma comment(lib, "d2d1.lib")
 #pragma comment(lib, "dwrite.lib")
+#pragma comment(lib, "comctl32.lib")
 
 namespace snip
 {
 namespace
 {
 constexpr wchar_t kClass[] = L"SnipCloneToolbar";
-constexpr int kBtn = 34;
-constexpr int kPad = 5;
-constexpr int kGap = 2;
-constexpr int kSep = 8;
+constexpr int kBtnDip = 34;
+constexpr int kPadDip = 5;
+constexpr int kGapDip = 2;
+constexpr int kSepDip = 8;
 
 constexpr D2D1_COLOR_F kBg = { 0.97f, 0.97f, 0.97f, 0.96f };
 constexpr D2D1_COLOR_F kBorder = { 0.60f, 0.60f, 0.60f, 1.f };
 constexpr D2D1_COLOR_F kHover = { 0.87f, 0.91f, 0.96f, 1.f };
 constexpr D2D1_COLOR_F kChecked = { 0.77f, 0.85f, 0.95f, 1.f };
 constexpr D2D1_COLOR_F kFg = { 0.20f, 0.20f, 0.20f, 1.f };
+constexpr D2D1_COLOR_F kDisabled = { 0.70f, 0.70f, 0.70f, 1.f };
 constexpr D2D1_COLOR_F kSepColor = { 0.78f, 0.78f, 0.78f, 1.f };
+}
+
+int Toolbar::Dip(int value) const
+{
+    return ScaleForDpi(value, m_dpi);
 }
 
 Toolbar::~Toolbar()
@@ -56,11 +64,17 @@ bool Toolbar::Create(HINSTANCE instance, HWND owner, DrawStack* annotator, Actio
     wc.lpszClassName = kClass;
     EnsureWindowClass(wc);
 
+    m_dpi = 96;
+    m_btn = kBtnDip;
+    m_pad = kPadDip;
+    m_gap = kGapDip;
+    m_sep = kSepDip;
+
     BuildButtons();
     LayoutButtons();
 
-    const int width = m_buttons.empty() ? 100 : m_buttons.back().hit.right + kPad;
-    const int height = kPad * 2 + kBtn;
+    const int width = m_buttons.empty() ? 100 : m_buttons.back().hit.right + m_pad;
+    const int height = m_pad * 2 + m_btn;
 
     m_hwnd = CreateWindowExW(
         WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
@@ -81,6 +95,7 @@ bool Toolbar::Create(HINSTANCE instance, HWND owner, DrawStack* annotator, Actio
     }
 
     SetWindowDisplayAffinity(m_hwnd, WDA_EXCLUDEFROMCAPTURE);
+    EnsureTooltip();
 
     m_stylePanel = std::make_unique<StylePanel>();
     m_stylePanel->Create(instance, owner, annotator, m_onAction);
@@ -90,8 +105,64 @@ bool Toolbar::Create(HINSTANCE instance, HWND owner, DrawStack* annotator, Actio
     return true;
 }
 
+void Toolbar::EnsureTooltip()
+{
+    if (m_tooltip || !m_hwnd)
+    {
+        return;
+    }
+    INITCOMMONCONTROLSEX icc{ sizeof(icc), ICC_BAR_CLASSES };
+    InitCommonControlsEx(&icc);
+    m_tooltip = CreateWindowExW(
+        WS_EX_TOPMOST,
+        TOOLTIPS_CLASSW,
+        nullptr,
+        WS_POPUP | TTS_NOPREFIX | TTS_ALWAYSTIP,
+        CW_USEDEFAULT,
+        CW_USEDEFAULT,
+        CW_USEDEFAULT,
+        CW_USEDEFAULT,
+        m_hwnd,
+        nullptr,
+        m_instance,
+        nullptr);
+    if (!m_tooltip)
+    {
+        return;
+    }
+    SetWindowPos(m_tooltip, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    TOOLINFOW ti{};
+    ti.cbSize = sizeof(ti);
+    ti.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
+    ti.hwnd = m_hwnd;
+    ti.uId = reinterpret_cast<UINT_PTR>(m_hwnd);
+    ti.lpszText = const_cast<wchar_t*>(L"");
+    SendMessageW(m_tooltip, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&ti));
+    SendMessageW(m_tooltip, TTM_SETMAXTIPWIDTH, 0, 320);
+}
+
+void Toolbar::UpdateTooltipFor(const ToolButton* btn)
+{
+    if (!m_tooltip || !m_hwnd)
+    {
+        return;
+    }
+    TOOLINFOW ti{};
+    ti.cbSize = sizeof(ti);
+    ti.hwnd = m_hwnd;
+    ti.uId = reinterpret_cast<UINT_PTR>(m_hwnd);
+    ti.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
+    ti.lpszText = btn ? const_cast<wchar_t*>(btn->tip.c_str()) : const_cast<wchar_t*>(L"");
+    SendMessageW(m_tooltip, TTM_UPDATETIPTEXTW, 0, reinterpret_cast<LPARAM>(&ti));
+}
+
 void Toolbar::Destroy()
 {
+    if (m_tooltip)
+    {
+        DestroyWindow(m_tooltip);
+        m_tooltip = nullptr;
+    }
     if (m_stylePanel)
     {
         m_stylePanel->Destroy();
@@ -159,15 +230,19 @@ void Toolbar::BuildButtons()
 
 void Toolbar::LayoutButtons()
 {
-    int x = kPad;
+    m_btn = Dip(kBtnDip);
+    m_pad = Dip(kPadDip);
+    m_gap = Dip(kGapDip);
+    m_sep = Dip(kSepDip);
+    int x = m_pad;
     for (auto& b : m_buttons)
     {
         if (b.action == ToolbarAction::Undo || b.action == ToolbarAction::Close)
         {
-            x += kSep;
+            x += m_sep;
         }
-        b.hit = { x, kPad, x + kBtn, kPad + kBtn };
-        x += kBtn + kGap;
+        b.hit = { x, m_pad, x + m_btn, m_pad + m_btn };
+        x += m_btn + m_gap;
     }
 }
 
@@ -204,44 +279,47 @@ void Toolbar::PlaceBelow(const RECT& annotationScreenRect)
     {
         return;
     }
-    RECT rc{};
-    GetClientRect(m_hwnd, &rc);
-    const int tw = rc.right - rc.left;
-    const int th = rc.bottom - rc.top;
 
+    // A08: size from target monitor DPI; clamp to that monitor's work area.
+    m_dpi = GetDpiForRect(annotationScreenRect);
+    LayoutButtons();
+    const int tw = m_buttons.empty() ? Dip(100) : m_buttons.back().hit.right + m_pad;
+    const int th = m_pad * 2 + m_btn;
+    SetWindowPos(m_hwnd, nullptr, 0, 0, tw, th, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+
+    const int gap = Dip(8);
+    const int panelReserve = Dip(44);
     int x = annotationScreenRect.right - tw;
-    int y = annotationScreenRect.bottom + 8;
+    int y = annotationScreenRect.bottom + gap;
     if (x < annotationScreenRect.left)
     {
         x = annotationScreenRect.left;
     }
 
-    const RECT vs = GetVirtualScreenRect();
-    // Reserve room for style panel (~40px) under the bar when possible.
-    if (y + th + 44 > vs.bottom)
+    const RECT work = GetMonitorWorkAreaFromRect(annotationScreenRect);
+    if (y + th + panelReserve > work.bottom)
     {
-        y = annotationScreenRect.top - th - 52;
-        if (y < vs.top)
+        y = annotationScreenRect.top - th - panelReserve;
+        if (y < work.top)
         {
-            y = annotationScreenRect.top - th - 8;
+            y = annotationScreenRect.top - th - gap;
         }
     }
-    // Clamp into virtual desktop (negative multi-monitor origins / screen edges).
-    if (x + tw > vs.right)
+    if (x + tw > work.right)
     {
-        x = vs.right - tw;
+        x = work.right - tw;
     }
-    if (x < vs.left)
+    if (x < work.left)
     {
-        x = vs.left;
+        x = work.left;
     }
-    if (y + th > vs.bottom)
+    if (y + th > work.bottom)
     {
-        y = vs.bottom - th;
+        y = work.bottom - th;
     }
-    if (y < vs.top)
+    if (y < work.top)
     {
-        y = vs.top;
+        y = work.top;
     }
 
     SetWindowPos(m_hwnd, HWND_TOPMOST, x, y, tw, th, SWP_SHOWWINDOW | SWP_NOACTIVATE);
@@ -260,10 +338,22 @@ void Toolbar::SyncFromAnnotator()
         if (b.action == ToolbarAction::SetTool)
         {
             b.checked = (b.tool == m_ann->Tool());
+            b.enabled = true;
+        }
+        else if (b.action == ToolbarAction::Undo)
+        {
+            b.enabled = m_ann->CanUndo();
+            b.checked = false;
+        }
+        else if (b.action == ToolbarAction::Redo)
+        {
+            b.enabled = m_ann->CanRedo();
+            b.checked = false;
         }
         else
         {
             b.checked = false;
+            b.enabled = true;
         }
     }
     Present();
@@ -332,11 +422,7 @@ LRESULT Toolbar::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                 changed = true;
             }
         }
-        // Tooltip via window title (lightweight).
-        if (auto* b = HitTest(pt))
-        {
-            SetWindowTextW(hwnd, b->tip.c_str());
-        }
+        UpdateTooltipFor(HitTest(pt));
         TRACKMOUSEEVENT tme{ sizeof(tme), TME_LEAVE, hwnd, 0 };
         TrackMouseEvent(&tme);
         if (changed)
@@ -350,6 +436,7 @@ LRESULT Toolbar::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         {
             b.hover = false;
         }
+        UpdateTooltipFor(nullptr);
         Present();
         return 0;
     case WM_LBUTTONUP:
@@ -357,6 +444,10 @@ LRESULT Toolbar::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         if (auto* b = HitTest(pt))
         {
+            if (!b->enabled)
+            {
+                return 0;
+            }
             if (b->action == ToolbarAction::SetTool && m_ann)
             {
                 // A06: toggling off a draw tool returns to Select (crop-move / object edit), not None.
@@ -517,11 +608,11 @@ void Toolbar::Present()
     {
         if (b.action == ToolbarAction::Undo || b.action == ToolbarAction::Close)
         {
-            const float sx = static_cast<float>(b.hit.left) - kSep * 0.5f;
+            const float sx = static_cast<float>(b.hit.left) - static_cast<float>(m_sep) * 0.5f;
             m_brush->SetColor(kSepColor);
             m_rt->DrawLine(
-                D2D1::Point2F(sx, static_cast<float>(kPad + 4)),
-                D2D1::Point2F(sx, static_cast<float>(kPad + kBtn - 4)),
+                D2D1::Point2F(sx, static_cast<float>(m_pad + 4)),
+                D2D1::Point2F(sx, static_cast<float>(m_pad + m_btn - 4)),
                 m_brush,
                 1.f);
         }
@@ -535,20 +626,19 @@ void Toolbar::Present()
             static_cast<float>(b.hit.right),
             static_cast<float>(b.hit.bottom));
 
-        if (b.checked)
+        if (b.enabled && b.checked)
         {
             m_brush->SetColor(kChecked);
             m_rt->FillRectangle(r, m_brush);
         }
-        else if (b.hover)
+        else if (b.enabled && b.hover)
         {
             m_brush->SetColor(kHover);
             m_rt->FillRectangle(r, m_brush);
         }
 
-        m_brush->SetColor(kFg);
+        m_brush->SetColor(b.enabled ? kFg : kDisabled);
         DrawToolbarIcon(m_rt, m_brush, r, b.action, b.tool);
-        m_brush->SetColor(kFg);
     }
 
     m_rt->EndDraw();

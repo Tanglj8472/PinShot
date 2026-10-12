@@ -42,6 +42,7 @@ struct ToolButton
     RECT hit{};                     // local to toolbar window
     bool checked = false;
     bool hover = false;
+    bool enabled = true;
 };
 
 } // namespace snip

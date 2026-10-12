@@ -22,6 +22,7 @@ public:
         ShowPins,
         HidePins,
         ClearClickThrough,
+        RestoreLastPin,
         OpenOutputDir,
         OpenSettingsDir,
         About,
@@ -35,8 +36,10 @@ public:
 
     bool Create(HWND owner, HINSTANCE instance, const std::wstring& tip, CommandFn onCommand);
     void Destroy();
+    bool Recreate(); // A13: TaskbarCreated / explorer restart
     void ShowBalloon(const wchar_t* title, const wchar_t* body);
     bool HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam);
+    void SetClickThroughHotkeyTip(const std::wstring& tip);
 
     static constexpr UINT WM_TRAY = WM_APP + 0x71;
 
@@ -48,6 +51,8 @@ private:
     NOTIFYICONDATAW m_nid{};
     bool m_added = false;
     CommandFn m_onCommand;
+    std::wstring m_tip;
+    std::wstring m_clickThroughTip = L"Ctrl+Shift+P";
 };
 
 } // namespace snip

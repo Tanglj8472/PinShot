@@ -132,20 +132,30 @@ void StylePanel::RebuildForTool(ToolKind tool)
 
     if (tool == ToolKind::Rect || tool == ToolKind::Ellipse)
     {
-        addAct(ToolbarAction::ToggleFill, L"fill", L"Outline / Filled (F)");
+        addAct(ToolbarAction::ToggleFill, L"fill", L"填充 / 描边 (F)");
     }
     if (tool != ToolKind::Text)
     {
-        addAct(ToolbarAction::WidthDec, L"w-", L"Thinner (1)");
-        addAct(ToolbarAction::WidthInc, L"w+", L"Thicker (2)");
+        addAct(ToolbarAction::WidthDec, L"w-", L"线宽减 (1)");
+        addAct(ToolbarAction::WidthInc, L"w+", L"线宽加 (2)");
+        ToolButton val;
+        val.action = ToolbarAction::None;
+        val.id = L"wv"; // width value readout
+        val.tip = L"当前线宽";
+        m_buttons.push_back(val);
     }
     else
     {
-        addAct(ToolbarAction::WidthDec, L"A-", L"Smaller font (1)");
-        addAct(ToolbarAction::WidthInc, L"A+", L"Larger font (2)");
-        addAct(ToolbarAction::Bold, L"B", L"Bold");
-        addAct(ToolbarAction::Italic, L"I", L"Italic");
-        addAct(ToolbarAction::Outline, L"OL", L"Outline");
+        addAct(ToolbarAction::WidthDec, L"A-", L"字号减 (1)");
+        addAct(ToolbarAction::WidthInc, L"A+", L"字号加 (2)");
+        ToolButton val;
+        val.action = ToolbarAction::None;
+        val.id = L"fv"; // font value readout
+        val.tip = L"当前字号";
+        m_buttons.push_back(val);
+        addAct(ToolbarAction::Bold, L"B", L"粗体");
+        addAct(ToolbarAction::Italic, L"I", L"斜体");
+        addAct(ToolbarAction::Outline, L"OL", L"描边");
     }
 
     if (ToolUsesColor(tool))
@@ -221,6 +231,7 @@ void StylePanel::SyncFromAnnotator()
     }
     const auto& textStyle = m_ann->Style(ToolKind::Text);
     const bool filled = m_ann->Style(ToolKind::Rect).filled;
+    const DrawStyle* active = m_ann->ActiveStyle();
     for (auto& b : m_buttons)
     {
         if (b.action == ToolbarAction::SetColor)
@@ -242,6 +253,14 @@ void StylePanel::SyncFromAnnotator()
         else if (b.action == ToolbarAction::Outline)
         {
             b.checked = textStyle.outline;
+        }
+        else if (b.action == ToolbarAction::None && b.id == L"wv" && active)
+        {
+            b.tip = L"线宽 " + std::to_wstring(static_cast<int>(active->width + 0.5f)) + L" px";
+        }
+        else if (b.action == ToolbarAction::None && b.id == L"fv")
+        {
+            b.tip = L"字号 " + std::to_wstring(static_cast<int>(textStyle.fontSize + 0.5f));
         }
         else
         {
@@ -269,26 +288,26 @@ void StylePanel::PlaceUnder(HWND toolbarHwnd)
 
     int x = tr.left;
     int y = tr.bottom + 4;
-    const RECT vs = GetVirtualScreenRect();
-    if (y + ph > vs.bottom)
+    const RECT work = GetMonitorWorkAreaFromRect(tr);
+    if (y + ph > work.bottom)
     {
         y = tr.top - ph - 4;
     }
-    if (x + pw > vs.right)
+    if (x + pw > work.right)
     {
-        x = vs.right - pw;
+        x = work.right - pw;
     }
-    if (x < vs.left)
+    if (x < work.left)
     {
-        x = vs.left;
+        x = work.left;
     }
-    if (y < vs.top)
+    if (y < work.top)
     {
-        y = vs.top;
+        y = work.top;
     }
-    if (y + ph > vs.bottom)
+    if (y + ph > work.bottom)
     {
-        y = vs.bottom - ph;
+        y = work.bottom - ph;
     }
 
     SetWindowPos(m_hwnd, HWND_TOPMOST, x, y, pw, ph, SWP_SHOWWINDOW | SWP_NOACTIVATE);
@@ -575,9 +594,11 @@ void StylePanel::Present()
             m_brush->SetColor(kFg);
             if (m_text)
             {
-                m_text->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-                m_rt->DrawText(b.id.c_str(), static_cast<UINT32>(b.id.size()), m_text, r, m_brush);
+                // Prefer tip for value readouts (wv/fv); else id hint text.
+                const std::wstring& label =
+                    (b.id == L"wv" || b.id == L"fv") && !b.tip.empty() ? b.tip : b.id;
                 m_text->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+                m_rt->DrawText(label.c_str(), static_cast<UINT32>(label.size()), m_text, r, m_brush);
             }
             continue;
         }

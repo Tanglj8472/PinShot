@@ -10,10 +10,10 @@
 | 项 | 要求 |
 |----|------|
 | OS | Windows 10 1809+（x64），PerMonitorV2 DPI |
-| 运行库 | 无额外 VC++ redist 需求（静态 CRT 未强制；VS 默认动态 CRT 时需对应 VC redist） |
+| 运行库 | **当前 Release 使用动态 CRT**：目标机需安装对应 [VC++ Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist)。静态 CRT / 随包部署待批次三收口。 |
 | 系统组件 | Direct2D、DirectWrite、WIC（Win10 自带） |
 
-## 解压即用
+## 解压即用（在满足运行库前提时）
 
 1. 复制 `SnipClone.exe` 到任意目录  
 2. 双击运行 → 托盘图标出现  
@@ -26,6 +26,8 @@
 
 ## 设置（`%APPDATA%\SnipClone\settings.ini`）
 
+当前无独立设置页；通过托盘「打开设置目录」编辑 ini。`StartWithWindows` 字段未实现，请勿依赖。
+
 ```ini
 [Hotkey]
 SnipVk=83
@@ -35,7 +37,6 @@ PinsMods=6
 
 [General]
 OutputDir=C:\Users\...\Documents\SnipClone
-StartWithWindows=0
 ```
 
 - `SnipMods` / `PinsMods`：`MOD_ALT=1`、`MOD_CONTROL=2`、`MOD_SHIFT=4`、`MOD_WIN=8`（可组合相加）  

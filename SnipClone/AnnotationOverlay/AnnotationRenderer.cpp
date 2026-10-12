@@ -3,6 +3,8 @@
 //==============================================================================
 #include "AnnotationRenderer.h"
 
+#include "../Common/TextLayout.h"
+
 #include <algorithm>
 #include <cmath>
 #include <vector>
@@ -558,8 +560,9 @@ void AnnotationRenderer::DrawScene(
                 }
                 if (sh->kind == ToolKind::Text)
                 {
-                    maxX = minX + (std::max)(40.f, sh->style.fontSize * 0.6f * static_cast<float>(sh->text.size() + 1));
-                    maxY = minY + sh->style.fontSize * 1.4f;
+                    const TextExtent ext = MeasureAnnotationText(sh->text, sh->style);
+                    maxX = minX + ext.width;
+                    maxY = minY + ext.height;
                 }
                 const float pad = sh->style.width + 3.f;
                 m_brush->SetColor(D2D1::ColorF(0.12f, 0.56f, 1.f, 0.95f));

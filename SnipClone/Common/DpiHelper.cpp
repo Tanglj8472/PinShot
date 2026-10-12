@@ -57,6 +57,37 @@ RECT GetVirtualScreenRect()
     return rect;
 }
 
+RECT GetMonitorWorkAreaFromRect(const RECT& rect)
+{
+    MONITORINFO info{};
+    info.cbSize = sizeof(info);
+    HMONITOR monitor = MonitorFromRect(&rect, MONITOR_DEFAULTTONEAREST);
+    if (monitor && GetMonitorInfoW(monitor, &info))
+    {
+        return info.rcWork;
+    }
+    return GetVirtualScreenRect();
+}
+
+UINT GetDpiForRect(const RECT& rect)
+{
+    HMONITOR monitor = MonitorFromRect(&rect, MONITOR_DEFAULTTONEAREST);
+    using GetDpiForMonitorFn = HRESULT(WINAPI*)(HMONITOR, int, UINT*, UINT*);
+    static auto fn = reinterpret_cast<GetDpiForMonitorFn>(
+        GetProcAddress(LoadLibraryW(L"shcore.dll"), "GetDpiForMonitor"));
+    if (fn && monitor)
+    {
+        UINT dx = 0;
+        UINT dy = 0;
+        // MDT_EFFECTIVE_DPI = 0
+        if (SUCCEEDED(fn(monitor, 0, &dx, &dy)) && dx != 0)
+        {
+            return dx;
+        }
+    }
+    return GetDpiForWindowHelper(nullptr);
+}
+
 int ScaleForDpi(int value, UINT dpi)
 {
     return MulDiv(value, static_cast<int>(dpi), static_cast<int>(kDpiBaseline));

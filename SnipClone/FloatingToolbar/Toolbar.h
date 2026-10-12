@@ -47,15 +47,24 @@ private:
     void ReleaseSurface();
     ToolButton* HitTest(POINT client);
     void SyncStylePanel();
+    void EnsureTooltip();
+    void UpdateTooltipFor(const ToolButton* btn);
+    int Dip(int value) const;
 
     HWND m_hwnd = nullptr;
     HWND m_owner = nullptr;
+    HWND m_tooltip = nullptr;
     HINSTANCE m_instance = nullptr;
     DrawStack* m_ann = nullptr;
     ActionFn m_onAction;
     std::vector<ToolButton> m_buttons;
     std::unique_ptr<StylePanel> m_stylePanel;
     ToolKind m_panelTool = ToolKind::Count; // force rebuild sentinel
+    UINT m_dpi = 96;
+    int m_btn = 34;
+    int m_pad = 5;
+    int m_gap = 2;
+    int m_sep = 8;
 
     ID2D1Factory* m_factory = nullptr;
     ID2D1DCRenderTarget* m_rt = nullptr;

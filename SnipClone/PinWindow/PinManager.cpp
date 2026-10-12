@@ -16,6 +16,19 @@ PinManager& PinManager::Instance()
     return inst;
 }
 
+void PinManager::PushClosed(PinSnapshot snap)
+{
+    if (snap.image.Empty())
+    {
+        return;
+    }
+    m_closedStack.push_back(std::move(snap));
+    while (m_closedStack.size() > kMaxClosed)
+    {
+        m_closedStack.erase(m_closedStack.begin());
+    }
+}
+
 PinWindow* PinManager::CreatePin(HINSTANCE instance, const CaptureResult& image, POINT screenOrigin)
 {
     auto* pin = new PinWindow();
@@ -25,7 +38,15 @@ PinWindow* PinManager::CreatePin(HINSTANCE instance, const CaptureResult& image,
         return nullptr;
     }
     m_pins.push_back(pin);
-    m_hidden = false;
+    // A12: while session is hidden, only the new pin is shown; others stay hidden.
+    if (m_hidden)
+    {
+        pin->SetVisible(true);
+    }
+    else
+    {
+        pin->SetVisible(true);
+    }
     return pin;
 }
 
@@ -35,7 +56,7 @@ void PinManager::RequestClose(PinWindow* pin)
     {
         return;
     }
-    m_lastClosed = pin->Snapshot();
+    PushClosed(pin->Snapshot());
     if (pin->Window())
     {
         PostMessageW(pin->Window(), WM_CLOSE, 0, 0);
@@ -57,7 +78,7 @@ void PinManager::CloseAll()
     while (!m_pins.empty())
     {
         PinWindow* pin = m_pins.front();
-        m_lastClosed = pin->Snapshot();
+        PushClosed(pin->Snapshot());
         HWND hwnd = pin->Window();
         if (hwnd)
         {
@@ -88,7 +109,6 @@ void PinManager::ShowAll()
         pin->SetVisible(true);
         if (pin->ClickThrough())
         {
-            // Keep click-through; just ensure topmost refresh.
             pin->SetClickThrough(true);
         }
     }
@@ -106,19 +126,26 @@ void PinManager::ClearClickThroughAll()
 
 bool PinManager::RestoreLastClosed(HINSTANCE instance)
 {
-    if (m_lastClosed.image.Empty())
+    // A12: consume one closed snapshot (no duplicate restores of the same pin).
+    if (m_closedStack.empty())
     {
         return false;
     }
+    PinSnapshot snap = std::move(m_closedStack.back());
+    m_closedStack.pop_back();
+
     auto* pin = new PinWindow();
-    PinSnapshot snap = m_lastClosed;
     if (!pin->CreateFromSnapshot(instance, std::move(snap)))
     {
         delete pin;
         return false;
     }
     m_pins.push_back(pin);
-    m_hidden = false;
+    if (m_hidden)
+    {
+        // Restored into a hidden session: show only this pin.
+        pin->SetVisible(true);
+    }
     return true;
 }
 

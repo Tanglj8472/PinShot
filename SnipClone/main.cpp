@@ -40,6 +40,7 @@ std::unique_ptr<snip::AnnotationOverlay> g_annotation;
 std::unique_ptr<snip::TrayIcon> g_tray;
 bool g_snipHotkeyOk = false;
 bool g_pinsHotkeyOk = false;
+UINT g_taskbarCreatedMsg = 0;
 
 bool Busy()
 {
@@ -155,6 +156,9 @@ void OnTrayCommand(snip::TrayIcon::Command cmd)
     case snip::TrayIcon::Command::ClearClickThrough:
         snip::PinManager::Instance().ClearClickThroughAll();
         break;
+    case snip::TrayIcon::Command::RestoreLastPin:
+        snip::PinManager::Instance().RestoreLastClosed(g_instance);
+        break;
     case snip::TrayIcon::Command::OpenOutputDir:
         ChooseOutputDir();
         break;
@@ -199,6 +203,16 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     if (g_tray && g_tray->HandleMessage(msg, wParam, lParam))
     {
+        return 0;
+    }
+
+    if (g_taskbarCreatedMsg && msg == g_taskbarCreatedMsg)
+    {
+        // A13: Explorer restarted — recreate tray icon.
+        if (g_tray)
+        {
+            g_tray->Recreate();
+        }
         return 0;
     }
 
@@ -356,6 +370,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR cmdLine, int)
 
     RegisterConfiguredHotkeys();
 
+    g_taskbarCreatedMsg = RegisterWindowMessageW(L"TaskbarCreated");
+
     g_tray = std::make_unique<snip::TrayIcon>();
     std::wstring tip = L"SnipClone — ";
     tip += snip::AppSettings::FormatHotkey(snip::LiveSettings().snip);
@@ -363,6 +379,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR cmdLine, int)
     {
         // Headless CI / no shell: continue without tray.
         g_tray.reset();
+    }
+    else
+    {
+        g_tray->SetClickThroughHotkeyTip(snip::AppSettings::FormatHotkey(snip::LiveSettings().pins));
     }
 
     if (smoke)

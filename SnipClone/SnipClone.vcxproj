@@ -179,6 +179,7 @@
   <ItemGroup>
     <ClCompile Include="main.cpp" />
     <ClCompile Include="Common\DpiHelper.cpp" />
+    <ClCompile Include="Common\TextLayout.cpp" />
     <ClCompile Include="Common\WinHelper.cpp" />
     <ClCompile Include="Common\ImageUtil.cpp" />
     <ClCompile Include="Common\AppSettings.cpp" />
@@ -198,6 +199,7 @@
   <ItemGroup>
     <ClInclude Include="Common\WinCompat.h" />
     <ClInclude Include="Common\DpiHelper.h" />
+    <ClInclude Include="Common\TextLayout.h" />
     <ClInclude Include="Common\CoordMap.h" />
     <ClInclude Include="Common\WinHelper.h" />
     <ClInclude Include="Common\ImageUtil.h" />

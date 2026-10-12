@@ -83,6 +83,7 @@
   <ItemGroup>
     <ClCompile Include="tests\LogicTests.cpp" />
     <ClCompile Include="Common\DpiHelper.cpp" />
+    <ClCompile Include="Common\TextLayout.cpp" />
     <ClCompile Include="Capture\ScreenCapture.cpp" />
     <ClCompile Include="AnnotationOverlay\DrawStack.cpp" />
     <ClCompile Include="AnnotationOverlay\AnnotationRenderer.cpp" />
@@ -90,6 +91,7 @@
   <ItemGroup>
     <ClInclude Include="Common\CoordMap.h" />
     <ClInclude Include="Common\DpiHelper.h" />
+    <ClInclude Include="Common\TextLayout.h" />
     <ClInclude Include="Common\WinCompat.h" />
     <ClInclude Include="Capture\CaptureResult.h" />
     <ClInclude Include="Capture\ScreenCapture.h" />

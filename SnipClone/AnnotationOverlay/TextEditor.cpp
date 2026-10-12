@@ -173,12 +173,47 @@ void TextEditor::ResizeToContent()
     const int h = (std::max)(
         static_cast<int>(sz.cy) + 8,
         static_cast<int>(m_style.fontSize) + 8);
-    const int w = (std::max)(80, static_cast<int>(sz.cx) + 16);
+    int w = (std::max)(80, static_cast<int>(sz.cx) + 16);
 
+    // A10: clamp editor into the monitor work area; keep top-left anchored.
     RECT wr{};
     GetWindowRect(m_host, &wr);
-    SetWindowPos(m_host, HWND_TOPMOST, wr.left, wr.top, w, h, SWP_NOACTIVATE);
-    MoveWindow(m_edit, 2, 2, w - 4, h - 4, TRUE);
+    RECT work{};
+    MONITORINFO mi{ sizeof(mi) };
+    HMONITOR mon = MonitorFromWindow(m_host, MONITOR_DEFAULTTONEAREST);
+    if (mon && GetMonitorInfoW(mon, &mi))
+    {
+        work = mi.rcWork;
+    }
+    else
+    {
+        work = { 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN) };
+    }
+    const int maxW = (std::max)(80, static_cast<int>(work.right - wr.left - 8));
+    const int maxH = (std::max)(24, static_cast<int>(work.bottom - wr.top - 8));
+    w = (std::min)(w, maxW);
+    const int hh = (std::min)(h, maxH);
+    int x = wr.left;
+    int y = wr.top;
+    if (x + w > work.right)
+    {
+        x = work.right - w;
+    }
+    if (y + hh > work.bottom)
+    {
+        y = work.bottom - hh;
+    }
+    if (x < work.left)
+    {
+        x = work.left;
+    }
+    if (y < work.top)
+    {
+        y = work.top;
+    }
+
+    SetWindowPos(m_host, HWND_TOPMOST, x, y, w, hh, SWP_NOACTIVATE);
+    MoveWindow(m_edit, 2, 2, w - 4, hh - 4, TRUE);
 }
 
 bool TextEditor::IsImeComposing() const
