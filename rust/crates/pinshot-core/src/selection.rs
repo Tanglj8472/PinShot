@@ -1,6 +1,7 @@
 //! Overlay selection state machine (idle → creating → selected + move/resize).
 
 use crate::geom::{hit_handle, Handle, Point, Rect};
+use crate::snap::{SnapGuides, SNAP_PX};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SelState {
@@ -86,9 +87,18 @@ impl Selection {
     }
 
     pub fn motion(&mut self, pt: Point, bounds: Rect) {
+        self.motion_snapped(pt, bounds, None);
+    }
+
+    /// Drag / move / resize. When `guides` is set, the moving corner or edges
+    /// stick to window and control bounds within [`SNAP_PX`].
+    pub fn motion_snapped(&mut self, pt: Point, bounds: Rect, guides: Option<&SnapGuides>) {
         match self.state {
             SelState::Creating => {
                 if let Some(origin) = self.press {
+                    let pt = guides
+                        .map(|g| g.snap_point(pt, SNAP_PX))
+                        .unwrap_or(pt);
                     if pt.manhattan(origin) > 3.0 {
                         self.rect = Rect::span(origin, pt);
                     }
@@ -101,13 +111,19 @@ impl Selection {
                     pt.y - self.drag_off.y,
                     r.w,
                     r.h,
-                )
-                .clamp_inside(bounds);
-                self.rect = r;
+                );
+                if let Some(g) = guides {
+                    r = g.snap_rect_move(r, SNAP_PX);
+                }
+                self.rect = r.clamp_inside(bounds);
             }
             SelState::Resizing => {
                 if let Some(h) = self.handle {
-                    self.rect = crate::geom::resize_rect(self.rect, h, pt);
+                    let mut r = crate::geom::resize_rect(self.rect, h, pt);
+                    if let Some(g) = guides {
+                        r = g.snap_rect_resize(r, h, SNAP_PX);
+                    }
+                    self.rect = r;
                 }
             }
             _ => {}
@@ -116,12 +132,35 @@ impl Selection {
 
     /// Finish a drag. If the drag was a click, adopt `hover` (window auto-detect).
     pub fn release(&mut self, pt: Point, hover: Rect, bounds: Rect) {
+        self.release_snapped(pt, hover, bounds, None);
+    }
+
+    pub fn release_snapped(
+        &mut self,
+        pt: Point,
+        hover: Rect,
+        bounds: Rect,
+        guides: Option<&SnapGuides>,
+    ) {
         if self.state == SelState::Creating {
             if let Some(origin) = self.press {
+                let pt = guides
+                    .map(|g| g.snap_point(pt, SNAP_PX))
+                    .unwrap_or(pt);
                 self.rect = Rect::span(origin, pt);
             }
             if !self.has_sel() {
                 self.rect = if hover.is_empty() { bounds } else { hover };
+            }
+        }
+        if self.state == SelState::Resizing {
+            if let (Some(h), Some(g)) = (self.handle, guides) {
+                self.rect = g.snap_rect_resize(self.rect, h, SNAP_PX);
+            }
+        }
+        if self.state == SelState::Moving {
+            if let Some(g) = guides {
+                self.rect = g.snap_rect_move(self.rect, SNAP_PX);
             }
         }
         if matches!(
@@ -294,6 +333,18 @@ mod tests {
         assert_eq!(s.normalized().x, 11.0);
         s.nudge(5.0, 0.0, Nudge::Move, bounds());
         assert_eq!(s.normalized().x, 16.0);
+    }
+
+    #[test]
+    fn create_drag_snaps_corner_to_control() {
+        let mut s = Selection::new();
+        let guides = crate::snap::SnapGuides::from_rects([Rect::new(40.0, 40.0, 80.0, 24.0)]);
+        s.press(Point::new(10.0, 10.0), bounds(), false);
+        s.motion_snapped(Point::new(118.0, 66.0), bounds(), Some(&guides));
+        s.release_snapped(Point::new(118.0, 66.0), Rect::EMPTY, bounds(), Some(&guides));
+        let r = s.normalized();
+        assert!((r.x + r.w - 120.0).abs() < 0.01, "right snapped, got {r:?}");
+        assert!((r.y + r.h - 64.0).abs() < 0.01, "bottom snapped, got {r:?}");
     }
 
     #[test]

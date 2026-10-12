@@ -134,6 +134,12 @@ fn child_rects() -> Vec<(Rect, String)> {
 
 /// UI Automation control-view walk (time-budgeted). `None` → child HWND fallback.
 fn try_uia() -> Option<Vec<(Rect, String)>> {
+    unsafe {
+        let _ = windows::Win32::System::Com::CoInitializeEx(
+            None,
+            windows::Win32::System::Com::COINIT_APARTMENTTHREADED,
+        );
+    }
     let uia = uiautomation::UIAutomation::new().ok()?;
     let walker = uia.get_control_view_walker().ok()?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(600);
@@ -205,14 +211,21 @@ fn walk_uia(
 static LAST_SOURCE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
 pub fn collect_elements() -> Vec<(Rect, String)> {
-    if let Some(r) = try_uia() {
+    let kids = child_rects();
+    if let Some(mut r) = try_uia() {
         if !r.is_empty() {
             LAST_SOURCE.store(1, std::sync::atomic::Ordering::Relaxed);
+            // Same as Python: UIA first (finer), child HWNDs fill apps without a11y.
+            r.extend(kids);
             return r;
         }
     }
     LAST_SOURCE.store(2, std::sync::atomic::Ordering::Relaxed);
-    child_rects()
+    kids
+}
+
+pub fn warm_element_backend() {
+    let _ = try_uia();
 }
 
 pub fn translated_elements(origin: (i32, i32)) -> Vec<Rect> {
