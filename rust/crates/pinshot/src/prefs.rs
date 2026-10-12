@@ -21,14 +21,22 @@ use crate::event::AppEvent;
 
 static OPEN: AtomicBool = AtomicBool::new(false);
 
-/// Snipaste Preferences is a compact landscape dialog that keeps one size.
-const PREFS_W: f32 = 600.0;
-const PREFS_H: f32 = 400.0;
-const PREFS_MIN_W: f32 = 480.0;
-const PREFS_MIN_H: f32 = 320.0;
-const FORM_LABEL_W: f32 = 120.0;
-const ROW_H: f32 = 24.0;
-const CONTROL_W: f32 = 220.0;
+/// Window hugs the form: width is the tab strip + fields, height is measured
+/// from the widgets each frame (not a leftover empty square).
+const PREFS_W: f32 = 448.0;
+const PREFS_MIN_W: f32 = 400.0;
+const PREFS_MIN_H: f32 = 100.0;
+const PREFS_MAX_H: f32 = 292.0;
+const FOOTER_H: f32 = 30.0;
+const BODY_MARGIN_Y: f32 = 8.0;
+const FORM_LABEL_W: f32 = 104.0;
+const ROW_H: f32 = 20.0;
+const CONTROL_W: f32 = 248.0;
+
+fn prefs_inner_size(body_h: f32) -> egui::Vec2 {
+    let h = (body_h + FOOTER_H + BODY_MARGIN_Y).clamp(PREFS_MIN_H, PREFS_MAX_H);
+    egui::vec2(PREFS_W, h)
+}
 
 const TABS: &[&str] = &[
     "General",
@@ -108,11 +116,14 @@ pub fn run_preferences() {
     crate::native::init_process();
     let cfg = config::load().unwrap_or_default();
     i18n::set_lang(cfg.lang());
+    let size = prefs_inner_size(72.0);
     let opts = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(tr("PinShot Preferences"))
-            .with_inner_size([PREFS_W, PREFS_H])
+            .with_inner_size([size.x, size.y])
             .with_min_inner_size([PREFS_MIN_W, PREFS_MIN_H])
+            .with_max_inner_size([PREFS_W, PREFS_MAX_H])
+            .with_resizable(false)
             .with_always_on_top(),
         persist_window: false,
         centered: true,
@@ -124,8 +135,8 @@ pub fn run_preferences() {
         Box::new(move |cc| {
             crate::ui_font::install_cjk(&cc.egui_ctx);
             let mut style = (*cc.egui_ctx.style()).clone();
-            style.spacing.item_spacing = egui::vec2(8.0, 6.0);
-            style.spacing.button_padding = egui::vec2(10.0, 4.0);
+            style.spacing.item_spacing = egui::vec2(4.0, 3.0);
+            style.spacing.button_padding = egui::vec2(6.0, 2.0);
             style.spacing.interact_size.y = ROW_H;
             cc.egui_ctx.set_style(style);
             apply_theme(&cc.egui_ctx, &cfg.theme);
@@ -135,6 +146,8 @@ pub fn run_preferences() {
                 group_sel: 0,
                 group_edit: String::new(),
                 status: String::new(),
+                size_key: usize::MAX,
+                last_h: 0.0,
             }))
         }),
     ) {
@@ -217,6 +230,8 @@ struct PrefsApp {
     group_sel: usize,
     group_edit: String,
     status: String,
+    size_key: usize,
+    last_h: f32,
 }
 
 impl PrefsApp {
@@ -304,13 +319,16 @@ impl eframe::App for PrefsApp {
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(tr("PinShot Preferences")));
         apply_theme(ctx, &self.draft.theme);
         egui::TopBottomPanel::bottom("btns")
-            .exact_height(40.0)
+            .exact_height(FOOTER_H)
             .frame(
                 egui::Frame::side_top_panel(&ctx.style())
-                    .inner_margin(egui::Margin::symmetric(12, 8)),
+                    .inner_margin(egui::Margin::symmetric(8, 3)),
             )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
+                    if self.tab != 6 && ui.button(tr("Restore Defaults")).clicked() {
+                        self.restore_tab();
+                    }
                     if !self.status.is_empty() {
                         ui.colored_label(Color32::from_rgb(180, 80, 40), &self.status);
                     }
@@ -331,49 +349,46 @@ impl eframe::App for PrefsApp {
                     });
                 });
             });
-        if self.tab != 6 {
-            egui::TopBottomPanel::bottom("restore")
-                .exact_height(32.0)
-                .frame(
-                    egui::Frame::side_top_panel(&ctx.style())
-                        .inner_margin(egui::Margin::symmetric(12, 4)),
-                )
-                .show(ctx, |ui| {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button(tr("Restore Defaults")).clicked() {
-                            self.restore_tab();
-                        }
-                    });
-                });
-        }
+        let mut body_h = 0.0;
         egui::CentralPanel::default()
             .frame(
-                egui::Frame::central_panel(&ctx.style()).inner_margin(egui::Margin::symmetric(12, 8)),
+                egui::Frame::central_panel(&ctx.style()).inner_margin(egui::Margin::symmetric(8, 4)),
             )
             .show(ctx, |ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(2.0, 6.0);
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 2.0;
-                    for (i, name) in TABS.iter().enumerate() {
-                        let selected = self.tab == i;
-                        if ui.selectable_label(selected, tr(name)).clicked() {
-                            self.tab = i;
+                // Height 0 so the child grows with widgets instead of filling
+                // the leftover CentralPanel square (that was the empty band).
+                let inner = ui.allocate_ui(egui::vec2(ui.available_width(), 0.0), |ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(4.0, 3.0);
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 2.0;
+                        for (i, name) in TABS.iter().enumerate() {
+                            let selected = self.tab == i;
+                            if ui.selectable_label(selected, tr(name)).clicked() {
+                                self.tab = i;
+                            }
                         }
-                    }
+                    });
+                    ui.add_space(1.0);
+                    ui.separator();
+                    ui.add_space(4.0);
+                    match self.tab {
+                        0 => self.ui_general(ui),
+                        1 => self.ui_interface(ui),
+                        2 => self.ui_snip(ui),
+                        3 => self.ui_paste(ui),
+                        4 => self.ui_output(ui),
+                        5 => self.ui_control(ui),
+                        _ => self.ui_about(ui),
+                    };
                 });
-                ui.add_space(2.0);
-                ui.separator();
-                ui.add_space(8.0);
-                match self.tab {
-                    0 => self.ui_general(ui),
-                    1 => self.ui_interface(ui),
-                    2 => self.ui_snip(ui),
-                    3 => self.ui_paste(ui),
-                    4 => self.ui_output(ui),
-                    5 => self.ui_control(ui),
-                    _ => self.ui_about(ui),
-                }
+                body_h = inner.response.rect.height();
             });
+        let size = prefs_inner_size(body_h);
+        if self.size_key != self.tab || (self.last_h - size.y).abs() > 1.0 {
+            self.size_key = self.tab;
+            self.last_h = size.y;
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
+        }
     }
 }
 
@@ -396,11 +411,10 @@ impl PrefsApp {
                     );
                 });
         });
-        ui.add_space(4.0);
         ui.checkbox(&mut self.draft.run_at_login, tr("Run at login"))
             .on_hover_text(tr("Start PinShot when you log in"));
         ui.checkbox(&mut self.draft.start_minimized, tr("Start minimized"));
-        ui.add_space(10.0);
+        ui.add_space(4.0);
         ui.label(RichText::new(tr("Configuration")).strong());
         ui.horizontal(|ui| {
             ui.label(config::config_dir().display().to_string());
@@ -463,7 +477,7 @@ impl PrefsApp {
             form_slider(ui, tr("Mask opacity:"), &mut self.draft.dim_alpha, 0..=200);
             form_slider(ui, tr("Snip history:"), &mut self.draft.history_max, 1..=50);
         });
-        ui.add_space(4.0);
+        ui.add_space(2.0);
         let mut confirm = !self.draft.skip_abort_confirm;
         ui.checkbox(&mut confirm, tr("Confirm before abort (Esc)"));
         self.draft.skip_abort_confirm = !confirm;
@@ -505,22 +519,18 @@ impl PrefsApp {
                 0..=50,
             );
         });
-        ui.add_space(8.0);
+        ui.add_space(2.0);
         ui.label(RichText::new(tr("Pin groups:")).strong());
         let groups = self.draft.groups.clone();
-        egui::ScrollArea::vertical()
-            .max_height(90.0)
-            .show(ui, |ui| {
-                for (i, g) in groups.iter().enumerate() {
-                    if ui
-                        .selectable_label(self.group_sel == i, groups::label(g))
-                        .clicked()
-                    {
-                        self.group_sel = i;
-                        self.group_edit = g.clone();
-                    }
-                }
-            });
+        for (i, g) in groups.iter().enumerate() {
+            if ui
+                .selectable_label(self.group_sel == i, groups::label(g))
+                .clicked()
+            {
+                self.group_sel = i;
+                self.group_edit = g.clone();
+            }
+        }
         ui.horizontal(|ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut self.group_edit).desired_width(200.0),
@@ -555,9 +565,9 @@ impl PrefsApp {
                 ui.label(tr("Save folder:"));
             });
             ui.horizontal(|ui| {
+                let w = (ui.available_width() - 88.0).max(160.0);
                 ui.add(
-                    egui::TextEdit::singleline(&mut self.draft.quick_save_folder)
-                        .desired_width(CONTROL_W),
+                    egui::TextEdit::singleline(&mut self.draft.quick_save_folder).desired_width(w),
                 );
                 if ui.button(tr("Browse…")).clicked() {
                     if let Some(p) = crate::dialog::open_folder() {
@@ -594,7 +604,7 @@ impl PrefsApp {
         });
         let conflicts = find_conflicts(&bindings_from_config(&self.draft));
         if !conflicts.is_empty() {
-            ui.add_space(6.0);
+            ui.add_space(4.0);
             ui.colored_label(
                 Color32::from_rgb(200, 60, 40),
                 RichText::new(format!(
@@ -605,16 +615,16 @@ impl PrefsApp {
                 )),
             );
         }
-        ui.add_space(8.0);
+        ui.add_space(4.0);
         ui.weak(tr(
             "Hotkeys already used by another app cannot be bound. Click Apply to rebind.",
         ));
     }
 
     fn ui_about(&mut self, ui: &mut Ui) {
-        ui.label(RichText::new(format!("PinShot {VERSION}")).heading());
+        ui.label(RichText::new(format!("PinShot {VERSION}")).strong());
         ui.label(crate::native::platform_name());
-        ui.add_space(8.0);
+        ui.add_space(2.0);
         ui.label(tr(
             "Settings layout follows Snipaste Preferences. Features stay PinShot's.",
         ));
@@ -624,7 +634,7 @@ impl PrefsApp {
 fn form_grid(ui: &mut Ui, id: &'static str, add: impl FnOnce(&mut Ui)) {
     egui::Grid::new(id)
         .num_columns(2)
-        .spacing([10.0, 8.0])
+        .spacing([8.0, 4.0])
         .min_col_width(FORM_LABEL_W)
         .min_row_height(ROW_H)
         .show(ui, add);
@@ -680,21 +690,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn prefs_window_is_landscape_like_snipaste() {
-        assert!(PREFS_W > PREFS_H);
-        assert!(PREFS_W >= 560.0);
-        assert!(PREFS_H >= 360.0);
-        assert!(PREFS_H <= 480.0);
+    fn prefs_window_hugs_each_tab() {
+        let interface = prefs_inner_size(48.0);
+        let about = prefs_inner_size(64.0);
+        let general = prefs_inner_size(148.0);
+        let control = prefs_inner_size(236.0);
+        assert_eq!(interface.x, PREFS_W);
+        assert!(interface.y < 140.0, "short tabs must not keep a tall square");
+        assert!(about.y < general.y);
+        assert!(interface.y < general.y);
+        assert!(control.y > general.y);
+        assert!(control.y <= PREFS_MAX_H);
+        assert!(PREFS_W < 500.0);
         assert_eq!(TABS.len(), 7);
-        assert_eq!(TABS[0], "General");
-        assert_eq!(TABS[5], "Control");
-        assert_eq!(TABS[6], "About");
     }
 
     #[test]
     fn form_label_column_is_aligned() {
         assert!(FORM_LABEL_W >= 100.0);
-        assert!(ROW_H >= 22.0);
+        assert!(ROW_H >= 20.0);
         assert!(CONTROL_W >= 180.0);
     }
 
@@ -711,6 +725,8 @@ mod tests {
             group_sel: 0,
             group_edit: String::new(),
             status: String::new(),
+            size_key: 0,
+            last_h: 0.0,
         };
         app.restore_tab();
         let d = Config::default();

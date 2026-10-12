@@ -144,7 +144,7 @@ window but styles it like Snipaste prefs (egui, CJK, always-on-top).
 
 | Python | Rust | Status |
 |---|---|---|
-| `prefs.PrefsDialog` General/Hotkeys/Output + Advanced | `prefs.rs` egui `--settings-window` (Linux + Windows) | done | Tabs match Snipaste Preferences: General / Interface / Snip / Paste / Output / Control / About (no Update — PinShot has no updater). Restore Defaults per page; Apply/OK/Cancel footer. CJK: Noto/Source Han/wqy Linux, YaHei Windows. `prefs_win.rs` remains as in-process fallback. |
+| `prefs.PrefsDialog` General/Hotkeys/Output + Advanced | `prefs.rs` egui `--settings-window` (Linux + Windows) | done | Tabs match Snipaste Preferences: General / Interface / Snip / Paste / Output / Control / About (no Update — PinShot has no updater). Window hugs the form (measured widget height, 448×~100–292, not a fixed empty square). Restore Defaults per page; Apply/OK/Cancel footer. CJK: Noto/Source Han/wqy Linux, YaHei Windows. `prefs_win.rs` remains as in-process fallback. |
 | zh/en only, light/dark/system | done | Linux prefs/fallback repaint on Apply; system ≈ GTK_THEME |
 | Hotkey conflict detection | `hotkey::find_conflicts` | done |
 | Groups add/rename/remove | done |
