@@ -18,6 +18,7 @@ use crate::draw::{
     fill_rect, fill_rounded_rect, paint_check_tick, present, stroke_rect, stroke_rounded_rect,
     UiTheme,
 };
+use tiny_skia::{FillRule, Paint, PathBuilder, Transform};
 use crate::event::PinMenuAction;
 use pinshot_core::color::Rgba;
 
@@ -555,18 +556,17 @@ impl PinMenuWin {
                         false,
                     );
                     if submenu.is_some() {
-                        crate::text::blit_into_pm(
-                            &mut pm,
-                            "▸",
-                            r.right() - 16.0,
-                            r.y + 3.0,
-                            12,
-                            thm.muted,
-                            false,
-                        );
+                        paint_flyout_arrow(&mut pm, r.right() - 14.0, r.y + 7.0, thm.muted);
                     }
                 }
             }
+        }
+        if !self.sub_rows.is_empty() {
+            let y0 = self.sub_rows[0].0.y - 4.0;
+            let y1 = self.sub_rows.last().map(|(r, _)| r.bottom()).unwrap_or(y0) + 4.0;
+            let card = Rect::new(MENU_W + 2.0, y0, SUB_W - 6.0, (y1 - y0).max(20.0));
+            fill_rounded_rect(&mut pm, card, 4.0, thm.bg);
+            stroke_rounded_rect(&mut pm, card, 4.0, thm.border, 1.0);
         }
         for (r, row) in &self.sub_rows {
             if let Row::Item {
@@ -600,18 +600,25 @@ impl PinMenuWin {
                 );
             }
         }
-        if self.open_sub.is_some() {
-            fill_rect(
-                &mut pm,
-                Rect::new(MENU_W, 4.0, 1.0, h as f32 - 8.0),
-                thm.border,
-            );
-        }
         if let Ok(mut buf) = self.surface.buffer_mut() {
             present(&mut buf, &pm);
             let _ = buf.present();
         }
         self.dirty = false;
+    }
+}
+
+fn paint_flyout_arrow(pm: &mut tiny_skia::Pixmap, x: f32, y: f32, color: Rgba) {
+    let mut pb = PathBuilder::new();
+    pb.move_to(x, y);
+    pb.line_to(x + 5.0, y + 4.0);
+    pb.line_to(x, y + 8.0);
+    pb.close();
+    if let Some(path) = pb.finish() {
+        let mut p = Paint::default();
+        p.set_color(color.to_skia());
+        p.anti_alias = true;
+        pm.fill_path(&path, &p, FillRule::Winding, Transform::identity(), None);
     }
 }
 

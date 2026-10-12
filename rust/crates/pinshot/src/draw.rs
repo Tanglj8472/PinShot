@@ -1026,9 +1026,19 @@ pub fn paint_toolbar(pm: &mut Pixmap, tb: &Toolbar, cursor: Option<Point>) -> Re
                 let tw = tw as f32 + 12.0;
                 let th = th as f32 + 8.0;
                 let mut tx = b.rect.x;
-                let mut ty = b.rect.bottom() + 4.0;
+                let panel_below = tb
+                    .panel
+                    .is_some_and(|pr| pr.y + 1.0 >= tb.bar.bottom() - 2.0);
+                let mut ty = if panel_below {
+                    b.rect.y - th - 4.0
+                } else {
+                    b.rect.bottom() + 4.0
+                };
+                if ty < 2.0 {
+                    ty = b.rect.bottom() + 4.0;
+                }
                 if ty + th > pm.height() as f32 {
-                    ty = b.rect.y - th - 4.0;
+                    ty = (b.rect.y - th - 4.0).max(2.0);
                 }
                 tx = tx.min(pm.width() as f32 - tw - 2.0).max(2.0);
                 let tip_r = Rect::new(tx, ty, tw, th);
