@@ -2,7 +2,27 @@
 
 对照源：`main` 上的 Python/PySide6 PinShot。Rust 在 `rust/`，分支 `rust`。Python 源码不改。
 
-最后更新：2026-10-12（`876fc4f`：b791ea3 实机 6 项已关；Xvfb 实机节拍 18/18）。
+最后更新：2026-10-12（`7ef18fe` Linux 实机 7/7 PASS；未关：滚轮每格生效两次）。
+
+---
+
+## 当前进度
+
+HEAD `7ef18fe`（`rust`）。对照 Python/`main`，**先 Linux X11**（Xfce / xfwm4，1920×1200），再 Windows。Python 源码不改。
+
+2026-10-12 08:33 UTC+8 对 HEAD 的 **Linux 实机鼠标** 7 项全过（见下表）。此前 b791ea3 报告里的 6 个 FAIL + 被挡住的滚轮改宽，均已在 `7f9b7dc`…`7ef18fe` 关上，并经实机确认。
+
+| 面 | 状态 |
+|---|---|
+| Linux 框选 / 矩形·椭圆·箭头 / 点边 8 手柄 / 滚轮改宽与面板数字 | 实机过 |
+| 文字快打 `hello world` + Ctrl+Enter、Ctrl+C PNG、prefs、`,` `.` 历史 | 实机过 |
+| 重启后 R 套在**当前截图**的上次选区、Tab 不漏到 Chrome | 实机过 |
+| pin 光标锚缩放（不切工作区）、菜单高度、Esc 只关菜单、穿透勾选 | 实机过 |
+| Linux 滚轮 | **未关**：每格生效两次（线宽 3 次点击 3→9；缩放 4 格走 8 步） |
+| Windows 实机 | **未关**：Linux-first 改动后尚未在真 Windows 上复测（CI 绿） |
+| AT-SPI / IME / 合成器 | 限制同前，见「已知限制」 |
+
+`PARITY.md` 计数未变：done 99 / partial 11 / missing 4 / impossible 6（合计 120）。
 
 ---
 
@@ -74,6 +94,15 @@
 | `d01fe6c` | **不要**在第二路 X 客户端或 winit 的 Xlib Display 上 `XGrabPointer`（事件进错连接）。overlay 期间 `ControlFlow::Poll` + 根窗口 `QueryPointer` 认领 Button1 |
 | `0098973` | 记录 d01fe6c 的 Xvfb A–L 15/15 |
 
+### b791ea3 → `7ef18fe`（本轮）
+
+| SHA | 内容 |
+|---|---|
+| `7f9b7dc` | recover **禁止** `annot.press`（修矩形/椭圆/箭头画不出）；R 只套 rect；pin `geom_pos`+`set_outer_position`；根窗口抓 Tab；菜单高度按行求和 |
+| `876fc4f` | fallback 不再 Esc=Quit（Python 也没有；焦点落到四按钮会杀掉全部 pin） |
+| `a4bf1b3` | 记录 Xvfb `:21` 实机节拍 18/18 |
+| `7ef18fe` | PARITY：fallback Esc 不对齐 Quit |
+
 ### 0098973 实机 11 项（本轮）
 
 实机 Xfce/xfwm4 上 A,B,D,E,G,H,K 已过；下列 11 项在真实鼠标/快打字下仍开。Xvfb 慢节拍曾误报通过。
@@ -92,26 +121,41 @@
 | 10 | 穿透项无勾；页脚 Zoom/Opacity 中文未译 | 已修 | 可勾项始终画勾槽；`match_pattern` 只拿 `{0}` 后到下一占位的分隔符 |
 | 11 | overlay 开着 Chrome 仍收到 Tab | 已修 | 先放 `InputHold` 再 `XGrabKeyboard`；根窗口被动抓 Tab/ISO_Left_Tab；默认关 IME；失败 1ms 重试 |
 
-### b791ea3 实机（Xfce/xfwm4，2026-10-12）
+### b791ea3 实机（Xfce/xfwm4，2026-10-12 07:32 UTC+8；附件 `rust-test-b791ea3_a248.md` / `_54b5.md`）
 
-PASS：文字快打+Ctrl+Enter；`,` `.` 历史 + 重启后 R；toast 淡出；按键即重绘；Esc 后 F1；pin 菜单勾选+中文页脚；Ctrl+C；pin 按钮；prefs。
+当时 PASS：文字快打+Ctrl+Enter；`,` `.` 历史 + 重启后 R；toast 淡出；按键即重绘；Esc 后 F1；pin 菜单勾选+中文页脚；Ctrl+C；pin 按钮；prefs。
 
-| ID | 问题 | 状态 | 修法 |
+下列 FAIL / 未测已在 `7f9b7dc`…`876fc4f` 修好，并经 **`7ef18fe` 实机（08:33 UTC+8）确认全过**。
+
+| ID | 问题 | 状态 | 修法 / 实机 |
 |---|---|---|---|
-| 1 | **回归**：矩形/椭圆/箭头画不出；日志只有 `recover annot press`，无 drag/release | 已修 | recover **禁止** `annot.press`；只在已有 extent 时 move/release。事件路径 `press→move_to→release` 单测 Rect/Ellipse/Arrow |
-| 2 | pin 滚轮缩小锚在左上：算出 nx,ny 但窗停在 148,100；多出的格滚到 Chrome | 已修 | 跟踪 `geom_pos`（不重读过期 `outer_position`）；始终 `set_outer_position` + `request_inner_size` + EWMH；滚轮时 raise/focus |
-| 3 | overlay 里 Tab 漏到 Chrome（Jump to content） | 已修 | 根窗口 `XGrabKey` Tab/ISO_Left_Tab（`owner_events=false`）；默认 `set_ime_allowed(false)`；抓键 1ms 重试 |
-| 4 | R 后背景是旧截图（应为当前屏幕 + 上次选区） | 已修 | `reuse_last` 只 `set_rect`，不 `replace_shot` |
-| 5 | Esc 关 pin 菜单也关掉 pin，其它已恢复的 pin 消失 | 已修 | 菜单开着或刚关 450ms 内 pin 不处理 Esc；fallback **不再** Esc=Quit（Python 也没有，焦点落到四按钮会把整个进程杀掉） |
-| 6 | pin 右键菜单很高，末项下大块空白 | 已修 | 高度按行真实高度求和（Sep=8，其它=22），不再 `len*ROW_H` |
+| 1 | **回归**：矩形/椭圆/箭头画不出；日志只有 `recover annot press`，无 drag/release | 已修 | `7f9b7dc`：recover **禁止** `annot.press`。`7ef18fe` 实机：三工具能画出 |
+| 2 | pin 滚轮缩小锚在左上：算出 nx,ny 但窗停在 148,100；多出的格滚到 Chrome / 切工作区 | 已修 | `geom_pos` + `set_outer_position`。`7ef18fe` 实机：锚在指针，不切工作区 |
+| 3 | overlay 里 Tab 漏到 Chrome（Jump to content） | 已修 | 根窗口抓 Tab。`7ef18fe` 实机：Chrome 收不到 Tab |
+| 4 | R 后背景是旧截图（应为当前屏幕 + 上次选区） | 已修 | `reuse_last` 只 `set_rect`。`7ef18fe` 实机：重启后 R 套在 live 截图 |
+| 5 | Esc 关 pin 菜单也关掉 pin，其它已恢复的 pin 消失 | 已修 | 菜单 Esc 只关菜单；fallback 不再 Esc=Quit。`7ef18fe` 实机：只关菜单 |
+| 6 | pin 右键菜单很高，末项下大块空白 | 已修 | 高度按行求和（Sep=8）。`7ef18fe` 实机：高度正常；穿透勾选可切换 |
+| — | 选中图形滚轮改线宽（当时被 #1 挡住） | 已修 | `7ef18fe` 实机：点边出 8 手柄，滚轮改宽，面板数字跟着变。**但每格生效两次，见未关** |
 
-未测：选中图形滚轮改线宽（被 #1 挡住；#1 修后事件路径单测覆盖绘制）。
+### `7ef18fe` 实机（Xfce/xfwm4，2026-10-12 08:33 UTC+8）
+
+**7 / 7 PASS。**
+
+| # | 检查 | 结果 |
+|---|---|---|
+| 1 | 矩形 / 椭圆 / 箭头绘制（b791ea3 回归） | PASS（`7f9b7dc`） |
+| 2 | 点边选中 → 8 手柄；滚轮改线宽；面板字段更新 | PASS（线宽数字会变；每格双倍见未关） |
+| 3 | pin 滚轮缩放锚在指针，不切工作区 | PASS |
+| 4 | overlay Tab 被吞，不漏到 Chrome | PASS |
+| 5 | 重启后 R：上次选区套在当前截图 | PASS |
+| 6 | pin 菜单 Esc 只关菜单；高度正常；穿透勾选可切换 | PASS |
+| 7 | 快打 `hello world`+Ctrl+Enter；Ctrl+C PNG；prefs；`,` `.` 历史 | PASS |
 
 ---
 
 ## 已发现的全部问题（各轮测试）
 
-状态：`已修` / `未关`。52d5642 实机 A–L、0098973 实机 11 项、b791ea3 实机 6 项本轮已关。
+状态：`已修` / `未关`。52d5642 实机 A–L、0098973 实机 11 项、b791ea3 实机 6 项 + 滚轮改宽已关。**仍开：Linux 滚轮双倍、Windows 实机复测。**
 
 ### Windows 早期轮次
 
@@ -192,6 +236,16 @@ PASS：文字快打+Ctrl+Enter；`,` `.` 历史 + 重启后 R；toast 淡出；�
 
 ---
 
+## 仍开（`7ef18fe` 之后）
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| Linux 滚轮每格两次 | 未关 | 线宽：点边后滚 3 格，3→9（期望 3→6）。缩放：4 格滚轮走出 8 步 `pin zoom`。疑 winit LineDelta 与 QueryPointer/Poll 各吃一格 |
+| Windows 实机 | 未关 | Linux-first 改动后只跑过 CI（`7ef18fe` 绿），尚未在真 Windows 上复测、未出新的 release exe |
+| PARITY 缺口 | 未关 | 属性面板、自定义取色、pin 阴影/缩略图、无总线时 AT-SPI、逐工具子面板、画笔 8ms 采样、像素级 hit（99/11/4/6） |
+
+---
+
 ## 已知限制
 
 | 项 | 说明 |
@@ -208,9 +262,9 @@ PASS：文字快打+Ctrl+Enter；`,` `.` 历史 + 重启后 R；toast 淡出；�
 
 ## 下一步（按优先级）
 
-1. **P1 — 对齐缺口**：无 a11y 时更细的控件框、属性面板（填充/虚线/模糊/字体）、自定义取色、pin 阴影。
-2. **P2 — Windows 再对齐**：在 Linux 稳定后，用同一套 core 把 Windows 宿主接到同等行为；CI 两边保持绿。
-3. **P3 — 体积与 OCR**：默认 exe 保持无模型；`--features ocr` / `pinshot-ocr` 文档化。
+1. **修 Linux 双倍滚轮**：每格只走一步（线宽与 pin 缩放同一根因）。
+2. **Windows 实机 + 放出 exe**：在真机复测 overlay/pin/热键/剪贴板，CI 已绿的 `pinshot.exe` 再打一版。
+3. **PARITY 剩余**：属性面板（填充/虚线/模糊/字体）、自定义取色、pin 阴影/缩略图、无 a11y 时控件框、逐工具子面板。
 
 验证约定：Linux 改动必须在 **Xvfb + xfwm4 + xdotool**（以及有桌面时的 `:1` Xfce）上做焦点/按键/菜单回归。本轮用 `type --delay 20`、两步快拖、连续滚轮格。
 
