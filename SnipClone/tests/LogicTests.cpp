@@ -81,13 +81,18 @@ void TestCoordMap()
     POINT back = snip::ImageToScreen(origin, image);
     Expect(back.x == screen.x && back.y == screen.y, "ImageToScreen round-trip");
 
-    int x = -50;
-    int y = -20;
+    const RECT vs = snip::GetVirtualScreenRect();
+    int x = vs.right + 500;
+    int y = vs.bottom + 500;
     snip::ClampTopLeftToVirtualScreen(x, y, 100, 40);
-    // Without a real virtual screen in CI this still must not crash; clamp is monotonic.
-    Expect(true, "ClampTopLeftToVirtualScreen callable");
-    (void)x;
-    (void)y;
+    Expect(x + 100 <= vs.right, "clamp keeps right edge in virtual screen");
+    Expect(y + 40 <= vs.bottom, "clamp keeps bottom edge in virtual screen");
+    Expect(x >= vs.left && y >= vs.top, "clamp keeps origin inside virtual screen");
+
+    x = vs.left - 200;
+    y = vs.top - 200;
+    snip::ClampTopLeftToVirtualScreen(x, y, 80, 60);
+    Expect(x == vs.left && y == vs.top, "clamp pulls negative origin up to vs origin");
 }
 
 void TestCropToScreenRect()
@@ -306,6 +311,39 @@ void TestComposeFailsEmpty()
     CoUninitialize();
 }
 
+void TestComposeReuseSurface()
+{
+    // A11: reuseSurface=true must match one-shot compose pixels and stay non-empty.
+    std::printf("Compose reuse surface\n");
+    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    RECT sr{ 0, 0, 32, 24 };
+    auto base = MakeSolid(32, 24, sr, 10, 20, 30);
+    snip::DrawStack stack;
+    stack.SetTool(snip::ToolKind::Pen);
+    stack.Press(D2D1::Point2F(2, 2));
+    stack.Move(D2D1::Point2F(20, 16));
+    stack.Release(D2D1::Point2F(20, 16));
+
+    snip::AnnotationRenderer renderer;
+    if (!renderer.Initialize())
+    {
+        Expect(false, "reuse renderer init");
+        CoUninitialize();
+        return;
+    }
+    bool ok1 = false;
+    bool ok2 = false;
+    auto a = renderer.Compose(base, stack, false, false, &ok1, false);
+    auto b = renderer.Compose(base, stack, false, false, &ok2, true);
+    Expect(ok1 && ok2 && !a.Empty() && !b.Empty(), "reuse + one-shot both succeed");
+    Expect(a.bgra == b.bgra, "reuse surface matches one-shot pixels");
+    auto c = renderer.Compose(base, stack, false, false, nullptr, true);
+    Expect(!c.Empty() && c.bgra == b.bgra, "second reuse frame stable");
+    renderer.ReleaseComposeCache();
+    renderer.Shutdown();
+    CoUninitialize();
+}
+
 void TestComposeExportOmitsSelectionChrome()
 {
     std::printf("Compose export chrome\n");
@@ -360,6 +398,7 @@ int wmain()
     TestCropViewportUndo();
     TestTextExtentConsistent();
     TestComposeFailsEmpty();
+    TestComposeReuseSurface();
     TestComposeExportOmitsSelectionChrome();
 
     std::printf("\n%d passed, %d failed\n", g_passed, g_failed);

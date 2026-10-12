@@ -318,8 +318,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR cmdLine, int)
     {
         if (smoke)
         {
-            // Second smoke instance in CI should still exit 0 after detecting lock.
-            return 0;
+            // A14: smoke must not report success when another instance owns the lock.
+            return 2;
         }
         if (!snip::SingleInstance::ActivateExisting(kMainClass))
         {
@@ -387,7 +387,17 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR cmdLine, int)
 
     if (smoke)
     {
-        // Startup smoke: init path succeeded; tear down cleanly for CI.
+        // A14 smoke contract:
+        //   required → main window created, settings loaded/saved
+        //   optional → tray (may fail headless), hotkeys (conflict OK unless --smoke-strict)
+        //   exit 0 success | 1 hard fail | 2 already running | 3 strict hotkey miss
+        const bool strict = HasArg(cmdLine, L"--smoke-strict");
+        const bool settingsOk = !snip::AppSettings::SettingsPath().empty();
+        int code = (g_mainWnd && settingsOk) ? 0 : 1;
+        if (code == 0 && strict && !g_snipHotkeyOk)
+        {
+            code = 3;
+        }
         if (g_tray)
         {
             g_tray->Destroy();
@@ -397,7 +407,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR cmdLine, int)
         snip::GlobalHotkey::Unregister(kHotkeySnip, g_mainWnd);
         DestroyWindow(g_mainWnd);
         CoUninitialize();
-        return 0;
+        return code;
     }
 
     MSG msg{};

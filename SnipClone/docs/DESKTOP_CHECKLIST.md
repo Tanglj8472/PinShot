@@ -1,6 +1,8 @@
-# SnipClone 桌面回归清单（P0）
+# SnipClone 桌面回归清单
 
-在真实 Windows 桌面执行。CI 仅覆盖无头逻辑（裁切 / 撤销 / 合成去 chrome）。
+在真实 Windows 桌面执行。自动覆盖见 `VERIFICATION.md`；勾选后将对应行标为 **桌面验证通过**（并记提交/机器）。
+
+CI 覆盖：裁切 / 撤销 / Compose / smoke（非交互）。
 
 ## 每次构建后（建议）
 

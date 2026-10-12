@@ -98,7 +98,7 @@ bool AnnotationOverlay::Start(HINSTANCE instance, HWND owner, CaptureResult crop
     }
 
     m_ann.SetChangedCallback([this]() {
-        Present();
+        RequestPresent();
         if (m_toolbar)
         {
             m_toolbar->SyncFromAnnotator();
@@ -397,6 +397,11 @@ LRESULT AnnotationOverlay::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
 
     case WM_SNIP_CLOSE_SELF:
         Stop();
+        return 0;
+
+    case WM_SNIP_PRESENT:
+        m_presentPending = false;
+        Present();
         return 0;
 
     case WM_KEYDOWN:
@@ -888,6 +893,7 @@ bool AnnotationOverlay::ApplyCropFromHistory(RECT cropScreen)
     // Shapes already restored by history; only swap the viewport bitmap.
     m_base = std::move(cropped);
     m_ann.SetViewport(m_base.screenRect);
+    m_renderer.ReleaseComposeCache();
     ReleaseSurface();
     if (!EnsureSurface())
     {
@@ -940,6 +946,7 @@ bool AnnotationOverlay::CommitCropRect(RECT newScreenRect)
 
     m_base = std::move(cropped);
     m_ann.SetViewport(m_base.screenRect);
+    m_renderer.ReleaseComposeCache();
     ReleaseSurface();
     if (!EnsureSurface())
     {
@@ -1281,12 +1288,23 @@ void AnnotationOverlay::ReleaseSurface()
     m_w = m_h = 0;
 }
 
+void AnnotationOverlay::RequestPresent()
+{
+    if (!m_hwnd || m_presentPending)
+    {
+        return;
+    }
+    m_presentPending = true;
+    PostMessageW(m_hwnd, WM_SNIP_PRESENT, 0, 0);
+}
+
 void AnnotationOverlay::Present()
 {
     if (!m_hwnd)
     {
         return;
     }
+    m_presentPending = false;
 
     // A07: while refining crop, host = union(base, preview) so expand shows freeze pixels.
     const RECT hostScreen = CurrentHostScreen();
@@ -1316,8 +1334,8 @@ void AnnotationOverlay::Present()
         StampCaptureToDib(m_base);
     }
 
-    // Compose annotations in crop-local space, blit onto host at base offset.
-    CaptureResult frame = m_renderer.Compose(m_base, m_ann, true, true);
+    // A11: reuse WIC/RT/base bitmap across preview frames; export still one-shot.
+    CaptureResult frame = m_renderer.Compose(m_base, m_ann, true, true, nullptr, /*reuseSurface=*/true);
     const int ox = m_base.screenRect.left - hostScreen.left;
     const int oy = m_base.screenRect.top - hostScreen.top;
     BlitCaptureToDibAt(frame.Empty() ? m_base : frame, ox, oy);

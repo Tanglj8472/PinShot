@@ -50,8 +50,31 @@ bool AnnotationRenderer::Initialize()
     return true;
 }
 
+void AnnotationRenderer::ReleaseComposeCache()
+{
+    if (m_cacheBaseBmp)
+    {
+        m_cacheBaseBmp->Release();
+        m_cacheBaseBmp = nullptr;
+    }
+    if (m_cacheRt)
+    {
+        m_cacheRt->Release();
+        m_cacheRt = nullptr;
+    }
+    if (m_cacheWic)
+    {
+        m_cacheWic->Release();
+        m_cacheWic = nullptr;
+    }
+    m_cacheW = m_cacheH = 0;
+    m_cacheBaseData = nullptr;
+    m_cacheBaseBytes = 0;
+}
+
 void AnnotationRenderer::Shutdown()
 {
+    ReleaseComposeCache();
     if (m_brush)
     {
         m_brush->Release();
@@ -72,6 +95,56 @@ void AnnotationRenderer::Shutdown()
         m_factory->Release();
         m_factory = nullptr;
     }
+}
+
+bool AnnotationRenderer::EnsureComposeCache(const CaptureResult& base)
+{
+    if (!Initialize() || base.Empty())
+    {
+        return false;
+    }
+    const bool sizeOk = m_cacheWic && m_cacheRt && m_cacheW == base.width && m_cacheH == base.height;
+    const bool baseOk = sizeOk && m_cacheBaseBmp && m_cacheBaseData == base.bgra.data() &&
+                        m_cacheBaseBytes == base.bgra.size();
+    if (sizeOk && baseOk)
+    {
+        return true;
+    }
+
+    if (!sizeOk)
+    {
+        ReleaseComposeCache();
+        if (FAILED(m_wic->CreateBitmap(
+                static_cast<UINT>(base.width),
+                static_cast<UINT>(base.height),
+                GUID_WICPixelFormat32bppPBGRA,
+                WICBitmapCacheOnLoad,
+                &m_cacheWic)) ||
+            !m_cacheWic)
+        {
+            return false;
+        }
+        D2D1_RENDER_TARGET_PROPERTIES props = D2D1::RenderTargetProperties(
+            D2D1_RENDER_TARGET_TYPE_DEFAULT,
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+        if (FAILED(m_factory->CreateWicBitmapRenderTarget(m_cacheWic, props, &m_cacheRt)) || !m_cacheRt)
+        {
+            ReleaseComposeCache();
+            return false;
+        }
+        m_cacheW = base.width;
+        m_cacheH = base.height;
+    }
+
+    if (m_cacheBaseBmp)
+    {
+        m_cacheBaseBmp->Release();
+        m_cacheBaseBmp = nullptr;
+    }
+    m_cacheBaseBmp = CreateBitmapFromCapture(m_cacheRt, base);
+    m_cacheBaseData = base.bgra.data();
+    m_cacheBaseBytes = base.bgra.size();
+    return m_cacheBaseBmp != nullptr;
 }
 
 void AnnotationRenderer::EnsureBrushes(ID2D1RenderTarget* rt)
@@ -592,7 +665,8 @@ CaptureResult AnnotationRenderer::Compose(
     const DrawStack& stack,
     bool includeSelectionChrome,
     bool includeLive,
-    bool* ok)
+    bool* ok,
+    bool reuseSurface)
 {
     auto fail = [&]() -> CaptureResult {
         if (ok)
@@ -608,29 +682,45 @@ CaptureResult AnnotationRenderer::Compose(
     }
 
     IWICBitmap* wicBmp = nullptr;
-    if (FAILED(m_wic->CreateBitmap(
-            static_cast<UINT>(base.width),
-            static_cast<UINT>(base.height),
-            GUID_WICPixelFormat32bppPBGRA,
-            WICBitmapCacheOnLoad,
-            &wicBmp)) ||
-        !wicBmp)
-    {
-        return fail();
-    }
-
-    D2D1_RENDER_TARGET_PROPERTIES props = D2D1::RenderTargetProperties(
-        D2D1_RENDER_TARGET_TYPE_DEFAULT,
-        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
-
     ID2D1RenderTarget* rt = nullptr;
-    if (FAILED(m_factory->CreateWicBitmapRenderTarget(wicBmp, props, &rt)) || !rt)
+    ID2D1Bitmap* baseBmp = nullptr;
+    bool ownsTemp = false;
+
+    if (reuseSurface)
     {
-        wicBmp->Release();
-        return fail();
+        if (!EnsureComposeCache(base))
+        {
+            return fail();
+        }
+        wicBmp = m_cacheWic;
+        rt = m_cacheRt;
+        baseBmp = m_cacheBaseBmp;
+    }
+    else
+    {
+        // Export / one-shot: do not touch the preview cache.
+        if (FAILED(m_wic->CreateBitmap(
+                static_cast<UINT>(base.width),
+                static_cast<UINT>(base.height),
+                GUID_WICPixelFormat32bppPBGRA,
+                WICBitmapCacheOnLoad,
+                &wicBmp)) ||
+            !wicBmp)
+        {
+            return fail();
+        }
+        D2D1_RENDER_TARGET_PROPERTIES props = D2D1::RenderTargetProperties(
+            D2D1_RENDER_TARGET_TYPE_DEFAULT,
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+        if (FAILED(m_factory->CreateWicBitmapRenderTarget(wicBmp, props, &rt)) || !rt)
+        {
+            wicBmp->Release();
+            return fail();
+        }
+        baseBmp = CreateBitmapFromCapture(rt, base);
+        ownsTemp = true;
     }
 
-    ID2D1Bitmap* baseBmp = CreateBitmapFromCapture(rt, base);
     if (m_brush)
     {
         m_brush->Release();
@@ -641,15 +731,17 @@ CaptureResult AnnotationRenderer::Compose(
     DrawScene(rt, baseBmp, &base, stack, includeSelectionChrome, includeLive);
     const HRESULT endHr = rt->EndDraw();
 
-    if (baseBmp)
-    {
-        baseBmp->Release();
-    }
-    rt->Release();
-
     if (FAILED(endHr))
     {
-        wicBmp->Release();
+        if (ownsTemp)
+        {
+            if (baseBmp)
+            {
+                baseBmp->Release();
+            }
+            rt->Release();
+            wicBmp->Release();
+        }
         return fail();
     }
 
@@ -658,7 +750,16 @@ CaptureResult AnnotationRenderer::Compose(
     const UINT bufSize = stride * static_cast<UINT>(base.height);
     out.bgra.assign(bufSize, 0);
     const HRESULT copyHr = wicBmp->CopyPixels(nullptr, stride, bufSize, out.bgra.data());
-    wicBmp->Release();
+
+    if (ownsTemp)
+    {
+        if (baseBmp)
+        {
+            baseBmp->Release();
+        }
+        rt->Release();
+        wicBmp->Release();
+    }
     if (m_brush)
     {
         m_brush->Release();

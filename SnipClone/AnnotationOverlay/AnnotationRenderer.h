@@ -38,18 +38,22 @@ public:
 
     // On any WIC/D2D failure returns Empty() — never a silent base copy (A02).
     // ok: optional; set false on failure, true on success.
+    // reuseSurface: keep WIC/RT/base bitmap between preview frames (A11). Export should pass false.
     CaptureResult Compose(
         const CaptureResult& base,
         const DrawStack& stack,
         bool includeSelectionChrome = true,
         bool includeLive = true,
-        bool* ok = nullptr);
+        bool* ok = nullptr,
+        bool reuseSurface = false);
 
     ID2D1Bitmap* CreateBitmapFromCapture(ID2D1RenderTarget* rt, const CaptureResult& image);
 
     ID2D1Factory* Factory() const { return m_factory; }
+    void ReleaseComposeCache();
 
 private:
+    bool EnsureComposeCache(const CaptureResult& base);
     void EnsureBrushes(ID2D1RenderTarget* rt);
     void DrawCommandOn(
         ID2D1RenderTarget* rt,
@@ -74,6 +78,15 @@ private:
     IDWriteFactory* m_dwrite = nullptr;
     IWICImagingFactory* m_wic = nullptr;
     ID2D1SolidColorBrush* m_brush = nullptr;
+
+    // A11 preview compose cache (not used for one-shot export).
+    IWICBitmap* m_cacheWic = nullptr;
+    ID2D1RenderTarget* m_cacheRt = nullptr;
+    ID2D1Bitmap* m_cacheBaseBmp = nullptr;
+    int m_cacheW = 0;
+    int m_cacheH = 0;
+    const void* m_cacheBaseData = nullptr;
+    size_t m_cacheBaseBytes = 0;
 };
 
 } // namespace snip

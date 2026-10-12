@@ -59,6 +59,7 @@ private:
     void DoPin();
     void RequestClose();
     void Present();
+    void RequestPresent(); // A11: coalesce Present to one per message pump turn
     bool EnsureSurface();
     bool EnsureSurfaceSize(int w, int h);
     void ReleaseSurface();
@@ -80,6 +81,7 @@ private:
     RECT CurrentHostScreen() const;
 
     static constexpr UINT WM_SNIP_CLOSE_SELF = WM_APP + 0x60;
+    static constexpr UINT WM_SNIP_PRESENT = WM_APP + 0x61;
 
     HWND m_hwnd = nullptr;
     HWND m_owner = nullptr;
@@ -99,6 +101,7 @@ private:
     RECT m_cropDragStartScreen{};
     RECT m_cropPreviewScreen{}; // live rubber-band; committed on mouse-up
     RECT m_hostScreen{};        // layered window rect while presenting (may exceed crop)
+    bool m_presentPending = false;
 
     // Layered host is GDI DIB + UpdateLayeredWindow. Scene pixels come from
     // AnnotationRenderer::Compose (WIC) — not a DC render target Clear/Draw path.
