@@ -20,7 +20,7 @@ use crate::event::AppEvent;
 use pinshot_core::color::Rgba;
 
 const W: f64 = 520.0;
-const H: f64 = 600.0;
+const H: f64 = 420.0;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Field {
@@ -74,7 +74,7 @@ impl PrefsWin {
         let attrs = Window::default_attributes()
             .with_title(tr("PinShot Preferences"))
             .with_inner_size(LogicalSize::new(W, H))
-            .with_min_inner_size(LogicalSize::new(440.0, 420.0))
+            .with_min_inner_size(LogicalSize::new(440.0, 360.0))
             .with_resizable(true)
             .with_window_level(WindowLevel::AlwaysOnTop);
         let window = Rc::new(event_loop.create_window(attrs).map_err(|e| e.to_string())?);
@@ -587,6 +587,25 @@ fn key_to_seq(key: &Key, mods: ModifiersState) -> Option<String> {
     }
     parts.push(k);
     Some(parts.join("+"))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn prefs_window_hugs_form_not_empty_square() {
+        assert!(
+            super::H <= 440.0,
+            "600px inner height left a large empty band under the form, got {}",
+            super::H
+        );
+        assert!(super::W >= 440.0);
+        assert!(
+            super::W > super::H - 20.0,
+            "settings dialog should be landscape-ish, got {}x{}",
+            super::W,
+            super::H
+        );
+    }
 }
 
 impl PrefsWin {
