@@ -42,6 +42,10 @@ impl Selection {
         self.rect.is_valid_sel()
     }
 
+    pub fn resize_handle(&self) -> Option<Handle> {
+        self.handle
+    }
+
     pub fn normalized(&self) -> Rect {
         self.rect.normalized()
     }

@@ -613,7 +613,9 @@ impl Annotator {
         if let Some(i) = self.option_target() {
             return Some(&self.shapes[i].style);
         }
-        self.tool.filter(|t| *t != Tool::Select).map(|t| self.style(t))
+        self.tool
+            .filter(|t| *t != Tool::Select)
+            .map(|t| self.style(t))
     }
 
     /// Width shown in the toolbar panel: live / selected shape, else the tool default.
@@ -765,6 +767,38 @@ impl Annotator {
 
     pub fn is_selecting(&self) -> bool {
         self.sel_mode.is_some()
+    }
+
+    pub fn selecting_handle(&self) -> Option<Handle> {
+        match self.sel_mode {
+            Some(SelMode::Handle(h)) => Some(h),
+            _ => None,
+        }
+    }
+
+    pub fn is_editing_text(&self) -> bool {
+        self.text_edit.is_some()
+    }
+
+    /// Shape / handle under the pointer for cursor mapping.
+    pub fn hover_for_cursor(&self, img_pt: Point) -> (bool, Option<Handle>) {
+        let handle = self.hit_handle_of_selected(img_pt);
+        let shape = self.hit_test(img_pt).is_some();
+        (shape, handle)
+    }
+
+    pub fn cursor_hint(&self, img_pt: Point) -> crate::cursor::CursorHint {
+        let (hover_shape, hover_shape_handle) = self.hover_for_cursor(img_pt);
+        crate::cursor::CursorHint {
+            tool: self.tool,
+            selecting: self.is_selecting(),
+            selecting_handle: self.selecting_handle(),
+            hover_shape,
+            hover_shape_handle,
+            editing_text: self.is_editing_text(),
+            drawing: self.live.is_some(),
+            ..Default::default()
+        }
     }
 
     pub fn is_brush_live(&self) -> bool {

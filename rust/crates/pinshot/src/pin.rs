@@ -5,20 +5,22 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use crate::draw::{
-    fill_rect, paint_color_picker, paint_pin, paint_toolbar, present_argb, stroke_rect, PIN_SHADOW_M,
+    fill_rect, paint_color_picker, paint_pin, paint_toolbar, present_argb, stroke_rect,
+    PIN_SHADOW_M,
 };
 use crate::native;
 use crate::toolbar::{TbAction, Toolbar};
 use pinshot_core::annotation::{Annotator, Tool};
 use pinshot_core::color::Rgba;
 use pinshot_core::colorpicker::{color_picker_layout, ColorPicker, PickerAction};
-use pinshot_core::wheel::WheelGate;
+use pinshot_core::cursor::cursor_for;
 use pinshot_core::geom::{handle_points, HANDLE_SIZE};
 use pinshot_core::geom::{Point, Rect};
 use pinshot_core::groups;
 use pinshot_core::i18n::tr;
 use pinshot_core::raster::Raster;
 use pinshot_core::render::compose;
+use pinshot_core::wheel::WheelGate;
 use softbuffer::{Context, Surface};
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
@@ -318,6 +320,7 @@ impl PinWin {
         }
         self.apply_size();
         self.dirty = true;
+        self.sync_cursor();
     }
 
     fn relayout_tb(&mut self) {
@@ -326,7 +329,13 @@ impl PinWin {
         let (ww, hh) = self.win_px();
         let sel = Rect::new(m, m, iw as f32, ih as f32);
         let over = Rect::new(0.0, 0.0, ww as f32, hh as f32);
-        let mut tb = Toolbar::layout_pin(sel, over, self.annot.tool, self.arrow_on, self.annot.option_style());
+        let mut tb = Toolbar::layout_pin(
+            sel,
+            over,
+            self.annot.tool,
+            self.arrow_on,
+            self.annot.option_style(),
+        );
         tb.set_width_value(self.annot.option_width());
         self.toolbar = Some(tb);
     }
@@ -406,10 +415,36 @@ impl PinWin {
         crate::logutil::log(&format!("pin thumb {}", self.thumb));
     }
 
+    fn sync_cursor(&mut self) {
+        if self.click_through {
+            return;
+        }
+        if !self.annotating {
+            crate::cursor::apply(
+                &self.window,
+                cursor_for(pinshot_core::CursorHint {
+                    pin_idle: true,
+                    over_chrome: self.color_picker.is_some(),
+                    ..Default::default()
+                }),
+            );
+            return;
+        }
+        let over_chrome = self.color_picker.is_some()
+            || self
+                .toolbar
+                .as_ref()
+                .is_some_and(|t| t.contains(self.last_cursor));
+        let mut hint = self.annot.cursor_hint(self.img_pt(self.last_cursor));
+        hint.over_chrome = over_chrome;
+        crate::cursor::apply(&self.window, cursor_for(hint));
+    }
+
     fn apply_tb(&mut self, a: TbAction) {
         match a {
-            TbAction::Tool(_) | TbAction::Arrow =>
-                crate::toolbar::toggle_tool(&mut self.annot, &mut self.arrow_on, a),
+            TbAction::Tool(_) | TbAction::Arrow => {
+                crate::toolbar::toggle_tool(&mut self.annot, &mut self.arrow_on, a)
+            }
             TbAction::Undo => {
                 let _ = self.annot.undo();
             }
@@ -472,7 +507,8 @@ impl PinWin {
                 self.annot.set_style_value(Tool::Text, |s| s.outline = on);
             }
             TbAction::Family(fam) => {
-                self.annot.set_style_value(Tool::Text, |s| s.family = fam.to_string());
+                self.annot
+                    .set_style_value(Tool::Text, |s| s.family = fam.to_string());
             }
             TbAction::Ocr | TbAction::Translate | TbAction::Pin => {}
         }
@@ -567,6 +603,7 @@ impl PinWin {
                 WindowEvent::CloseRequested => self.close(),
                 _ => {}
             }
+            self.sync_cursor();
             return;
         }
         match event {
@@ -783,6 +820,7 @@ impl PinWin {
             WindowEvent::CloseRequested => self.close(),
             _ => {}
         }
+        self.sync_cursor();
     }
 
     pub fn handle_ctrl_wheel(&mut self, dy: f32) {

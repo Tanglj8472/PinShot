@@ -76,6 +76,7 @@ Counts at the bottom. Python sources are not modified.
 | `ConfirmAbort` in-overlay Y/N | overlay Y/N + “Do not show again” | done | No zenity/MessageBox (keeps the X11 grab) |
 | `show_cursor` paint | `draw::paint_pointer` | done | Also stamped into copy/pin/save crop |
 | Color copy then cancel | done | |
+| `setCursor` by tool / hover / handle | `cursor::cursor_for` + overlay `sync_cursor` | done | Text I-beam; mosaic/eraser Cell; select hover Grab / drag Grabbing; 8-handle resize; region Move; toolbar/confirm Arrow |
 
 ## Annotator (`annotate.py`)
 
@@ -99,6 +100,7 @@ Counts at the bottom. Python sources are not modified.
 | Custom QColorDialog | in-overlay / in-pin HSV + palette picker | done | No zenity; grab stays on the freeze |
 | Brush cursor poll timer | QueryPointer 8ms while brush live | done |
 | Pixel-perfect hit via 3×3 paint | `shape_paints_at` 3×3 paint | done | Translate so `pt` is pixel (1,1); alpha>16. Mosaic/eraser stay path-contains |
+| hover / `_sel_mode` cursor hints | `hover_for_cursor` / `selecting_handle` | done | |
 
 ## Toolbar (`toolbar.py`)
 
@@ -128,6 +130,7 @@ Counts at the bottom. Python sources are not modified.
 | Click-through XShape / WS_EX_TRANSPARENT | done |
 | Groups move / new / rename | tray groups; pin menu New/Rename prompt | done | KeyboardInput when not IME preedit (overlay text same); Ime::Commit for CJK; empty Enter ignored; Default cannot be renamed |
 | Glow fade-in | `tick_glow` | done |
+| `setCursor` Cross / OpenHand / ClosedHand | pin `sync_cursor` | done | Same mapping as overlay; idle pin Arrow |
 
 ## Prefs / settings / theme / i18n
 
@@ -194,10 +197,10 @@ Rust config default `language = "zh_CN"` (Phase 1) vs Python QSettings default `
 
 | Status | Rows |
 |---|---|
-| done | 111 |
+| done | 114 |
 | partial | 1 |
 | missing | 0 |
 | impossible | 6 |
-| **total** | **118** |
+| **total** | **121** |
 
 Remaining partial: RapidOCR band detector (full DBNet is large). Xvfb `:26` covered font chips + B/I/family paint diffs and pin-menu New/Rename typing (empty Enter ignored). Hands-on still wanted: OCR-above-pins restack, AT-SPI `{role}:{name}` on a live a11y bus, 3×3 hit feel vs geometry slop. Custom color is in-process (no zenity).
