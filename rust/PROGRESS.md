@@ -2,7 +2,7 @@
 
 对照源：`main` 上的 Python/PySide6 PinShot。Rust 在 `rust/`，分支 `rust`。Python 源码不改。
 
-最后更新：2026-10-12（PARITY 剩余项：3×3 hit、F6 toast、字体芯片、pin 分组改名、AT-SPI exclude、OCR 置顶 restack）。
+最后更新：2026-10-12（`6f19f21`：PARITY 剩余项除 RapidOCR。Xvfb `:25` 11/11）。
 
 ---
 
@@ -336,6 +336,23 @@ HEAD 在 `rust`（本轮 PARITY 剩余项）。对照 Python/`main`，**先 Linu
 | RapidOCR DBNet | **partial** | 仍用条带检测，完整 DB 太大 |
 
 单元测试：`cargo test --workspace --offline --lib` → pinshot-core 120 + pinshot 19。Windows 交叉编译在本环境缺 SDK（`ring`/`assert.h`），以 CI 为准。
+
+### Xvfb `6f19f21` PARITY 剩余项（`:25` 1920×1200 + xfwm4）
+
+脚本 `/tmp/pinshot-parity-verify.sh`。`pass=11 fail=0`。
+
+| 检查 | 结果 |
+|---|---|
+| `--translate` overlay | PASS |
+| F6 toast「Select text, then release」 | PASS |
+| Text 工具 | PASS（`tb Tool(Text)`） |
+| 字体芯片 | PASS（`tb Family("")` Default） |
+| pin 创建 | PASS |
+| 菜单高度含 Rename | PASS（`pin menu 268x816`，比有 Shadow 的 794 多一行） |
+| Rename 名称框 | PASS（`pin menu prompt rename group`） |
+| Default 不能改名 | PASS（`pin menu rename skipped (Default)`，与 Python 相同） |
+
+工件：`/opt/cursor/artifacts/parity-verify/`。3×3 hit / `option_width` 文字·马赛克由单元测试覆盖。OCR restack 与 AT-SPI 实总线仍需真机。
 
 ### Xvfb `da81652` A–F（`:23` 1920×1200 + xfwm4，实机节拍）
 
