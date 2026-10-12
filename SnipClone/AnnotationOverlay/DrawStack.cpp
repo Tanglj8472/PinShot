@@ -916,7 +916,15 @@ bool DrawStack::Undo(RECT* outCrop, bool* outHasCrop)
     {
         *outHasCrop = frame.hasCrop;
     }
-    m_selected = -1;
+    // M1: keep a valid selection after undo so style/edit target stays usable.
+    if (m_shapes.empty())
+    {
+        m_selected = -1;
+    }
+    else if (m_selected < 0 || m_selected >= static_cast<int>(m_shapes.size()))
+    {
+        m_selected = static_cast<int>(m_shapes.size()) - 1;
+    }
     Notify();
     return true;
 }
@@ -954,7 +962,14 @@ bool DrawStack::Redo(RECT* outCrop, bool* outHasCrop)
     {
         *outHasCrop = frame.hasCrop;
     }
-    m_selected = -1;
+    if (m_shapes.empty())
+    {
+        m_selected = -1;
+    }
+    else if (m_selected < 0 || m_selected >= static_cast<int>(m_shapes.size()))
+    {
+        m_selected = static_cast<int>(m_shapes.size()) - 1;
+    }
     Notify();
     return true;
 }
