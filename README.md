@@ -3,6 +3,8 @@
 Clean-room screenshot + pin tool, built only from `docs/design.md`
 and general open-source Qt practice. Python 3 + PySide6 (P0 stack per the doc).
 
+Win32 / Direct2D **SnipClone** lives on branch [`cursor/snipclone-17f2`](https://github.com/Tanglj8472/pinshot/tree/cursor/snipclone-17f2) and is not part of this tree.
+
 ## Install & run
 ```sh
 # from the repository root
