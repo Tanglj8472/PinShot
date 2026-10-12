@@ -125,8 +125,11 @@ impl FallbackWin {
                 match &event.logical_key {
                     Key::Named(NamedKey::F1) => return Some(TrayCmd::Snip),
                     Key::Named(NamedKey::F3) => return Some(TrayCmd::Pin),
-                    Key::Character(c) if c.eq_ignore_ascii_case("p") => return Some(TrayCmd::Settings),
-                    Key::Named(NamedKey::Escape) => return Some(TrayCmd::Quit),
+                    Key::Character(c) if c.eq_ignore_ascii_case("p") => {
+                        return Some(TrayCmd::Settings)
+                    }
+                    // Python fallback has no Esc=Quit. Esc here used to kill the
+                    // process after a pin menu closed (focus fell on fallback).
                     _ => {}
                 }
             }
@@ -154,7 +157,11 @@ impl FallbackWin {
         let Some(mut pm) = tiny_skia::Pixmap::new(w, h) else {
             return;
         };
-        fill_rect(&mut pm, Rect::new(0.0, 0.0, w as f32, h as f32), self.theme.bg);
+        fill_rect(
+            &mut pm,
+            Rect::new(0.0, 0.0, w as f32, h as f32),
+            self.theme.bg,
+        );
         for b in &self.buttons {
             let hover = b.rect.contains(self.cursor);
             fill_rect(

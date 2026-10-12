@@ -63,8 +63,8 @@ impl PinMenuWin {
         state: PinMenuState,
     ) -> Result<Self, String> {
         let rows_src = build_rows(&state);
-        let (_, h) = menu_pixel_size(&state);
-        let w = MENU_W as u32;
+        let (w, h) = menu_pixel_size(&state);
+        crate::logutil::log(&format!("pin menu {w}x{h}"));
         let attrs = Window::default_attributes()
             .with_title("PinShot")
             .with_decorations(false)
@@ -451,7 +451,12 @@ mod tests {
             scale: 1.0,
             opacity: 1.0,
             group: "Default".into(),
-            groups: vec!["Default".into()],
+            groups: vec![
+                "Default".into(),
+                "Group 1".into(),
+                "Group 2".into(),
+                "Group 3".into(),
+            ],
             img_w: 100,
             img_h: 80,
         };
