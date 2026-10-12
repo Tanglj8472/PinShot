@@ -1090,4 +1090,19 @@ void DrawStack::Clear()
     Notify();
 }
 
+void DrawStack::LoadShapes(std::vector<DrawCommand> shapes)
+{
+    Finish();
+    m_undo.clear();
+    m_redo.clear();
+    m_shapes = std::move(shapes);
+    m_live = {};
+    m_selected = -1;
+    m_movingSelection = false;
+    m_resizingSelection = false;
+    m_resizeHandle = 0;
+    m_styleEditOp = StyleOp::None;
+    Notify();
+}
+
 } // namespace snip

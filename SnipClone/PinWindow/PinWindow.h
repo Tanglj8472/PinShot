@@ -3,6 +3,7 @@
 //==============================================================================
 #pragma once
 
+#include "../AnnotationOverlay/AnnotatorDocument.h"
 #include "../Capture/CaptureResult.h"
 
 #include "../Common/WinCompat.h"
@@ -13,7 +14,8 @@ namespace snip
 
 struct PinSnapshot
 {
-    CaptureResult image;
+    CaptureResult image; // composed display cache
+    AnnotatorDocument document;
     POINT origin{};
     float scale = 1.f;
     BYTE opacity = 255;
@@ -26,12 +28,19 @@ public:
     ~PinWindow();
 
     bool Create(HINSTANCE instance, CaptureResult image, POINT screenOrigin);
+    bool Create(HINSTANCE instance, CaptureResult image, POINT screenOrigin, AnnotatorDocument document);
     bool CreateFromSnapshot(HINSTANCE instance, PinSnapshot snap);
     void Destroy();
     HWND Window() const { return m_hwnd; }
 
     PinSnapshot Snapshot() const;
     const CaptureResult& Image() const { return m_image; }
+    const AnnotatorDocument& Document() const { return m_document; }
+    bool HasEditableDocument() const { return m_document.Editable(); }
+
+    // M2: replace composed cache + document after re-edit commit.
+    void ApplyEdit(CaptureResult composed, AnnotatorDocument document);
+    void RequestEdit(); // notify main to reopen annotation overlay
 
     void SetScale(float scale);
     void SetOpacity(BYTE opacity);
@@ -47,6 +56,7 @@ public:
 private:
     enum
     {
+        IDM_EDIT = 4000,
         IDM_COPY = 4001,
         IDM_SAVE,
         IDM_RESET_SCALE,
@@ -74,6 +84,7 @@ private:
     HWND m_hwnd = nullptr;
     HINSTANCE m_instance = nullptr;
     CaptureResult m_image;
+    AnnotatorDocument m_document;
     POINT m_origin{};
     float m_scale = 1.f;
     BYTE m_opacity = 255;

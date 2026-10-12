@@ -9,6 +9,7 @@
 #include "../Common/ImageUtil.h"
 #include "../Common/WinHelper.h"
 #include "../PinWindow/PinManager.h"
+#include "../PinWindow/PinWindow.h"
 
 #include <windowsx.h>
 
@@ -37,6 +38,35 @@ POINT AnnotationOverlay::LastExportOrigin()
     return s_lastOrigin;
 }
 
+bool AnnotationOverlay::StartFromDocument(
+    HINSTANCE instance,
+    HWND owner,
+    AnnotatorDocument document,
+    PinWindow* writeBack)
+{
+    if (!document.Editable())
+    {
+        return false;
+    }
+    auto shapes = std::move(document.shapes);
+    CaptureResult freeze = std::move(document.freeze);
+    CaptureResult crop = std::move(document.base);
+    if (!Start(instance, owner, std::move(crop), std::move(freeze)))
+    {
+        return false;
+    }
+    m_writeBackPin = writeBack;
+    m_writeBackCommitted = false;
+    m_ann.LoadShapes(std::move(shapes));
+    m_ann.SetViewport(m_base.screenRect);
+    if (m_toolbar)
+    {
+        m_toolbar->SyncFromAnnotator();
+    }
+    RequestPresent();
+    return true;
+}
+
 bool AnnotationOverlay::Start(HINSTANCE instance, HWND owner, CaptureResult crop, CaptureResult freeze)
 {
     if (m_hwnd || crop.Empty())
@@ -46,6 +76,8 @@ bool AnnotationOverlay::Start(HINSTANCE instance, HWND owner, CaptureResult crop
 
     m_instance = instance;
     m_owner = owner;
+    m_writeBackPin = nullptr;
+    m_writeBackCommitted = false;
     m_base = std::move(crop);
     m_freeze = std::move(freeze);
     if (m_freeze.Empty())
@@ -464,7 +496,7 @@ LRESULT AnnotationOverlay::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
                 }
                 return 0;
             }
-            RequestClose();
+            RequestCloseDiscard();
             return 0;
         }
         if (wParam == VK_DELETE || wParam == VK_BACK)
@@ -598,6 +630,42 @@ LRESULT AnnotationOverlay::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         break;
     }
     return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+AnnotatorDocument AnnotationOverlay::BuildDocument() const
+{
+    AnnotatorDocument doc;
+    doc.base = m_base;
+    doc.freeze = m_freeze;
+    doc.shapes = m_ann.Shapes();
+    return doc;
+}
+
+bool AnnotationOverlay::CommitWriteBack()
+{
+    if (!m_writeBackPin)
+    {
+        return true;
+    }
+    auto composed = ComposeExport();
+    if (composed.Empty())
+    {
+        return false;
+    }
+    auto doc = BuildDocument();
+    m_writeBackPin->ApplyEdit(std::move(composed), std::move(doc));
+    m_writeBackPin->SetVisible(true);
+    m_writeBackCommitted = true;
+    return true;
+}
+
+void AnnotationOverlay::RequestCloseDiscard()
+{
+    if (m_writeBackPin && !m_writeBackCommitted)
+    {
+        m_writeBackPin->SetVisible(true);
+    }
+    RequestClose();
 }
 
 void AnnotationOverlay::RequestClose()
@@ -793,7 +861,7 @@ void AnnotationOverlay::OnToolbarAction(ToolbarAction action, ToolKind /*tool*/)
         DoPin();
         break;
     case ToolbarAction::Close:
-        RequestClose();
+        RequestCloseDiscard();
         break;
     case ToolbarAction::SetTool:
         if (m_textEditor && m_textEditor->IsOpen())
@@ -831,8 +899,15 @@ void AnnotationOverlay::DoCopy()
     }
     if (ImageUtil::CopyToClipboard(composed))
     {
-        s_lastExport = std::move(composed);
+        s_lastExport = composed;
         s_lastOrigin = ImageOrigin(m_base.screenRect);
+        if (m_writeBackPin)
+        {
+            auto doc = BuildDocument();
+            m_writeBackPin->ApplyEdit(std::move(composed), std::move(doc));
+            m_writeBackPin->SetVisible(true);
+            m_writeBackCommitted = true;
+        }
         RequestClose();
     }
     else
@@ -866,8 +941,15 @@ void AnnotationOverlay::DoSave()
                 MessageBoxW(m_hwnd, L"图片已保存，但写入设置失败。", L"SnipClone", MB_ICONWARNING | MB_OK);
             }
         }
-        s_lastExport = std::move(composed);
+        s_lastExport = composed;
         s_lastOrigin = ImageOrigin(m_base.screenRect);
+        if (m_writeBackPin)
+        {
+            auto doc = BuildDocument();
+            m_writeBackPin->ApplyEdit(std::move(composed), std::move(doc));
+            m_writeBackPin->SetVisible(true);
+            m_writeBackCommitted = true;
+        }
         RequestClose();
     }
     else
@@ -885,7 +967,17 @@ void AnnotationOverlay::DoPin()
         return;
     }
     s_lastOrigin = ImageOrigin(m_base.screenRect);
-    if (PinManager::Instance().CreatePin(m_instance, composed, s_lastOrigin) == nullptr)
+    auto doc = BuildDocument();
+    if (m_writeBackPin)
+    {
+        m_writeBackPin->ApplyEdit(std::move(composed), std::move(doc));
+        m_writeBackPin->SetVisible(true);
+        m_writeBackCommitted = true;
+        s_lastExport = m_writeBackPin->Image();
+        RequestClose();
+        return;
+    }
+    if (PinManager::Instance().CreatePin(m_instance, composed, s_lastOrigin, std::move(doc)) == nullptr)
     {
         MessageBoxW(m_hwnd, L"创建贴图失败，批注仍可继续编辑。", L"SnipClone", MB_ICONWARNING | MB_OK);
         return;

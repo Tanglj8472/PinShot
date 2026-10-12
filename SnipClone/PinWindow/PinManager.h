@@ -20,6 +20,11 @@ public:
     static PinManager& Instance();
 
     PinWindow* CreatePin(HINSTANCE instance, const CaptureResult& image, POINT screenOrigin);
+    PinWindow* CreatePin(
+        HINSTANCE instance,
+        const CaptureResult& image,
+        POINT screenOrigin,
+        AnnotatorDocument document);
     void RequestClose(PinWindow* pin);
 
     // WM_NCDESTROY: remove + delete (classic Win32 self-delete).
@@ -33,6 +38,7 @@ public:
     bool HasLastClosed() const { return !m_closedStack.empty(); }
     size_t Count() const { return m_pins.size(); }
     bool Hidden() const { return m_hidden; }
+    bool Owns(const PinWindow* pin) const;
 
 private:
     void PushClosed(PinSnapshot snap);

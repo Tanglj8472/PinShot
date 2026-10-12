@@ -29,24 +29,38 @@ void PinManager::PushClosed(PinSnapshot snap)
     }
 }
 
+bool PinManager::Owns(const PinWindow* pin) const
+{
+    for (const auto* p : m_pins)
+    {
+        if (p == pin)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
 PinWindow* PinManager::CreatePin(HINSTANCE instance, const CaptureResult& image, POINT screenOrigin)
 {
+    return CreatePin(instance, image, screenOrigin, {});
+}
+
+PinWindow* PinManager::CreatePin(
+    HINSTANCE instance,
+    const CaptureResult& image,
+    POINT screenOrigin,
+    AnnotatorDocument document)
+{
     auto* pin = new PinWindow();
-    if (!pin->Create(instance, image, screenOrigin))
+    if (!pin->Create(instance, image, screenOrigin, std::move(document)))
     {
         delete pin;
         return nullptr;
     }
     m_pins.push_back(pin);
     // A12: while session is hidden, only the new pin is shown; others stay hidden.
-    if (m_hidden)
-    {
-        pin->SetVisible(true);
-    }
-    else
-    {
-        pin->SetVisible(true);
-    }
+    pin->SetVisible(true);
     return pin;
 }
 

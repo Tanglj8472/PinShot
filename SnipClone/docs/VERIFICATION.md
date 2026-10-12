@@ -38,6 +38,8 @@
 | 矩形 8 手柄 / 箭头端点 (M1) | 已实现 | 自动验证通过 | 待验证 | `TestBoxHandleResize` |
 | 空白单击清选择；Space 拖选区 (M1) | 已实现 | — | 待验证 | |
 | 对象右键复制/删除 (M1) | 已实现 | — | 待验证 | Ctrl+D / Del |
+| 贴图 Document 再编辑 (M2) | 已实现 | 自动验证通过 | 待验证 | `TestLoadShapesDocument`；右键/Space/双击 |
+| 贴图关闭→恢复仍可编辑 (M2) | 已实现 | — | 待验证 | Snapshot 含 document |
 
 ## Smoke 退出码
 

@@ -5,6 +5,7 @@
 
 #include "../Capture/CaptureResult.h"
 #include "../FloatingToolbar/Toolbar.h"
+#include "AnnotatorDocument.h"
 #include "AnnotationRenderer.h"
 #include "DrawStack.h"
 #include "TextEditor.h"
@@ -12,9 +13,12 @@
 #include "../Common/WinCompat.h"
 
 #include <memory>
+#include <vector>
 
 namespace snip
 {
+
+class PinWindow;
 
 inline constexpr UINT WM_SNIP_ANNOTATION_DONE = WM_APP + 0x52;
 
@@ -26,6 +30,12 @@ public:
 
     // crop = visible region; freeze = full virtual desktop (enables post-annotate refine).
     bool Start(HINSTANCE instance, HWND owner, CaptureResult crop, CaptureResult freeze = {});
+    // M2: reopen from pin document; writeBack receives composed + document on commit.
+    bool StartFromDocument(
+        HINSTANCE instance,
+        HWND owner,
+        AnnotatorDocument document,
+        PinWindow* writeBack);
     void Stop();
     bool IsActive() const { return m_hwnd != nullptr; }
 
@@ -57,7 +67,10 @@ private:
     void DoCopy();
     void DoSave();
     void DoPin();
+    AnnotatorDocument BuildDocument() const;
+    bool CommitWriteBack(); // updates target pin; returns false if compose failed
     void RequestClose();
+    void RequestCloseDiscard(); // Esc cancel during pin re-edit
     void Present();
     void RequestPresent(); // A11: coalesce Present to one per message pump turn
     bool EnsureSurface();
@@ -90,6 +103,8 @@ private:
 
     CaptureResult m_freeze; // full desktop; empty → crop refine disabled
     CaptureResult m_base;   // current crop shown in the host
+    PinWindow* m_writeBackPin = nullptr;
+    bool m_writeBackCommitted = false;
     DrawStack m_ann;
     AnnotationRenderer m_renderer;
     std::unique_ptr<Toolbar> m_toolbar;

@@ -48,8 +48,14 @@ int PinWindow::DisplayHeight() const
 
 bool PinWindow::Create(HINSTANCE instance, CaptureResult image, POINT screenOrigin)
 {
+    return Create(instance, std::move(image), screenOrigin, {});
+}
+
+bool PinWindow::Create(HINSTANCE instance, CaptureResult image, POINT screenOrigin, AnnotatorDocument document)
+{
     PinSnapshot snap;
     snap.image = std::move(image);
+    snap.document = std::move(document);
     snap.origin = screenOrigin;
     return CreateFromSnapshot(instance, std::move(snap));
 }
@@ -62,6 +68,7 @@ bool PinWindow::CreateFromSnapshot(HINSTANCE instance, PinSnapshot snap)
     }
     m_instance = instance;
     m_image = std::move(snap.image);
+    m_document = std::move(snap.document);
     m_origin = snap.origin;
     m_scale = (std::max)(kMinScale, (std::min)(kMaxScale, snap.scale <= 0.f ? 1.f : snap.scale));
     m_opacity = snap.opacity ? snap.opacity : 255;
@@ -112,6 +119,7 @@ PinSnapshot PinWindow::Snapshot() const
 {
     PinSnapshot s;
     s.image = m_image;
+    s.document = m_document;
     s.origin = m_origin;
     if (m_hwnd)
     {
@@ -122,6 +130,31 @@ PinSnapshot PinWindow::Snapshot() const
     s.scale = m_scale;
     s.opacity = m_opacity;
     return s;
+}
+
+void PinWindow::ApplyEdit(CaptureResult composed, AnnotatorDocument document)
+{
+    if (composed.Empty())
+    {
+        return;
+    }
+    m_image = std::move(composed);
+    m_document = std::move(document);
+    ReleaseSurface();
+    ApplyWindowSize();
+    Present();
+}
+
+void PinWindow::RequestEdit()
+{
+    HWND main = FindWindowW(L"SnipCloneMain", nullptr);
+    if (!main)
+    {
+        return;
+    }
+    // Hide while editing so the pin does not sit on top of the overlay.
+    SetVisible(false);
+    PostMessageW(main, WM_SNIP_PIN_EDIT, 0, reinterpret_cast<LPARAM>(this));
 }
 
 void PinWindow::SetScale(float scale)
@@ -243,6 +276,11 @@ void PinWindow::ShowContextMenu(POINT screen)
     {
         return;
     }
+    AppendMenuW(
+        menu,
+        MF_STRING | (HasEditableDocument() ? 0 : MF_GRAYED),
+        IDM_EDIT,
+        L"编辑标注…\tSpace");
     AppendMenuW(menu, MF_STRING, IDM_COPY, L"复制");
     AppendMenuW(menu, MF_STRING, IDM_SAVE, L"保存 PNG…");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
@@ -290,6 +328,9 @@ void PinWindow::ShowContextMenu(POINT screen)
 
     switch (cmd)
     {
+    case IDM_EDIT:
+        RequestEdit();
+        break;
     case IDM_COPY:
         CopyImage();
         break;
@@ -448,9 +489,22 @@ LRESULT PinWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         return 0;
     }
     case WM_LBUTTONDBLCLK:
-        PinManager::Instance().RequestClose(this);
+        // M2: double-click enters re-edit when document exists; else close.
+        if (HasEditableDocument())
+        {
+            RequestEdit();
+        }
+        else
+        {
+            PinManager::Instance().RequestClose(this);
+        }
         return 0;
     case WM_KEYDOWN:
+        if (wParam == VK_SPACE && HasEditableDocument())
+        {
+            RequestEdit();
+            return 0;
+        }
         if (wParam == VK_ESCAPE || wParam == VK_DELETE)
         {
             PinManager::Instance().RequestClose(this);

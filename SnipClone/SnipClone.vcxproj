@@ -216,6 +216,7 @@
     <ClInclude Include="Capture\CaptureResult.h" />
     <ClInclude Include="Capture\ScreenCapture.h" />
     <ClInclude Include="AnnotationOverlay\DrawCommand.h" />
+    <ClInclude Include="AnnotationOverlay\AnnotatorDocument.h" />
     <ClInclude Include="AnnotationOverlay\DrawStack.h" />
     <ClInclude Include="AnnotationOverlay\AnnotationRenderer.h" />
     <ClInclude Include="AnnotationOverlay\AnnotationOverlay.h" />

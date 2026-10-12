@@ -8,6 +8,7 @@
 // P4: tray + single-instance + settings.ini + --smoke
 //==============================================================================
 #include "AnnotationOverlay/AnnotationOverlay.h"
+#include "AnnotationOverlay/AnnotatorDocument.h"
 #include "Capture/ScreenCapture.h"
 #include "Common/AppSettings.h"
 #include "Common/SettingsDialog.h"
@@ -15,6 +16,7 @@
 #include "Common/TrayIcon.h"
 #include "Hotkey/GlobalHotkey.h"
 #include "PinWindow/PinManager.h"
+#include "PinWindow/PinWindow.h"
 #include "SelectionOverlay/SelectionOverlay.h"
 
 #include "Common/WinCompat.h"
@@ -67,6 +69,31 @@ void BeginAnnotationFromSelection()
     {
         g_annotation.reset();
         MessageBoxW(g_mainWnd, L"Failed to open annotation overlay.", L"SnipClone", MB_ICONERROR | MB_OK);
+    }
+}
+
+void BeginAnnotationFromPin(snip::PinWindow* pin)
+{
+    if (!pin || !snip::PinManager::Instance().Owns(pin) || !pin->HasEditableDocument())
+    {
+        if (pin)
+        {
+            pin->SetVisible(true);
+        }
+        return;
+    }
+    if (Busy())
+    {
+        pin->SetVisible(true);
+        return;
+    }
+    snip::AnnotatorDocument doc = pin->Document();
+    g_annotation = std::make_unique<snip::AnnotationOverlay>();
+    if (!g_annotation->StartFromDocument(g_instance, g_mainWnd, std::move(doc), pin))
+    {
+        g_annotation.reset();
+        pin->SetVisible(true);
+        MessageBoxW(g_mainWnd, L"无法打开贴图编辑。", L"SnipClone", MB_ICONERROR | MB_OK);
     }
 }
 
@@ -293,6 +320,10 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         {
             g_annotation.reset();
         }
+        return 0;
+
+    case snip::WM_SNIP_PIN_EDIT:
+        BeginAnnotationFromPin(reinterpret_cast<snip::PinWindow*>(lParam));
         return 0;
 
     case WM_DESTROY:

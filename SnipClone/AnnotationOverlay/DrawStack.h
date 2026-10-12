@@ -102,6 +102,8 @@ public:
     bool Undo(RECT* outCrop = nullptr, bool* outHasCrop = nullptr);
     bool Redo(RECT* outCrop = nullptr, bool* outHasCrop = nullptr);
     void Clear();
+    // Replace shapes for pin re-edit / document load (clears undo/redo).
+    void LoadShapes(std::vector<DrawCommand> shapes);
 
     bool CanUndo() const { return !m_undo.empty(); }
     bool CanRedo() const { return !m_redo.empty(); }

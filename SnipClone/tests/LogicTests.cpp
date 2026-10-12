@@ -343,6 +343,27 @@ void TestMosaicHitRect()
     Expect(stack.HitTest(D2D1::Point2F(80, 80)) < 0, "mosaic far miss");
 }
 
+void TestLoadShapesDocument()
+{
+    // M2: LoadShapes restores vectors for pin re-edit.
+    std::printf("LoadShapes document\n");
+    snip::DrawStack stack;
+    stack.SetTool(snip::ToolKind::Arrow);
+    stack.Press(D2D1::Point2F(0, 0));
+    stack.Move(D2D1::Point2F(30, 10));
+    stack.Release(D2D1::Point2F(30, 10));
+    auto shapes = stack.Shapes();
+    Expect(shapes.size() == 1, "seed arrow");
+
+    snip::DrawStack reload;
+    reload.LoadShapes(shapes);
+    Expect(reload.Shapes().size() == 1, "load shapes count");
+    Expect(reload.ShapeAt(0) && reload.ShapeAt(0)->kind == snip::ToolKind::Arrow, "load kind");
+    Expect(reload.ShapeAt(0)->pts.size() >= 2 && reload.ShapeAt(0)->pts[1].x == 30.f, "load geometry");
+    reload.SetTool(snip::ToolKind::Select);
+    Expect(reload.HitTest(D2D1::Point2F(15, 5)) == 0, "loaded arrow hittable");
+}
+
 void TestStyleEditsSelected()
 {
     // M1 / E01: color/width mutate selected shape and push undo.
@@ -473,6 +494,7 @@ int wmain()
     TestHitAccuracy();
     TestBoxHandleResize();
     TestMosaicHitRect();
+    TestLoadShapesDocument();
     TestStyleEditsSelected();
     TestRemapForCrop();
     TestCropViewportUndo();
