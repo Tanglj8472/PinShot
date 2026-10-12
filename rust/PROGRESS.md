@@ -53,7 +53,7 @@ HEAD 在 `rust`。本轮只改自绘 chrome（clean-room，未拆 Snipaste 资�
 
 | SHA | 内容 |
 |---|---|
-| （本轮） | 工具栏/菜单/对话框向公开 Snipaste 密度与质感靠拢：圆角阴影、选中高亮、直线图标无箭头头。单元测试 `toolbar_selected_uses_blue_accent` + `line_icon_has_no_arrow_head`。Xvfb 截图见 `/opt/cursor/artifacts/ui-polish/` |
+| `21b37dc` + 本轮补记 | 工具栏 CELL 24 / 高 30、圆角阴影、选中蓝边、芯片实心蓝、直线/箭头图标区分、菜单勾选+悬停、分组框蓝边。`cargo test --workspace --lib`：pinshot-core 123 + pinshot 22。Xvfb `:28` 1920×1200：F1 框选 → `tb bar 559,708 422x30` → Text/Pin → 菜单 268×816 → New group 提示。截图 `/opt/cursor/artifacts/ui-polish/` |
 
 ### P1 骨架（Windows-only workspace）
 

@@ -1263,6 +1263,7 @@ impl Overlay {
             self.sel.release(pt, self.hover, self.bounds());
             self.log_sel_translate();
             self.relayout_toolbar();
+            self.log_tb_chrome();
             if self.sel.has_sel() {
                 let r = self.sel.normalized();
                 crate::logutil::log(&format!("recover release sel {:.0}x{:.0}", r.w, r.h));

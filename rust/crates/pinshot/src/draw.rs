@@ -1490,5 +1490,28 @@ mod tests {
                 cpx.blue()
             );
         }
+        if let Ok(dir) = std::env::var("PINSHOT_DUMP_UI") {
+            let _ = std::fs::create_dir_all(&dir);
+            let crop = tb.bar.union(tb.panel.unwrap_or(tb.bar)).inflated(12.0);
+            let cw = crop.w.ceil().max(8.0) as u32;
+            let ch = crop.h.ceil().max(8.0) as u32;
+            if let Some(mut out) = Pixmap::new(cw, ch) {
+                out.fill(tiny_skia::Color::from_rgba8(60, 64, 72, 255));
+                let mut full = Pixmap::new(1920, 1200).unwrap();
+                full.fill(tiny_skia::Color::from_rgba8(60, 64, 72, 255));
+                paint_toolbar(&mut full, &tb, None);
+                let x0 = crop.x.max(0.0) as i32;
+                let y0 = crop.y.max(0.0) as i32;
+                out.draw_pixmap(
+                    -x0,
+                    -y0,
+                    full.as_ref(),
+                    &tiny_skia::PixmapPaint::default(),
+                    Transform::identity(),
+                    None,
+                );
+                let _ = out.save_png(format!("{dir}/toolbar_text.png"));
+            }
+        }
     }
 }
