@@ -188,6 +188,7 @@
     <ClCompile Include="PinWindow\PinManager.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="Common\WinCompat.h" />
     <ClInclude Include="Common\DpiHelper.h" />
     <ClInclude Include="Common\WinHelper.h" />
     <ClInclude Include="Common\ImageUtil.h" />

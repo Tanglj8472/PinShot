@@ -3,7 +3,7 @@
 //==============================================================================
 #pragma once
 
-#include <Windows.h>
+#include "WinCompat.h"
 
 namespace snip
 {

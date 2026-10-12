@@ -3,7 +3,7 @@
 //==============================================================================
 #pragma once
 
-#include <Windows.h>
+#include "../Common/WinCompat.h"
 
 #include <cstdint>
 #include <vector>

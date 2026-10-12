@@ -176,7 +176,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
         return 1;
     }
 
-    if (!snip::GlobalHotkey::Register(VK_S, MOD_CONTROL | MOD_SHIFT, kHotkeySnip, g_mainWnd))
+    // Letter keys are 'A'..'Z' (0x41..0x5A); VK_S is not a defined macro in all SDKs.
+    if (!snip::GlobalHotkey::Register(static_cast<UINT>('S'), MOD_CONTROL | MOD_SHIFT, kHotkeySnip, g_mainWnd))
     {
         MessageBoxW(
             nullptr,

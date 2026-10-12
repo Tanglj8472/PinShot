@@ -8,8 +8,8 @@
 
 #include "ToolButton.h"
 #include "../AnnotationOverlay/DrawStack.h"
+#include "../Common/WinCompat.h"
 
-#include <Windows.h>
 #include <d2d1.h>
 #include <dwrite.h>
 

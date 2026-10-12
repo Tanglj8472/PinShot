@@ -45,6 +45,7 @@
     <ClCompile Include="PinWindow\PinManager.cpp"><Filter>PinWindow</Filter></ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="Common\WinCompat.h"><Filter>Common</Filter></ClInclude>
     <ClInclude Include="Common\DpiHelper.h"><Filter>Common</Filter></ClInclude>
     <ClInclude Include="Common\WinHelper.h"><Filter>Common</Filter></ClInclude>
     <ClInclude Include="Common\ImageUtil.h"><Filter>Common</Filter></ClInclude>

@@ -7,7 +7,7 @@
 
 #include "DrawCommand.h"
 
-#include <Windows.h>
+#include "../Common/WinCompat.h"
 
 #include <functional>
 #include <string>

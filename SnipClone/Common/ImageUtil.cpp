@@ -72,7 +72,7 @@ bool ImageUtil::SavePng(const CaptureResult& image, const std::wstring& path)
     IWICStream* stream = nullptr;
     IWICBitmapEncoder* encoder = nullptr;
     IWICBitmapFrameEncode* frame = nullptr;
-    IPropertyBag* props = nullptr;
+    IPropertyBag2* props = nullptr; // WIC CreateNewFrame expects IPropertyBag2**
     bool ok = false;
 
     do

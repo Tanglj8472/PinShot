@@ -249,38 +249,39 @@ void AnnotationRenderer::DrawMosaic(
 
         const int sw = (std::max)(1, cw / block);
         const int sh = (std::max)(1, ch / block);
-        std::vector<std::uint8_t> small(static_cast<size_t>(sw * sh * 4));
+        // NOTE: do not name this `small` — Windows rpcndr.h does `#define small char`.
+        std::vector<std::uint8_t> mosaicLo(static_cast<size_t>(sw * sh * 4));
         for (int sy = 0; sy < sh; ++sy)
         {
             const int srcY = y0 + sy * ch / sh;
             for (int sx = 0; sx < sw; ++sx)
             {
                 const int srcX = x0 + sx * cw / sw;
-                const auto* p = basePixels->bgra.data() +
-                                static_cast<size_t>(srcY) * basePixels->stride +
-                                static_cast<size_t>(srcX) * 4;
-                auto* d = small.data() + static_cast<size_t>((sy * sw + sx) * 4);
-                d[0] = p[0];
-                d[1] = p[1];
-                d[2] = p[2];
-                d[3] = 255;
+                const auto* srcPx = basePixels->bgra.data() +
+                                    static_cast<size_t>(srcY) * basePixels->stride +
+                                    static_cast<size_t>(srcX) * 4;
+                auto* dstPx = mosaicLo.data() + static_cast<size_t>((sy * sw + sx) * 4);
+                dstPx[0] = srcPx[0];
+                dstPx[1] = srcPx[1];
+                dstPx[2] = srcPx[2];
+                dstPx[3] = 255;
             }
         }
 
         // Upscale on CPU with nearest neighbor into region-sized buffer.
-        std::vector<std::uint8_t> big(static_cast<size_t>(cw * ch * 4));
+        std::vector<std::uint8_t> mosaicHi(static_cast<size_t>(cw * ch * 4));
         for (int y = 0; y < ch; ++y)
         {
             const int sy = y * sh / ch;
             for (int x = 0; x < cw; ++x)
             {
                 const int sx = x * sw / cw;
-                const auto* s = small.data() + static_cast<size_t>((sy * sw + sx) * 4);
-                auto* d = big.data() + static_cast<size_t>((y * cw + x) * 4);
-                d[0] = s[0];
-                d[1] = s[1];
-                d[2] = s[2];
-                d[3] = 255;
+                const auto* srcPx = mosaicLo.data() + static_cast<size_t>((sy * sw + sx) * 4);
+                auto* dstPx = mosaicHi.data() + static_cast<size_t>((y * cw + x) * 4);
+                dstPx[0] = srcPx[0];
+                dstPx[1] = srcPx[1];
+                dstPx[2] = srcPx[2];
+                dstPx[3] = 255;
             }
         }
 
@@ -290,7 +291,7 @@ void AnnotationRenderer::DrawMosaic(
         // Premultiply (opaque).
         rt->CreateBitmap(
             D2D1::SizeU(static_cast<UINT32>(cw), static_cast<UINT32>(ch)),
-            big.data(),
+            mosaicHi.data(),
             static_cast<UINT32>(cw * 4),
             props,
             &mosa);
