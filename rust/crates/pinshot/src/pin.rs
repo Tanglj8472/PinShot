@@ -5,8 +5,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use crate::draw::{
-    fill_rect, paint_color_picker, paint_toolbar, present_argb, stroke_rect,
-    PIN_SHADOW_M,
+    fill_rect, paint_color_picker, paint_toolbar, present_argb, stroke_rect, PIN_SHADOW_M,
 };
 use crate::native;
 use crate::toolbar::{TbAction, Toolbar};
@@ -18,7 +17,7 @@ use pinshot_core::geom::{handle_points, HANDLE_SIZE};
 use pinshot_core::geom::{Point, Rect};
 use pinshot_core::groups;
 use pinshot_core::i18n::tr;
-use pinshot_core::ocr::{hit_token, nearest_token, selected_text, OcrPage};
+use pinshot_core::ocr::{hit_token, nearest_token, selected_text, tokens_in_rect, OcrPage};
 use pinshot_core::raster::Raster;
 use pinshot_core::render::compose;
 use pinshot_core::wheel::WheelGate;
@@ -51,13 +50,22 @@ const ID_Z150: usize = 14;
 const ID_Z200: usize = 15;
 const ID_Z400: usize = 16;
 const ID_TOOLBAR: usize = 5;
-const OCR_STRIP_H: u32 = 56;
+const OCR_STRIP_H: u32 = 40;
 
 struct OcrOverlay {
     page: OcrPage,
     sel: Option<(usize, usize)>,
     translation: Option<String>,
     translating: bool,
+}
+
+/// Drag-select on the pin image. Empty-space drags still move the pin.
+#[derive(Clone, Copy)]
+struct OcrGesture {
+    img0: Point,
+    win0: Point,
+    tl0: (i32, i32),
+    selecting: bool,
 }
 
 pub struct PinWin {
@@ -99,7 +107,7 @@ pub struct PinWin {
     pub mirror_x: bool,
     pub mirror_y: bool,
     ocr: Option<OcrOverlay>,
-    ocr_drag: Option<usize>,
+    ocr_gesture: Option<OcrGesture>,
     pending_ocr: bool,
 }
 
@@ -170,7 +178,7 @@ impl PinWin {
             mirror_x: false,
             mirror_y: false,
             ocr: None,
-            ocr_drag: None,
+            ocr_gesture: None,
             pending_ocr: false,
         };
         pin.redraw();
@@ -312,7 +320,7 @@ impl PinWin {
             translation: None,
             translating: false,
         });
-        self.ocr_drag = None;
+        self.ocr_gesture = None;
         self.dirty = true;
         self.window.request_redraw();
     }
@@ -347,19 +355,28 @@ impl PinWin {
 
     fn clear_ocr(&mut self) {
         self.ocr = None;
-        self.ocr_drag = None;
+        self.ocr_gesture = None;
     }
 
-    fn ocr_drag_to(&mut self, img_pt: Point) {
-        let Some(start) = self.ocr_drag else {
+    fn ocr_select_to(&mut self, img_pt: Point) {
+        let Some(g) = self.ocr_gesture.as_mut() else {
             return;
         };
         let Some(ocr) = self.ocr.as_mut() else {
             return;
         };
-        let end = nearest_token(&ocr.page.tokens, img_pt).unwrap_or(start);
-        ocr.sel = Some((start, end));
-        self.dirty = true;
+        let band = Rect::from_points(g.img0, img_pt);
+        let range = tokens_in_rect(&ocr.page.tokens, band).or_else(|| {
+            let start = hit_token(&ocr.page.tokens, g.img0)
+                .or_else(|| nearest_token(&ocr.page.tokens, g.img0))?;
+            let end = nearest_token(&ocr.page.tokens, img_pt).unwrap_or(start);
+            Some((start, end))
+        });
+        if let Some(range) = range {
+            ocr.sel = Some(range);
+            g.selecting = true;
+            self.dirty = true;
+        }
     }
 
     fn copy_hotkey(&mut self) {
@@ -512,7 +529,9 @@ impl PinWin {
     }
 
     fn ocr_hit(&self, img_pt: Point) -> Option<usize> {
-        self.ocr.as_ref().and_then(|o| hit_token(&o.page.tokens, img_pt))
+        self.ocr
+            .as_ref()
+            .and_then(|o| hit_token(&o.page.tokens, img_pt))
     }
 
     fn apply_size(&mut self) {
@@ -567,9 +586,12 @@ impl PinWin {
             return;
         }
         if !self.annotating {
-            let over_text = self.ocr_drag.is_some()
-                || self.ocr_over_strip(self.last_cursor)
-                || self.ocr_hit(self.img_pt(self.last_cursor)).is_some();
+            let m = self.margin() as f32;
+            let (iw, ih) = self.img_px();
+            let p = self.last_cursor;
+            let over_img = p.x >= m && p.y >= m && p.x <= m + iw as f32 && p.y <= m + ih as f32;
+            let over_text =
+                (self.ocr.is_some() && !self.thumb && over_img) || self.ocr_over_strip(p);
             crate::cursor::apply(
                 &self.window,
                 cursor_for(pinshot_core::CursorHint {
@@ -784,8 +806,29 @@ impl PinWin {
                     && (was_over_tb || self.toolbar.as_ref().is_some_and(|t| t.contains(p)))
                 {
                     self.dirty = true;
-                } else if self.ocr_drag.is_some() {
-                    self.ocr_drag_to(self.img_pt(p));
+                } else if self.ocr_gesture.is_some_and(|g| g.selecting) {
+                    self.ocr_select_to(self.img_pt(p));
+                } else if let Some(g) = self.ocr_gesture {
+                    let img = self.img_pt(p);
+                    let band = Rect::from_points(g.img0, img);
+                    let hit = self
+                        .ocr
+                        .as_ref()
+                        .and_then(|o| tokens_in_rect(&o.page.tokens, band));
+                    if hit.is_some() {
+                        self.ocr_select_to(img);
+                    } else if (p.x - g.win0.x).hypot(p.y - g.win0.y) > 8.0 {
+                        self.ocr_gesture = None;
+                        if let Some(ocr) = self.ocr.as_mut() {
+                            ocr.sel = None;
+                        }
+                        self.drag = Some((g.win0, g.tl0));
+                        let nx = g.tl0.0 + (p.x - g.win0.x) as i32;
+                        let ny = g.tl0.1 + (p.y - g.win0.y) as i32;
+                        self.window
+                            .set_outer_position(PhysicalPosition::new(nx, ny));
+                        self.geom_pos = Some((nx, ny));
+                    }
                 } else if let Some((off, tl)) = self.drag {
                     let nx = tl.0 + (p.x - off.x) as i32;
                     let ny = tl.1 + (p.y - off.y) as i32;
@@ -844,17 +887,21 @@ impl PinWin {
                         if self.ocr_over_strip(p) {
                             return;
                         }
-                        if let Some(i) = self.ocr_hit(self.img_pt(p)) {
-                            self.ocr_drag = Some(i);
+                        let img = self.img_pt(p);
+                        let hit = self.ocr_hit(img);
+                        self.ocr_gesture = Some(OcrGesture {
+                            img0: img,
+                            win0: p,
+                            tl0: self.current_tl(),
+                            selecting: hit.is_some(),
+                        });
+                        if let Some(i) = hit {
                             if let Some(ocr) = self.ocr.as_mut() {
                                 ocr.sel = Some((i, i));
                             }
                             self.dirty = true;
-                            return;
-                        } else if let Some(ocr) = self.ocr.as_mut() {
-                            ocr.sel = None;
-                            self.dirty = true;
                         }
+                        return;
                     }
                     self.drag = Some((p, self.current_tl()));
                 } else {
@@ -869,7 +916,14 @@ impl PinWin {
                         self.persist_needed = true;
                         self.dirty = true;
                     }
-                    self.ocr_drag = None;
+                    if let Some(g) = self.ocr_gesture.take() {
+                        if !g.selecting {
+                            if let Some(ocr) = self.ocr.as_mut() {
+                                ocr.sel = None;
+                            }
+                            self.dirty = true;
+                        }
+                    }
                     self.drag = None;
                 }
             }
@@ -941,15 +995,11 @@ impl PinWin {
                                 self.annot.insert_str(&s);
                             }
                         }
-                        Key::Character(c)
-                            if (c.as_str() == "1" || c.as_str() == "[") && !ctrl =>
-                        {
+                        Key::Character(c) if (c.as_str() == "1" || c.as_str() == "[") && !ctrl => {
                             self.annot.adjust_width(-1);
                             self.relayout_tb();
                         }
-                        Key::Character(c)
-                            if (c.as_str() == "2" || c.as_str() == "]") && !ctrl =>
-                        {
+                        Key::Character(c) if (c.as_str() == "2" || c.as_str() == "]") && !ctrl => {
                             self.annot.adjust_width(1);
                             self.relayout_tb();
                         }
@@ -1177,7 +1227,11 @@ impl PinWin {
             PinMenuAction::ToggleClickThrough => self.set_click_through(!self.click_through),
             PinMenuAction::ToggleShadow => self.set_shadow(!self.shadow),
             PinMenuAction::Zoom(pct) => {
-                let s = if pct == 33 { 1.0 / 3.0 } else { pct as f32 / 100.0 };
+                let s = if pct == 33 {
+                    1.0 / 3.0
+                } else {
+                    pct as f32 / 100.0
+                };
                 self.set_scale(s);
             }
             PinMenuAction::Rotate(t) => self.rotate(t),

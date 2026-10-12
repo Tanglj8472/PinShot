@@ -221,7 +221,11 @@ pub fn page_from_blocks(blocks: Vec<(Vec<(u32, u32)>, String)>) -> OcrPage {
         a.0.y
             .partial_cmp(&b.0.y)
             .unwrap_or(std::cmp::Ordering::Equal)
-            .then(a.0.x.partial_cmp(&b.0.x).unwrap_or(std::cmp::Ordering::Equal))
+            .then(
+                a.0.x
+                    .partial_cmp(&b.0.x)
+                    .unwrap_or(std::cmp::Ordering::Equal),
+            )
     });
 
     let mut tokens = Vec::new();
@@ -279,23 +283,43 @@ pub fn page_from_plain(text: &str, width: u32, height: u32) -> OcrPage {
 }
 
 pub fn hit_token(tokens: &[OcrToken], p: Point) -> Option<usize> {
-    tokens
-        .iter()
-        .position(|t| t.rect.contains(p))
-        .or_else(|| {
-            tokens
-                .iter()
-                .enumerate()
-                .filter(|(_, t)| t.rect.inflated(8.0).contains(p))
-                .min_by(|a, b| {
-                    a.1.rect
-                        .center()
-                        .distance(p)
-                        .partial_cmp(&b.1.rect.center().distance(p))
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                })
-                .map(|(i, _)| i)
-        })
+    tokens.iter().position(|t| t.rect.contains(p)).or_else(|| {
+        tokens
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.rect.inflated(8.0).contains(p))
+            .min_by(|a, b| {
+                a.1.rect
+                    .center()
+                    .distance(p)
+                    .partial_cmp(&b.1.rect.center().distance(p))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|(i, _)| i)
+    })
+}
+
+/// Inclusive reading-order range of tokens whose boxes meet `r`.
+pub fn tokens_in_rect(tokens: &[OcrToken], r: Rect) -> Option<(usize, usize)> {
+    let r = if r.w < 2.0 || r.h < 2.0 {
+        Rect::new(
+            r.x - if r.w < 2.0 { 1.0 } else { 0.0 },
+            r.y - if r.h < 2.0 { 1.0 } else { 0.0 },
+            r.w.max(2.0),
+            r.h.max(2.0),
+        )
+    } else {
+        r
+    };
+    let mut lo = None::<usize>;
+    let mut hi = None::<usize>;
+    for (i, t) in tokens.iter().enumerate() {
+        if t.rect.intersects(r) {
+            lo = Some(lo.map_or(i, |n| n.min(i)));
+            hi = Some(hi.map_or(i, |n| n.max(i)));
+        }
+    }
+    Some((lo?, hi?))
 }
 
 /// Token nearest the pointer in reading order (used while dragging off a glyph).
@@ -395,6 +419,14 @@ mod tests {
             "Mozilla officially sponsored"
         );
         assert_eq!(selected_text(&toks, 1, 1), "officially");
+        let band = Rect::from_xyxy(
+            toks[0].rect.x,
+            toks[0].rect.y,
+            toks[1].rect.right(),
+            toks[1].rect.bottom(),
+        );
+        assert_eq!(tokens_in_rect(&toks, band), Some((0, 1)));
+        assert_eq!(selected_text(&toks, 0, 1), "Mozilla officially");
     }
 
     #[test]

@@ -164,10 +164,10 @@ window but styles it like Snipaste prefs (egui, CJK, always-on-top).
 
 | Python | Rust | Status |
 |---|---|---|
-| `translation.recognize` RapidOCR | Linux always / `--features ocr` ort + PP-OCRv5 | done | DBNet det + LCNet cls + CTC rec. Models from RapidOCR PP-OCRv5 mirrors. Result window is PinShot-only (Snipaste PRO copies to clipboard); spawned as `--ocr-window` so eframe is not on the GTK thread. |
-| Edge `translatetext` | `translate.rs` | done |
-| `ResultWindow` above pins | Win32 EDIT / egui | done |
-| `selection_text.send_copy` | `result_win::send_ctrl_c` | done (Windows) / impossible (Linux; Python same) |
+| `translation.recognize` RapidOCR | Linux always / `--features ocr` paddle-ocr-rs PP-OCRv5 | done | In-place on the pin: drag-select text, C copies. No result window, Ctrl+A, or region boxes. |
+| Edge `translatetext` | `translate_run.rs` | done | Overlay F5 pins + OCR + a 40px translation strip. |
+| `ResultWindow` above pins | in-place pin overlay | done | `--ocr-window` / egui result window removed. |
+| `selection_text.send_copy` | `win32::send_ctrl_c` | done (Windows) / impossible (Linux; Python same) |
 
 ## Hotkeys (`hotkeys.py`)
 

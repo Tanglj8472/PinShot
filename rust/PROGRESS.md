@@ -12,13 +12,13 @@
 
 ## 当前进度
 
-HEAD 在本轮 Snipaste 对齐：文字标注（点击落字、IME、光标、滚轮改号、右键结束、Esc 只结束文字）、设置窗改 egui 网格、OCR 走 PP-OCRv5 DBNet 并在独立 `--ocr-window` 进程里出结果。Python 不改。
+HEAD 在本轮：OCR 改 paddle-ocr-rs（PP-OCRv5），识别后就地钉在截图上，拖选文字再 C 复制；F5 只在钉图底加一条翻译。无独立 OCR 窗。Python 不改。
 
 | 面 | 状态 |
 |---|---|
 | 文字标注（对照 Snipaste） | **已修**：xdotool CJK（Unicode keysym，编辑时保持 grab）；caret 落笔即可见（2px 填充）；框贴紧字形；点框外只提交（无手柄、不新开空框）；回编隐藏已提交副本；caret 跟点击；拖已提交文字是移动 |
 | 设置窗（对照 Snipaste 版式） | **已修**：七个标签固定 480×300（按最高的 Control 页）；主题下拉与其它 `form_combo` 同宽同箭头；每页恢复默认；底栏应用/确定/取消 |
-| OCR（Snipaste 无结果窗） | **已修**：rec RGB + 宽至 1280 + 方向自适应 CTC；失败进状态栏不进编辑框；`--ocr-window` 子进程 reap；关闭后释放 stray grab（F1 可再用）；OCR 独立图标+tooltip |
+| OCR（就地拖选，无结果窗） | **本轮**：paddle-ocr-rs PP-OCRv5；overlay OCR/F5 直接出钉图；拖选文字 + C 复制；F5 底条翻译；失败 toast；OCR 独立图标仍在工具栏 |
 | chrome 文字（芯片 / 菜单 / toast / prefs） | **已修**：平滑 AA；CJK 优先 Noto/Source Han/Droid/文泉驿，拉丁 Liberation |
 | 标注工具栏 / 子面板视觉 | **本轮**：贴内容的单行子面板（不再 500px 空条）；蓝底线宽圆点/数字；直线线型下拉；文字 B/I/A + 字体下拉；马赛克滑条；选中亮蓝+红点；色块三角 |
 | 图钉右键菜单 / 贴图编辑 | **本轮**：Zoom / 图像处理 / 分组 / 尺寸 四级菜单；33.3% + 平滑；旋转翻转；灰度/反色；双线性缩放 |
