@@ -340,6 +340,14 @@ pub fn blit_raster(pm: &mut Pixmap, img: &Raster, dest: Rect) {
 }
 
 pub fn blit_raster_ex(pm: &mut Pixmap, img: &Raster, dest: Rect, smooth: bool) {
+    let dx = dest.x.round() as i32;
+    let dy = dest.y.round() as i32;
+    let dw = dest.w.round().max(0.0) as u32;
+    let dh = dest.h.round().max(0.0) as u32;
+    if dw == img.width && dh == img.height {
+        blit_raster_copy(pm, img, dx, dy);
+        return;
+    }
     let Some(src) = img.to_skia() else {
         return;
     };
@@ -361,6 +369,32 @@ pub fn blit_raster_ex(pm: &mut Pixmap, img: &Raster, dest: Rect, smooth: bool) {
         tiny_skia::FilterQuality::Nearest
     };
     pm.draw_pixmap(0, 0, src.as_ref(), &paint, t, None);
+}
+
+fn blit_raster_copy(pm: &mut Pixmap, img: &Raster, x: i32, y: i32) {
+    let pw = pm.width() as i32;
+    let ph = pm.height() as i32;
+    let iw = img.width as i32;
+    let ih = img.height as i32;
+    let x0 = x.max(0);
+    let y0 = y.max(0);
+    let x1 = (x + iw).min(pw);
+    let y1 = (y + ih).min(ph);
+    if x0 >= x1 || y0 >= y1 {
+        return;
+    };
+    let dst = pm.data_mut();
+    let sw = pw as usize * 4;
+    let src_w = img.width as usize * 4;
+    let row = (x1 - x0) as usize * 4;
+    let src_x = (x0 - x) as usize * 4;
+    for yy in y0..y1 {
+        let so = ((yy - y) as usize) * src_w + src_x;
+        let doff = (yy as usize) * sw + (x0 as usize) * 4;
+        if so + row <= img.pixels.len() && doff + row <= dst.len() {
+            dst[doff..doff + row].copy_from_slice(&img.pixels[so..so + row]);
+        }
+    }
 }
 
 /// Persistent overlay compositor: cached capture + dirty GDI present.
@@ -1590,28 +1624,38 @@ pub fn paint_pin_ex(
     invert: bool,
 ) -> Pixmap {
     let shapes = annot.visible_shapes();
-    let mut composed = compose(img, &shapes);
+    let mut owned = if shapes.is_empty() {
+        None
+    } else {
+        Some(compose(img, &shapes))
+    };
     if grayscale {
-        composed = composed.grayscale();
+        let mut c = owned.unwrap_or_else(|| img.clone());
+        c = c.grayscale();
+        owned = Some(c);
     }
     if invert {
-        composed = composed.invert_color();
+        let mut c = owned.unwrap_or_else(|| img.clone());
+        c = c.invert_color();
+        owned = Some(c);
     }
+    let photo = owned.as_ref().unwrap_or(img);
     let (content, w, h) = if thumb {
-        let s = composed.width.min(composed.height) as f32;
+        let s = photo.width.min(photo.height) as f32;
         let src = Rect::new(
-            (composed.width as f32 - s) / 2.0,
-            (composed.height as f32 - s) / 2.0,
+            (photo.width as f32 - s) / 2.0,
+            (photo.height as f32 - s) / 2.0,
             s,
             s,
         );
-        let cropped = composed.crop(src).scale_nn(PIN_THUMB, PIN_THUMB);
-        (cropped, PIN_THUMB, PIN_THUMB)
+        let cropped = photo.crop(src).scale_nn(PIN_THUMB, PIN_THUMB);
+        (Some(cropped), PIN_THUMB, PIN_THUMB)
     } else {
         let w = ((img.width as f32) * scale).round().max(8.0) as u32;
         let h = ((img.height as f32) * scale).round().max(8.0) as u32;
-        (composed, w, h)
+        (None, w, h)
     };
+    let photo = content.as_ref().unwrap_or(photo);
     let m = if shadow { PIN_SHADOW_M } else { 0.0 };
     let pw = (w as f32 + 2.0 * m).round().max(8.0) as u32;
     let ph = (h as f32 + 2.0 * m).round().max(8.0) as u32;
@@ -1622,7 +1666,7 @@ pub fn paint_pin_ex(
     }
     // Image over the shadow (Python clips to `img_rect`) so the +2 drop
     // offset cannot darken the photo's top/left edge.
-    blit_raster_ex(&mut pm, &content, img_r, smooth);
+    blit_raster_ex(&mut pm, photo, img_r, smooth);
     // Python `QRectF(r).adjusted(-0.5, -0.5, -0.5, -0.5)` — hairline on the
     // image box, not an inset that eats the first pixel row/column.
     let stroke_r = Rect::new(m - 0.5, m - 0.5, w as f32, h as f32);
@@ -1662,17 +1706,53 @@ pub fn paint_pin_ex(
 }
 
 fn paint_pin_shadow(pm: &mut Pixmap, img_r: Rect, m: f32) {
-    let steps = m.round().max(1.0) as i32;
-    for i in (1..=steps).rev() {
-        let t = 1.0 - i as f32 / m;
-        let a = ((46.0 * t * t) as u8).saturating_add(2);
-        let r = Rect::new(
-            img_r.x - i as f32,
-            img_r.y - i as f32 + 2.0,
-            img_r.w + 2.0 * i as f32,
-            img_r.h + 2.0 * i as f32,
-        );
-        fill_rounded_rect(pm, r, i as f32, Rgba::rgba(0, 0, 0, a));
+    if m < 1.0 {
+        return;
+    }
+    let pw = pm.width() as i32;
+    let ph = pm.height() as i32;
+    let x0 = img_r.x;
+    let y0 = img_r.y;
+    let x1 = img_r.x + img_r.w;
+    let y1 = img_r.y + img_r.h;
+    let drop = 2.0;
+    let data = pm.data_mut();
+    let stride = pw as usize * 4;
+    for y in 0..ph {
+        for x in 0..pw {
+            let fx = x as f32 + 0.5;
+            let fy = y as f32 + 0.5;
+            if fx >= x0 && fx < x1 && fy >= y0 && fy < y1 {
+                continue;
+            }
+            let dx = if fx < x0 {
+                x0 - fx
+            } else if fx > x1 {
+                fx - x1
+            } else {
+                0.0
+            };
+            let dy = if fy < y0 + drop {
+                y0 + drop - fy
+            } else if fy > y1 + drop {
+                fy - (y1 + drop)
+            } else {
+                0.0
+            };
+            let d = dx.max(dy);
+            if d <= 0.0 || d > m {
+                continue;
+            }
+            let t = 1.0 - d / m;
+            let a = ((46.0 * t * t) as u8).saturating_add(2);
+            let i = y as usize * stride + x as usize * 4;
+            if i + 3 < data.len() {
+                data[i] = 0;
+                data[i + 1] = 0;
+                data[i + 2] = 0;
+                data[i + 3] = a;
+            }
+        }
     }
 }
 
@@ -1689,12 +1769,16 @@ pub fn present_argb(buf: &mut [u32], pm: &Pixmap) {
 fn present_ex(buf: &mut [u32], pm: &Pixmap, argb: bool) {
     let data = pm.data();
     let n = buf.len().min(data.len() / 4);
+    if n == 0 {
+        return;
+    }
+    let src = unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u32, n) };
     for i in 0..n {
-        let o = i * 4;
-        let r = data[o] as u32;
-        let g = data[o + 1] as u32;
-        let b = data[o + 2] as u32;
-        let a = data[o + 3] as u32;
+        let v = src[i];
+        let r = v & 0xff;
+        let g = (v >> 8) & 0xff;
+        let b = (v >> 16) & 0xff;
+        let a = (v >> 24) & 0xff;
         buf[i] = if argb {
             a << 24 | r << 16 | g << 8 | b
         } else {

@@ -80,6 +80,7 @@ pub struct PinWin {
     pub opacity: f32,
     pub click_through: bool,
     glow: f32,
+    glow_at: Option<Instant>,
     /// Grab offset from the window origin to the screen cursor while dragging.
     drag: Option<(i32, i32)>,
     last_cursor: Point,
@@ -168,6 +169,7 @@ impl PinWin {
             opacity: 1.0,
             click_through: false,
             glow: 1.0,
+            glow_at: Some(Instant::now()),
             drag: None,
             last_cursor: Point::ZERO,
             geom_pos: Some((pos.0 - m, pos.1 - m)),
@@ -204,7 +206,9 @@ impl PinWin {
             status: None,
             ocr_flash_until: None,
         };
+        let t_paint = Instant::now();
         pin.redraw();
+        crate::logutil::ms("pin first paint", t_paint);
         #[cfg(windows)]
         native::cloak_window(&pin.window, false);
         pin.show();
@@ -515,11 +519,17 @@ impl PinWin {
     }
 
     pub fn tick_glow(&mut self) {
-        if self.glow > 0.0 {
-            self.glow = (self.glow - 0.05).max(0.0);
-            if self.drag.is_none() {
-                self.dirty = true;
-            }
+        if self.glow <= 0.0 {
+            return;
+        }
+        let now = Instant::now();
+        if self.glow_at.is_some_and(|t| now < t) {
+            return;
+        }
+        self.glow_at = Some(now + Duration::from_millis(40));
+        self.glow = (self.glow - 0.05).max(0.0);
+        if self.drag.is_none() {
+            self.dirty = true;
         }
     }
 
@@ -1628,25 +1638,36 @@ impl PinWin {
             self.grayscale,
             self.invert,
         );
-        let mut pm =
-            tiny_skia::Pixmap::new(ww, hh).unwrap_or_else(|| tiny_skia::Pixmap::new(8, 8).unwrap());
-        // Keep the shadow margin premultiplied-clear. Filling 0xF7 made the
-        // drop shadow an opaque grey slab (and a dark top/left crop band).
-        let img_w = img_pm.width().min(ww);
-        let img_h = img_pm.height().min(hh);
-        {
-            let src = img_pm.data();
-            let dst = pm.data_mut();
-            let sw = img_pm.width() as usize;
-            for y in 0..img_h as usize {
-                let so = y * sw * 4;
-                let doff = y * ww as usize * 4;
-                let n = (img_w as usize) * 4;
-                if so + n <= src.len() && doff + n <= dst.len() {
-                    dst[doff..doff + n].copy_from_slice(&src[so..so + n]);
+        let extra = self.ocr.is_some()
+            || self.annotating
+            || self.annot.selected.is_some()
+            || self.color_picker.is_some()
+            || self.status.is_some()
+            || self.toast.is_some();
+        let mut pm = if extra || img_pm.width() != ww || img_pm.height() != hh {
+            let mut pm = tiny_skia::Pixmap::new(ww, hh)
+                .unwrap_or_else(|| tiny_skia::Pixmap::new(8, 8).unwrap());
+            // Keep the shadow margin premultiplied-clear. Filling 0xF7 made the
+            // drop shadow an opaque grey slab (and a dark top/left crop band).
+            let img_w = img_pm.width().min(ww);
+            let img_h = img_pm.height().min(hh);
+            {
+                let src = img_pm.data();
+                let dst = pm.data_mut();
+                let sw = img_pm.width() as usize;
+                for y in 0..img_h as usize {
+                    let so = y * sw * 4;
+                    let doff = y * ww as usize * 4;
+                    let n = (img_w as usize) * 4;
+                    if so + n <= src.len() && doff + n <= dst.len() {
+                        dst[doff..doff + n].copy_from_slice(&src[so..so + n]);
+                    }
                 }
             }
-        }
+            pm
+        } else {
+            img_pm
+        };
         if let Some(ocr) = &self.ocr {
             let flashing = self.ocr_flash_until.is_some_and(|t| Instant::now() < t);
             if let Some((a, b)) = ocr.sel {
@@ -1805,6 +1826,9 @@ impl PinWin {
     }
 
     pub fn next_wake(&self) -> Option<Instant> {
+        if self.glow > 0.0 {
+            return Some(self.glow_at.unwrap_or_else(Instant::now));
+        }
         if self.annot.text_edit.is_some() || self.status.is_some() {
             return Some(Instant::now() + Duration::from_millis(80));
         }
