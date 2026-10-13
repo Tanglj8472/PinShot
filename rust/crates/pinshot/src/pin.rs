@@ -117,7 +117,6 @@ pub struct PinWin {
     /// Sticky banner (download / recognize). Unlike toast it does not expire.
     status: Option<String>,
     ocr_flash_until: Option<Instant>,
-    hovered: bool,
 }
 
 impl PinWin {
@@ -192,7 +191,6 @@ impl PinWin {
             pending_translate: false,
             status: None,
             ocr_flash_until: None,
-            hovered: false,
         };
         pin.redraw();
         crate::logutil::log(&format!(
@@ -255,7 +253,6 @@ impl PinWin {
     }
 
     fn begin_drag(&mut self) {
-        self.show_hover_tb(false);
         self.dirty = false;
         let tl = self.current_tl();
         let (sx, sy) = self.screen_pointer();
@@ -546,32 +543,6 @@ impl PinWin {
         self.toolbar = Some(tb);
     }
 
-    fn relayout_hover_tb(&mut self) {
-        let m = self.margin() as f32;
-        let (iw, ih) = self.img_px();
-        let (ww, hh) = self.win_px();
-        let sel = Rect::new(m, m, iw as f32, ih as f32);
-        let over = Rect::new(0.0, 0.0, ww as f32, hh as f32);
-        self.toolbar = Some(Toolbar::layout_pin_hover(sel, over));
-    }
-
-    fn show_hover_tb(&mut self, on: bool) {
-        if self.annotating || self.thumb {
-            return;
-        }
-        if on {
-            if !self.hovered {
-                self.hovered = true;
-                self.relayout_hover_tb();
-                self.dirty = true;
-            }
-        } else if self.hovered {
-            self.hovered = false;
-            self.toolbar = None;
-            self.dirty = true;
-        }
-    }
-
     fn margin(&self) -> i32 {
         if self.shadow {
             crate::draw::PIN_SHADOW_M as i32
@@ -822,8 +793,6 @@ impl PinWin {
         }
         if self.annotating {
             self.relayout_tb();
-        } else if self.hovered {
-            self.relayout_hover_tb();
         }
         self.persist_needed = true;
         self.dirty = true;
@@ -917,12 +886,6 @@ impl PinWin {
             return;
         }
         match event {
-            WindowEvent::CursorEntered { .. } => {
-                self.show_hover_tb(true);
-            }
-            WindowEvent::CursorLeft { .. } => {
-                self.show_hover_tb(false);
-            }
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x as f32, position.y as f32);
                 let was_over_tb = self
@@ -930,18 +893,7 @@ impl PinWin {
                     .as_ref()
                     .map(|t| t.contains(self.last_cursor))
                     .unwrap_or(false);
-                let prev = self.last_cursor;
                 self.last_cursor = p;
-                if !self.annotating && !self.thumb {
-                    let show = self.drag.is_none() && self.ocr_gesture.is_none();
-                    self.show_hover_tb(show);
-                    if show {
-                        let over = self.toolbar.as_ref().is_some_and(|t| t.contains(p));
-                        if over != was_over_tb || (over && t_hot_changed(&self.toolbar, prev, p)) {
-                            self.dirty = true;
-                        }
-                    }
-                }
                 if self.annotating
                     && (self.annot.is_brush_live()
                         || self.annot.is_selecting()
@@ -1671,13 +1623,6 @@ impl PinWin {
                     }
                 }
             }
-        } else if self.hovered && !self.thumb {
-            if self.toolbar.is_none() {
-                self.relayout_hover_tb();
-            }
-            if let Some(tb) = &self.toolbar {
-                paint_toolbar(&mut pm, tb, Some(self.last_cursor));
-            }
         }
         if let Some(i) = self.annot.selected {
             if let Some(sh) = self.annot.shapes.get(i) {
@@ -1754,13 +1699,6 @@ pub fn pin_grab_offset(tl: (i32, i32), cursor: (i32, i32)) -> (i32, i32) {
 
 pub fn pin_origin_from_cursor(cursor: (i32, i32), grab: (i32, i32)) -> (i32, i32) {
     (cursor.0 - grab.0, cursor.1 - grab.1)
-}
-
-fn t_hot_changed(tb: &Option<Toolbar>, a: Point, b: Point) -> bool {
-    let Some(tb) = tb else {
-        return false;
-    };
-    tb.hit(a) != tb.hit(b)
 }
 
 /// Keep the image pixel under `anchor` fixed while the scale changes.
