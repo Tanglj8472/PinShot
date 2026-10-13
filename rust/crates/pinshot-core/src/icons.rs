@@ -116,7 +116,14 @@ fn fill_sparkle(pixmap: &mut Pixmap, cx: f32, cy: f32, r: f32, color: Rgba, t: T
     }
 }
 
-fn arrow_head(pixmap: &mut Pixmap, a: (f32, f32), b: (f32, f32), head: f32, color: Rgba, t: Transform) {
+fn arrow_head(
+    pixmap: &mut Pixmap,
+    a: (f32, f32),
+    b: (f32, f32),
+    head: f32,
+    color: Rgba,
+    t: Transform,
+) {
     let ang = (b.1 - a.1).atan2(b.0 - a.0);
     let mut pb = PathBuilder::new();
     pb.move_to(b.0, b.1);
@@ -192,9 +199,12 @@ pub fn draw_icon(pixmap: &mut Pixmap, kind: IconKind, cell: Rect, color: Option<
             for i in 0..3 {
                 for j in 0..3 {
                     if (i + j) % 2 == 0 {
-                        if let Some(r) =
-                            tiny_skia::Rect::from_xywh(4.0 + i as f32 * 4.0, 4.0 + j as f32 * 4.0, 4.0, 4.0)
-                        {
+                        if let Some(r) = tiny_skia::Rect::from_xywh(
+                            4.0 + i as f32 * 4.0,
+                            4.0 + j as f32 * 4.0,
+                            4.0,
+                            4.0,
+                        ) {
                             pixmap.fill_rect(r, &p, t, None);
                         }
                     }
@@ -240,14 +250,24 @@ pub fn draw_icon(pixmap: &mut Pixmap, kind: IconKind, cell: Rect, color: Option<
             } else {
                 t
             };
-            // Approximate the Python arc with a cubic.
+            // Reply / forward: parallel bars, semicircle on the right, arrow on the
+            // bottom (↩ / ↪). Redo is a horizontal flip of Undo.
+            let top = 5.4;
+            let bot = 14.6;
+            let mid = (top + bot) * 0.5;
+            let r = (bot - top) * 0.5;
+            let cx = 11.2;
+            let k = 0.5522847498 * r;
             let mut pb = PathBuilder::new();
-            pb.move_to(6.0, 8.0);
-            pb.cubic_to(4.0, 12.0, 8.0, 16.0, 14.0, 14.0);
+            pb.move_to(4.8, top);
+            pb.line_to(cx, top);
+            pb.cubic_to(cx + k, top, cx + r, mid - k, cx + r, mid);
+            pb.cubic_to(cx + r, mid + k, cx + k, bot, cx, bot);
+            pb.line_to(6.6, bot);
             if let Some(path) = pb.finish() {
-                pixmap.stroke_path(&path, &p, &st, tf, None);
+                pixmap.stroke_path(&path, &p, &stroke(2.0), tf, None);
             }
-            arrow_head(pixmap, (5.0, 8.0), (4.2, 10.5), 4.0, color, tf);
+            arrow_head(pixmap, (8.8, bot), (3.4, bot), 4.8, color, tf);
         }
         IconKind::Close => {
             let red = Rgba::rgb(210, 50, 50);
@@ -432,8 +452,12 @@ pub fn draw_app_icon(size: u32) -> Pixmap {
     let a = 7.0;
     let b = 25.0;
     let l = 6.0;
-    for (x, y, dx, dy) in [(a, a, 1.0, 1.0), (b, a, -1.0, 1.0), (a, b, 1.0, -1.0), (b, b, -1.0, -1.0)]
-    {
+    for (x, y, dx, dy) in [
+        (a, a, 1.0, 1.0),
+        (b, a, -1.0, 1.0),
+        (a, b, 1.0, -1.0),
+        (b, b, -1.0, -1.0),
+    ] {
         if let Some(path) = line_path((x, y), (x + dx * l, y)) {
             pm.stroke_path(&path, &white, &st, t, None);
         }
@@ -505,6 +529,56 @@ mod tests {
             draw_icon(&mut pm, kind, Rect::new(2.0, 2.0, 20.0, 20.0), None);
             let painted = pm.pixels().iter().any(|p| p.alpha() > 0);
             assert!(painted, "{kind:?} produced an empty icon");
+        }
+    }
+
+    #[test]
+    fn undo_and_redo_are_reply_arrows() {
+        let cell = Rect::new(2.0, 2.0, 20.0, 20.0);
+        let mut undo = Pixmap::new(24, 24).unwrap();
+        let mut redo = Pixmap::new(24, 24).unwrap();
+        draw_icon(&mut undo, IconKind::Undo, cell, None);
+        draw_icon(&mut redo, IconKind::Redo, cell, None);
+        assert_ne!(
+            undo.data(),
+            redo.data(),
+            "Undo and Redo must be distinct icons"
+        );
+
+        let ink = |pm: &Pixmap, x: u32, y: u32| pm.pixel(x, y).unwrap().alpha() > 40;
+        // Undo: left-pointing head on the bottom, curve on the right.
+        assert!(ink(&undo, 5, 16), "undo arrow tip should sit bottom-left");
+        assert!(ink(&undo, 18, 12), "undo should curve on the right");
+        assert!(
+            !ink(&undo, 18, 5),
+            "undo should not put the arrow in the top-right"
+        );
+        // Redo: right-pointing head on the bottom, curve on the left.
+        assert!(ink(&redo, 18, 16), "redo arrow tip should sit bottom-right");
+        assert!(ink(&redo, 5, 12), "redo should curve on the left");
+        assert!(
+            !ink(&redo, 5, 5),
+            "redo should not put the arrow in the top-left"
+        );
+        if let Ok(dir) = std::env::var("PINSHOT_DUMP_ICONS") {
+            let dir = std::path::PathBuf::from(dir);
+            let _ = std::fs::create_dir_all(&dir);
+            dump_icon_preview(&dir.join("undo.png"), IconKind::Undo);
+            dump_icon_preview(&dir.join("redo.png"), IconKind::Redo);
+        }
+    }
+
+    fn dump_icon_preview(path: &std::path::Path, kind: IconKind) {
+        let mut pm = Pixmap::new(80, 80).unwrap();
+        pm.fill(tiny_skia::Color::from_rgba8(36, 36, 36, 255));
+        draw_icon(
+            &mut pm,
+            kind,
+            Rect::new(8.0, 8.0, 64.0, 64.0),
+            Some(Rgba::rgb(230, 230, 230)),
+        );
+        if let Ok(png) = pm.encode_png() {
+            let _ = std::fs::write(path, png);
         }
     }
 
