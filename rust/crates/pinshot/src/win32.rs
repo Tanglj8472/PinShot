@@ -19,14 +19,14 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS, VK_CONTROL,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, FindWindowW, GetCursorPos, GetWindowLongPtrW,
-    IsWindow, PostMessageW, RegisterClassW, SetCursorPos, SetLayeredWindowAttributes,
-    SetWindowDisplayAffinity, SetWindowLongPtrW, SetWindowPos, ShowWindow, GWL_EXSTYLE, GWL_STYLE,
-    HWND_NOTOPMOST, HWND_TOPMOST, LWA_ALPHA, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE,
-    SWP_NOREDRAW, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE,
-    WINDOW_DISPLAY_AFFINITY, WM_DESTROY, WM_HOTKEY, WNDCLASSW, WS_EX_APPWINDOW, WS_EX_LAYERED,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_MAXIMIZE,
-    WS_OVERLAPPEDWINDOW, WS_POPUP,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, FindWindowW, GetCursorPos, GetSystemMetrics,
+    GetWindowLongPtrW, IsWindow, PostMessageW, RegisterClassW, SetCursorPos,
+    SetLayeredWindowAttributes, SetWindowDisplayAffinity, SetWindowLongPtrW, SetWindowPos,
+    ShowWindow, GWL_EXSTYLE, GWL_STYLE, HWND_NOTOPMOST, HWND_TOPMOST, LWA_ALPHA, SM_REMOTESESSION,
+    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOREDRAW, SWP_NOSIZE, SWP_NOZORDER,
+    SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE, WINDOW_DISPLAY_AFFINITY, WM_DESTROY, WM_HOTKEY,
+    WNDCLASSW, WS_EX_APPWINDOW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    WS_EX_TRANSPARENT, WS_MAXIMIZE, WS_OVERLAPPEDWINDOW, WS_POPUP,
 };
 use winit::event_loop::EventLoopProxy;
 use winit::window::Window;
@@ -145,7 +145,10 @@ pub fn apply_overlay_style(hwnd: HWND) {
             0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED,
         );
-        exclude_from_capture(hwnd);
+        // Do not WDA_EXCLUDEFROMCAPTURE the overlay. RDP / ToDesk / RustDesk
+        // stream DXGI Desktop Duplication, so an excluded HWND is invisible
+        // to the remote viewer while still eating mouse hits in the session.
+        include_in_capture(hwnd);
     }
 }
 
@@ -173,7 +176,8 @@ pub fn cover_shell(hwnd: HWND, x: i32, y: i32, w: u32, h: u32) {
 }
 
 /// DXGI / Windows Graphics Capture skip this HWND (Win10 2004+). Pins stay
-/// capturable; overlay / fallback / countdown must not stall F1 waiting to hide.
+/// capturable. Use only on short-lived chrome (countdown), not the snip overlay:
+/// remote-desktop tools duplicate the desktop and would hide an excluded overlay.
 pub fn exclude_from_capture(hwnd: HWND) {
     if hwnd.is_invalid() {
         return;
@@ -183,6 +187,20 @@ pub fn exclude_from_capture(hwnd: HWND) {
     unsafe {
         let _ = SetWindowDisplayAffinity(hwnd, EXCLUDE);
     }
+}
+
+pub fn include_in_capture(hwnd: HWND) {
+    if hwnd.is_invalid() {
+        return;
+    }
+    const NONE: WINDOW_DISPLAY_AFFINITY = WINDOW_DISPLAY_AFFINITY(0);
+    unsafe {
+        let _ = SetWindowDisplayAffinity(hwnd, NONE);
+    }
+}
+
+pub fn is_remote_session() -> bool {
+    unsafe { GetSystemMetrics(SM_REMOTESESSION) != 0 }
 }
 
 pub fn apply_pin_style(hwnd: HWND) {

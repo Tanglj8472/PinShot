@@ -255,10 +255,13 @@ impl App {
     }
 
     fn hide_wait_ms(&self) -> u64 {
-        // Overlay / fallback are WDA_EXCLUDEFROMCAPTURE; DXGI reuses the last
-        // duplicated frame on timeout. The old 150ms DWM nap was a floor on F1.
-        let _ = (self.wait_after_overlay, self.restore_fallback);
-        0
+        // Overlay is visible to DXGI (remote-desktop tools must see it). After
+        // it closes, give DWM a beat so the next grab is not the overlay itself.
+        if self.wait_after_overlay || self.restore_fallback {
+            150
+        } else {
+            0
+        }
     }
 
     fn prepare_capture_hide(&mut self) {

@@ -332,7 +332,12 @@ impl Overlay {
         s.redraw();
         crate::logutil::ms("overlay first redraw", t_draw);
         #[cfg(windows)]
-        native::cloak_window(&s.window, false);
+        crate::logutil::log(&format!(
+            "overlay shown {}x{} remote={}",
+            w,
+            h,
+            crate::win32::is_remote_session()
+        ));
         #[cfg(not(unix))]
         native::focus_window(&s.window);
         // After focus the taskbar may jump above an already-TOPMOST overlay.
@@ -1798,6 +1803,11 @@ impl Overlay {
                 }
             }
         }
+        // Uncloak before ShowWindow so DWM / RDP actually composite this frame.
+        // Hit-test earlier in start() stays cloaked so UIA sees the window under
+        // the cursor, not this HWND.
+        #[cfg(windows)]
+        native::cloak_window(&self.window, false);
         self.window.set_visible(true);
         self.cover_desktop();
         self.dirty = false;
