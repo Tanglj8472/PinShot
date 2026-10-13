@@ -45,6 +45,13 @@ pub fn init_dpi() {
     }
 }
 
+pub fn hide_sync(hwnd: HWND) {
+    unsafe {
+        let _ = ShowWindow(hwnd, SW_HIDE);
+        let _ = UpdateWindow(hwnd);
+    }
+}
+
 pub fn apply_overlay_style(hwnd: HWND) {
     unsafe {
         let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);

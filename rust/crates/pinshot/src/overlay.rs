@@ -41,6 +41,16 @@ pub enum OverlayResult {
     Resnip,
 }
 
+impl OverlayResult {
+    /// Copy / pin / save / OCR push a history frame. Cancel and F1 resnip do not.
+    pub fn writes_history(&self) -> bool {
+        matches!(
+            self,
+            Self::Copy(_, _) | Self::Pin(_, _, _) | Self::Save(_) | Self::Ocr(_, _, _)
+        )
+    }
+}
+
 struct ConfirmAbort {
     dont: bool,
 }
@@ -591,14 +601,19 @@ impl Overlay {
         crate::logutil::log("overlay cancel");
         self.release_grab();
         self.result = Some(OverlayResult::Cancel);
-        self.window.set_visible(false);
+        self.hide_for_capture();
     }
 
     pub fn resnip(&mut self) {
         crate::logutil::log("overlay F1 resnip");
         self.release_grab();
         self.result = Some(OverlayResult::Resnip);
+        self.hide_for_capture();
+    }
+
+    pub fn hide_for_capture(&self) {
         self.window.set_visible(false);
+        crate::native::unmap_sync(&self.window);
     }
 
     fn apply_tb(&mut self, a: TbAction) {
@@ -1849,5 +1864,20 @@ mod keysym_tests {
         assert!(recover_should_commit_sel(false, 2, SelState::Resizing));
         assert!(!recover_should_commit_sel(true, 2, SelState::Creating));
         assert!(!recover_should_commit_sel(false, 2, SelState::Selected));
+    }
+
+    #[test]
+    fn cancel_and_resnip_do_not_rewrite_history() {
+        use super::OverlayResult;
+        use pinshot_core::geom::Rect;
+        use pinshot_core::raster::Raster;
+        let img = Raster::new(4, 4);
+        let r = Rect::new(0.0, 0.0, 4.0, 4.0);
+        assert!(!OverlayResult::Cancel.writes_history());
+        assert!(!OverlayResult::Resnip.writes_history());
+        assert!(OverlayResult::Copy(img.clone(), r).writes_history());
+        assert!(OverlayResult::Pin(img.clone(), r, (0, 0)).writes_history());
+        assert!(OverlayResult::Save(img.clone()).writes_history());
+        assert!(OverlayResult::Ocr(img, false, (0, 0)).writes_history());
     }
 }

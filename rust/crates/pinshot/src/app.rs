@@ -88,6 +88,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         countdown: None,
         countdown_left: 0,
         restore_fallback: false,
+        wait_after_overlay: false,
         prefs: None,
         pin_menu: None,
         menu_pin: None,
@@ -124,6 +125,8 @@ struct App {
     countdown: Option<CountdownWin>,
     countdown_left: u32,
     restore_fallback: bool,
+    /// Overlay just closed — wait for DWM to drop it before DXGI grab (F1 resnip).
+    wait_after_overlay: bool,
     prefs: Option<crate::prefs_win::PrefsWin>,
     pin_menu: Option<crate::pin_menu::PinMenuWin>,
     menu_pin: Option<WindowId>,
@@ -247,12 +250,10 @@ impl App {
     }
 
     fn hide_wait_ms(&self) -> u64 {
-        if !self.restore_fallback {
-            0
-        } else if cfg!(unix) {
+        if self.wait_after_overlay || self.restore_fallback {
             150
         } else {
-            150
+            0
         }
     }
 
@@ -285,6 +286,8 @@ impl App {
         if self.overlay.is_some() {
             return;
         }
+        self.wait_after_overlay = false;
+        crate::logutil::log("begin_snip capture");
         let translate = self.translate_next;
         self.translate_next = false;
         #[cfg(unix)]
@@ -385,10 +388,22 @@ impl App {
         };
         self.history = ov.history.clone();
         self.history.entries.truncate(self.cfg.history_max as usize);
-        self.persist_history();
+        let persist = res.writes_history();
+        let resnip = matches!(res, OverlayResult::Resnip);
+        ov.hide_for_capture();
         self.overlay = None;
         crate::native::release_stray_grabs();
-        let resnip = matches!(res, OverlayResult::Resnip);
+        if persist {
+            let t0 = Instant::now();
+            self.persist_history();
+            crate::logutil::log(&format!(
+                "persist history {} entries in {}ms",
+                self.history.entries.len(),
+                t0.elapsed().as_millis()
+            ));
+        } else {
+            crate::logutil::log("skip history persist (cancel/resnip)");
+        }
         match res {
             OverlayResult::Copy(img, _) => {
                 if clipboard::write_image(&img).is_ok() {
@@ -424,6 +439,8 @@ impl App {
             OverlayResult::Resnip => {}
         }
         if resnip {
+            self.wait_after_overlay = true;
+            crate::logutil::log("resnip: wait 150ms for overlay to leave the DXGI frame");
             self.request_snip(event_loop, false);
         } else {
             self.restore_fallback_if_needed();

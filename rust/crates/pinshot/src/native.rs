@@ -172,6 +172,8 @@ pub fn grab_overlay_keys(
 pub fn unmap_sync(window: &Window) {
     #[cfg(unix)]
     crate::x11util::unmap_sync(window);
+    #[cfg(windows)]
+    crate::win32::hide_sync(hwnd_of(window));
     let _ = window;
 }
 
