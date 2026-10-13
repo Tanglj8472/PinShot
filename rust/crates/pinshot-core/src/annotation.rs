@@ -112,6 +112,23 @@ pub enum LineStyleKind {
     Dot,
 }
 
+/// Line-tool head (Snipaste: none / thin / thick / hollow).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArrowKind {
+    #[default]
+    None,
+    Thin,
+    Thick,
+    Hollow,
+}
+
+impl ArrowKind {
+    pub fn is_arrow(self) -> bool {
+        !matches!(self, ArrowKind::None)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DrawMode {
@@ -131,7 +148,11 @@ pub struct Style {
     pub color: Rgba,
     pub width: i32,
     pub filled: bool,
+    /// Legacy flag kept so `session.toml` still loads; prefer [`Style::arrow_kind`].
+    #[serde(default)]
     pub arrow: bool,
+    #[serde(default)]
+    pub arrow_kind: ArrowKind,
     pub line_style: LineStyleKind,
     pub mode: DrawMode,
     pub effect: Effect,
@@ -149,7 +170,8 @@ impl Default for Style {
             color: Rgba::RED,
             width: 3,
             filled: false,
-            arrow: true,
+            arrow: false,
+            arrow_kind: ArrowKind::None,
             line_style: LineStyleKind::Solid,
             mode: DrawMode::Rect,
             effect: Effect::Mosaic,
@@ -174,7 +196,7 @@ impl Style {
             Tool::Pen => s.width = 3,
             Tool::Line => {
                 s.width = 3;
-                s.arrow = false;
+                s.set_arrow_kind(ArrowKind::None);
             }
             Tool::Eraser => {
                 s.mode = DrawMode::Brush;
@@ -195,6 +217,22 @@ impl Style {
             _ => {}
         }
         s
+    }
+
+    pub fn arrow_kind(&self) -> ArrowKind {
+        match self.arrow_kind {
+            ArrowKind::None if self.arrow => ArrowKind::Thin,
+            k => k,
+        }
+    }
+
+    pub fn has_arrow(&self) -> bool {
+        self.arrow_kind().is_arrow()
+    }
+
+    pub fn set_arrow_kind(&mut self, kind: ArrowKind) {
+        self.arrow_kind = kind;
+        self.arrow = kind.is_arrow();
     }
 }
 
@@ -871,7 +909,7 @@ impl Annotator {
             .max(sh.style.font_size as f32 / 7.0)
             .max(sh.style.size as f32 * 3.0)
             + 2.0;
-        if sh.kind == Tool::Line && sh.style.arrow {
+        if sh.kind == Tool::Line && sh.style.has_arrow() {
             margin = margin.max(12.0 + sh.style.width as f32 * 2.0);
         }
         let expanded = b.adjusted(-margin, -margin, margin, margin);

@@ -18,6 +18,8 @@ pub enum IconKind {
     RoundRect,
     Line,
     Arrow,
+    ArrowThick,
+    ArrowHollow,
     Pen,
     Marker,
     Mosaic,
@@ -50,6 +52,8 @@ impl IconKind {
             "shape" | "roundrect" => Self::RoundRect,
             "line" => Self::Line,
             "arrow" => Self::Arrow,
+            "arrow_thick" | "thickarrow" => Self::ArrowThick,
+            "arrow_hollow" | "hollowarrow" => Self::ArrowHollow,
             "pen" | "pencil" => Self::Pen,
             "marker" => Self::Marker,
             "mosaic" => Self::Mosaic,
@@ -142,20 +146,40 @@ fn arrow_head(
     color: Rgba,
     t: Transform,
 ) {
+    arrow_head_ex(pixmap, a, b, head, 0.5, color, t, false);
+}
+
+fn arrow_head_ex(
+    pixmap: &mut Pixmap,
+    a: (f32, f32),
+    b: (f32, f32),
+    head: f32,
+    spread: f32,
+    color: Rgba,
+    t: Transform,
+    hollow: bool,
+) {
     let ang = (b.1 - a.1).atan2(b.0 - a.0);
     let mut pb = PathBuilder::new();
     pb.move_to(b.0, b.1);
     pb.line_to(
-        b.0 - head * (ang - 0.5).cos(),
-        b.1 - head * (ang - 0.5).sin(),
+        b.0 - head * (ang - spread).cos(),
+        b.1 - head * (ang - spread).sin(),
     );
     pb.line_to(
-        b.0 - head * (ang + 0.5).cos(),
-        b.1 - head * (ang + 0.5).sin(),
+        b.0 - head * (ang + spread).cos(),
+        b.1 - head * (ang + spread).sin(),
     );
     pb.close();
     if let Some(path) = pb.finish() {
-        pixmap.fill_path(&path, &paint(color), FillRule::Winding, t, None);
+        if hollow {
+            let mut outline = stroke(1.35);
+            outline.line_join = tiny_skia::LineJoin::Miter;
+            outline.miter_limit = 8.0;
+            pixmap.stroke_path(&path, &paint(color), &outline, t, None);
+        } else {
+            pixmap.fill_path(&path, &paint(color), FillRule::Winding, t, None);
+        }
     }
 }
 
@@ -194,10 +218,23 @@ pub fn draw_icon(pixmap: &mut Pixmap, kind: IconKind, cell: Rect, color: Option<
             }
         }
         IconKind::Arrow => {
-            if let Some(path) = line_path((4.0, 16.0), (16.0, 4.0)) {
+            if let Some(path) = line_path((4.0, 16.0), (14.8, 5.2)) {
                 pixmap.stroke_path(&path, &p, &st, t, None);
             }
-            arrow_head(pixmap, (4.0, 16.0), (16.0, 4.0), 5.0, color, t);
+            arrow_head_ex(pixmap, (4.0, 16.0), (16.0, 4.0), 4.6, 0.36, color, t, false);
+        }
+        IconKind::ArrowThick => {
+            if let Some(path) = line_path((4.0, 16.0), (11.5, 8.5)) {
+                pixmap.stroke_path(&path, &p, &st, t, None);
+            }
+            arrow_head_ex(pixmap, (4.0, 16.0), (16.8, 3.2), 8.6, 0.82, color, t, false);
+        }
+        IconKind::ArrowHollow => {
+            if let Some(path) = line_path((4.0, 16.0), (12.2, 7.8)) {
+                pixmap.stroke_path(&path, &p, &st, t, None);
+            }
+            // Large outlined triangle so the hole survives 20×20 toolbar cells.
+            arrow_head_ex(pixmap, (4.0, 16.0), (16.5, 3.5), 8.0, 0.58, color, t, true);
         }
         IconKind::Pen => {
             let mut pb = PathBuilder::new();
@@ -533,6 +570,8 @@ mod tests {
             IconKind::RoundRect,
             IconKind::Line,
             IconKind::Arrow,
+            IconKind::ArrowThick,
+            IconKind::ArrowHollow,
             IconKind::Pen,
             IconKind::Marker,
             IconKind::Mosaic,
@@ -618,6 +657,16 @@ mod tests {
             line.data(),
             arrow.data(),
             "Line and Arrow must be distinct icons"
+        );
+        let mut thick = Pixmap::new(24, 24).unwrap();
+        let mut hollow = Pixmap::new(24, 24).unwrap();
+        draw_icon(&mut thick, IconKind::ArrowThick, cell, None);
+        draw_icon(&mut hollow, IconKind::ArrowHollow, cell, None);
+        assert_ne!(arrow.data(), thick.data(), "thin and thick arrows differ");
+        assert_ne!(
+            thick.data(),
+            hollow.data(),
+            "thick and hollow arrows differ"
         );
     }
 

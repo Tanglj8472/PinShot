@@ -26,7 +26,9 @@ pub mod snap;
 pub mod translate;
 pub mod wheel;
 
-pub use annotation::{Annotator, DrawMode, Effect, LineStyleKind, Shape, Style, Tool, UndoStack};
+pub use annotation::{
+    Annotator, ArrowKind, DrawMode, Effect, LineStyleKind, Shape, Style, Tool, UndoStack,
+};
 pub use color::{hsv_to_rgb, palette_colors, parse_color_text, rgb_to_hsv, Rgba, PALETTE};
 pub use colorpicker::{
     color_picker_layout, ColorPicker, ColorPickerLayout, PickerAction, PickerHit,

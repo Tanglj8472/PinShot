@@ -1882,7 +1882,13 @@ mod tests {
         let sel = Rect::new(100.0, 100.0, 400.0, 240.0);
         let over = Rect::new(0.0, 0.0, 1920.0, 1200.0);
         let st = Style::for_tool(Tool::Text);
-        let tb = Toolbar::layout(sel, over, Some(Tool::Text), false, Some(&st));
+        let tb = Toolbar::layout(
+            sel,
+            over,
+            Some(Tool::Text),
+            pinshot_core::ArrowKind::None,
+            Some(&st),
+        );
         let mut pm = Pixmap::new(1920, 1200).unwrap();
         pm.fill(tiny_skia::Color::from_rgba8(80, 80, 80, 255));
         paint_toolbar(&mut pm, &tb, None);
@@ -1961,7 +1967,13 @@ mod tests {
                 let _ = out.save_png(format!("{dir}/toolbar_text.png"));
             }
             let rst = Style::for_tool(Tool::Rect);
-            let rtb = Toolbar::layout(sel, over, Some(Tool::Rect), false, Some(&rst));
+            let rtb = Toolbar::layout(
+                sel,
+                over,
+                Some(Tool::Rect),
+                pinshot_core::ArrowKind::None,
+                Some(&rst),
+            );
             let crop = rtb.bar.union(rtb.panel.unwrap_or(rtb.bar)).inflated(12.0);
             if let Some(out) = crop_rect(
                 &{
@@ -1976,7 +1988,13 @@ mod tests {
                 let _ = out.save_png(format!("{dir}/toolbar_rect.png"));
             }
             let lst = Style::for_tool(Tool::Line);
-            let mut ltb = Toolbar::layout(sel, over, Some(Tool::Line), false, Some(&lst));
+            let mut ltb = Toolbar::layout(
+                sel,
+                over,
+                Some(Tool::Line),
+                pinshot_core::ArrowKind::None,
+                Some(&lst),
+            );
             ltb.attach_line_menu(over, &lst);
             let crop = ltb
                 .bar
@@ -2049,7 +2067,13 @@ mod tests {
         let sel = Rect::new(200.0, 160.0, 520.0, 280.0);
         let over = Rect::new(0.0, 0.0, 1920.0, 1200.0);
         let st = Style::for_tool(Tool::Text);
-        let tb = Toolbar::layout(sel, over, Some(Tool::Text), false, Some(&st));
+        let tb = Toolbar::layout(
+            sel,
+            over,
+            Some(Tool::Text),
+            pinshot_core::ArrowKind::None,
+            Some(&st),
+        );
         let mut pm = Pixmap::new(1920, 1200).unwrap();
         pm.fill(tiny_skia::Color::from_rgba8(60, 64, 72, 255));
         paint_toolbar(&mut pm, &tb, None);

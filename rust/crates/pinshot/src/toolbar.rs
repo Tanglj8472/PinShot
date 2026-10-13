@@ -1,6 +1,6 @@
 //! Self-drawn annotation toolbar + colour/width/style sub-panel (hit-testing only).
 
-use pinshot_core::annotation::{Annotator, Tool};
+use pinshot_core::annotation::{Annotator, ArrowKind, Tool};
 use pinshot_core::annotation::{DrawMode, Effect, LineStyleKind, Style};
 use pinshot_core::color::{palette_colors, Rgba};
 use pinshot_core::geom::{clamp_f32, Point, Rect};
@@ -10,7 +10,7 @@ use pinshot_core::icons::IconKind;
 /// Clicking an active drawing tool (or grouped Shape / Line entry) deselects it.
 pub fn toggle_tool(
     annot: &mut Annotator,
-    arrow_on: &mut bool,
+    arrow_kind: &mut ArrowKind,
     ellipse_on: &mut bool,
     action: TbAction,
 ) {
@@ -33,14 +33,14 @@ pub fn toggle_tool(
                 annot.set_tool(None);
             } else {
                 annot.set_tool(Some(Tool::Line));
-                annot.set_style_default(Tool::Line, |s| s.arrow = *arrow_on);
+                annot.set_style_default(Tool::Line, |s| s.set_arrow_kind(*arrow_kind));
             }
         }
         TbAction::Tool(tool) => {
             let same = annot.tool == Some(tool);
             annot.set_tool(if same { None } else { Some(tool) });
             if tool == Tool::Line && !same {
-                annot.set_style_default(tool, |s| s.arrow = *arrow_on);
+                annot.set_style_default(tool, |s| s.set_arrow_kind(*arrow_kind));
             }
         }
         _ => {}
@@ -52,18 +52,19 @@ pub fn set_shape_kind(annot: &mut Annotator, ellipse_on: &mut bool, ellipse: boo
     annot.set_tool(Some(if ellipse { Tool::Ellipse } else { Tool::Rect }));
 }
 
-pub fn set_line_preset(
-    annot: &mut Annotator,
-    arrow_on: &mut bool,
-    arrow: bool,
-    style: LineStyleKind,
-) {
-    *arrow_on = arrow;
+pub fn set_line_preset(annot: &mut Annotator, arrow_kind: &mut ArrowKind, kind: ArrowKind) {
+    *arrow_kind = kind;
     annot.set_tool(Some(Tool::Line));
-    annot.set_style_default(Tool::Line, |s| {
-        s.arrow = arrow;
-        s.line_style = style;
-    });
+    annot.set_style_default(Tool::Line, |s| s.set_arrow_kind(kind));
+}
+
+fn icon_for_arrow(kind: ArrowKind) -> IconKind {
+    match kind {
+        ArrowKind::None => IconKind::Line,
+        ArrowKind::Thin => IconKind::Arrow,
+        ArrowKind::Thick => IconKind::ArrowThick,
+        ArrowKind::Hollow => IconKind::ArrowHollow,
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,10 +87,7 @@ pub enum TbAction {
     Fill(bool),
     LineStyle(LineStyleKind),
     ToggleLineMenu,
-    LinePreset {
-        arrow: bool,
-        style: LineStyleKind,
-    },
+    LinePreset(ArrowKind),
     SetMode(DrawMode),
     SetEffect(Effect),
     Bold(bool),
@@ -162,27 +160,27 @@ impl Toolbar {
         sel: Rect,
         overlay: Rect,
         active: Option<Tool>,
-        arrow_on: bool,
+        arrow: ArrowKind,
         style: Option<&Style>,
     ) -> Self {
-        Self::layout_ex(sel, overlay, active, arrow_on, false, style)
+        Self::layout_ex(sel, overlay, active, arrow, false, style)
     }
 
     pub fn layout_pin(
         sel: Rect,
         overlay: Rect,
         active: Option<Tool>,
-        arrow_on: bool,
+        arrow: ArrowKind,
         style: Option<&Style>,
     ) -> Self {
-        Self::layout_ex(sel, overlay, active, arrow_on, true, style)
+        Self::layout_ex(sel, overlay, active, arrow, true, style)
     }
 
     pub fn layout_ex(
         sel: Rect,
         overlay: Rect,
         active: Option<Tool>,
-        arrow_on: bool,
+        arrow: ArrowKind,
         for_pin: bool,
         style: Option<&Style>,
     ) -> Self {
@@ -191,11 +189,11 @@ impl Toolbar {
         } else {
             IconKind::RoundRect
         };
-        let line_icon = if arrow_on {
-            IconKind::Arrow
+        let line_icon = icon_for_arrow(if active == Some(Tool::Line) {
+            style.map(|s| s.arrow_kind()).unwrap_or(arrow)
         } else {
-            IconKind::Line
-        };
+            arrow
+        });
         let tools = [
             (shape_icon, TbAction::Shape, "Rectangle / Ellipse"),
             (line_icon, TbAction::LineStroke, "Line / Arrow"),
@@ -355,15 +353,7 @@ impl Toolbar {
                         );
                     }
                     Some(Tool::Line) => {
-                        let icon = if st.arrow {
-                            IconKind::Arrow
-                        } else {
-                            match st.line_style {
-                                LineStyleKind::Solid => IconKind::Line,
-                                LineStyleKind::Dash => IconKind::Dash,
-                                LineStyleKind::Dot => IconKind::Dot,
-                            }
-                        };
+                        let icon = icon_for_arrow(st.arrow_kind());
                         push_combo(
                             &mut extras,
                             &mut chip_x,
@@ -623,10 +613,10 @@ impl Toolbar {
             return;
         };
         let presets = [
-            (false, LineStyleKind::Solid, IconKind::Line, "Line"),
-            (true, LineStyleKind::Solid, IconKind::Arrow, "Arrow"),
-            (false, LineStyleKind::Dash, IconKind::Dash, "Dash"),
-            (false, LineStyleKind::Dot, IconKind::Dot, "Dot"),
+            (ArrowKind::None, IconKind::Line, "Line"),
+            (ArrowKind::Thin, IconKind::Arrow, "Thin arrow"),
+            (ArrowKind::Thick, IconKind::ArrowThick, "Thick arrow"),
+            (ArrowKind::Hollow, IconKind::ArrowHollow, "Hollow arrow"),
         ];
         let iw = combo.rect.w.max(72.0);
         let ih = 24.0;
@@ -640,15 +630,12 @@ impl Toolbar {
         my = my.max(overlay.y);
         let rect = Rect::new(mx, my, iw, h);
         let mut items = Vec::new();
-        for (i, (arrow, ls, icon, tip)) in presets.iter().enumerate() {
-            let checked = style.arrow == *arrow && style.line_style == *ls;
+        for (i, (kind, icon, tip)) in presets.iter().enumerate() {
+            let checked = style.arrow_kind() == *kind;
             items.push(TbButton {
                 rect: Rect::new(mx + 3.0, my + 3.0 + i as f32 * ih, iw - 6.0, ih - 2.0),
                 icon: *icon,
-                action: TbAction::LinePreset {
-                    arrow: *arrow,
-                    style: *ls,
-                },
+                action: TbAction::LinePreset(*kind),
                 tip,
                 checked,
             });
@@ -811,7 +798,7 @@ mod tests {
     #[test]
     fn tool_click_toggles_and_line_arrow_switches_without_editing_shapes() {
         let mut ann = Annotator::new();
-        let mut arrow = false;
+        let mut arrow = ArrowKind::None;
         let mut ellipse = false;
         toggle_tool(&mut ann, &mut arrow, &mut ellipse, TbAction::Shape);
         assert_eq!(ann.tool, Some(Tool::Rect));
@@ -821,10 +808,12 @@ mod tests {
         assert_eq!(ann.tool, Some(Tool::Ellipse));
         toggle_tool(&mut ann, &mut arrow, &mut ellipse, TbAction::LineStroke);
         assert_eq!(ann.tool, Some(Tool::Line));
-        assert!(!ann.style(Tool::Line).arrow);
-        set_line_preset(&mut ann, &mut arrow, true, LineStyleKind::Solid);
+        assert!(!ann.style(Tool::Line).has_arrow());
+        set_line_preset(&mut ann, &mut arrow, ArrowKind::Thin);
         assert_eq!(ann.tool, Some(Tool::Line));
-        assert!(ann.style(Tool::Line).arrow);
+        assert_eq!(ann.style(Tool::Line).arrow_kind(), ArrowKind::Thin);
+        set_line_preset(&mut ann, &mut arrow, ArrowKind::Hollow);
+        assert_eq!(ann.style(Tool::Line).arrow_kind(), ArrowKind::Hollow);
         toggle_tool(&mut ann, &mut arrow, &mut ellipse, TbAction::LineStroke);
         assert_eq!(ann.tool, None);
     }
@@ -833,12 +822,12 @@ mod tests {
     fn select_tool_has_no_draw_panel() {
         let sel = Rect::new(0.0, 0.0, 240.0, 120.0);
         let over = Rect::new(0.0, 0.0, 400.0, 300.0);
-        let tb = Toolbar::layout_pin(sel, over, Some(Tool::Select), false, None);
+        let tb = Toolbar::layout_pin(sel, over, Some(Tool::Select), ArrowKind::None, None);
         assert!(
             tb.panel.is_none(),
             "Select must not open a rect style panel"
         );
-        let rect = Toolbar::layout_pin(sel, over, Some(Tool::Rect), false, None);
+        let rect = Toolbar::layout_pin(sel, over, Some(Tool::Rect), ArrowKind::None, None);
         assert!(rect.panel.is_some());
     }
 
@@ -847,7 +836,7 @@ mod tests {
         let sel = Rect::new(0.0, 0.0, 20.0, 12.0);
         let over = Rect::new(0.0, 0.0, 40.0, 20.0);
         let st = Style::for_tool(Tool::Pen);
-        let tb = Toolbar::layout_pin(sel, over, Some(Tool::Pen), false, Some(&st));
+        let tb = Toolbar::layout_pin(sel, over, Some(Tool::Pen), ArrowKind::None, Some(&st));
         assert!(tb.bar.w > 0.0);
         assert!(tb.panel.is_some());
         assert!(
@@ -890,7 +879,7 @@ mod tests {
         let sel = Rect::new(100.0, 100.0, 400.0, 240.0);
         let over = Rect::new(0.0, 0.0, 1920.0, 1200.0);
         let st = Style::for_tool(Tool::Rect);
-        let tb = Toolbar::layout(sel, over, Some(Tool::Rect), false, Some(&st));
+        let tb = Toolbar::layout(sel, over, Some(Tool::Rect), ArrowKind::None, Some(&st));
         let fill = tb.extras.iter().find(|e| e.action == TbAction::Fill(true));
         let outline = tb.extras.iter().find(|e| e.action == TbAction::Fill(false));
         assert!(fill.is_some() && outline.is_some());
@@ -931,7 +920,7 @@ mod tests {
         let sel = Rect::new(100.0, 100.0, 400.0, 240.0);
         let over = Rect::new(0.0, 0.0, 1920.0, 1200.0);
         let st = Style::for_tool(Tool::Line);
-        let tb = Toolbar::layout(sel, over, Some(Tool::Line), false, Some(&st));
+        let tb = Toolbar::layout(sel, over, Some(Tool::Line), ArrowKind::None, Some(&st));
         let combo = tb
             .extras
             .iter()
@@ -942,23 +931,29 @@ mod tests {
         let mut open = tb.clone();
         open.attach_line_menu(over, &st);
         let menu = open.menu.as_ref().expect("line preset menu");
-        assert!(menu.items.len() >= 2);
-        assert!(menu
-            .items
-            .iter()
-            .any(|b| matches!(b.action, TbAction::LinePreset { arrow: true, .. })));
+        assert_eq!(menu.items.len(), 4);
+        assert_eq!(
+            menu.items.iter().map(|b| b.action).collect::<Vec<_>>(),
+            vec![
+                TbAction::LinePreset(ArrowKind::None),
+                TbAction::LinePreset(ArrowKind::Thin),
+                TbAction::LinePreset(ArrowKind::Thick),
+                TbAction::LinePreset(ArrowKind::Hollow),
+            ]
+        );
         assert_eq!(
             open.hit(menu.items[1].rect.center()),
-            Some(TbAction::LinePreset {
-                arrow: true,
-                style: LineStyleKind::Solid
-            })
+            Some(TbAction::LinePreset(ArrowKind::Thin))
+        );
+        assert_eq!(
+            open.hit(menu.items[3].rect.center()),
+            Some(TbAction::LinePreset(ArrowKind::Hollow))
         );
         let pen = Toolbar::layout(
             sel,
             over,
             Some(Tool::Pen),
-            false,
+            ArrowKind::None,
             Some(&Style::for_tool(Tool::Pen)),
         );
         assert!(
@@ -972,7 +967,7 @@ mod tests {
         let sel = Rect::new(100.0, 100.0, 400.0, 240.0);
         let over = Rect::new(0.0, 0.0, 1920.0, 1200.0);
         let st = Style::for_tool(Tool::Text);
-        let tb = Toolbar::layout(sel, over, Some(Tool::Text), false, Some(&st));
+        let tb = Toolbar::layout(sel, over, Some(Tool::Text), ArrowKind::None, Some(&st));
         let combo = tb
             .extras
             .iter()
@@ -991,7 +986,7 @@ mod tests {
     fn compact_bar_and_button_centers() {
         let sel = Rect::new(100.0, 100.0, 400.0, 240.0);
         let over = Rect::new(0.0, 0.0, 1920.0, 1200.0);
-        let tb = Toolbar::layout(sel, over, None, false, None);
+        let tb = Toolbar::layout(sel, over, None, ArrowKind::None, None);
         assert!(
             tb.bar.h <= 32.0,
             "toolbar should be denser than the old 34px bar, h={}",
@@ -1035,7 +1030,7 @@ mod tests {
         let sel = Rect::new(100.0, 100.0, 400.0, 240.0);
         let over = Rect::new(0.0, 0.0, 1920.0, 1200.0);
         let st = Style::for_tool(Tool::Text);
-        let tb = Toolbar::layout(sel, over, Some(Tool::Text), false, Some(&st));
+        let tb = Toolbar::layout(sel, over, Some(Tool::Text), ArrowKind::None, Some(&st));
         let a = tb
             .extras
             .iter()
@@ -1046,7 +1041,7 @@ mod tests {
             sel,
             over,
             Some(Tool::Mosaic),
-            false,
+            ArrowKind::None,
             Some(&Style::for_tool(Tool::Mosaic)),
         );
         assert!(!mos.slider.is_empty(), "mosaic panel has a size slider");

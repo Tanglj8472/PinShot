@@ -3,7 +3,7 @@
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use pinshot_core::annotation::{Annotator, Tool};
+use pinshot_core::annotation::{Annotator, ArrowKind, Tool};
 use pinshot_core::color::Rgba;
 use pinshot_core::colorpicker::{color_picker_layout, ColorPicker, PickerAction};
 use pinshot_core::confirm::{confirm_abort_layout, ConfirmAbortHit};
@@ -78,7 +78,7 @@ pub struct Overlay {
     detect: DetectMode,
     toast: Option<String>,
     toast_until: Option<Instant>,
-    arrow_on: bool,
+    arrow_kind: ArrowKind,
     ellipse_on: bool,
     line_menu_open: bool,
     dpr: f32,
@@ -192,7 +192,7 @@ impl Overlay {
             detect: DetectMode::Element,
             toast: None,
             toast_until: None,
-            arrow_on: false,
+            arrow_kind: ArrowKind::None,
             ellipse_on: false,
             line_menu_open: false,
             dpr: 1.0,
@@ -474,7 +474,7 @@ impl Overlay {
                 self.sel.normalized(),
                 self.bounds(),
                 self.annot.tool,
-                self.arrow_on,
+                self.arrow_kind,
                 self.annot.option_style(),
             );
             tb.set_width_value(self.annot.option_width());
@@ -704,7 +704,7 @@ impl Overlay {
                 self.line_menu_open = false;
                 crate::toolbar::toggle_tool(
                     &mut self.annot,
-                    &mut self.arrow_on,
+                    &mut self.arrow_kind,
                     &mut self.ellipse_on,
                     a,
                 )
@@ -721,7 +721,7 @@ impl Overlay {
                 self.line_menu_open = false;
                 crate::toolbar::toggle_tool(
                     &mut self.annot,
-                    &mut self.arrow_on,
+                    &mut self.arrow_kind,
                     &mut self.ellipse_on,
                     TbAction::LineStroke,
                 )
@@ -729,8 +729,8 @@ impl Overlay {
             TbAction::ToggleLineMenu => {
                 self.line_menu_open = !self.line_menu_open;
             }
-            TbAction::LinePreset { arrow, style } => {
-                crate::toolbar::set_line_preset(&mut self.annot, &mut self.arrow_on, arrow, style);
+            TbAction::LinePreset(kind) => {
+                crate::toolbar::set_line_preset(&mut self.annot, &mut self.arrow_kind, kind);
                 self.line_menu_open = false;
             }
             TbAction::Undo => {

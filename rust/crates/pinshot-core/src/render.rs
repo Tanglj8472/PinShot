@@ -1,6 +1,6 @@
 //! Software compose of annotations onto a [`Raster`] via tiny-skia.
 
-use crate::annotation::{DrawMode, Effect, Shape, Tool};
+use crate::annotation::{ArrowKind, DrawMode, Effect, Shape, Tool};
 use crate::color::Rgba;
 use crate::geom::Point;
 use crate::raster::Raster;
@@ -18,12 +18,14 @@ fn paint(c: Rgba) -> Paint<'static> {
 fn stroke_for(sh: &Shape) -> Stroke {
     let dash = match sh.style.line_style {
         crate::annotation::LineStyleKind::Solid => None,
-        crate::annotation::LineStyleKind::Dash => {
-            StrokeDash::new(vec![sh.style.width as f32 * 3.0, sh.style.width as f32 * 2.0], 0.0)
-        }
-        crate::annotation::LineStyleKind::Dot => {
-            StrokeDash::new(vec![sh.style.width as f32, sh.style.width as f32 * 1.5], 0.0)
-        }
+        crate::annotation::LineStyleKind::Dash => StrokeDash::new(
+            vec![sh.style.width as f32 * 3.0, sh.style.width as f32 * 2.0],
+            0.0,
+        ),
+        crate::annotation::LineStyleKind::Dot => StrokeDash::new(
+            vec![sh.style.width as f32, sh.style.width as f32 * 1.5],
+            0.0,
+        ),
     };
     Stroke {
         width: sh.style.width.max(1) as f32,
@@ -220,11 +222,13 @@ fn draw_shape_t(pm: &mut Pixmap, sh: &Shape, t: Transform) {
             }
         }
         Tool::Line => {
-            if let Some(path) = polyline(&sh.pts) {
+            let kind = sh.style.arrow_kind();
+            let pts = shaft_pts(&sh.pts, sh.style.width, kind);
+            if let Some(path) = polyline(&pts) {
                 pm.stroke_path(&path, &paint(sh.style.color), &stroke_for(sh), t, None);
             }
-            if sh.style.arrow && sh.pts.len() > 1 {
-                draw_arrow_head(pm, sh, t);
+            if kind.is_arrow() && sh.pts.len() > 1 {
+                draw_arrow_head(pm, sh, kind, t);
             }
         }
         Tool::Pen | Tool::Marker => {
@@ -299,7 +303,8 @@ fn draw_shape_t(pm: &mut Pixmap, sh: &Shape, t: Transform) {
         }
         Tool::Text => {
             if sh.text.is_empty() {
-                if let Some(r) = tiny_skia::Rect::from_xywh(b.x, b.y + b.h - 2.0, b.w.max(4.0), 2.0) {
+                if let Some(r) = tiny_skia::Rect::from_xywh(b.x, b.y + b.h - 2.0, b.w.max(4.0), 2.0)
+                {
                     pm.fill_rect(r, &paint(sh.style.color), t, None);
                 }
             } else {
@@ -321,7 +326,39 @@ fn draw_shape_t(pm: &mut Pixmap, sh: &Shape, t: Transform) {
     }
 }
 
-fn draw_arrow_head(pm: &mut Pixmap, sh: &Shape, t: Transform) {
+fn arrow_metrics(width: i32, kind: ArrowKind) -> Option<(f32, f32, f32)> {
+    let w = width.max(1) as f32;
+    match kind {
+        ArrowKind::None => None,
+        ArrowKind::Thin => Some(((10.0 + w * 2.0).max(12.0), 0.38, 0.72)),
+        ArrowKind::Thick => Some(((16.0 + w * 3.6).max(20.0), 0.72, 0.88)),
+        ArrowKind::Hollow => Some(((14.0 + w * 3.0).max(16.0), 0.55, 1.0)),
+    }
+}
+
+fn shaft_pts(pts: &[Point], width: i32, kind: ArrowKind) -> Vec<Point> {
+    let mut out = pts.to_vec();
+    let Some((l, _, pull)) = arrow_metrics(width, kind) else {
+        return out;
+    };
+    if out.len() < 2 {
+        return out;
+    }
+    let n = out.len();
+    let a = out[n - 2];
+    let b = out[n - 1];
+    let dx = b.x - a.x;
+    let dy = b.y - a.y;
+    let len = (dx * dx + dy * dy).sqrt();
+    if len < 1.0 {
+        return out;
+    }
+    let back = (l * pull).min(len * 0.85);
+    out[n - 1] = Point::new(b.x - dx / len * back, b.y - dy / len * back);
+    out
+}
+
+fn draw_arrow_head(pm: &mut Pixmap, sh: &Shape, kind: ArrowKind, t: Transform) {
     let a = sh.pts[sh.pts.len() - 2];
     let bpt = sh.pts[sh.pts.len() - 1];
     let dx = bpt.x - a.x;
@@ -331,35 +368,58 @@ fn draw_arrow_head(pm: &mut Pixmap, sh: &Shape, t: Transform) {
     }
     let ang = dy.atan2(dx);
     let w = sh.style.width.max(2) as f32;
-    let l = (16.0 + w * 3.0).max(18.0);
-    let spread = 0.55;
+    let Some((l, spread, _)) = arrow_metrics(sh.style.width, kind) else {
+        return;
+    };
     let mut pb = PathBuilder::new();
     pb.move_to(bpt.x, bpt.y);
     pb.line_to(
         bpt.x - l * (ang - spread).cos(),
         bpt.y - l * (ang - spread).sin(),
     );
-    pb.line_to(
-        bpt.x - l * 0.55 * ang.cos(),
-        bpt.y - l * 0.55 * ang.sin(),
-    );
+    if kind == ArrowKind::Thin {
+        pb.line_to(bpt.x - l * 0.55 * ang.cos(), bpt.y - l * 0.55 * ang.sin());
+    }
     pb.line_to(
         bpt.x - l * (ang + spread).cos(),
         bpt.y - l * (ang + spread).sin(),
     );
     pb.close();
-    if let Some(path) = pb.finish() {
-        pm.fill_path(&path, &paint(sh.style.color), FillRule::Winding, t, None);
-        pm.stroke_path(
-            &path,
-            &paint(sh.style.color),
-            &Stroke {
-                width: (w * 0.6).max(1.0),
-                ..Stroke::default()
-            },
-            t,
-            None,
-        );
+    let Some(path) = pb.finish() else {
+        return;
+    };
+    match kind {
+        ArrowKind::Hollow => {
+            pm.stroke_path(
+                &path,
+                &paint(sh.style.color),
+                &Stroke {
+                    width: w.max(1.5),
+                    line_join: LineJoin::Miter,
+                    miter_limit: 8.0,
+                    line_cap: LineCap::Butt,
+                    ..Stroke::default()
+                },
+                t,
+                None,
+            );
+        }
+        ArrowKind::None => {}
+        ArrowKind::Thin | ArrowKind::Thick => {
+            pm.fill_path(&path, &paint(sh.style.color), FillRule::Winding, t, None);
+            if kind == ArrowKind::Thin {
+                pm.stroke_path(
+                    &path,
+                    &paint(sh.style.color),
+                    &Stroke {
+                        width: (w * 0.45).max(1.0),
+                        ..Stroke::default()
+                    },
+                    t,
+                    None,
+                );
+            }
+        }
     }
 }
 
@@ -428,34 +488,78 @@ mod tests {
         assert_ne!(out.get(1, 1), base.get(1, 1));
     }
 
-    #[test]
-    fn arrow_head_paints_beyond_plain_line() {
-        let mut base = Raster::new(80, 40);
-        base.fill(Rgba::WHITE);
-        let mut st = Style::for_tool(Tool::Line);
-        st.arrow = true;
-        st.color = Rgba::RED;
-        st.width = 3;
-        let sh = Shape::new(
-            Tool::Line,
-            vec![Point::new(8.0, 20.0), Point::new(50.0, 20.0)],
-            st,
-        );
-        let out = compose(&base, &[sh]);
+    fn count_red(out: &Raster, xs: std::ops::Range<i32>, ys: std::ops::Range<i32>) -> u32 {
         let mut found = 0u32;
-        for y in 10..30 {
-            for x in 38..62 {
+        for y in ys {
+            for x in xs.clone() {
                 if out.get(x, y) == Some(Rgba::RED) {
                     found += 1;
                 }
             }
         }
+        found
+    }
+
+    fn line_shape(kind: crate::annotation::ArrowKind) -> Shape {
+        let mut st = Style::for_tool(Tool::Line);
+        st.set_arrow_kind(kind);
+        st.color = Rgba::RED;
+        st.width = 3;
+        Shape::new(
+            Tool::Line,
+            vec![Point::new(8.0, 20.0), Point::new(50.0, 20.0)],
+            st,
+        )
+    }
+
+    #[test]
+    fn arrow_head_paints_beyond_plain_line() {
+        let mut base = Raster::new(80, 40);
+        base.fill(Rgba::WHITE);
+        let out = compose(&base, &[line_shape(crate::annotation::ArrowKind::Thin)]);
+        let found = count_red(&out, 38..62, 10..30);
         assert!(found > 20, "arrowhead pixels={found}");
     }
 
     #[test]
+    fn thick_arrow_covers_more_than_thin() {
+        let mut base = Raster::new(80, 40);
+        base.fill(Rgba::WHITE);
+        let thin = count_red(
+            &compose(&base, &[line_shape(crate::annotation::ArrowKind::Thin)]),
+            30..62,
+            4..36,
+        );
+        let thick = count_red(
+            &compose(&base, &[line_shape(crate::annotation::ArrowKind::Thick)]),
+            30..62,
+            4..36,
+        );
+        assert!(thick > thin, "thick={thick} thin={thin}");
+    }
+
+    #[test]
+    fn hollow_arrow_is_outline_not_a_solid_wedge() {
+        let mut base = Raster::new(80, 40);
+        base.fill(Rgba::WHITE);
+        let out = compose(&base, &[line_shape(crate::annotation::ArrowKind::Hollow)]);
+        let edge = count_red(&out, 38..62, 10..30);
+        assert!(edge > 12, "hollow outline pixels={edge}");
+        // Interior of the wedge (behind the tip along the shaft) stays empty.
+        let interior = count_red(&out, 44..48, 19..22);
+        assert!(
+            interior < 8,
+            "hollow should not fill the wedge, interior={interior}"
+        );
+    }
+
+    #[test]
     fn line_tool_default_has_no_arrow() {
-        assert!(!Style::for_tool(Tool::Line).arrow);
+        assert!(!Style::for_tool(Tool::Line).has_arrow());
+        assert_eq!(
+            Style::for_tool(Tool::Line).arrow_kind(),
+            crate::annotation::ArrowKind::None
+        );
     }
 
     #[test]

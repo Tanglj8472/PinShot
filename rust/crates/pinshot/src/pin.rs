@@ -9,7 +9,7 @@ use crate::draw::{
 };
 use crate::native;
 use crate::toolbar::{TbAction, Toolbar};
-use pinshot_core::annotation::{Annotator, Tool};
+use pinshot_core::annotation::{Annotator, ArrowKind, Tool};
 use pinshot_core::color::Rgba;
 use pinshot_core::colorpicker::{color_picker_layout, ColorPicker, PickerAction};
 use pinshot_core::cursor::cursor_for;
@@ -91,7 +91,7 @@ pub struct PinWin {
     pub group: String,
     pub annotating: bool,
     toolbar: Option<Toolbar>,
-    arrow_on: bool,
+    arrow_kind: ArrowKind,
     ellipse_on: bool,
     line_menu_open: bool,
     toast: Option<String>,
@@ -168,7 +168,7 @@ impl PinWin {
             group: groups::DEFAULT.into(),
             annotating: false,
             toolbar: None,
-            arrow_on: false,
+            arrow_kind: ArrowKind::None,
             ellipse_on: false,
             line_menu_open: false,
             toast: None,
@@ -559,7 +559,7 @@ impl PinWin {
             sel,
             over,
             self.annot.tool,
-            self.arrow_on,
+            self.arrow_kind,
             self.annot.option_style(),
         );
         tb.set_width_value(self.annot.option_width());
@@ -783,7 +783,7 @@ impl PinWin {
                 self.line_menu_open = false;
                 crate::toolbar::toggle_tool(
                     &mut self.annot,
-                    &mut self.arrow_on,
+                    &mut self.arrow_kind,
                     &mut self.ellipse_on,
                     a,
                 )
@@ -800,7 +800,7 @@ impl PinWin {
                 self.line_menu_open = false;
                 crate::toolbar::toggle_tool(
                     &mut self.annot,
-                    &mut self.arrow_on,
+                    &mut self.arrow_kind,
                     &mut self.ellipse_on,
                     TbAction::LineStroke,
                 )
@@ -808,8 +808,8 @@ impl PinWin {
             TbAction::ToggleLineMenu => {
                 self.line_menu_open = !self.line_menu_open;
             }
-            TbAction::LinePreset { arrow, style } => {
-                crate::toolbar::set_line_preset(&mut self.annot, &mut self.arrow_on, arrow, style);
+            TbAction::LinePreset(kind) => {
+                crate::toolbar::set_line_preset(&mut self.annot, &mut self.arrow_kind, kind);
                 self.line_menu_open = false;
             }
             TbAction::Undo => {
