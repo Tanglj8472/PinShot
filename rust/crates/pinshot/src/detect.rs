@@ -1,27 +1,31 @@
 //! Top-level windows (EnumWindows + DWM) and live element hit-test.
 //!
-//! Element mode matches public Snipaste behavior: find the HWND under the
-//! cursor (skip our overlay), then go deeper in that process only
-//! (UIA control-view walk, else nested child HWND). No full-desktop tree dump.
+//! Public Inspect / AHK-UIA / screenshot-tool approach: wake Chromium a11y
+//! (`WM_GETOBJECT`), make the overlay hit-through, then
+//! `IUIAutomation::ElementFromPoint` + `AccessibleObjectFromPoint`, and walk
+//! only the smallest child that still contains the cursor ("go deeper").
 
-use std::cell::OnceCell;
+use std::cell::{OnceCell, RefCell};
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use pinshot_core::geom::{Point, Rect};
-use windows::Win32::Foundation::{BOOL, HWND, LPARAM, POINT, RECT};
+use windows::Win32::Foundation::{BOOL, HWND, LPARAM, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::ScreenToClient;
 use windows::Win32::System::Threading::{
     GetCurrentProcessId, OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
     PROCESS_QUERY_LIMITED_INFORMATION,
 };
+use windows::Win32::UI::Accessibility::{AccessibleObjectFromPoint, IAccessible};
 use windows::Win32::UI::WindowsAndMessaging::{
     ChildWindowFromPointEx, EnumChildWindows, EnumWindows, GetTopWindow, GetWindow, GetWindowLongW,
     GetWindowRect, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsIconic,
-    IsWindowVisible, CWP_SKIPINVISIBLE, CWP_SKIPTRANSPARENT, GWL_EXSTYLE, GW_HWNDNEXT,
+    IsWindowVisible, RealChildWindowFromPoint, SendMessageTimeoutW, CWP_SKIPINVISIBLE,
+    CWP_SKIPTRANSPARENT, GWL_EXSTYLE, GW_HWNDNEXT, OBJID_CLIENT, SMTO_ABORTIFHUNG, WM_GETOBJECT,
     WS_EX_TOOLWINDOW,
 };
 
-use crate::win32::{is_cloaked, window_frame};
+use crate::win32::{is_cloaked, window_frame, with_hit_through};
 
 pub struct PointHit {
     pub rect: Rect,
@@ -252,6 +256,7 @@ pub fn element_source() -> &'static str {
     match LAST_SOURCE.load(std::sync::atomic::Ordering::Relaxed) {
         1 => "UI Automation",
         2 => "child windows",
+        3 => "MSAA",
         _ => "hit-test",
     }
 }
@@ -358,7 +363,14 @@ fn deepest_child_hwnd(top: HWND, sx: i32, sy: i32) -> (HWND, u32) {
             if !ScreenToClient(cur, &mut pt).as_bool() {
                 break;
             }
-            let child = ChildWindowFromPointEx(cur, pt, CWP_SKIPINVISIBLE | CWP_SKIPTRANSPARENT);
+            let child = {
+                let real = RealChildWindowFromPoint(cur, pt);
+                if hwnd_nonzero(real) && real != cur {
+                    real
+                } else {
+                    ChildWindowFromPointEx(cur, pt, CWP_SKIPINVISIBLE | CWP_SKIPTRANSPARENT)
+                }
+            };
             if !hwnd_nonzero(child) || child == cur {
                 break;
             }
@@ -398,54 +410,158 @@ fn better_hit(best: Option<(Rect, u32)>, rect: Rect, depth: u32) -> bool {
     }
 }
 
-fn deepest_uia_at(top: HWND, sx: i32, sy: i32, deadline: Instant) -> Option<(Rect, u32)> {
-    let uia = uia_instance()?;
-    let walker = uia.get_control_view_walker().ok()?;
-    let root = uia.element_from_handle(uia_handle(top)).ok()?;
-    let mut best: Option<(Rect, u32)> = None;
-    walk_uia_at(&walker, &root, sx, sy, 0, deadline, &mut best);
-    best
+fn element_rect(el: &uiautomation::UIElement) -> Option<Rect> {
+    let r = el.get_bounding_rectangle().ok()?;
+    let rect = Rect::from_i32(r.get_left(), r.get_top(), r.get_width(), r.get_height());
+    if rect.w <= 3.0 || rect.h <= 3.0 {
+        None
+    } else {
+        Some(rect)
+    }
 }
 
-fn walk_uia_at(
+fn is_our_uia(el: &uiautomation::UIElement, skip: HWND, self_pid: u32) -> bool {
+    if el.get_process_id().ok() == Some(self_pid) {
+        return true;
+    }
+    if let Ok(h) = el.get_native_window_handle() {
+        let hid: isize = h.into();
+        if hid != 0 && hid == skip.0 as isize {
+            return true;
+        }
+    }
+    false
+}
+
+fn wake_accessibility(hwnd: HWND) {
+    if !hwnd_nonzero(hwnd) {
+        return;
+    }
+    thread_local! {
+        static WOKE: RefCell<HashSet<isize>> = RefCell::new(HashSet::new());
+    }
+    let key = hwnd.0 as isize;
+    let already = WOKE.with(|s| s.borrow().contains(&key));
+    if already {
+        return;
+    }
+    unsafe {
+        let mut result = 0usize;
+        let _ = SendMessageTimeoutW(
+            hwnd,
+            WM_GETOBJECT,
+            WPARAM(0),
+            LPARAM(OBJID_CLIENT.0 as isize),
+            SMTO_ABORTIFHUNG,
+            50,
+            Some(&mut result),
+        );
+    }
+    WOKE.with(|s| {
+        s.borrow_mut().insert(key);
+    });
+}
+
+/// Smallest child that contains the point, then recurse — not a full-tree dump.
+fn go_deeper(
     walker: &uiautomation::UITreeWalker,
     el: &uiautomation::UIElement,
     sx: i32,
     sy: i32,
     depth: u32,
     deadline: Instant,
-    best: &mut Option<(Rect, u32)>,
-) {
-    if depth > 16 || Instant::now() > deadline {
-        return;
+) -> Option<(Rect, u32)> {
+    if depth > 24 || Instant::now() > deadline {
+        return element_rect(el)
+            .filter(|r| rect_contains_i32(*r, sx, sy))
+            .map(|r| (r, depth));
     }
-    let Ok(r) = el.get_bounding_rectangle() else {
-        return;
-    };
-    let rect = Rect::from_i32(r.get_left(), r.get_top(), r.get_width(), r.get_height());
-    if rect.w <= 3.0 || rect.h <= 3.0 || !rect_contains_i32(rect, sx, sy) {
-        return;
+    let rect = element_rect(el)?;
+    if !rect_contains_i32(rect, sx, sy) {
+        return None;
     }
-    if let Ok(off) = el.is_offscreen() {
-        if off && depth > 0 {
-            return;
-        }
-    }
-    if better_hit(*best, rect, depth) {
-        *best = Some((rect, depth));
-    }
+    let mut best_child: Option<(uiautomation::UIElement, Rect)> = None;
     if let Ok(mut child) = walker.get_first_child(el) {
         loop {
-            walk_uia_at(walker, &child, sx, sy, depth + 1, deadline, best);
+            if Instant::now() > deadline {
+                break;
+            }
+            if let Some(cr) = element_rect(&child) {
+                if rect_contains_i32(cr, sx, sy) {
+                    let take = best_child
+                        .as_ref()
+                        .map(|(_, br)| cr.area() < br.area())
+                        .unwrap_or(true);
+                    if take {
+                        best_child = Some((child.clone(), cr));
+                    }
+                }
+            }
             match walker.get_next_sibling(&child) {
                 Ok(next) => child = next,
                 Err(_) => break,
             }
-            if Instant::now() > deadline {
-                break;
-            }
         }
     }
+    if let Some((child, _)) = best_child {
+        if let Some(deeper) = go_deeper(walker, &child, sx, sy, depth + 1, deadline) {
+            return Some(deeper);
+        }
+    }
+    Some((rect, depth))
+}
+
+fn uia_from_point(
+    sx: i32,
+    sy: i32,
+    top: HWND,
+    skip: HWND,
+    self_pid: u32,
+    deadline: Instant,
+) -> Option<(Rect, u32)> {
+    let uia = uia_instance()?;
+    let walker = uia.get_control_view_walker().ok()?;
+    let start = uia
+        .element_from_point(uiautomation::types::Point::new(sx, sy))
+        .ok()
+        .filter(|el| !is_our_uia(el, skip, self_pid))
+        .or_else(|| uia.element_from_handle(uia_handle(top)).ok());
+    let start = start.filter(|el| !is_our_uia(el, skip, self_pid))?;
+    crate::logutil::log("detect go deeper");
+    go_deeper(&walker, &start, sx, sy, 0, deadline)
+}
+
+fn msaa_from_point(sx: i32, sy: i32) -> Option<(Rect, u32)> {
+    unsafe {
+        let mut acc: Option<IAccessible> = None;
+        let mut child = windows_core::VARIANT::default();
+        AccessibleObjectFromPoint(POINT { x: sx, y: sy }, &mut acc, &mut child).ok()?;
+        let acc = acc?;
+        let mut left = 0i32;
+        let mut top = 0i32;
+        let mut width = 0i32;
+        let mut height = 0i32;
+        acc.accLocation(&mut left, &mut top, &mut width, &mut height, child)
+            .ok()?;
+        if width <= 3 || height <= 3 {
+            return None;
+        }
+        let rect = Rect::from_i32(left, top, width, height);
+        if rect_contains_i32(rect, sx, sy) {
+            Some((rect, 1))
+        } else {
+            None
+        }
+    }
+}
+
+fn pick_hit(cands: &[(Rect, u32, u8)]) -> Option<(Rect, u32, u8)> {
+    cands.iter().copied().min_by(|a, b| {
+        a.0.area()
+            .partial_cmp(&b.0.area())
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| b.1.cmp(&a.1))
+    })
 }
 
 /// Live hit-test at a virtual-desktop (screen) point. Skips `exclude_hwnd` (overlay).
@@ -461,18 +577,29 @@ pub fn element_at_point(sx: i32, sy: i32, exclude: Option<isize>) -> Option<Poin
     let exe = process_exe(pid);
     crate::logutil::log(&format!("detect cursor in window exe={exe}"));
 
-    let deadline = Instant::now() + Duration::from_millis(20);
-    let uia_hit = deepest_uia_at(top, sx, sy, deadline);
     let (child, hwnd_depth) = deepest_child_hwnd(top, sx, sy);
-    let hwnd_rect = hwnd_rect(child).or_else(|| hwnd_rect(top))?;
+    wake_accessibility(top);
+    wake_accessibility(child);
 
-    let (rect, depth, src) = match uia_hit {
-        Some((r, d)) if d > 0 || r.area() <= hwnd_rect.area() => (r, d, 1u8),
-        Some((r, d)) if hwnd_depth == 0 => (r, d, 1u8),
-        _ if hwnd_depth > 0 => (hwnd_rect, hwnd_depth, 2u8),
-        Some((r, d)) => (r, d, 1u8),
-        None => (hwnd_rect, hwnd_depth, 2u8),
-    };
+    let deadline = Instant::now() + Duration::from_millis(25);
+    let (uia_hit, msaa_hit) = with_hit_through(skip, || {
+        (
+            uia_from_point(sx, sy, top, skip, self_pid, deadline),
+            msaa_from_point(sx, sy),
+        )
+    });
+
+    let mut cands = Vec::new();
+    if let Some((r, d)) = uia_hit {
+        cands.push((r, d, 1u8));
+    }
+    if let Some((r, d)) = msaa_hit {
+        cands.push((r, d, 3u8));
+    }
+    if let Some(r) = hwnd_rect(child).or_else(|| hwnd_rect(top)) {
+        cands.push((r, hwnd_depth, 2u8));
+    }
+    let (rect, depth, src) = pick_hit(&cands)?;
     LAST_SOURCE.store(src, std::sync::atomic::Ordering::Relaxed);
     Some(PointHit {
         rect,
@@ -515,5 +642,17 @@ mod tests {
         assert!(better_hit(Some((pane, 1)), btn, 2));
         assert!(!better_hit(Some((btn, 2)), wide, 2));
         assert!(better_hit(Some((wide, 2)), btn, 2));
+    }
+
+    #[test]
+    fn pick_hit_takes_smallest_then_deeper() {
+        let window = (Rect::from_i32(0, 0, 800, 600), 0u32, 2u8);
+        let button = (Rect::from_i32(40, 40, 80, 24), 3u32, 1u8);
+        let pane = (Rect::from_i32(10, 10, 400, 300), 1u32, 3u8);
+        let picked = pick_hit(&[window, pane, button]).unwrap();
+        assert_eq!(
+            (picked.0.w as i32, picked.0.h as i32, picked.2),
+            (80, 24, 1)
+        );
     }
 }

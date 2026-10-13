@@ -4,8 +4,6 @@ use pinshot_core::hotkey::{parse_hotkey, Command, Hotkey, MOD_NOREPEAT};
 use pinshot_core::Config;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::sync::Mutex;
-use winit::event_loop::EventLoopProxy;
-use winit::window::Window;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Graphics::Dwm::{
@@ -26,6 +24,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SW_HIDE, WM_DESTROY, WM_HOTKEY, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
     WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
+use winit::event_loop::EventLoopProxy;
+use winit::window::Window;
 
 use crate::event::AppEvent;
 
@@ -90,7 +90,12 @@ pub fn apply_pin_style(hwnd: HWND) {
             0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
         );
-        let _ = SetLayeredWindowAttributes(hwnd, windows::Win32::Foundation::COLORREF(0), 255, LWA_ALPHA);
+        let _ = SetLayeredWindowAttributes(
+            hwnd,
+            windows::Win32::Foundation::COLORREF(0),
+            255,
+            LWA_ALPHA,
+        );
     }
 }
 
@@ -105,7 +110,34 @@ pub fn set_opacity(hwnd: HWND, opacity: f32) {
         if ex & WS_EX_LAYERED.0 as isize == 0 {
             SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex | WS_EX_LAYERED.0 as isize);
         }
-        let _ = SetLayeredWindowAttributes(hwnd, windows::Win32::Foundation::COLORREF(0), alpha, LWA_ALPHA);
+        let _ = SetLayeredWindowAttributes(
+            hwnd,
+            windows::Win32::Foundation::COLORREF(0),
+            alpha,
+            LWA_ALPHA,
+        );
+    }
+}
+
+/// Toggle `WS_EX_TRANSPARENT` without changing alpha, so UIA/MSAA
+/// `ElementFromPoint` / `AccessibleObjectFromPoint` can see through the overlay.
+pub fn with_hit_through<R>(hwnd: HWND, f: impl FnOnce() -> R) -> R {
+    if hwnd.is_invalid() {
+        return f();
+    }
+    struct Restore(HWND, isize);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            unsafe {
+                SetWindowLongPtrW(self.0, GWL_EXSTYLE, self.1);
+            }
+        }
+    }
+    unsafe {
+        let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex | WS_EX_TRANSPARENT.0 as isize);
+        let _restore = Restore(hwnd, ex);
+        f()
     }
 }
 
@@ -124,7 +156,8 @@ pub fn set_click_through(hwnd: HWND, on: bool, opacity: f32) {
         } else {
             (opacity.clamp(0.1, 1.0) * 255.0).round() as u8
         };
-        let _ = SetLayeredWindowAttributes(hwnd, windows::Win32::Foundation::COLORREF(0), a, LWA_ALPHA);
+        let _ =
+            SetLayeredWindowAttributes(hwnd, windows::Win32::Foundation::COLORREF(0), a, LWA_ALPHA);
     }
 }
 
@@ -137,7 +170,12 @@ struct HotkeyBind {
 static PROXY: Mutex<Option<EventLoopProxy<AppEvent>>> = Mutex::new(None);
 static BINDS: Mutex<Vec<HotkeyBind>> = Mutex::new(Vec::new());
 
-unsafe extern "system" fn hotkey_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+unsafe extern "system" fn hotkey_wndproc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
     if msg == WM_HOTKEY {
         let id = wparam.0 as i32;
         if let Ok(binds) = BINDS.lock() {
@@ -205,13 +243,8 @@ impl HotkeyHost {
             let mut next = 0xA000i32;
             for (seq, cmd) in specs {
                 if let Some(Hotkey { mods, vk }) = parse_hotkey(seq) {
-                    if RegisterHotKey(
-                        hwnd,
-                        next,
-                        HOT_KEY_MODIFIERS(mods | MOD_NOREPEAT),
-                        vk,
-                    )
-                    .is_ok()
+                    if RegisterHotKey(hwnd, next, HOT_KEY_MODIFIERS(mods | MOD_NOREPEAT), vk)
+                        .is_ok()
                     {
                         binds.push(HotkeyBind { id: next, cmd });
                         ids.push(next);
@@ -221,7 +254,8 @@ impl HotkeyHost {
             }
             if !cfg.hotkey_clickthrough.trim().is_empty() {
                 if let Some(Hotkey { mods, vk }) = parse_hotkey(&cfg.hotkey_clickthrough) {
-                    if RegisterHotKey(hwnd, next, HOT_KEY_MODIFIERS(mods | MOD_NOREPEAT), vk).is_ok()
+                    if RegisterHotKey(hwnd, next, HOT_KEY_MODIFIERS(mods | MOD_NOREPEAT), vk)
+                        .is_ok()
                     {
                         binds.push(HotkeyBind {
                             id: next,
@@ -345,7 +379,11 @@ fn key(vk: u16, up: bool) -> windows::Win32::UI::Input::KeyboardAndMouse::INPUT 
         Anonymous: INPUT_0 {
             ki: KEYBDINPUT {
                 wVk: VIRTUAL_KEY(vk),
-                dwFlags: if up { KEYEVENTF_KEYUP } else { Default::default() },
+                dwFlags: if up {
+                    KEYEVENTF_KEYUP
+                } else {
+                    Default::default()
+                },
                 ..Default::default()
             },
         },
