@@ -372,6 +372,7 @@ pub struct OverlayFront {
     dim: u8,
     last_hole: Rect,
     last_chrome: Vec<Rect>,
+    last_size_label: Rect,
     primed: bool,
 }
 
@@ -514,6 +515,7 @@ impl OverlayFront {
             dim,
             last_hole: Rect::EMPTY,
             last_chrome: Vec::new(),
+            last_size_label: Rect::EMPTY,
             primed: false,
         })
     }
@@ -550,6 +552,7 @@ impl OverlayFront {
         fill_rect(&mut self.frame, bounds, Rgba::rgba(0, 0, 0, self.dim));
         self.last_hole = Rect::EMPTY;
         self.last_chrome.clear();
+        self.last_size_label = Rect::EMPTY;
         self.primed = false;
         #[cfg(windows)]
         {
@@ -597,9 +600,29 @@ impl OverlayFront {
             sel.normalized()
         };
         let hole = clip_rect(hole, bounds);
-        let hole_pad = hole.inflated(8.0).intersect(bounds);
         let fw = self.frame.width();
         let fh = self.frame.height();
+        let size_text = if hole.is_empty() {
+            String::new()
+        } else {
+            Rect::new(hole.x * dpr, hole.y * dpr, hole.w * dpr, hole.h * dpr).size_label()
+        };
+        let size_label = if hole.is_empty() {
+            Rect::EMPTY
+        } else {
+            size_label_dirty(hole, &size_text, fw, fh).intersect(bounds)
+        };
+        // Chip sits ~22px above the hole — wider than hole_pad (8px) — so it
+        // is a first-class dirty rect. Union old+new so a drag BitBlts both.
+        let size_clear = self
+            .last_size_label
+            .union(size_label)
+            .inflated(8.0)
+            .intersect(bounds);
+        let hole_pad = hole
+            .inflated(8.0)
+            .union(size_label)
+            .intersect(bounds);
 
         let mut present: Vec<Rect> = Vec::new();
         if !self.primed {
@@ -628,6 +651,10 @@ impl OverlayFront {
                     present.push(r);
                 }
             }
+        }
+        if !size_clear.is_empty() {
+            self.restore(size_clear, hole);
+            present.push(size_clear);
         }
         for r in std::mem::take(&mut self.last_chrome) {
             // Glyph / rounded-rect AA can sit a few px outside the chip.
@@ -682,14 +709,7 @@ impl OverlayFront {
                     stroke_rect(&mut self.frame, hr, Rgba::WHITE, 1.0);
                 }
             }
-            let phys = Rect::new(hole.x * dpr, hole.y * dpr, hole.w * dpr, hole.h * dpr);
-            chrome.push(paint_size_label(
-                &mut self.frame,
-                hole,
-                &phys.size_label(),
-                fw,
-                fh,
-            ));
+            chrome.push(paint_size_label(&mut self.frame, hole, &size_text, fw, fh));
             chrome.push(hole_pad);
         }
 
@@ -794,6 +814,7 @@ impl OverlayFront {
         }
         self.last_hole = hole;
         self.last_chrome = chrome;
+        self.last_size_label = size_label;
 
         if !self.primed {
             #[cfg(windows)]
@@ -876,6 +897,10 @@ fn size_label_box(hole: Rect, label: &str, ow: u32, oh: u32) -> Rect {
     Rect::new(lx, ly, lw, lh)
 }
 
+fn size_label_dirty(hole: Rect, label: &str, ow: u32, oh: u32) -> Rect {
+    size_label_box(hole, label, ow, oh).inflated(20.0)
+}
+
 fn paint_size_label(pm: &mut Pixmap, hole: Rect, label: &str, ow: u32, oh: u32) -> Rect {
     let boxr = size_label_box(hole, label, ow, oh);
     fill_rounded_rect(pm, boxr, 4.0, Rgba::rgba(0, 0, 0, 170));
@@ -889,9 +914,8 @@ fn paint_size_label(pm: &mut Pixmap, hole: Rect, label: &str, ow: u32, oh: u32) 
         false,
     );
     // blit_into_pm starts at (x-2,y-2) and the 2× atlas can hang past the
-    // chip. last_chrome uses this rect — too tight left a trail when the
-    // hole (and this chip) moved.
-    boxr.inflated(12.0)
+    // chip. OverlayFront tracks this dirty rect across frames.
+    size_label_dirty(hole, label, ow, oh)
 }
 
 fn paint_magnifier(
@@ -1659,7 +1683,7 @@ mod tests {
         let hole = Rect::new(40.0, 80.0, 220.0, 120.0);
         let label = "6800 × 3780 px";
         let boxr = size_label_box(hole, label, 1280, 800);
-        let dirty = boxr.inflated(12.0);
+        let dirty = size_label_dirty(hole, label, 1280, 800);
         let (tw, _th) = crate::text::measure(label, 12, false);
         assert!(
             dirty.w >= tw as f32 + 16.0,
@@ -1712,6 +1736,43 @@ mod tests {
             ghost_luma > 110,
             "leftover size-label trail at {sx},{sy} luma={ghost_luma}"
         );
+    }
+
+    #[test]
+    fn size_label_grow_clears_old_digits() {
+        let w = 640u32;
+        let h = 400u32;
+        let shot = gray_shot(w, h, 210);
+        let mut front = OverlayFront::new(&shot, 110).expect("front");
+        let bounds = Rect::new(0.0, 0.0, w as f32, h as f32);
+        let mut sel = Selection::new();
+        let small = Rect::new(80.0, 90.0, 40.0, 30.0);
+        sel.set_rect(small, bounds);
+        paint_sel(&mut front, &shot, &sel);
+        let small_chip = size_label_box(small, &small.size_label(), w, h);
+        let big = Rect::new(80.0, 90.0, 260.0, 180.0);
+        sel.set_rect(big, bounds);
+        paint_sel(&mut front, &shot, &sel);
+        let big_chip = size_label_box(big, &big.size_label(), w, h);
+        // Growing keeps the top-left; the chip text gets longer. Pixels that
+        // were just past the old chip must not keep the old dark fill.
+        if big_chip.right() > small_chip.right() + 4.0 {
+            let x = (small_chip.right() + 2.0) as u32;
+            let y = (small_chip.y + small_chip.h * 0.5) as u32;
+            let px = front.pixmap().pixel(x, y).expect("px").demultiply();
+            let on_new = big_chip.contains(Point::new(x as f32, y as f32));
+            if !on_new {
+                assert!(
+                    px.red() > 110,
+                    "grow left a size-chip trail at {x},{y} r={}",
+                    px.red()
+                );
+            }
+        }
+        let x = (small_chip.x + 8.0) as u32;
+        let y = (small_chip.y + small_chip.h * 0.5) as u32;
+        let px = front.pixmap().pixel(x, y).expect("px").demultiply();
+        assert!(px.red() < 100, "resized chip should still be dark");
     }
 
     #[test]
