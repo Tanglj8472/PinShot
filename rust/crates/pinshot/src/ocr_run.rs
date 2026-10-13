@@ -6,8 +6,8 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use pinshot_core::ocr::{
-    det_edge_pad, det_padding, model_dir, ocr_upsample, page_from_blocks, ModelPaths, OcrModelKind,
-    OcrPage, DET_BOX_SCORE, DET_BOX_THRESH, DET_MAX_SIDE, DET_UNCLIP,
+    det_edge_pad, det_padding, model_dir, ocr_upsample_for, page_from_blocks, ModelPaths,
+    OcrModelKind, OcrPage, DET_BOX_SCORE, DET_BOX_THRESH, DET_MAX_SIDE, DET_UNCLIP,
 };
 use pinshot_core::raster::Raster;
 
@@ -47,7 +47,7 @@ fn preferred_kind() -> OcrModelKind {
     }
     pinshot_core::config::load()
         .map(|c| OcrModelKind::parse(&c.ocr_model))
-        .unwrap_or(OcrModelKind::Server)
+        .unwrap_or(OcrModelKind::Mobile)
 }
 
 fn extra_model_dirs(data_models: &Path) -> Vec<std::path::PathBuf> {
@@ -89,6 +89,11 @@ fn ensure_models_with_progress(progress: &mut dyn FnMut(&str)) -> Result<ModelPa
             preferred.det.display(),
             preferred.rec.display()
         ));
+        if kind == OcrModelKind::Server {
+            crate::logutil::log(
+                "ocr server is slow on CPU; Settings → OCR model → Mobile, or PINSHOT_OCR_MODEL=mobile",
+            );
+        }
         return Ok(preferred);
     }
     let other = match kind {
@@ -242,7 +247,17 @@ fn infer(image: &Raster, paths: &ModelPaths) -> Result<OcrPage, String> {
     if image.width < 8 || image.height < 8 {
         return Err("image too small for OCR".into());
     }
-    let scale = ocr_upsample(image.width, image.height);
+    let kind = if paths
+        .det
+        .file_name()
+        .is_some_and(|n| n == pinshot_core::ocr::SERVER_DET_FILE)
+    {
+        OcrModelKind::Server
+    } else {
+        OcrModelKind::Mobile
+    };
+    let scale = ocr_upsample_for(kind, image.width, image.height);
+    let started = std::time::Instant::now();
     let unclip = std::env::var("PINSHOT_OCR_UNCLIP")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -264,10 +279,8 @@ fn infer(image: &Raster, paths: &ModelPaths) -> Result<OcrPage, String> {
     let rgb = pad_rgb_lr(&rgb, edge);
     with_engine(paths, |ocr| {
         let result = ocr
-            // paddle-ocr-rs AngleNet is 48×192 (PP-OCRv2 cls). RapidOCR v5
-            // orientation is 80×160, so skip angle; screenshot lines are upright.
-            // Chrome 13px glyphs are ~14px tall; rec is H=48, so article clips
-            // use 3×. Extra L/R pad + unclip 1.7 keep the last CJK wrap glyph.
+            // Skip AngleNet (v2 48×192 vs RapidOCR v5 80×160). Extra L/R pad
+            // + unclip 1.7 keep the last CJK wrap glyph.
             .detect(
                 &rgb,
                 det_padding(pad_w, pad_h),
@@ -312,9 +325,11 @@ fn infer(image: &Raster, paths: &ModelPaths) -> Result<OcrPage, String> {
             Err("No text found. Select a clearer area.".into())
         } else {
             crate::logutil::log(&format!(
-                "ocr done {} chars {} tokens",
+                "ocr done {} chars {} tokens {}ms kind={}",
                 page.text.chars().count(),
-                page.tokens.len()
+                page.tokens.len(),
+                started.elapsed().as_millis(),
+                kind.as_str()
             ));
             Ok(page)
         }

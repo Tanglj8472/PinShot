@@ -437,15 +437,15 @@ impl PinWin {
         let Some(ocr) = self.ocr.as_mut() else {
             return;
         };
-        let band = Rect::from_points(g.img0, img_pt);
-        let range = tokens_in_rect(&ocr.page.tokens, band).or_else(|| {
-            let start = hit_token(&ocr.page.tokens, g.img0)
-                .or_else(|| nearest_token(&ocr.page.tokens, g.img0))?;
-            let end = nearest_token(&ocr.page.tokens, img_pt).unwrap_or(start);
-            Some((start, end))
-        });
-        if let Some(range) = range {
-            ocr.sel = Some(range);
+        // Reading-order caret range (RapidOCR / Snipaste style), not a
+        // geometric band: a tall drag used to copy every token between the
+        // first and last box that touched the rectangle.
+        let start = hit_token(&ocr.page.tokens, g.img0)
+            .or_else(|| nearest_token(&ocr.page.tokens, g.img0));
+        let end = hit_token(&ocr.page.tokens, img_pt)
+            .or_else(|| nearest_token(&ocr.page.tokens, img_pt));
+        if let (Some(start), Some(end)) = (start, end) {
+            ocr.sel = Some((start, end));
             g.selecting = true;
             self.dirty = true;
         }

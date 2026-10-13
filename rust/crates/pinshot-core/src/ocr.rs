@@ -6,8 +6,8 @@ use crate::geom::{Point, Rect};
 
 pub const MODEL_DIR_NAME: &str = "ocr-models";
 
-/// RapidOCR PP-OCRv5 ONNX (ModelScope v3.9.2). Server (~170 MB) is the
-/// default: mobile (~20 MB) loses English stems on real Chrome text.
+/// RapidOCR PP-OCRv5 ONNX (ModelScope v3.9.2). Mobile (~20 MB) is the
+/// default for interactive pins; server (~170 MB) is more accurate but slow.
 pub const MOBILE_DET_FILE: &str = "ch_PP-OCRv5_mobile_det.onnx";
 pub const MOBILE_REC_FILE: &str = "ch_PP-OCRv5_mobile_rec.onnx";
 pub const SERVER_DET_FILE: &str = "ch_PP-OCRv5_server_det.onnx";
@@ -76,13 +76,21 @@ pub fn det_edge_pad(width: u32, height: u32) -> u32 {
 }
 
 /// paddle-ocr-rs rec is hardcoded to H=48. Chrome Wikipedia is ~13px.
-/// 3× on a 500px clip makes a 1500px det + server rec feel frozen; 2× is
-/// enough for H=48 rec. Full-screen stays 1×. Unclip stays 1.7.
+/// Mobile uses 2× on short clips so H=48 rec sees usable stems. Server rec
+/// already reads 13px; extra upsample × N sequential recs freezes the UI.
+/// Full-screen stays 1×. Unclip stays 1.7.
 pub fn ocr_upsample(width: u32, height: u32) -> u32 {
+    ocr_upsample_for(OcrModelKind::Mobile, width, height)
+}
+
+pub fn ocr_upsample_for(kind: OcrModelKind, width: u32, height: u32) -> u32 {
     if let Ok(v) = std::env::var("PINSHOT_OCR_SCALE") {
         if let Ok(n) = v.trim().parse::<u32>() {
             return n.clamp(1, 4);
         }
+    }
+    if kind == OcrModelKind::Server {
+        return 1;
     }
     let short = width.min(height);
     if short < 720 {
@@ -263,33 +271,50 @@ fn glue_cjk_gap(prev: Option<char>, next: Option<char>) -> bool {
     }
 }
 
+/// Approximate glyph advance. RapidOCR maps CTC columns; paddle-ocr-rs only
+/// returns the line box, so CJK is em-square and Latin is narrower.
+fn char_advance(c: char) -> f32 {
+    if is_cjk(c) {
+        1.0
+    } else if matches!(c, 'i' | 'l' | 'I' | 'j' | 't' | 'f' | '!' | '|' | '.' | ',' | ':' | ';' | '\'' | '`')
+    {
+        0.35
+    } else if c.is_ascii_uppercase() {
+        0.72
+    } else if c.is_ascii() {
+        0.55
+    } else {
+        0.7
+    }
+}
+
 /// Split a line box into one token per character, mapped by character width.
 pub fn tokenize_line(line: usize, text: &str, box_rect: Rect) -> Vec<OcrToken> {
     let text = collapse_cjk_spaces(text.trim());
     if text.is_empty() || box_rect.w <= 0.0 || box_rect.h <= 0.0 {
         return Vec::new();
     }
-    let mut units: Vec<(String, bool)> = Vec::new();
+    let mut units: Vec<(char, bool)> = Vec::new();
     let mut space_before = false;
     for c in text.chars() {
         if c.is_whitespace() {
             space_before = !units.is_empty();
             continue;
         }
-        units.push((c.to_string(), space_before));
+        units.push((c, space_before));
         space_before = false;
     }
     if units.is_empty() {
         return Vec::new();
     }
-    let total = units.len().max(1) as f32;
+    let weight: f32 = units.iter().map(|(c, _)| char_advance(*c)).sum();
     let mut x = box_rect.x;
     let mut out = Vec::with_capacity(units.len());
-    for (u, space_before) in units {
-        let w = box_rect.w / total;
+    for (c, space_before) in units {
+        let w = (box_rect.w * (char_advance(c) / weight.max(0.01))).max(1.0);
         out.push(OcrToken {
-            rect: Rect::new(x, box_rect.y, w.max(1.0), box_rect.h.max(1.0)),
-            text: u,
+            rect: Rect::new(x, box_rect.y, w, box_rect.h.max(1.0)),
+            text: c.to_string(),
             line,
             space_before,
         });
@@ -1027,6 +1052,9 @@ mod tests {
         assert_eq!(ocr_upsample(800, 719), 2);
         assert_eq!(ocr_upsample(800, 720), 1);
         assert_eq!(ocr_upsample(1000, 900), 1);
+        assert_eq!(ocr_upsample_for(OcrModelKind::Server, 511, 177), 1);
+        assert_eq!(ocr_upsample_for(OcrModelKind::Server, 1100, 400), 1);
+        assert_eq!(ocr_upsample_for(OcrModelKind::Mobile, 511, 177), 2);
     }
 
     #[test]
@@ -1043,6 +1071,9 @@ mod tests {
             selected_text(&toks, 0, toks.len() - 1),
             "Hello 你好 PinShot"
         );
+        let i_w = toks.iter().find(|t| t.text == "l").unwrap().rect.w;
+        let cjk_w = toks.iter().find(|t| t.text == "你").unwrap().rect.w;
+        assert!(cjk_w > i_w);
     }
 
     #[test]
