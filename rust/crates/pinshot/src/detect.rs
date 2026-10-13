@@ -534,7 +534,7 @@ fn uia_from_point(
 fn msaa_from_point(sx: i32, sy: i32) -> Option<(Rect, u32)> {
     unsafe {
         let mut acc: Option<IAccessible> = None;
-        let mut child = windows_core::VARIANT::default();
+        let mut child = windows::core::VARIANT::default();
         AccessibleObjectFromPoint(POINT { x: sx, y: sy }, &mut acc, &mut child).ok()?;
         let acc = acc?;
         let mut left = 0i32;
