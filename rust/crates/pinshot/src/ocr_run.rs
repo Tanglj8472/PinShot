@@ -89,9 +89,9 @@ fn ensure_models_with_progress(progress: &mut dyn FnMut(&str)) -> Result<ModelPa
             preferred.det.display(),
             preferred.rec.display()
         ));
-        if kind == OcrModelKind::Server {
+        if kind == OcrModelKind::Server && !want_ocr_gpu() {
             crate::logutil::log(
-                "ocr server is slow on CPU; Settings → OCR model → Mobile, or PINSHOT_OCR_MODEL=mobile",
+                "ocr server is slow on CPU; Settings → OCR model → Mobile, PINSHOT_OCR_MODEL=mobile, or use a GPU",
             );
         }
         return Ok(preferred);
@@ -325,11 +325,12 @@ fn infer(image: &Raster, paths: &ModelPaths) -> Result<OcrPage, String> {
             Err("No text found. Select a clearer area.".into())
         } else {
             crate::logutil::log(&format!(
-                "ocr done {} chars {} tokens {}ms kind={}",
+                "ocr done {} chars {} tokens {}ms kind={} ep={}",
                 page.text.chars().count(),
                 page.tokens.len(),
                 started.elapsed().as_millis(),
-                kind.as_str()
+                kind.as_str(),
+                ocr_ep_label(),
             ));
             Ok(page)
         }
@@ -364,6 +365,155 @@ fn raster_to_rgb(image: &Raster) -> image::RgbImage {
         .unwrap_or_else(|| image::RgbImage::new(image.width, image.height))
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OcrGpuPref {
+    Auto,
+    ForceGpu,
+    ForceCpu,
+}
+
+fn ocr_gpu_pref() -> OcrGpuPref {
+    match std::env::var("PINSHOT_OCR_GPU")
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "0" | "false" | "off" | "no" | "cpu" => OcrGpuPref::ForceCpu,
+        "1" | "true" | "on" | "yes" | "gpu" => OcrGpuPref::ForceGpu,
+        _ => OcrGpuPref::Auto,
+    }
+}
+
+fn want_ocr_gpu() -> bool {
+    match ocr_gpu_pref() {
+        OcrGpuPref::ForceCpu => false,
+        OcrGpuPref::ForceGpu => true,
+        OcrGpuPref::Auto => has_hardware_gpu(),
+    }
+}
+
+fn has_hardware_gpu() -> bool {
+    #[cfg(windows)]
+    {
+        windows_has_hardware_gpu()
+    }
+    #[cfg(not(windows))]
+    {
+        linux_has_hardware_gpu()
+    }
+}
+
+#[cfg(windows)]
+fn windows_has_hardware_gpu() -> bool {
+    use windows::Win32::Graphics::Dxgi::{
+        CreateDXGIFactory1, IDXGIFactory1, DXGI_ADAPTER_FLAG_SOFTWARE,
+    };
+    unsafe {
+        let factory: IDXGIFactory1 = match CreateDXGIFactory1() {
+            Ok(f) => f,
+            Err(_) => return false,
+        };
+        let mut idx = 0u32;
+        while let Ok(adapter) = factory.EnumAdapters1(idx) {
+            idx += 1;
+            let Ok(desc) = adapter.GetDesc1() else {
+                continue;
+            };
+            if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32) != 0 {
+                continue;
+            }
+            // Microsoft WARP / Basic Render Driver (software).
+            if desc.VendorId == 0x1414 {
+                continue;
+            }
+            if desc.VendorId != 0 {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+#[cfg(not(windows))]
+fn linux_has_hardware_gpu() -> bool {
+    if std::path::Path::new("/dev/nvidia0").exists() {
+        return true;
+    }
+    let Ok(entries) = fs::read_dir("/sys/class/drm") else {
+        return false;
+    };
+    for ent in entries.flatten() {
+        let name = ent.file_name();
+        let name = name.to_string_lossy();
+        if !name.starts_with("card") || name.contains('-') {
+            continue;
+        }
+        let vendor = fs::read_to_string(ent.path().join("device/vendor")).unwrap_or_default();
+        let vendor = vendor
+            .trim()
+            .trim_start_matches("0x")
+            .trim_start_matches("0X");
+        let id = u32::from_str_radix(vendor, 16).unwrap_or(0);
+        match id {
+            0 | 0x1414 | 0x1234 | 0x1b36 | 0x15ad | 0x80ee => continue,
+            _ => return true,
+        }
+    }
+    false
+}
+
+fn ocr_threads() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(2)
+        .clamp(2, 8)
+}
+
+#[cfg(any(feature = "ocr", unix))]
+fn ocr_ep_label() -> &'static str {
+    if OCR_USED_GPU.load(std::sync::atomic::Ordering::Relaxed) {
+        "gpu"
+    } else {
+        "cpu"
+    }
+}
+
+#[cfg(any(feature = "ocr", unix))]
+static OCR_USED_GPU: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(any(feature = "ocr", unix))]
+fn session_gpu(
+    builder: ort::session::builder::SessionBuilder,
+) -> Result<ort::session::builder::SessionBuilder, ort::Error> {
+    use ort::session::builder::GraphOptimizationLevel;
+    let threads = ocr_threads();
+    let builder = builder
+        .with_optimization_level(GraphOptimizationLevel::Level2)?
+        .with_intra_threads(threads)?
+        .with_inter_threads(threads)?;
+    let mut eps = Vec::new();
+    #[cfg(feature = "ocr-cuda")]
+    {
+        eps.push(ort::execution_providers::CUDAExecutionProvider::default().build());
+    }
+    #[cfg(not(feature = "ocr-cuda"))]
+    {
+        use ort::execution_providers::{DirectMLExecutionProvider, WebGPUExecutionProvider};
+        let wgpu = WebGPUExecutionProvider::default();
+        #[cfg(windows)]
+        let wgpu = wgpu
+            .with_dawn_backend_type(ort::execution_providers::webgpu::WebGPUDawnBackendType::D3D12);
+        #[cfg(not(windows))]
+        let wgpu = wgpu.with_dawn_backend_type(
+            ort::execution_providers::webgpu::WebGPUDawnBackendType::Vulkan,
+        );
+        eps.push(wgpu.build());
+        eps.push(DirectMLExecutionProvider::default().build());
+    }
+    builder.with_execution_providers(eps)
+}
+
 #[cfg(any(feature = "ocr", unix))]
 fn with_engine<F>(paths: &ModelPaths, f: F) -> Result<OcrPage, String>
 where
@@ -374,32 +524,60 @@ where
         OnceLock::new();
     let cell = ENGINE.get_or_init(|| Mutex::new(None));
     let mut guard = cell.lock().map_err(|e| e.to_string())?;
-    let key = paths.rec.to_string_lossy().into_owned();
+    let gpu = want_ocr_gpu();
+    let key = format!(
+        "{}|{}",
+        paths.rec.to_string_lossy(),
+        if gpu { "gpu" } else { "cpu" }
+    );
     let need_init = match guard.as_ref() {
         Some((k, _)) => k != &key,
         None => true,
     };
     if need_init {
-        let mut ocr = paddle_ocr_rs::ocr_lite::OcrLite::new();
         let det = paths.det.to_string_lossy();
         let cls = paths.cls.to_string_lossy();
         let rec = paths.rec.to_string_lossy();
-        let threads = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(2)
-            .clamp(2, 8);
-        let init = ocr.init_models(&det, &cls, &rec, threads);
-        if let Err(e) = init {
-            crate::logutil::log(&format!(
-                "ocr init metadata dict fail: {e:?}; trying keys file"
-            ));
-            if paths.keys.is_file() {
-                ocr.init_models_with_dict(&det, &cls, &rec, &paths.keys.to_string_lossy(), threads)
-                    .map_err(|e| format!("ocr models: {e:?}"))?;
-            } else {
-                return Err(format!("ocr models: {e:?}"));
+        let threads = ocr_threads();
+        let mut used_gpu = false;
+        let mut ocr = paddle_ocr_rs::ocr_lite::OcrLite::new();
+        if gpu {
+            let mut gpu_ocr = paddle_ocr_rs::ocr_lite::OcrLite::new();
+            match gpu_ocr.init_models_custom(&det, &cls, &rec, session_gpu) {
+                Ok(()) => {
+                    crate::logutil::log("ocr engine GPU (ONNX Runtime WebGPU/CUDA)");
+                    ocr = gpu_ocr;
+                    used_gpu = true;
+                }
+                Err(e) => {
+                    crate::logutil::log(&format!(
+                        "ocr GPU init failed ({e:?}); falling back to CPU"
+                    ));
+                }
             }
         }
+        if !used_gpu {
+            let init = ocr.init_models(&det, &cls, &rec, threads);
+            if let Err(e) = init {
+                crate::logutil::log(&format!(
+                    "ocr init metadata dict fail: {e:?}; trying keys file"
+                ));
+                if paths.keys.is_file() {
+                    ocr.init_models_with_dict(
+                        &det,
+                        &cls,
+                        &rec,
+                        &paths.keys.to_string_lossy(),
+                        threads,
+                    )
+                    .map_err(|e| format!("ocr models: {e:?}"))?;
+                } else {
+                    return Err(format!("ocr models: {e:?}"));
+                }
+            }
+            crate::logutil::log(&format!("ocr engine CPU ({threads} threads)"));
+        }
+        OCR_USED_GPU.store(used_gpu, std::sync::atomic::Ordering::Relaxed);
         *guard = Some((key, ocr));
     }
     let ocr = &mut guard.as_mut().expect("engine").1;
@@ -835,5 +1013,39 @@ mod tests {
                 && joined.contains("(i.e., written in rust) targeting llvm."),
             "Wikipedia paragraph not verbatim enough: {text:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod gpu_pref_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    static ENV: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn pinshot_ocr_gpu_0_forces_cpu() {
+        let _g = ENV.lock().unwrap();
+        std::env::set_var("PINSHOT_OCR_GPU", "0");
+        assert_eq!(ocr_gpu_pref(), OcrGpuPref::ForceCpu);
+        assert!(!want_ocr_gpu());
+        std::env::set_var("PINSHOT_OCR_GPU", "cpu");
+        assert!(!want_ocr_gpu());
+        std::env::remove_var("PINSHOT_OCR_GPU");
+    }
+
+    #[test]
+    fn pinshot_ocr_gpu_1_forces_gpu_attempt() {
+        let _g = ENV.lock().unwrap();
+        std::env::set_var("PINSHOT_OCR_GPU", "gpu");
+        assert_eq!(ocr_gpu_pref(), OcrGpuPref::ForceGpu);
+        assert!(want_ocr_gpu());
+        std::env::remove_var("PINSHOT_OCR_GPU");
+        assert_eq!(ocr_gpu_pref(), OcrGpuPref::Auto);
+    }
+
+    #[test]
+    fn hardware_gpu_probe_does_not_panic() {
+        let _ = has_hardware_gpu();
     }
 }

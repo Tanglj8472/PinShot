@@ -459,7 +459,7 @@ impl PrefsApp {
                 });
         });
         ui.weak(tr(
-            "Mobile is the default (fast). Server is more accurate but much slower on CPU.",
+            "Mobile is the default (fast). Server is more accurate but slower; GPU is used when available.",
         ));
         ui.add_space(4.0);
         ui.label(RichText::new(tr("Configuration")).strong());

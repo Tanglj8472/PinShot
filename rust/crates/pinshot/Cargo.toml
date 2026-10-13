@@ -13,6 +13,9 @@ path = "src/main.rs"
 [features]
 default = []
 ocr = ["dep:ort", "dep:paddle-ocr-rs"]
+# NVIDIA CUDA 12 ONNX Runtime. Do not combine with WebGPU (pyke then
+# downloads the CPU `none` flavor). Default Windows/Linux OCR uses WebGPU.
+ocr-cuda = ["ocr", "ort/cuda"]
 
 [dependencies]
 pinshot-core = { workspace = true }
@@ -31,6 +34,7 @@ ort = { version = "=2.0.0-rc.10", optional = true, default-features = false, fea
 paddle-ocr-rs = { version = "0.6.1", optional = true, default-features = false, features = ["download-binaries"] }
 
 [target.'cfg(windows)'.dependencies]
+ort = { version = "=2.0.0-rc.10", optional = true, default-features = false, features = ["download-binaries", "std", "copy-dylibs", "webgpu"] }
 arboard = { version = "3.4", default-features = false, features = ["image-data", "windows-sys"] }
 uiautomation = "0.22"
 windows = { version = "0.58", features = [
@@ -65,5 +69,5 @@ windows = { version = "0.58", features = [
 x11rb = { version = "0.13", default-features = true, features = ["allow-unsafe-code"] }
 libc = "0.2"
 gtk = "0.18"
-ort = { version = "=2.0.0-rc.10", default-features = false, features = ["download-binaries", "std"] }
+ort = { version = "=2.0.0-rc.10", default-features = false, features = ["download-binaries", "std", "copy-dylibs", "webgpu"] }
 paddle-ocr-rs = { version = "0.6.1", default-features = false, features = ["download-binaries"] }

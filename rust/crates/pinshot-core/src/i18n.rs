@@ -205,7 +205,7 @@ const PAIRS: &[(&str, &str)] = &[
     ("OCR model:", "OCR 模型："),
     ("Mobile (faster)", "轻量（更快）"),
     ("Server (more accurate)", "服务器（更准）"),
-    ("Mobile is the default (fast). Server is more accurate but much slower on CPU.", "默认用轻量模型（快）。服务器模型更准，但 CPU 上会慢很多。"),
+    ("Mobile is the default (fast). Server is more accurate but slower; GPU is used when available.", "默认用轻量模型（快）。服务器模型更准，但更慢；有 GPU 时会用 GPU。"),
     ("The Default group cannot be removed.", "不能删除默认分组。"),
     ("The Default group cannot be renamed.", "不能重命名默认分组。"),
     ("Hotkeys already used by another app cannot be bound. Click Apply to rebind.", "已被其他程序占用的热键无法绑定。点「应用」重新注册。"),
