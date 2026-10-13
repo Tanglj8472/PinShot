@@ -1,6 +1,7 @@
 //! Application shell: tray, hotkeys, overlay, pins, prefs, session, OCR.
 
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use pinshot_core::config::{self, data_dir, Config};
@@ -139,7 +140,8 @@ struct App {
     #[cfg(unix)]
     input_hold: Option<crate::x11util::InputHold>,
     /// Hidden winit HWND so the event loop still pumps after the overlay drops.
-    pump_win: Option<Window>,
+    /// Reused as the snip overlay so the first F1 is not a cold DWM surface.
+    pump_win: Option<Rc<Window>>,
 }
 
 impl App {
@@ -305,14 +307,19 @@ impl App {
             Ok(cap) => match Overlay::start(
                 event_loop,
                 cap,
-                self.history.clone(),
+                SnipHistory::new(),
                 self.cfg.history_max,
                 translate,
                 self.proxy.clone(),
+                self.pump_win.clone(),
                 #[cfg(unix)]
                 self.input_hold.take(),
             ) {
-                Ok(ov) => self.overlay = Some(ov),
+                Ok(mut ov) => {
+                    ov.history = std::mem::take(&mut self.history);
+                    self.pump_win = Some(ov.window_rc());
+                    self.overlay = Some(ov);
+                }
                 Err(e) => {
                     #[cfg(unix)]
                     {
@@ -396,6 +403,7 @@ impl App {
         let persist = res.writes_history();
         let resnip = matches!(res, OverlayResult::Resnip);
         ov.hide_for_capture();
+        self.pump_win = Some(ov.window_rc());
         drop(ov);
         crate::logutil::log("overlay closed");
         crate::native::release_stray_grabs();
@@ -466,7 +474,7 @@ impl App {
         #[cfg(windows)]
         {
             if let Some(w) = Overlay::warmup_present(event_loop) {
-                self.pump_win = Some(w);
+                self.pump_win = Some(Rc::new(w));
                 return;
             }
             let attrs = Window::default_attributes()
@@ -476,7 +484,7 @@ impl App {
                 .with_inner_size(winit::dpi::LogicalSize::new(1.0, 1.0));
             if let Ok(w) = event_loop.create_window(attrs) {
                 w.set_visible(false);
-                self.pump_win = Some(w);
+                self.pump_win = Some(Rc::new(w));
             }
         }
         #[cfg(not(windows))]

@@ -116,6 +116,57 @@ pub struct Overlay {
     ime_preedit: bool,
 }
 
+/// Warmup / last-snip HWND is reusable only when it already matches the
+/// virtual desktop. A 1×1 pump fallback is a cold DWM surface if resized.
+fn overlay_hwnd_fits(inner_w: u32, inner_h: u32, cap_w: u32, cap_h: u32) -> bool {
+    inner_w == cap_w && inner_h == cap_h && cap_w > 1 && cap_h > 1
+}
+
+fn overlay_window(
+    event_loop: &ActiveEventLoop,
+    recycled: Option<Rc<Window>>,
+    vx: i32,
+    vy: i32,
+    w: u32,
+    h: u32,
+) -> Result<Rc<Window>, String> {
+    if let Some(window) = recycled {
+        let sz = window.inner_size();
+        if overlay_hwnd_fits(sz.width, sz.height, w, h) {
+            crate::logutil::log("overlay reuse hwnd");
+            window.set_visible(false);
+            if !native::configure_window_geom(&window, vx, vy, w, h) {
+                native::move_window(&window, vx, vy);
+                let _ = window.request_inner_size(PhysicalSize::new(w, h));
+            }
+            native::apply_overlay_style(&window);
+            return Ok(window);
+        }
+        crate::logutil::log(&format!(
+            "overlay hwnd {}x{} != capture {}x{}, create",
+            sz.width, sz.height, w, h
+        ));
+    }
+    let t0 = Instant::now();
+    let attrs = Window::default_attributes()
+        .with_title("PinShot Snip")
+        .with_decorations(false)
+        .with_resizable(false)
+        .with_visible(false)
+        .with_position(PhysicalPosition::new(vx, vy))
+        .with_inner_size(PhysicalSize::new(w, h))
+        .with_window_level(winit::window::WindowLevel::AlwaysOnTop);
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let attrs = {
+        use winit::platform::x11::WindowAttributesExtX11;
+        attrs.with_override_redirect(true)
+    };
+    let window = Rc::new(event_loop.create_window(attrs).map_err(|e| e.to_string())?);
+    crate::logutil::ms("overlay create_window", t0);
+    native::apply_overlay_style(&window);
+    Ok(window)
+}
+
 impl Overlay {
     pub fn start(
         event_loop: &ActiveEventLoop,
@@ -124,28 +175,14 @@ impl Overlay {
         history_max: u32,
         translate_on_select: bool,
         proxy: winit::event_loop::EventLoopProxy<crate::event::AppEvent>,
+        recycled: Option<Rc<Window>>,
         #[cfg(unix)] mut pre_hold: Option<crate::x11util::InputHold>,
     ) -> Result<Self, String> {
         let t0 = Instant::now();
         let (vx, vy) = capture.virtual_origin;
         let w = capture.composed.width;
         let h = capture.composed.height;
-        let attrs = Window::default_attributes()
-            .with_title("PinShot Snip")
-            .with_decorations(false)
-            .with_resizable(false)
-            .with_visible(false)
-            .with_position(PhysicalPosition::new(vx, vy))
-            .with_inner_size(PhysicalSize::new(w, h))
-            .with_window_level(winit::window::WindowLevel::AlwaysOnTop);
-        #[cfg(all(unix, not(target_os = "macos")))]
-        let attrs = {
-            use winit::platform::x11::WindowAttributesExtX11;
-            attrs.with_override_redirect(true)
-        };
-        let window = Rc::new(event_loop.create_window(attrs).map_err(|e| e.to_string())?);
-        crate::logutil::ms("overlay create_window", t0);
-        native::apply_overlay_style(&window);
+        let window = overlay_window(event_loop, recycled, vx, vy, w, h)?;
         window.set_cursor(CursorIcon::Crosshair);
         // IME only while a text editor is open; a standing IME grab lets Tab
         // leak to Chrome before XGrabKeyboard wins.
@@ -236,14 +273,15 @@ impl Overlay {
             s.cursor = Point::new((sx - ox) as f32, (sy - oy) as f32);
             s.hover = hover_rect(s.cursor, &s.windows, &[], s.bounds());
         }
-        s.window.set_visible(true);
-        native::focus_window(&s.window);
         s.load_elements();
         if s.translate_on_select {
             s.show_toast(tr("Select text, then release"));
         }
         #[cfg(unix)]
         {
+            // Map before the grab so the overlay is a valid pointer target.
+            s.window.set_visible(true);
+            native::focus_window(&s.window);
             // Grab the pointer on the overlay *before* the first frame, on the
             // same connection as InputHold (replaces the root grab; no gap for
             // Chrome). Ungrab keyboard inside grab_overlay_pointer so
@@ -276,6 +314,8 @@ impl Overlay {
         let t_draw = Instant::now();
         s.redraw();
         crate::logutil::ms("overlay first redraw", t_draw);
+        #[cfg(not(unix))]
+        native::focus_window(&s.window);
         crate::logutil::ms("overlay start", t0);
         Ok(s)
     }
@@ -407,6 +447,10 @@ impl Overlay {
 
     pub fn window_id(&self) -> WindowId {
         self.window.id()
+    }
+
+    pub fn window_rc(&self) -> Rc<Window> {
+        self.window.clone()
     }
 
     pub fn cursor(&self) -> Point {
@@ -1947,8 +1991,8 @@ fn keysym_to_winit(keysym: u32) -> Option<(Key, Option<String>)> {
 mod keysym_tests {
     use super::keysym_to_winit;
     use super::{
-        annot_stroke_extent, handle_press_point, recover_should_commit_sel, recover_stroke_action,
-        RecoverStroke,
+        annot_stroke_extent, handle_press_point, overlay_hwnd_fits, recover_should_commit_sel,
+        recover_stroke_action, RecoverStroke,
     };
     use pinshot_core::annotation::{Annotator, Tool};
     use pinshot_core::geom::Point;
@@ -2042,6 +2086,14 @@ mod keysym_tests {
         assert!(recover_should_commit_sel(false, 2, SelState::Resizing));
         assert!(!recover_should_commit_sel(true, 2, SelState::Creating));
         assert!(!recover_should_commit_sel(false, 2, SelState::Selected));
+    }
+
+    #[test]
+    fn overlay_hwnd_fits_full_desktop_only() {
+        assert!(overlay_hwnd_fits(4160, 1400, 4160, 1400));
+        assert!(!overlay_hwnd_fits(1, 1, 4160, 1400));
+        assert!(!overlay_hwnd_fits(4160, 1400, 1920, 1080));
+        assert!(!overlay_hwnd_fits(0, 0, 0, 0));
     }
 
     #[test]

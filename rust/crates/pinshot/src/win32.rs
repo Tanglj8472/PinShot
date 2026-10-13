@@ -138,6 +138,22 @@ pub fn move_window(hwnd: HWND, x: i32, y: i32) {
     }
 }
 
+/// Place a hidden overlay without mapping it. Reused warmup HWNDs sit
+/// off-screen until the first GDI blit, then ShowWindow.
+pub fn place_window(hwnd: HWND, x: i32, y: i32, w: u32, h: u32) {
+    unsafe {
+        let _ = SetWindowPos(
+            hwnd,
+            HWND_TOPMOST,
+            x,
+            y,
+            w as i32,
+            h as i32,
+            SWP_NOACTIVATE | SWP_NOREDRAW,
+        );
+    }
+}
+
 pub fn pointer_ctrl_down() -> bool {
     unsafe { GetAsyncKeyState(VK_CONTROL.0 as i32) < 0 }
 }

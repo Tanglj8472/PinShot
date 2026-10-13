@@ -181,7 +181,13 @@ pub fn pointer_in_client(_window: &Window) -> Option<(i32, i32, bool)> {
     None
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+pub fn configure_window_geom(window: &Window, x: i32, y: i32, w: u32, h: u32) -> bool {
+    crate::win32::place_window(hwnd_of(window), x, y, w, h);
+    true
+}
+
+#[cfg(not(any(unix, windows)))]
 pub fn configure_window_geom(_window: &Window, _x: i32, _y: i32, _w: u32, _h: u32) -> bool {
     false
 }
