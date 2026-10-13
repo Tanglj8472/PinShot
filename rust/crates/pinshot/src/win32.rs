@@ -291,3 +291,56 @@ pub fn post_quit_like(hwnd: HWND) {
         let _ = PostMessageW(hwnd, WM_DESTROY, WPARAM(0), LPARAM(0));
     }
 }
+
+/// F5: send Ctrl+C, read clipboard text, restore later via caller.
+pub fn send_ctrl_c() -> Result<(), String> {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VIRTUAL_KEY,
+    };
+    unsafe {
+        for vk in [0x12u16, 0x10, 0x5B, 0x5C] {
+            if GetAsyncKeyState(vk as i32) as u16 & 0x8000 != 0 {
+                let up = INPUT {
+                    r#type: INPUT_KEYBOARD,
+                    Anonymous: INPUT_0 {
+                        ki: KEYBDINPUT {
+                            wVk: VIRTUAL_KEY(vk),
+                            dwFlags: KEYEVENTF_KEYUP,
+                            ..Default::default()
+                        },
+                    },
+                };
+                let _ = SendInput(&[up], std::mem::size_of::<INPUT>() as i32);
+            }
+        }
+        let n = SendInput(
+            &[
+                key(0x11, false),
+                key(0x43, false),
+                key(0x43, true),
+                key(0x11, true),
+            ],
+            std::mem::size_of::<INPUT>() as i32,
+        );
+        if n != 4 {
+            return Err("SendInput Ctrl+C failed".into());
+        }
+    }
+    Ok(())
+}
+
+fn key(vk: u16, up: bool) -> windows::Win32::UI::Input::KeyboardAndMouse::INPUT {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VIRTUAL_KEY,
+    };
+    INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: VIRTUAL_KEY(vk),
+                dwFlags: if up { KEYEVENTF_KEYUP } else { Default::default() },
+                ..Default::default()
+            },
+        },
+    }
+}

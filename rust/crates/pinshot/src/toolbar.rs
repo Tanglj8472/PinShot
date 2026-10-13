@@ -33,6 +33,7 @@ pub enum TbAction {
     Save,
     Copy,
     Width(i32),
+    WidthSet(i32),
     Color(u8),
     CustomColor,
     Fill(bool),
@@ -44,7 +45,6 @@ pub enum TbAction {
     Outline(bool),
     Family(&'static str),
     Ocr,
-    Translate,
     Check,
 }
 
@@ -57,12 +57,21 @@ pub struct TbButton {
     pub checked: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExtraKind {
+    Icon,
+    Chip,
+    Combo,
+}
+
 #[derive(Clone, Debug)]
 pub struct TbExtra {
     pub rect: Rect,
     pub action: TbAction,
     pub label: String,
     pub checked: bool,
+    pub icon: Option<IconKind>,
+    pub kind: ExtraKind,
 }
 
 #[derive(Clone, Debug)]
@@ -79,6 +88,9 @@ pub struct Toolbar {
     pub width_value: i32,
     pub custom_color: Rect,
     pub custom_value: Rgba,
+    pub slider: Rect,
+    pub slider_min: i32,
+    pub slider_max: i32,
 }
 
 /// Compact cells (Snipaste-like density). Hit-testing uses the same metrics.
@@ -125,9 +137,11 @@ impl Toolbar {
             (IconKind::Mosaic, TbAction::Tool(Tool::Mosaic), "Mosaic / blur"),
             (IconKind::Text, TbAction::Tool(Tool::Text), "Text"),
             (IconKind::Number, TbAction::Tool(Tool::Number), "Numbered marker (N)"),
+            (IconKind::Eraser, TbAction::Tool(Tool::Eraser), "Eraser"),
         ];
         let acts: Vec<(IconKind, TbAction, &'static str)> = if for_pin {
             vec![
+                (IconKind::Ocr, TbAction::Ocr, "Recognize text"),
                 (IconKind::Undo, TbAction::Undo, "Undo (Ctrl+Z)"),
                 (IconKind::Redo, TbAction::Redo, "Redo (Ctrl+Y)"),
                 (IconKind::Check, TbAction::Check, "Show toolbar"),
@@ -137,8 +151,7 @@ impl Toolbar {
             ]
         } else {
             vec![
-                (IconKind::Text, TbAction::Ocr, "Recognize text"),
-                (IconKind::Copy, TbAction::Translate, "Recognize and translate"),
+                (IconKind::Ocr, TbAction::Ocr, "Recognize text"),
                 (IconKind::Undo, TbAction::Undo, "Undo (Ctrl+Z)"),
                 (IconKind::Redo, TbAction::Redo, "Redo (Ctrl+Y)"),
                 (IconKind::Close, TbAction::Close, "Cancel (Esc)"),
@@ -193,103 +206,146 @@ impl Toolbar {
         let mut panel = None;
         let mut swatches = Vec::new();
         let mut extras = Vec::new();
-        let mut width_minus = Rect::EMPTY;
-        let mut width_plus = Rect::EMPTY;
+        let width_minus = Rect::EMPTY;
+        let width_plus = Rect::EMPTY;
         let mut width_label = Rect::EMPTY;
         let mut custom_color = Rect::EMPTY;
+        let mut slider = Rect::EMPTY;
+        let slider_min = 1;
+        let mut slider_max = 30;
         let custom_value = style.map(|s| s.color).unwrap_or(Rgba::RED);
         if active.is_some() {
-            let has_style_row = matches!(
-                active,
-                Some(Tool::Rect | Tool::Ellipse | Tool::Line | Tool::Mosaic | Tool::Text | Tool::Number | Tool::Eraser)
-            );
-            let show_palette = !matches!(active, Some(Tool::Mosaic | Tool::Eraser | Tool::Select));
-            let pw = (20.0_f32 * 16.0 + 128.0).min(overlay.w.max(128.0));
-            let ph = if has_style_row { 70.0 } else { 42.0 };
-            let mut py = bar.bottom() + 4.0;
+            // Measure a hugging row, then place it under (or above) the bar.
+            let ph = 32.0;
+            let mut py = bar.bottom() + 2.0;
             if py + ph > overlay.bottom() {
-                py = bar.y - ph - 4.0;
+                py = bar.y - ph - 2.0;
             }
-            let px = clamp_f32(bar.x, overlay.x, overlay.right() - pw);
-            let pr = Rect::new(px, py, pw, ph);
-            panel = Some(pr);
-
-            let mut chip_x = pr.x + 8.0;
-            let chip_y = pr.y + 8.0;
+            let chip_y = py + 4.0;
+            let mut chip_x = 6.0;
+            let show_width = matches!(
+                active,
+                Some(Tool::Rect | Tool::Ellipse | Tool::Line | Tool::Pen | Tool::Marker | Tool::Mosaic | Tool::Eraser | Tool::Number)
+            );
+            let numeric_width = matches!(active, Some(Tool::Mosaic | Tool::Eraser));
+            if show_width {
+                let ww = if numeric_width { 28.0 } else { 26.0 };
+                width_label = Rect::new(chip_x, chip_y, ww, 24.0);
+                chip_x += ww + 4.0;
+            }
             if let Some(st) = style {
                 match active {
                     Some(Tool::Rect) | Some(Tool::Ellipse) => {
-                        push_chip(&mut extras, &mut chip_x, chip_y, 58.0, tr("Outline"), TbAction::Fill(false), !st.filled);
-                        push_chip(&mut extras, &mut chip_x, chip_y, 52.0, tr("Filled"), TbAction::Fill(true), st.filled);
-                        push_chip(&mut extras, &mut chip_x, chip_y, 46.0, tr("Solid"), TbAction::LineStyle(LineStyleKind::Solid), st.line_style == LineStyleKind::Solid);
-                        push_chip(&mut extras, &mut chip_x, chip_y, 46.0, tr("Dash"), TbAction::LineStyle(LineStyleKind::Dash), st.line_style == LineStyleKind::Dash);
-                        push_chip(&mut extras, &mut chip_x, chip_y, 40.0, tr("Dot"), TbAction::LineStyle(LineStyleKind::Dot), st.line_style == LineStyleKind::Dot);
+                        push_icon(&mut extras, &mut chip_x, chip_y, IconKind::Fill, TbAction::Fill(true), st.filled);
+                        push_icon(&mut extras, &mut chip_x, chip_y, IconKind::Outline, TbAction::Fill(false), !st.filled);
+                        push_icon(&mut extras, &mut chip_x, chip_y, IconKind::Line, TbAction::LineStyle(LineStyleKind::Solid), st.line_style == LineStyleKind::Solid);
+                        push_icon(&mut extras, &mut chip_x, chip_y, IconKind::Dash, TbAction::LineStyle(LineStyleKind::Dash), st.line_style == LineStyleKind::Dash);
                     }
                     Some(Tool::Line) => {
-                        push_chip(&mut extras, &mut chip_x, chip_y, 46.0, tr("Solid"), TbAction::LineStyle(LineStyleKind::Solid), st.line_style == LineStyleKind::Solid);
-                        push_chip(&mut extras, &mut chip_x, chip_y, 46.0, tr("Dash"), TbAction::LineStyle(LineStyleKind::Dash), st.line_style == LineStyleKind::Dash);
-                        push_chip(&mut extras, &mut chip_x, chip_y, 40.0, tr("Dot"), TbAction::LineStyle(LineStyleKind::Dot), st.line_style == LineStyleKind::Dot);
+                        let icon = match st.line_style {
+                            LineStyleKind::Solid => IconKind::Line,
+                            LineStyleKind::Dash => IconKind::Dash,
+                            LineStyleKind::Dot => IconKind::Dot,
+                        };
+                        let next = match st.line_style {
+                            LineStyleKind::Solid => LineStyleKind::Dash,
+                            LineStyleKind::Dash => LineStyleKind::Dot,
+                            LineStyleKind::Dot => LineStyleKind::Solid,
+                        };
+                        push_combo(
+                            &mut extras,
+                            &mut chip_x,
+                            chip_y,
+                            56.0,
+                            String::new(),
+                            Some(icon),
+                            TbAction::LineStyle(next),
+                        );
                     }
                     Some(Tool::Mosaic) => {
-                        push_chip(&mut extras, &mut chip_x, chip_y, 50.0, tr("Brush"), TbAction::SetMode(DrawMode::Brush), st.mode == DrawMode::Brush);
-                        push_chip(&mut extras, &mut chip_x, chip_y, 44.0, tr("Rect"), TbAction::SetMode(DrawMode::Rect), st.mode == DrawMode::Rect);
-                        push_chip(&mut extras, &mut chip_x, chip_y, 56.0, tr("Mosaic"), TbAction::SetEffect(Effect::Mosaic), st.effect == Effect::Mosaic);
-                        push_chip(&mut extras, &mut chip_x, chip_y, 44.0, tr("Blur"), TbAction::SetEffect(Effect::Blur), st.effect == Effect::Blur);
+                        push_icon(&mut extras, &mut chip_x, chip_y, IconKind::Mosaic, TbAction::SetEffect(Effect::Mosaic), st.effect == Effect::Mosaic);
+                        push_icon(&mut extras, &mut chip_x, chip_y, IconKind::Blur, TbAction::SetEffect(Effect::Blur), st.effect == Effect::Blur);
+                        push_icon(&mut extras, &mut chip_x, chip_y, IconKind::Pen, TbAction::SetMode(DrawMode::Brush), st.mode == DrawMode::Brush);
+                        push_icon(&mut extras, &mut chip_x, chip_y, IconKind::Rect, TbAction::SetMode(DrawMode::Rect), st.mode == DrawMode::Rect);
+                        slider = Rect::new(chip_x, chip_y + 6.0, 72.0, 12.0);
+                        slider_max = 30;
+                        chip_x += 80.0;
                     }
                     Some(Tool::Eraser) => {
-                        push_chip(&mut extras, &mut chip_x, chip_y, 50.0, tr("Brush"), TbAction::SetMode(DrawMode::Brush), st.mode == DrawMode::Brush);
-                        push_chip(&mut extras, &mut chip_x, chip_y, 44.0, tr("Rect"), TbAction::SetMode(DrawMode::Rect), st.mode == DrawMode::Rect);
+                        push_icon(&mut extras, &mut chip_x, chip_y, IconKind::Pen, TbAction::SetMode(DrawMode::Brush), st.mode == DrawMode::Brush);
+                        push_icon(&mut extras, &mut chip_x, chip_y, IconKind::Rect, TbAction::SetMode(DrawMode::Rect), st.mode == DrawMode::Rect);
                     }
                     Some(Tool::Text) => {
-                        push_chip(&mut extras, &mut chip_x, chip_y, 24.0, "B".into(), TbAction::Bold(!st.bold), st.bold);
-                        push_chip(&mut extras, &mut chip_x, chip_y, 24.0, "I".into(), TbAction::Italic(!st.italic), st.italic);
-                        push_chip(&mut extras, &mut chip_x, chip_y, 56.0, tr("Outline"), TbAction::Outline(!st.outline), st.outline);
-                        for (fam, label) in pinshot_core::font::FAMILY_PRESETS {
-                            let on = if fam.is_empty() {
-                                st.family.is_empty()
-                            } else {
-                                st.family.eq_ignore_ascii_case(fam)
-                            };
-                            let w = match *fam {
-                                "" => 52.0,
-                                "Sans" => 46.0,
-                                "Serif" => 48.0,
-                                _ => 50.0,
-                            };
-                            push_chip(
-                                &mut extras,
-                                &mut chip_x,
-                                chip_y,
-                                w,
-                                tr(label),
-                                TbAction::Family(*fam),
-                                on,
-                            );
-                        }
+                        push_chip(&mut extras, &mut chip_x, chip_y, 22.0, "B".into(), TbAction::Bold(!st.bold), st.bold);
+                        push_chip(&mut extras, &mut chip_x, chip_y, 22.0, "I".into(), TbAction::Italic(!st.italic), st.italic);
+                        push_chip(&mut extras, &mut chip_x, chip_y, 22.0, "A".into(), TbAction::Outline(!st.outline), st.outline);
+                        let presets = pinshot_core::font::FAMILY_PRESETS;
+                        let idx = presets
+                            .iter()
+                            .position(|(id, _)| {
+                                if id.is_empty() {
+                                    st.family.is_empty()
+                                } else {
+                                    st.family.eq_ignore_ascii_case(id)
+                                }
+                            })
+                            .unwrap_or(0);
+                        let label = format!("{}  {}", tr(presets[idx].1), st.font_size.max(8));
+                        let next = presets[(idx + 1) % presets.len()].0;
+                        push_combo(
+                            &mut extras,
+                            &mut chip_x,
+                            chip_y,
+                            118.0,
+                            label,
+                            None,
+                            TbAction::Family(next),
+                        );
                     }
                     Some(Tool::Number) => {
-                        push_chip(&mut extras, &mut chip_x, chip_y, 52.0, tr("Filled"), TbAction::Fill(true), st.filled);
-                        push_chip(&mut extras, &mut chip_x, chip_y, 58.0, tr("Outline"), TbAction::Fill(false), !st.filled);
+                        push_icon(&mut extras, &mut chip_x, chip_y, IconKind::Fill, TbAction::Fill(true), st.filled);
+                        push_icon(&mut extras, &mut chip_x, chip_y, IconKind::Outline, TbAction::Fill(false), !st.filled);
                     }
                     _ => {}
                 }
             }
-
-            let row_y = if has_style_row { pr.y + 38.0 } else { pr.y + 10.0 };
-            width_minus = Rect::new(pr.x + 8.0, row_y, 22.0, 22.0);
-            width_label = Rect::new(pr.x + 32.0, row_y, 28.0, 22.0);
-            width_plus = Rect::new(pr.x + 62.0, row_y, 22.0, 22.0);
-            let mut pal_x = pr.x + 90.0;
+            let show_palette = !matches!(active, Some(Tool::Mosaic | Tool::Eraser | Tool::Select));
             if show_palette {
-                custom_color = Rect::new(pal_x, row_y, 22.0, 22.0);
-                pal_x += 26.0;
+                custom_color = Rect::new(chip_x, chip_y, 22.0, 24.0);
+                chip_x += 26.0;
+                let pal_x = chip_x;
+                let pal_y = py + 3.0;
                 for (i, c) in palette_colors().iter().enumerate() {
                     let col = i % 10;
                     let row = i / 10;
-                    let sr = Rect::new(pal_x + col as f32 * 16.0, row_y - 2.0 + row as f32 * 16.0, 14.0, 14.0);
+                    let sr = Rect::new(
+                        pal_x + col as f32 * 14.0,
+                        pal_y + row as f32 * 13.0,
+                        12.0,
+                        12.0,
+                    );
                     swatches.push((sr, *c, i as u8));
                 }
+                chip_x += 10.0 * 14.0;
             }
+            let pw = (chip_x + 6.0).clamp(32.0, overlay.w.max(32.0));
+            let px = clamp_f32(bar.x, overlay.x, overlay.right() - pw);
+            let dx = px - 0.0;
+            let shift = |r: &mut Rect| {
+                if !r.is_empty() {
+                    r.x += dx;
+                }
+            };
+            shift(&mut width_label);
+            shift(&mut custom_color);
+            shift(&mut slider);
+            for extra in &mut extras {
+                extra.rect.x += dx;
+            }
+            for (sr, _, _) in &mut swatches {
+                sr.x += dx;
+            }
+            panel = Some(Rect::new(px, py, pw, ph));
         }
         Self {
             bar,
@@ -304,6 +360,62 @@ impl Toolbar {
             width_value: 0,
             custom_color,
             custom_value,
+            slider,
+            slider_min,
+            slider_max,
+        }
+    }
+
+    /// Compact Snipaste-style hover strip on an idle pin (OCR / save / copy / close).
+    pub fn layout_pin_hover(sel: Rect, overlay: Rect) -> Self {
+        let acts = [
+            (IconKind::Ocr, TbAction::Ocr, "Recognize text"),
+            (IconKind::Save, TbAction::Save, "Save"),
+            (IconKind::Copy, TbAction::Copy, "Copy"),
+            (IconKind::Close, TbAction::Close, "Close"),
+        ];
+        let n_acts = acts.len() as f32;
+        let w = PAD * 2.0 + n_acts * CELL;
+        let h = CELL + PAD * 2.0;
+        let mut x = sel.right() - w - 4.0;
+        let mut y = sel.bottom() - h - 4.0;
+        if y < sel.y {
+            y = sel.y + 4.0;
+        }
+        x = clamp_f32(
+            x,
+            overlay.x.max(sel.x),
+            overlay.right().min(sel.right()) - w,
+        );
+        let bar = Rect::new(x, y, w, h);
+        let mut buttons = Vec::new();
+        let mut cx = x + PAD;
+        for (icon, action, tip) in acts {
+            buttons.push(TbButton {
+                rect: Rect::new(cx, y + PAD, CELL, CELL),
+                icon,
+                action,
+                tip,
+                checked: false,
+            });
+            cx += CELL;
+        }
+        Self {
+            bar,
+            panel: None,
+            buttons,
+            extras: Vec::new(),
+            swatches: Vec::new(),
+            visible: true,
+            width_minus: Rect::EMPTY,
+            width_plus: Rect::EMPTY,
+            width_label: Rect::EMPTY,
+            width_value: 0,
+            custom_color: Rect::EMPTY,
+            custom_value: Rgba::RED,
+            slider: Rect::EMPTY,
+            slider_min: 1,
+            slider_max: 30,
         }
     }
 
@@ -320,6 +432,7 @@ impl Toolbar {
             || self.width_plus.contains(p)
             || self.width_label.contains(p)
             || self.custom_color.contains(p)
+            || self.slider.contains(p)
         {
             return true;
         }
@@ -337,6 +450,12 @@ impl Toolbar {
     pub fn hit(&self, p: Point) -> Option<TbAction> {
         if !self.visible {
             return None;
+        }
+        if !self.slider.is_empty() && self.slider.contains(p) {
+            let t = ((p.x - self.slider.x) / self.slider.w.max(1.0)).clamp(0.0, 1.0);
+            let span = (self.slider_max - self.slider_min) as f32;
+            let v = self.slider_min + (t * span).round() as i32;
+            return Some(TbAction::WidthSet(v));
         }
         if self.width_minus.contains(p) {
             return Some(TbAction::Width(-1));
@@ -383,10 +502,51 @@ fn push_chip(
     checked: bool,
 ) {
     extras.push(TbExtra {
-        rect: Rect::new(*x, y, w, 22.0),
+        rect: Rect::new(*x, y, w, 24.0),
         action,
         label,
         checked,
+        icon: None,
+        kind: ExtraKind::Chip,
+    });
+    *x += w + 2.0;
+}
+
+fn push_icon(
+    extras: &mut Vec<TbExtra>,
+    x: &mut f32,
+    y: f32,
+    icon: IconKind,
+    action: TbAction,
+    checked: bool,
+) {
+    extras.push(TbExtra {
+        rect: Rect::new(*x, y, 24.0, 24.0),
+        action,
+        label: String::new(),
+        checked,
+        icon: Some(icon),
+        kind: ExtraKind::Icon,
+    });
+    *x += 24.0;
+}
+
+fn push_combo(
+    extras: &mut Vec<TbExtra>,
+    x: &mut f32,
+    y: f32,
+    w: f32,
+    label: String,
+    icon: Option<IconKind>,
+    action: TbAction,
+) {
+    extras.push(TbExtra {
+        rect: Rect::new(*x, y, w, 24.0),
+        action,
+        label,
+        checked: false,
+        icon,
+        kind: ExtraKind::Combo,
     });
     *x += w + 4.0;
 }
@@ -419,7 +579,40 @@ mod tests {
         let st = Style::for_tool(Tool::Pen);
         let tb = Toolbar::layout_pin(sel, over, Some(Tool::Pen), false, Some(&st));
         assert!(tb.bar.w > 0.0);
-        assert_eq!(tb.hit(Point::new(tb.width_plus.x + 2.0, tb.width_plus.y + 2.0)), Some(TbAction::Width(1)));
+        assert!(tb.panel.is_some());
+        assert!(
+            !tb.custom_color.is_empty(),
+            "pen sub-panel hugs a colour swatch"
+        );
+        assert!(
+            tb.buttons.iter().any(|b| b.action == TbAction::Ocr),
+            "pin annotation toolbar must expose OCR"
+        );
+    }
+
+    #[test]
+    fn pin_hover_bar_has_ocr() {
+        let sel = Rect::new(0.0, 0.0, 240.0, 120.0);
+        let over = Rect::new(0.0, 0.0, 240.0, 120.0);
+        let tb = Toolbar::layout_pin_hover(sel, over);
+        let ocr = tb
+            .buttons
+            .iter()
+            .find(|b| b.action == TbAction::Ocr)
+            .expect("hover OCR");
+        assert_eq!(ocr.icon, IconKind::Ocr);
+        assert_eq!(tb.hit(ocr.rect.center()), Some(TbAction::Ocr));
+        assert!(tb.buttons.iter().any(|b| b.action == TbAction::Copy));
+        assert!(tb.buttons.iter().any(|b| b.action == TbAction::Close));
+        assert!(
+            tb.buttons
+                .iter()
+                .all(|b| !matches!(b.action, TbAction::Tool(_))),
+            "idle hover bar is actions only"
+        );
+        let tips: Vec<&str> = tb.buttons.iter().map(|b| b.tip).collect();
+        assert_eq!(tips, ["Recognize text", "Save", "Copy", "Close"]);
+        assert!(tips.iter().all(|t| !t.is_empty()));
     }
 
     #[test]
@@ -440,33 +633,49 @@ mod tests {
             Some(TbAction::CustomColor)
         );
         assert!(tb.extras.iter().any(|e| e.action == TbAction::LineStyle(LineStyleKind::Dash)));
-        assert!(tb.extras.iter().any(|e| e.action == TbAction::LineStyle(LineStyleKind::Dot)));
         let dash = tb.extras.iter().find(|e| e.action == TbAction::LineStyle(LineStyleKind::Dash)).unwrap();
         assert_eq!(tb.hit(dash.rect.center()), Some(TbAction::LineStyle(LineStyleKind::Dash)));
+        let pw = tb.panel.unwrap().w;
+        assert!(
+            pw < 420.0,
+            "Snipaste sub-panel hugs the chips, not a 500px strip, w={pw}"
+        );
     }
 
     #[test]
-    fn line_panel_has_dash_dot() {
+    fn line_panel_has_style_combo() {
         let sel = Rect::new(100.0, 100.0, 400.0, 240.0);
         let over = Rect::new(0.0, 0.0, 1920.0, 1200.0);
         let st = Style::for_tool(Tool::Line);
         let tb = Toolbar::layout(sel, over, Some(Tool::Line), false, Some(&st));
-        assert!(tb.extras.iter().any(|e| e.action == TbAction::LineStyle(LineStyleKind::Dash)));
-        assert!(tb.extras.iter().any(|e| e.action == TbAction::LineStyle(LineStyleKind::Dot)));
+        let combo = tb
+            .extras
+            .iter()
+            .find(|e| e.kind == ExtraKind::Combo)
+            .expect("line-style combo");
+        assert!(matches!(combo.action, TbAction::LineStyle(_)));
+        assert_eq!(tb.hit(combo.rect.center()), Some(combo.action));
+        let pen = Toolbar::layout(sel, over, Some(Tool::Pen), false, Some(&Style::for_tool(Tool::Pen)));
+        assert!(
+            pen.panel.unwrap().w < tb.panel.unwrap().w,
+            "pen is colour-only; line adds a style combo"
+        );
     }
 
     #[test]
-    fn text_panel_has_family_chips() {
+    fn text_panel_has_font_combo() {
         let sel = Rect::new(100.0, 100.0, 400.0, 240.0);
         let over = Rect::new(0.0, 0.0, 1920.0, 1200.0);
         let st = Style::for_tool(Tool::Text);
         let tb = Toolbar::layout(sel, over, Some(Tool::Text), false, Some(&st));
-        assert!(tb.extras.iter().any(|e| e.action == TbAction::Family("")));
-        assert!(tb.extras.iter().any(|e| e.action == TbAction::Family("Sans")));
-        assert!(tb.extras.iter().any(|e| e.action == TbAction::Family("Serif")));
-        assert!(tb.extras.iter().any(|e| e.action == TbAction::Family("Mono")));
-        let sans = tb.extras.iter().find(|e| e.action == TbAction::Family("Sans")).unwrap();
-        assert_eq!(tb.hit(sans.rect.center()), Some(TbAction::Family("Sans")));
+        let combo = tb
+            .extras
+            .iter()
+            .find(|e| e.kind == ExtraKind::Combo)
+            .expect("font combo");
+        assert!(matches!(combo.action, TbAction::Family(_)));
+        assert!(combo.label.contains(char::is_numeric), "combo shows size, got {}", combo.label);
+        assert_eq!(tb.hit(combo.rect.center()), Some(combo.action));
     }
 
     #[test]
@@ -483,5 +692,34 @@ mod tests {
         assert_eq!(tb.hit(text), Some(TbAction::Tool(Tool::Text)));
         let pin = tb.button_center(TbAction::Pin).unwrap();
         assert_eq!(tb.hit(pin), Some(TbAction::Pin));
+        let ocr = tb
+            .buttons
+            .iter()
+            .find(|b| b.action == TbAction::Ocr)
+            .expect("ocr");
+        assert_eq!(ocr.icon, IconKind::Ocr);
+        assert_eq!(ocr.tip, "Recognize text");
+        assert!(
+            tb.buttons
+                .iter()
+                .all(|b| b.tip != "Recognize and translate"),
+            "translate is F5-only, not a toolbar button"
+        );
+        assert!(tb.buttons.iter().any(|b| b.action == TbAction::Tool(Tool::Eraser)));
+    }
+
+    #[test]
+    fn text_panel_uses_outline_as_a() {
+        let sel = Rect::new(100.0, 100.0, 400.0, 240.0);
+        let over = Rect::new(0.0, 0.0, 1920.0, 1200.0);
+        let st = Style::for_tool(Tool::Text);
+        let tb = Toolbar::layout(sel, over, Some(Tool::Text), false, Some(&st));
+        let a = tb.extras.iter().find(|e| e.action == TbAction::Outline(true) || e.action == TbAction::Outline(false));
+        assert_eq!(a.map(|e| e.label.as_str()), Some("A"));
+        assert!(tb.panel.unwrap().h <= 36.0, "Snipaste sub-panel is one row");
+        let mos = Toolbar::layout(sel, over, Some(Tool::Mosaic), false, Some(&Style::for_tool(Tool::Mosaic)));
+        assert!(!mos.slider.is_empty(), "mosaic panel has a size slider");
+        let at = Point::new(mos.slider.x + mos.slider.w * 0.5, mos.slider.y + 4.0);
+        assert!(matches!(mos.hit(at), Some(TbAction::WidthSet(_))));
     }
 }

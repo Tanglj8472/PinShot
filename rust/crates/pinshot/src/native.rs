@@ -71,12 +71,36 @@ pub fn raise_on_top(window: &Window) {
     let _ = window;
 }
 
+/// Raise `window` above `lower` (pin menu above the F5 strip on the pin).
+pub fn raise_above(window: &Window, lower: Option<&Window>) {
+    #[cfg(unix)]
+    {
+        if let Some(xid) = crate::x11util::xid_of(window) {
+            let low = lower.and_then(crate::x11util::xid_of);
+            match low {
+                Some(l) => crate::x11util::raise_xid_above(xid, &[l]),
+                None => crate::x11util::raise_xid_above(xid, &[]),
+            }
+            return;
+        }
+    }
+    let _ = (window, lower);
+}
+
 pub fn focus_window(window: &Window) {
     #[cfg(unix)]
     crate::x11util::focus_window(window);
     #[cfg(not(unix))]
     window.focus_window();
 }
+
+#[cfg(unix)]
+pub fn release_stray_grabs() {
+    crate::x11util::release_stray_grabs();
+}
+
+#[cfg(not(unix))]
+pub fn release_stray_grabs() {}
 
 #[cfg(unix)]
 pub fn grab_overlay_keys(

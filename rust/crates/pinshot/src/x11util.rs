@@ -10,7 +10,7 @@ use winit::window::Window;
 use x11rb::connection::{Connection, RequestConnection};
 use x11rb::protocol::xproto::{
     AtomEnum, ChangeWindowAttributesAux, ClientMessageEvent, ConnectionExt, EventMask, GrabMode,
-    InputFocus, KeyPressEvent, ModMask, PropMode,
+    GrabStatus, InputFocus, KeyPressEvent, MapState, ModMask, PropMode, StackMode,
 };
 use x11rb::protocol::Event;
 use x11rb::COPY_DEPTH_FROM_PARENT;
@@ -22,8 +22,33 @@ const LOCK: u16 = 2;
 const CONTROL: u16 = 4;
 const MOD1: u16 = 8;
 const MOD2: u16 = 16;
+const MOD3: u16 = 32;
 const MOD4: u16 = 64;
+const MOD5: u16 = 128;
+const BUTTONS: u16 = 0x1f00;
 const IGNORE: [u16; 4] = [0, LOCK, MOD2, LOCK | MOD2];
+
+fn ignore_mod_combos() -> [u16; 16] {
+    let mut out = [0u16; 16];
+    let mut i = 0;
+    for lock in [0u16, LOCK] {
+        for num in [0u16, MOD2] {
+            for m3 in [0u16, MOD3] {
+                for m5 in [0u16, MOD5] {
+                    out[i] = lock | num | m3 | m5;
+                    i += 1;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Key modifiers that participate in a hotkey bind. Caps/Num/Mode_switch
+/// / AltGr and leftover mouse buttons (clicking Chrome, then F1) are ignored.
+fn hotkey_event_mods(state: u16) -> u16 {
+    state & (SHIFT | CONTROL | MOD1 | MOD4) & !BUTTONS
+}
 
 /// True when an X compositor owns `_NET_WM_CM_Sn` (Python `_composited`).
 pub fn compositor_active() -> bool {
@@ -162,88 +187,6 @@ pub fn raise_xid_above(xid: u32, lower: &[u32]) {
             .stack_mode(x11rb::protocol::xproto::StackMode::ABOVE),
     );
     let _ = c.flush();
-}
-
-fn window_title(c: &x11rb::rust_connection::RustConnection, wid: u32) -> String {
-    let name = intern(c, b"_NET_WM_NAME");
-    let utf8 = intern(c, b"UTF8_STRING");
-    if let (Some(na), Some(ut)) = (name, utf8) {
-        if let Ok(p) = c.get_property(false, wid, na, ut, 0, 256) {
-            if let Ok(r) = p.reply() {
-                if !r.value.is_empty() {
-                    return String::from_utf8_lossy(&r.value).into_owned();
-                }
-            }
-        }
-        if let Ok(p) = c.get_property(false, wid, na, AtomEnum::STRING, 0, 256) {
-            if let Ok(r) = p.reply() {
-                if !r.value.is_empty() {
-                    return String::from_utf8_lossy(&r.value).into_owned();
-                }
-            }
-        }
-    }
-    if let Ok(p) = c.get_property(false, wid, AtomEnum::WM_NAME, AtomEnum::STRING, 0, 256) {
-        if let Ok(r) = p.reply() {
-            return String::from_utf8_lossy(&r.value).into_owned();
-        }
-    }
-    String::new()
-}
-
-fn client_list(c: &x11rb::rust_connection::RustConnection, root: u32) -> Vec<u32> {
-    for atom_name in [b"_NET_CLIENT_LIST_STACKING".as_slice(), b"_NET_CLIENT_LIST".as_slice()] {
-        if let Some(atom) = intern(c, atom_name) {
-            if let Ok(p) = c.get_property(false, root, atom, AtomEnum::WINDOW, 0, 4096) {
-                if let Ok(r) = p.reply() {
-                    if !r.value.is_empty() {
-                        return r
-                            .value
-                            .chunks_exact(4)
-                            .map(|c| u32::from_ne_bytes([c[0], c[1], c[2], c[3]]))
-                            .collect();
-                    }
-                }
-            }
-        }
-    }
-    Vec::new()
-}
-
-pub fn titled_top_levels() -> Vec<(u32, String)> {
-    let Ok((c, screen)) = conn() else {
-        return Vec::new();
-    };
-    let root = c.setup().roots[screen].root;
-    client_list(&c, root)
-        .into_iter()
-        .filter_map(|wid| {
-            let title = window_title(&c, wid);
-            if title.is_empty() {
-                None
-            } else {
-                Some((wid, title))
-            }
-        })
-        .collect()
-}
-
-/// Push "PinShot Pin" windows below the OCR result (Python `windows_to_lower`).
-pub fn raise_ocr_above_pins() {
-    let wins = titled_top_levels();
-    let pins: Vec<u32> = wins
-        .iter()
-        .filter(|(_, t)| t == "PinShot Pin")
-        .map(|(id, _)| *id)
-        .collect();
-    let Some(&(ocr, _)) = wins
-        .iter()
-        .find(|(_, t)| t == "PinShot OCR" || t.contains("PinShot OCR"))
-    else {
-        return;
-    };
-    crate::logutil::log(&format!("ocr raise above {} pins xid={ocr:#x}", pins.len()));
-    raise_xid_above(ocr, &pins);
 }
 
 pub fn raise_on_top(window: &Window) {
@@ -474,6 +417,22 @@ impl Drop for OverlayKeyGrab {
     }
 }
 
+/// Best-effort ungrab if a previous overlay/OCR helper left the pointer or
+/// keyboard grabbed. Only the grabbing client can truly ungrab; this still
+/// helps when that client has already disconnected.
+pub fn release_stray_grabs() {
+    let Ok((c, screen)) = conn() else {
+        return;
+    };
+    let root = c.setup().roots.get(screen).map(|s| s.root);
+    let _ = c.ungrab_keyboard(x11rb::CURRENT_TIME);
+    let _ = c.ungrab_pointer(x11rb::CURRENT_TIME);
+    if let Some(root) = root {
+        let _ = c.set_input_focus(InputFocus::POINTER_ROOT, root, x11rb::CURRENT_TIME);
+    }
+    let _ = c.flush();
+}
+
 struct KeyMap {
     min: u8,
     stride: usize,
@@ -569,6 +528,12 @@ fn overlay_grab_loop(
         }
         match c.poll_for_event() {
             Ok(Some(Event::KeyPress(ev))) => {
+                // xdotool `type` remaps a keycode then FakeKeyEvent; MappingNotify
+                // often lands *after* the KeyPress, so a cached map turns CJK into
+                // Return/None and the empty editor vanishes.
+                if let Some(m) = load_keymap(&c) {
+                    map = Some(m);
+                }
                 let keysym = map
                     .as_ref()
                     .map(|m| keysym_from_map(m, ev.detail, u16::from(ev.state)))
@@ -817,7 +782,26 @@ pub fn set_click_through(window: &Window, on: bool, _opacity: f32) {
     let _ = c.flush();
 }
 
+/// Pointer event from the overlay grab. Coordinates are the X event's
+/// `root_x`/`root_y` (ButtonPress), never a later `QueryPointer` sample.
+#[derive(Clone, Copy, Debug)]
+pub struct PtrEv {
+    pub root_x: i32,
+    pub root_y: i32,
+    pub detail: u8,
+    pub kind: PtrKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PtrKind {
+    Move,
+    Press,
+    Release,
+}
+
 /// Grab pointer+keyboard on the root until the overlay maps (Python `InputHold`).
+/// The same connection then re-grabs the pointer on the overlay window so
+/// there is no UngrabPointer gap Chrome can eat.
 pub struct InputHold {
     conn: Option<x11rb::rust_connection::RustConnection>,
 }
@@ -829,16 +813,37 @@ impl InputHold {
         };
         let root = c.setup().roots[screen].root;
         let mask = EventMask::BUTTON_PRESS | EventMask::BUTTON_RELEASE | EventMask::POINTER_MOTION;
-        let _ = c.grab_pointer(
-            false,
-            root,
-            mask,
-            GrabMode::ASYNC,
-            GrabMode::ASYNC,
-            x11rb::NONE,
-            x11rb::NONE,
-            x11rb::CURRENT_TIME,
-        );
+        let mut ptr_ok = false;
+        for _ in 0..25 {
+            match c.grab_pointer(
+                false,
+                root,
+                mask,
+                GrabMode::ASYNC,
+                GrabMode::ASYNC,
+                x11rb::NONE,
+                x11rb::NONE,
+                x11rb::CURRENT_TIME,
+            ) {
+                Ok(cookie) => match cookie.reply() {
+                    Ok(r) if r.status == GrabStatus::SUCCESS => {
+                        ptr_ok = true;
+                        break;
+                    }
+                    Ok(r) => crate::logutil::log(&format!(
+                        "InputHold XGrabPointer status={:?}",
+                        r.status
+                    )),
+                    Err(e) => crate::logutil::log(&format!("InputHold XGrabPointer: {e}")),
+                },
+                Err(e) => crate::logutil::log(&format!("InputHold XGrabPointer: {e}")),
+            }
+            let _ = c.get_input_focus().ok().and_then(|k| k.reply().ok());
+        }
+        if !ptr_ok {
+            crate::logutil::log("InputHold pointer grab failed; first drag may leak to Chrome");
+            return Self { conn: None };
+        }
         let _ = c.grab_keyboard(
             false,
             root,
@@ -847,7 +852,98 @@ impl InputHold {
             GrabMode::ASYNC,
         );
         let _ = c.flush();
+        crate::logutil::log("InputHold XGrabPointer ok (root)");
         Self { conn: Some(c) }
+    }
+
+    /// Map `overlay_xid` and move the pointer grab onto it (same client:
+    /// XGrabPointer replaces the root grab, no UngrabPointer). Ungrab the
+    /// keyboard so [`OverlayKeyGrab`] can take keys.
+    pub fn grab_overlay_pointer(&mut self, overlay_xid: u32) -> bool {
+        let Some(c) = self.conn.as_ref() else {
+            return false;
+        };
+        let aux = x11rb::protocol::xproto::ConfigureWindowAux::new().stack_mode(StackMode::ABOVE);
+        for _ in 0..40 {
+            let _ = c.map_window(overlay_xid);
+            let _ = c.configure_window(overlay_xid, &aux);
+            let viewable = c
+                .get_window_attributes(overlay_xid)
+                .ok()
+                .and_then(|k| k.reply().ok())
+                .is_some_and(|a| a.map_state == MapState::VIEWABLE);
+            if viewable {
+                break;
+            }
+            let _ = c.get_input_focus().ok().and_then(|k| k.reply().ok());
+        }
+        let mask = EventMask::BUTTON_PRESS | EventMask::BUTTON_RELEASE | EventMask::POINTER_MOTION;
+        let mut ok = false;
+        for _ in 0..20 {
+            match c.grab_pointer(
+                false,
+                overlay_xid,
+                mask,
+                GrabMode::ASYNC,
+                GrabMode::ASYNC,
+                x11rb::NONE,
+                x11rb::NONE,
+                x11rb::CURRENT_TIME,
+            ) {
+                Ok(cookie) => match cookie.reply() {
+                    Ok(r) if r.status == GrabStatus::SUCCESS => {
+                        ok = true;
+                        break;
+                    }
+                    Ok(r) => {
+                        crate::logutil::log(&format!("overlay XGrabPointer status={:?}", r.status));
+                    }
+                    Err(e) => crate::logutil::log(&format!("overlay XGrabPointer: {e}")),
+                },
+                Err(e) => crate::logutil::log(&format!("overlay XGrabPointer: {e}")),
+            }
+            let _ = c.get_input_focus().ok().and_then(|k| k.reply().ok());
+        }
+        if ok {
+            let _ = c.ungrab_keyboard(x11rb::CURRENT_TIME);
+            crate::logutil::log("overlay XGrabPointer ok (before first frame)");
+        } else {
+            crate::logutil::log("overlay XGrabPointer failed; keeping root grab");
+        }
+        let _ = c.flush();
+        ok
+    }
+
+    /// Drain ButtonPress / Motion / Release from the grabbing connection.
+    pub fn poll_pointer(&mut self) -> Vec<PtrEv> {
+        let mut out = Vec::new();
+        let Some(c) = self.conn.as_ref() else {
+            return out;
+        };
+        while let Ok(Some(ev)) = c.poll_for_event() {
+            match ev {
+                Event::ButtonPress(e) => out.push(PtrEv {
+                    root_x: i32::from(e.root_x),
+                    root_y: i32::from(e.root_y),
+                    detail: e.detail,
+                    kind: PtrKind::Press,
+                }),
+                Event::ButtonRelease(e) => out.push(PtrEv {
+                    root_x: i32::from(e.root_x),
+                    root_y: i32::from(e.root_y),
+                    detail: e.detail,
+                    kind: PtrKind::Release,
+                }),
+                Event::MotionNotify(e) => out.push(PtrEv {
+                    root_x: i32::from(e.root_x),
+                    root_y: i32::from(e.root_y),
+                    detail: 0,
+                    kind: PtrKind::Move,
+                }),
+                _ => {}
+            }
+        }
+        out
     }
 
     pub fn release(&mut self) {
@@ -977,28 +1073,32 @@ fn hotkey_loop(
             continue;
         };
         let mods = win_mods_to_x(hk.mods);
-        for ig in IGNORE {
-            let _ = c.grab_key(
-                true,
+        // owner_events=false: Chrome (focused) must not see F1 as Help.
+        for ig in ignore_mod_combos() {
+            if let Err(e) = c.grab_key(
+                false,
                 root,
                 ModMask::from(mods | ig),
                 code,
                 GrabMode::ASYNC,
                 GrabMode::ASYNC,
-            );
+            ) {
+                crate::logutil::log(&format!("XGrabKey {seq}: {e}"));
+            }
         }
         binds.push((mods, code, cmd));
+        crate::logutil::log(&format!("XGrabKey {seq} keycode={code} mods={mods}"));
     }
     let _ = c.flush();
     loop {
         let ev = c.wait_for_event().map_err(|e| e.to_string())?;
         if let Event::KeyPress(KeyPressEvent { detail, state, .. }) = ev {
-            let mods = state & !(LOCK | MOD2);
-            let mods_u = u16::from(mods);
+            let mods_u = hotkey_event_mods(u16::from(state));
             if let Some((_, _, cmd)) = binds
                 .iter()
                 .find(|(m, code, _)| *m == mods_u && *code == detail)
             {
+                crate::logutil::log(&format!("hotkey {cmd:?} state={:#x}", u16::from(state)));
                 let _ = proxy.send_event(AppEvent::Hotkey(*cmd));
             }
         }
@@ -1009,4 +1109,31 @@ fn hotkey_loop(
 fn _keep_atom(a: AtomEnum) {
     let _ = COPY_DEPTH_FROM_PARENT;
     let _ = a;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hotkey_event_mods_strips_buttons_and_lock() {
+        // Click-focus Chrome then F1: Button1Mask (0x100) must not hide F1.
+        assert_eq!(hotkey_event_mods(0), 0);
+        assert_eq!(hotkey_event_mods(LOCK | MOD2), 0);
+        assert_eq!(hotkey_event_mods(BUTTONS), 0);
+        assert_eq!(hotkey_event_mods(0x100), 0);
+        assert_eq!(hotkey_event_mods(LOCK | 0x100 | MOD5), 0);
+        assert_eq!(hotkey_event_mods(CONTROL | 0x100), CONTROL);
+        assert_eq!(hotkey_event_mods(SHIFT | CONTROL), SHIFT | CONTROL);
+        assert_eq!(hotkey_event_mods(MOD1 | MOD5), MOD1);
+    }
+
+    #[test]
+    fn ignore_mod_combos_cover_lock_num_mode() {
+        let c = ignore_mod_combos();
+        assert!(c.contains(&0));
+        assert!(c.contains(&(LOCK | MOD2)));
+        assert!(c.contains(&(LOCK | MOD2 | MOD3 | MOD5)));
+        assert_eq!(c.len(), 16);
+    }
 }

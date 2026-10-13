@@ -37,11 +37,12 @@ pub fn confirm_abort_layout(overlay_w: f32, overlay_h: f32) -> ConfirmAbortLayou
 
 impl ConfirmAbortLayout {
     pub fn hit(&self, p: Point) -> Option<ConfirmAbortHit> {
-        if self.yes.contains(p) {
+        // Inflate the painted chips so a click on the 是/否 label still counts.
+        if self.yes.inflated(8.0).contains(p) {
             Some(ConfirmAbortHit::Yes)
-        } else if self.no.contains(p) {
+        } else if self.no.inflated(8.0).contains(p) {
             Some(ConfirmAbortHit::No)
-        } else if self.dont.contains(p) {
+        } else if self.dont.inflated(4.0).contains(p) {
             Some(ConfirmAbortHit::Dont)
         } else {
             None
@@ -68,6 +69,11 @@ mod tests {
         assert_eq!(lay.hit(yc), Some(ConfirmAbortHit::Yes));
         assert_eq!(lay.hit(nc), Some(ConfirmAbortHit::No));
         assert_eq!(lay.hit(dc), Some(ConfirmAbortHit::Dont));
+        // Click on the 是 glyph / just outside the chip still hits.
+        let yes_label = Point::new(lay.yes.x + 24.0, lay.yes.y + 12.0);
+        assert_eq!(lay.hit(yes_label), Some(ConfirmAbortHit::Yes));
+        let yes_edge = Point::new(lay.yes.x - 4.0, lay.yes.y + 8.0);
+        assert_eq!(lay.hit(yes_edge), Some(ConfirmAbortHit::Yes));
         assert_eq!(lay.hit(Point::new(0.0, 0.0)), None);
     }
 }

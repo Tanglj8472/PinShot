@@ -132,14 +132,29 @@ const PAIRS: &[(&str, &str)] = &[
     ("Preferences…", "首选项…"),
     ("PinShot Preferences", "PinShot 首选项"),
     ("General", "常规"),
+    ("Interface", "界面"),
+    ("Control", "控制"),
+    ("About", "关于"),
     ("Hotkeys", "热键"),
     ("Output", "输出"),
     ("Advanced", "高级"),
+    ("Restore Defaults", "恢复默认"),
+    ("Open containing folder", "打开所在文件夹"),
+    ("Open log folder", "打开日志文件夹"),
+    ("Configuration", "配置"),
+    ("Start minimized", "启动后最小化"),
+    ("Mask opacity:", "遮罩不透明度："),
+    ("Global hotkeys", "全局热键"),
+    ("File", "文件"),
+    ("Open", "打开"),
+    ("Restored this page to defaults.", "已恢复本页为默认值。"),
+    ("Settings layout follows Snipaste Preferences. Features stay PinShot's.", "设置页版式对照 Snipaste 首选项。功能仍是 PinShot 的。"),
     ("Apply", "应用"),
     ("Settings applied.", "已应用。"),
     ("No snip history", "没有截图历史"),
     ("OK", "确定"),
     ("Run at login", "登录时启动"),
+    ("Start PinShot when you log in", "登录时启动 PinShot"),
     ("Snip delay:", "截图延时："),
     ("None (0 s)", "无（0 秒）"),
     ("Language:", "语言："),
@@ -186,6 +201,11 @@ const PAIRS: &[(&str, &str)] = &[
     ("No text to translate", "没有可翻译的文字"),
     ("OCR not available in this build. Use pinshot-ocr.exe.", "此构建未包含 OCR，请使用 pinshot-ocr.exe。"),
     ("Downloading OCR models…", "正在下载 OCR 模型…"),
+    ("OCR ready — drag to select text", "识别完成 — 拖选文字即可"),
+    ("OCR model:", "OCR 模型："),
+    ("Mobile (faster)", "轻量（更快）"),
+    ("Server (more accurate)", "服务器（更准）"),
+    ("Server models download once (~170 MB). Mobile is faster but weaker on English / small type.", "默认下载服务器模型（约 170 MB，只下一次）。轻量更快，但英文和小字较差。"),
     ("The Default group cannot be removed.", "不能删除默认分组。"),
     ("The Default group cannot be renamed.", "不能重命名默认分组。"),
     ("Hotkeys already used by another app cannot be bound. Click Apply to rebind.", "已被其他程序占用的热键无法绑定。点「应用」重新注册。"),
@@ -200,6 +220,23 @@ const PAIRS: &[(&str, &str)] = &[
     ("Hide/Show pins", "隐藏/显示贴图"),
     ("PinShot is running", "PinShot 正在运行"),
     ("Follow system", "跟随系统"),
+    ("Provider:", "服务商："),
+    ("API URL:", "API 地址："),
+    ("API key:", "API 密钥："),
+    ("Model:", "模型："),
+    ("Target language:", "目标语言："),
+    ("Follow UI language", "跟随界面语言"),
+    ("Microsoft Edge (free)", "微软 Edge（免费）"),
+    ("OpenAI-compatible", "OpenAI 兼容"),
+    ("DeepL", "DeepL"),
+    ("Test", "测试"),
+    ("Testing…", "测试中…"),
+    ("Translation OK:", "翻译成功："),
+    ("Translation failed:", "翻译失败："),
+    (
+        "OpenAI-compatible covers OpenAI, DeepSeek, Qwen, Ollama, OpenRouter. Edge stays the free fallback.",
+        "OpenAI 兼容接口可用于 OpenAI、DeepSeek、通义千问、Ollama、OpenRouter。Edge 仍是免费备用。",
+    ),
     ("Select (V)", "选择 (V)"),
     ("Line / arrow (Shift)", "直线 / 箭头 (Shift)"),
     ("Number (N)", "序号 (N)"),
@@ -290,6 +327,20 @@ const PAIRS: &[(&str, &str)] = &[
     ("Quick-save folder", "快速保存文件夹"),
     ("Numbered marker (N)", "序号标记 (N)"),
     ("Save image as", "图像另存为"),
+    ("Smoothing", "平滑"),
+    ("Current", "当前"),
+    ("Image processing", "图像处理"),
+    ("Horizontal flip", "水平翻转"),
+    ("Vertical flip", "垂直翻转"),
+    ("Replace by file...", "用文件替换..."),
+    ("Group", "分组"),
+    ("Rotation", "旋转"),
+    ("Opacity", "不透明度"),
+    ("X-mirror", "水平镜像"),
+    ("Y-mirror", "垂直镜像"),
+    ("Grayscale", "灰度"),
+    ("Color inverted", "反色"),
+    ("OCR failed", "识别失败"),
 ];
 
 const PATTERNS: &[(&str, &str)] = &[
@@ -304,6 +355,7 @@ const PATTERNS: &[(&str, &str)] = &[
     ("Group {0}", "分组 {0}"),
     ("Unbound hotkeys: {0}", "未绑定热键：{0}"),
     ("{0} s", "{0} 秒"),
+    ("Downloading {0}%", "正在下载 {0}%"),
 ];
 
 fn zh_map() -> &'static HashMap<&'static str, &'static str> {
@@ -445,6 +497,9 @@ mod tests {
             assert_eq!(tr("Show toolbar"), "显示工具栏");
             assert_eq!(tr("Rotate left"), "向左旋转");
             assert_eq!(tr("PinShot is running"), "PinShot 正在运行");
+            assert_eq!(tr("Save"), "保存");
+            assert_eq!(tr("Copy"), "复制");
+            assert_eq!(tr("Close"), "关闭");
         });
     }
 

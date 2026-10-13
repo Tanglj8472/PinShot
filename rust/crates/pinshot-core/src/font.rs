@@ -683,9 +683,108 @@ pub fn measure(text: &str, px: f32) -> (f32, f32) {
     measure_picked(text, px, |_| font())
 }
 
+/// Annotation text: family face when it has the glyph, else the chrome CJK/Latin stack
+/// (Snipaste: default text annotation uses the interface font).
+fn pick_annot(ch: char, family: &str, bold: bool, italic: bool) -> Option<&'static fontdue::Font> {
+    if family.trim().is_empty() && !bold && !italic {
+        return pick_chrome(ch);
+    }
+    if let Some(f) = font_ex(family, bold, italic) {
+        if has_glyph(f, ch) {
+            return Some(f);
+        }
+    }
+    pick_chrome(ch).or_else(font)
+}
+
+pub fn measure_ex(text: &str, px: f32, family: &str, bold: bool, italic: bool) -> (f32, f32) {
+    measure_picked(text, px, |ch| pick_annot(ch, family, bold, italic))
+}
+
 /// Layout size for chrome labels (toolbar chips, menus, toasts, prefs).
 pub fn measure_chrome(text: &str, px: f32) -> (f32, f32) {
     measure_picked(text, px, pick_chrome)
+}
+
+fn is_cjk_wrap(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{3400}'..='\u{4DBF}'
+            | '\u{4E00}'..='\u{9FFF}'
+            | '\u{F900}'..='\u{FAFF}'
+            | '\u{3000}'..='\u{303F}'
+            | '\u{3040}'..='\u{30FF}'
+            | '\u{FF00}'..='\u{FFEF}'
+    )
+}
+
+/// Wrap chrome text to `max_w` (CJK per character, Latin on spaces).
+pub fn wrap_chrome(text: &str, px: f32, max_w: f32) -> Vec<String> {
+    let max_w = max_w.max(px);
+    let mut out = Vec::new();
+    for para in text.split('\n') {
+        if para.is_empty() {
+            out.push(String::new());
+            continue;
+        }
+        let mut line = String::new();
+        let mut line_w = 0.0_f32;
+        let mut word = String::new();
+        let mut word_w = 0.0_f32;
+        let flush_word = |line: &mut String,
+                          line_w: &mut f32,
+                          word: &mut String,
+                          word_w: &mut f32,
+                          out: &mut Vec<String>| {
+            if word.is_empty() {
+                return;
+            }
+            if *line_w > 0.0 && *line_w + *word_w > max_w {
+                out.push(std::mem::take(line));
+                *line_w = 0.0;
+            }
+            line.push_str(word);
+            *line_w += *word_w;
+            word.clear();
+            *word_w = 0.0;
+        };
+        for ch in para.chars() {
+            let cw = measure_chrome(&ch.to_string(), px).0.max(1.0);
+            if is_cjk_wrap(ch) {
+                flush_word(&mut line, &mut line_w, &mut word, &mut word_w, &mut out);
+                if line_w > 0.0 && line_w + cw > max_w {
+                    out.push(std::mem::take(&mut line));
+                    line_w = 0.0;
+                }
+                line.push(ch);
+                line_w += cw;
+            } else if ch.is_whitespace() {
+                flush_word(&mut line, &mut line_w, &mut word, &mut word_w, &mut out);
+                if line_w > 0.0 && line_w + cw > max_w {
+                    out.push(std::mem::take(&mut line));
+                    line_w = 0.0;
+                } else {
+                    line.push(ch);
+                    line_w += cw;
+                }
+            } else {
+                if !word.is_empty() && line_w == 0.0 && word_w + cw > max_w {
+                    out.push(std::mem::take(&mut word));
+                    word_w = 0.0;
+                }
+                word.push(ch);
+                word_w += cw;
+            }
+        }
+        flush_word(&mut line, &mut line_w, &mut word, &mut word_w, &mut out);
+        if !line.is_empty() || out.is_empty() {
+            out.push(line);
+        }
+    }
+    if out.is_empty() {
+        out.push(String::new());
+    }
+    out
 }
 
 /// Straight-alpha source-over. Destination may be transparent (temp glyph
@@ -886,52 +985,44 @@ pub fn blit_pixmap_ex(
         return;
     }
     let path = find_family_file(family, bold, italic);
-    let Some(font) = font_ex(family, bold, italic).or_else(font) else {
-        return;
-    };
     let name = path
         .as_ref()
         .map(|p| p.to_string_lossy().to_ascii_lowercase())
         .unwrap_or_default();
     let fake_bold = bold && !file_looks_bold(&name);
     let fake_italic = italic && !file_looks_italic(&name);
-    let (tw, th) = measure(text, px);
+    const SS: i32 = 2;
+    let px2 = (px.max(8.0) * SS as f32).max(8.0);
+    let (tw, th) = measure_ex(text, px2, family, bold, italic);
     let extra = if fake_italic {
-        (px * 0.4) as u32 + 8
+        (px2 * 0.4) as u32 + 16
     } else {
-        8
+        16
     };
     let tw = (tw.ceil() as u32 + extra).max(1);
-    let th = (th.ceil() as u32 + 8).max(1);
+    let th = (th.ceil() as u32 + 16).max(1);
     let mut rgba = vec![0u8; tw as usize * th as usize * 4];
-    blit_rgba_font(
-        font,
+    blit_rgba_picked(
+        |ch| pick_annot(ch, family, bold, italic),
         &mut rgba,
         tw,
         tw,
         th,
         text,
-        2.0,
-        2.0,
-        px,
+        4.0,
+        4.0,
+        px2,
         color,
         outline,
         fake_bold,
         fake_italic,
     );
-    let Some(mut src) = Pixmap::new(tw, th) else {
+    let dw = tw.div_ceil(2);
+    let dh = th.div_ceil(2);
+    let Some(mut src) = Pixmap::new(dw, dh) else {
         return;
     };
-    for (dst, s) in src.pixels_mut().iter_mut().zip(rgba.chunks_exact(4)) {
-        let a = s[3];
-        *dst = PremultipliedColorU8::from_rgba(
-            ((s[0] as u16 * a as u16) / 255) as u8,
-            ((s[1] as u16 * a as u16) / 255) as u8,
-            ((s[2] as u16 * a as u16) / 255) as u8,
-            a,
-        )
-        .unwrap_or(PremultipliedColorU8::TRANSPARENT);
-    }
+    downsample_box2(&rgba, tw, th, src.pixels_mut(), dw, dh);
     pm.draw_pixmap(
         x as i32 - 2,
         y as i32 - 2,
@@ -940,6 +1031,51 @@ pub fn blit_pixmap_ex(
         tiny_skia::Transform::identity(),
         None,
     );
+}
+
+fn downsample_box2(
+    src: &[u8],
+    sw: u32,
+    sh: u32,
+    dst: &mut [PremultipliedColorU8],
+    dw: u32,
+    dh: u32,
+) {
+    for y in 0..dh {
+        for x in 0..dw {
+            let mut sr = 0u32;
+            let mut sg = 0u32;
+            let mut sb = 0u32;
+            let mut sa = 0u32;
+            for oy in 0..2 {
+                for ox in 0..2 {
+                    let sx = (x * 2 + ox).min(sw.saturating_sub(1));
+                    let sy = (y * 2 + oy).min(sh.saturating_sub(1));
+                    let i = ((sy * sw + sx) * 4) as usize;
+                    if i + 3 >= src.len() {
+                        continue;
+                    }
+                    let a = src[i + 3] as u32;
+                    sr += src[i] as u32 * a;
+                    sg += src[i + 1] as u32 * a;
+                    sb += src[i + 2] as u32 * a;
+                    sa += a;
+                }
+            }
+            let idx = (y * dw + x) as usize;
+            if sa == 0 {
+                dst[idx] = PremultipliedColorU8::TRANSPARENT;
+                continue;
+            }
+            dst[idx] = PremultipliedColorU8::from_rgba(
+                (sr / 4 / 255).min(255) as u8,
+                (sg / 4 / 255).min(255) as u8,
+                (sb / 4 / 255).min(255) as u8,
+                (sa / 4).min(255) as u8,
+            )
+            .unwrap_or(PremultipliedColorU8::TRANSPARENT);
+        }
+    }
 }
 
 pub fn blit_raster(
@@ -1071,6 +1207,24 @@ mod tests {
         let (w, h) = measure("Hi", 20.0);
         assert!(w > 4.0);
         assert!(h >= 20.0);
+    }
+
+    #[test]
+    fn wrap_chrome_breaks_long_cjk_and_latin() {
+        let lines = wrap_chrome(
+            "並且在2010年首次發布編譯器來自該專案並且繼續發展。",
+            14.0,
+            120.0,
+        );
+        assert!(lines.len() >= 2, "expected wrap, got {lines:?}");
+        let joined: String = lines.concat();
+        assert!(joined.contains("並且在") && joined.contains("編譯器"));
+        let en = wrap_chrome(
+            "In 2009 Mozilla officially sponsored the project with full-time engineers.",
+            14.0,
+            160.0,
+        );
+        assert!(en.len() >= 2, "expected English wrap, got {en:?}");
     }
 
     #[test]
@@ -1265,5 +1419,31 @@ mod tests {
         img.fill(Rgba::WHITE);
         blit_raster(&mut img, "Hi", 4.0, 6.0, 18.0, Rgba::rgb(20, 20, 20), false);
         assert!(img.pixels.iter().any(|&p| p > 0 && p < 255));
+    }
+
+    #[test]
+    fn annot_default_paints_cjk_via_interface_font() {
+        let (w, h) = measure_ex("你好Pin", 22.0, "", false, false);
+        assert!(w > 40.0, "CJK+Latin width {w}");
+        assert!(h >= 22.0);
+        let mut pm = Pixmap::new(220, 64).unwrap();
+        blit_pixmap_ex(
+            &mut pm,
+            "你好",
+            4.0,
+            4.0,
+            22.0,
+            Rgba::RED,
+            false,
+            "",
+            false,
+            false,
+        );
+        assert!(
+            pm.pixels().iter().any(|p| p.alpha() > 16),
+            "default family must paint CJK"
+        );
+        let sans_w = measure_ex("你好", 22.0, "Sans", false, false).0;
+        assert!(sans_w > 24.0, "Sans CJK falls back, width {sans_w}");
     }
 }

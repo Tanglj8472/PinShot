@@ -32,6 +32,13 @@ pub enum IconKind {
     Eraser,
     Check,
     App,
+    Ocr,
+    Translate,
+    Fill,
+    Outline,
+    Dash,
+    Dot,
+    Blur,
 }
 
 impl IconKind {
@@ -56,6 +63,13 @@ impl IconKind {
             "eraser" => Self::Eraser,
             "check" => Self::Check,
             "app" => Self::App,
+            "ocr" => Self::Ocr,
+            "translate" => Self::Translate,
+            "fill" => Self::Fill,
+            "outline" => Self::Outline,
+            "dash" => Self::Dash,
+            "dot" => Self::Dot,
+            "blur" => Self::Blur,
             _ => return None,
         })
     }
@@ -82,6 +96,24 @@ fn line_path(a: (f32, f32), b: (f32, f32)) -> Option<Path> {
     pb.move_to(a.0, a.1);
     pb.line_to(b.0, b.1);
     pb.finish()
+}
+
+/// 4-pointed sparkle (Snipping Tool "Text actions" accent).
+fn fill_sparkle(pixmap: &mut Pixmap, cx: f32, cy: f32, r: f32, color: Rgba, t: Transform) {
+    let mut pb = PathBuilder::new();
+    let inner = r * 0.32;
+    pb.move_to(cx, cy - r);
+    pb.line_to(cx + inner, cy - inner);
+    pb.line_to(cx + r, cy);
+    pb.line_to(cx + inner, cy + inner);
+    pb.line_to(cx, cy + r);
+    pb.line_to(cx - inner, cy + inner);
+    pb.line_to(cx - r, cy);
+    pb.line_to(cx - inner, cy - inner);
+    pb.close();
+    if let Some(path) = pb.finish() {
+        pixmap.fill_path(&path, &paint(color), FillRule::Winding, t, None);
+    }
 }
 
 fn arrow_head(pixmap: &mut Pixmap, a: (f32, f32), b: (f32, f32), head: f32, color: Rgba, t: Transform) {
@@ -295,6 +327,76 @@ pub fn draw_icon(pixmap: &mut Pixmap, kind: IconKind, cell: Rect, color: Option<
                 pixmap.stroke_path(&path, &paint(green), &stroke(2.2), t, None);
             }
         }
+        IconKind::Ocr => {
+            // Windows Snipping Tool "Text actions": page with lines + sparkle.
+            if let Some(r) = tiny_skia::Rect::from_xywh(2.5, 4.0, 11.0, 13.0) {
+                pixmap.stroke_path(&PathBuilder::from_rect(r), &p, &st, t, None);
+            }
+            for y in [7.5, 10.5, 13.5] {
+                if let Some(path) = line_path((4.5, y), (11.5, y)) {
+                    pixmap.stroke_path(&path, &p, &stroke(1.15), t, None);
+                }
+            }
+            fill_sparkle(pixmap, 15.6, 5.0, 3.8, color, t);
+            fill_sparkle(pixmap, 17.6, 9.2, 1.7, color, t);
+        }
+        IconKind::Translate => {
+            // Latin A + CJK 口 — a two-script mark, never a T (Text) or Tₓ.
+            if let Some(path) = line_path((3.5, 15.0), (7.0, 4.5)) {
+                pixmap.stroke_path(&path, &p, &stroke(1.7), t, None);
+            }
+            if let Some(path) = line_path((7.0, 4.5), (10.5, 15.0)) {
+                pixmap.stroke_path(&path, &p, &stroke(1.7), t, None);
+            }
+            if let Some(path) = line_path((5.0, 11.2), (8.8, 11.2)) {
+                pixmap.stroke_path(&path, &p, &stroke(1.4), t, None);
+            }
+            if let Some(r) = tiny_skia::Rect::from_xywh(11.0, 5.5, 6.5, 10.0) {
+                pixmap.stroke_path(&PathBuilder::from_rect(r), &p, &stroke(1.5), t, None);
+            }
+            if let Some(path) = line_path((11.0, 10.5), (17.5, 10.5)) {
+                pixmap.stroke_path(&path, &p, &stroke(1.3), t, None);
+            }
+        }
+        IconKind::Fill => {
+            if let Some(r) = tiny_skia::Rect::from_xywh(4.0, 5.0, 12.0, 10.0) {
+                pixmap.fill_rect(r, &p, t, None);
+            }
+        }
+        IconKind::Outline => {
+            if let Some(r) = tiny_skia::Rect::from_xywh(4.0, 5.0, 12.0, 10.0) {
+                pixmap.stroke_path(&PathBuilder::from_rect(r), &p, &st, t, None);
+            }
+        }
+        IconKind::Dash => {
+            for (a, b) in [((4.0, 16.0), (8.0, 12.0)), ((11.0, 9.0), (16.0, 4.0))] {
+                if let Some(path) = line_path(a, b) {
+                    pixmap.stroke_path(&path, &p, &st, t, None);
+                }
+            }
+        }
+        IconKind::Dot => {
+            for (x, y) in [(5.0, 15.0), (10.0, 10.0), (15.0, 5.0)] {
+                if let Some(r) = tiny_skia::Rect::from_xywh(x - 1.2, y - 1.2, 2.4, 2.4) {
+                    pixmap.fill_path(
+                        &PathBuilder::from_oval(r).unwrap(),
+                        &p,
+                        FillRule::Winding,
+                        t,
+                        None,
+                    );
+                }
+            }
+        }
+        IconKind::Blur => {
+            if let Some(r) = tiny_skia::Rect::from_xywh(4.0, 4.0, 12.0, 12.0) {
+                pixmap.stroke_path(&PathBuilder::from_rect(r), &p, &stroke(1.0), t, None);
+            }
+            let soft = paint(color.with_alpha(90));
+            if let Some(r) = tiny_skia::Rect::from_xywh(6.0, 6.0, 8.0, 8.0) {
+                pixmap.fill_rect(r, &soft, t, None);
+            }
+        }
         IconKind::App => {
             if let Some(r) = tiny_skia::Rect::from_xywh(1.0, 1.0, 18.0, 18.0) {
                 pixmap.fill_rect(r, &paint(Rgba::BLUE), t, None);
@@ -393,6 +495,11 @@ mod tests {
             IconKind::Pin,
             IconKind::Save,
             IconKind::Copy,
+            IconKind::Ocr,
+            IconKind::Translate,
+            IconKind::Fill,
+            IconKind::Outline,
+            IconKind::Eraser,
         ] {
             pm.fill(tiny_skia::Color::TRANSPARENT);
             draw_icon(&mut pm, kind, Rect::new(2.0, 2.0, 20.0, 20.0), None);
@@ -412,6 +519,26 @@ mod tests {
             line.data(),
             arrow.data(),
             "Line and Arrow must be distinct icons"
+        );
+    }
+
+    #[test]
+    fn ocr_and_translate_are_not_a_t() {
+        let cell = Rect::new(2.0, 2.0, 20.0, 20.0);
+        let mut text = Pixmap::new(24, 24).unwrap();
+        let mut ocr = Pixmap::new(24, 24).unwrap();
+        let mut tr = Pixmap::new(24, 24).unwrap();
+        draw_icon(&mut text, IconKind::Text, cell, None);
+        draw_icon(&mut ocr, IconKind::Ocr, cell, None);
+        draw_icon(&mut tr, IconKind::Translate, cell, None);
+        assert_ne!(text.data(), ocr.data(), "OCR must not match Text T");
+        assert_ne!(text.data(), tr.data(), "Translate must not match Text T");
+        assert_ne!(ocr.data(), tr.data(), "OCR and Translate must differ");
+        // Sparkle lives in the top-right of the 20×20 icon (cell origin 2,2).
+        let sparkle = ocr.pixel(18, 6).unwrap().demultiply();
+        assert!(
+            sparkle.alpha() > 0,
+            "OCR icon needs the Snipping Tool sparkle"
         );
     }
 }

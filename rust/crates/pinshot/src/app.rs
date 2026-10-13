@@ -92,6 +92,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         pin_menu: None,
         menu_pin: None,
         menu_esc_until: None,
+        menu_raise_until: None,
         #[cfg(unix)]
         input_hold: None,
     };
@@ -129,6 +130,8 @@ struct App {
     /// Swallow Escape on pins after the menu closes so the still-held Esc
     /// does not close the pin (and persist/reap must not drop the others).
     menu_esc_until: Option<Instant>,
+    /// Keep restacking the menu above the pin (and its F5 strip) briefly.
+    menu_raise_until: Option<Instant>,
     #[cfg(unix)]
     input_hold: Option<crate::x11util::InputHold>,
 }
@@ -200,6 +203,31 @@ impl App {
     }
 
     fn request_snip(&mut self, event_loop: &ActiveEventLoop, translate: bool) {
+        if self.overlay.is_some() {
+            let closing_resnip = self
+                .overlay
+                .as_ref()
+                .and_then(|o| o.peek_result())
+                .is_some_and(|r| matches!(r, OverlayResult::Resnip));
+            let closing = self
+                .overlay
+                .as_ref()
+                .is_some_and(|o| o.peek_result().is_some());
+            if !closing {
+                // Overlay may be up while Chrome kept keyboard focus, so F1
+                // lands here instead of OverlayKeyGrab. Restart the snip.
+                crate::logutil::log("hotkey F1 while overlay live");
+                if let Some(ov) = self.overlay.as_mut() {
+                    ov.resnip();
+                }
+                self.finish_overlay(event_loop);
+                return;
+            }
+            self.finish_overlay(event_loop);
+            if closing_resnip {
+                return;
+            }
+        }
         if self.overlay.is_some() || self.snip_at.is_some() || self.countdown.is_some() {
             return;
         }
@@ -359,6 +387,7 @@ impl App {
         self.history.entries.truncate(self.cfg.history_max as usize);
         self.persist_history();
         self.overlay = None;
+        crate::native::release_stray_grabs();
         let resnip = matches!(res, OverlayResult::Resnip);
         match res {
             OverlayResult::Copy(img, _) => {
@@ -383,7 +412,14 @@ impl App {
                     }
                 }
             }
-            OverlayResult::Ocr(img, translate) => self.spawn_ocr(img, translate),
+            OverlayResult::Ocr(img, translate, pos) => {
+                self.spawn_pin(event_loop, img.clone(), Some(pos), None);
+                if let Some(p) = self.pins.last_mut() {
+                    p.set_status(Some(tr("Recognizing…")));
+                    let id = p.window_id();
+                    self.spawn_ocr(id, img, translate);
+                }
+            }
             OverlayResult::Cancel => {}
             OverlayResult::Resnip => {}
         }
@@ -394,11 +430,53 @@ impl App {
         }
     }
 
-    fn spawn_ocr(&self, img: Raster, translate: bool) {
+    fn spawn_ocr(&self, pin: winit::window::WindowId, img: Raster, translate: bool) {
+        crate::logutil::log(&format!(
+            "ocr start {}x{} translate={translate}",
+            img.width, img.height
+        ));
         let proxy = self.proxy.clone();
         std::thread::spawn(move || {
-            let text = crate::ocr_run::recognize(&img).unwrap_or_else(|e| e);
-            let _ = proxy.send_event(AppEvent::OcrDone(text, translate));
+            let mut last = String::new();
+            let result = crate::ocr_run::recognize_with_progress(&img, |msg| {
+                if msg != last {
+                    last = msg.to_string();
+                    let _ = proxy.send_event(AppEvent::OcrProgress {
+                        pin,
+                        message: msg.to_string(),
+                    });
+                }
+            })
+            .map_err(|e| {
+                crate::logutil::log(&format!("ocr fail: {e}"));
+                e
+            });
+            match &result {
+                Ok(page) => {
+                    crate::logutil::log(&format!("ocr done {} chars", page.text.chars().count()))
+                }
+                Err(e) => crate::logutil::log(&format!("ocr empty: {e}")),
+            }
+            let _ = proxy.send_event(AppEvent::OcrDone {
+                pin,
+                result,
+                translate,
+            });
+        });
+    }
+
+    fn spawn_translate(&self, pin: winit::window::WindowId, text: String) {
+        let text = pinshot_core::ocr::page_for_translate(&text);
+        let proxy = self.proxy.clone();
+        let settings = self.cfg.translate.clone();
+        let ui_lang = self.cfg.language.clone();
+        std::thread::spawn(move || {
+            let result =
+                crate::translate_run::translate_with(&settings, &ui_lang, &text).map_err(|e| {
+                    crate::logutil::log(&format!("translate fail: {e}"));
+                    e
+                });
+            let _ = proxy.send_event(AppEvent::TranslateDone { pin, result });
         });
     }
 
@@ -443,11 +521,37 @@ impl App {
         }
     }
 
+    fn pin_or_selection_translate(&mut self) {
+        if let Some(id) = self
+            .menu_pin
+            .or_else(|| self.pins.last().map(|p| p.window_id()))
+        {
+            self.start_pin_translate(id);
+            return;
+        }
+        self.selection_translate();
+    }
+
+    fn start_pin_translate(&mut self, pin: WindowId) {
+        let Some(p) = self.pins.iter_mut().find(|p| p.window_id() == pin) else {
+            return;
+        };
+        if let Some(text) = p.ocr_text() {
+            if !text.trim().is_empty() {
+                p.set_translating(true);
+                self.spawn_translate(pin, text);
+                return;
+            }
+        }
+        p.set_status(Some(tr("Recognizing…")));
+        let img = p.rendered();
+        self.spawn_ocr(pin, img, true);
+    }
+
     fn selection_translate(&self) {
         #[cfg(not(windows))]
         {
-            let msg = tr("Select-text translate is only available here.");
-            crate::result_win::open(msg, false);
+            eprintln!("{}", tr("Select-text translate is only available here."));
             return;
         }
         #[cfg(windows)]
@@ -455,8 +559,10 @@ impl App {
             let proxy = self.proxy.clone();
             std::thread::spawn(move || {
                 let backup = clipboard::read_best();
-                if crate::result_win::send_ctrl_c().is_err() {
-                    let _ = proxy.send_event(AppEvent::OcrDone(String::new(), true));
+                if crate::win32::send_ctrl_c().is_err() {
+                    let _ = proxy.send_event(AppEvent::SelectionText(Err(tr(
+                        "Could not copy selected text.",
+                    ))));
                     return;
                 }
                 std::thread::sleep(Duration::from_millis(80));
@@ -464,11 +570,15 @@ impl App {
                     ClipContent::Text(t) => t,
                     _ => String::new(),
                 };
-                // restore image if we stole it
                 if let ClipContent::Image(img) = backup {
                     let _ = clipboard::write_image(&img);
                 }
-                let _ = proxy.send_event(AppEvent::OcrDone(text, true));
+                let result = if text.trim().is_empty() {
+                    Err(tr("Could not copy selected text."))
+                } else {
+                    Ok(text)
+                };
+                let _ = proxy.send_event(AppEvent::SelectionText(result));
             });
         }
     }
@@ -658,8 +768,27 @@ impl App {
             opacity: p.opacity,
             group: p.group.clone(),
             groups: self.cfg.groups.clone(),
+            group_counts: self
+                .cfg
+                .groups
+                .iter()
+                .map(|g| {
+                    let n = self
+                        .pins
+                        .iter()
+                        .filter(|pin| pin.group.eq_ignore_ascii_case(g))
+                        .count();
+                    (g.clone(), n)
+                })
+                .collect(),
             img_w: p.img.width,
             img_h: p.img.height,
+            smooth: p.smooth,
+            grayscale: p.grayscale,
+            invert: p.invert,
+            rotation: p.rotation,
+            mirror_x: p.mirror_x,
+            mirror_y: p.mirror_y,
         };
         let (mw, mh) = crate::pin_menu::menu_pixel_size(&state);
         let (mx, my) = crate::pin_menu::clamp_menu_pos(
@@ -672,9 +801,13 @@ impl App {
         );
         match crate::pin_menu::PinMenuWin::create(event_loop, (mx, my), state) {
             Ok(m) => {
+                if let Some(p) = self.pins.iter().find(|p| p.window_id() == pid) {
+                    m.restack_above(p.window());
+                }
                 self.menu_pin = Some(pid);
                 self.pin_menu = Some(m);
                 self.menu_esc_until = None;
+                self.menu_raise_until = Some(Instant::now() + Duration::from_millis(300));
             }
             Err(e) => crate::logutil::log(&format!("pin menu: {e}")),
         }
@@ -685,6 +818,7 @@ impl App {
             m.close();
         }
         self.pin_menu = None;
+        self.menu_raise_until = None;
         self.menu_esc_until = Some(Instant::now() + Duration::from_millis(450));
     }
 
@@ -772,7 +906,28 @@ impl App {
             return;
         }
         if let Some(p) = self.pins.iter_mut().find(|p| p.window_id() == pid) {
-            p.apply_menu(action);
+            p.apply_menu(action.clone());
+        }
+        match action {
+            PinMenuAction::Ocr => {
+                if let Some(p) = self.pins.iter_mut().find(|p| p.window_id() == pid) {
+                    let _ = p.take_pending_ocr();
+                    p.set_status(Some(tr("Recognizing…")));
+                    let img = p.rendered();
+                    self.spawn_ocr(pid, img, false);
+                }
+            }
+            PinMenuAction::Translate => {
+                let _ = self
+                    .pins
+                    .iter_mut()
+                    .find(|p| p.window_id() == pid)
+                    .map(|p| {
+                        p.take_pending_translate();
+                    });
+                self.start_pin_translate(pid);
+            }
+            _ => {}
         }
     }
 }
@@ -810,6 +965,7 @@ impl ApplicationHandler<AppEvent> for App {
             self.session_restored = true;
             self.restore_session(event_loop);
             self.restore_history();
+            crate::ocr_run::prefetch_models();
         }
         if self.start_prefs {
             self.start_prefs = false;
@@ -853,7 +1009,13 @@ impl ApplicationHandler<AppEvent> for App {
                 prefs::open(self.cfg.clone(), self.proxy.clone());
             }
             AppEvent::Hotkey(Command::CaptureTranslate) => self.request_snip(event_loop, true),
-            AppEvent::Hotkey(Command::SelectionTranslate) => self.selection_translate(),
+            AppEvent::Hotkey(Command::SelectionTranslate) => {
+                if self.overlay.is_some() {
+                    // Overlay F5 already runs OCR+translate on the selection.
+                } else {
+                    self.pin_or_selection_translate();
+                }
+            }
             AppEvent::Tray(TrayCmd::Snip) => self.request_snip(event_loop, false),
             AppEvent::Tray(TrayCmd::Pin) => self.pin_clipboard(event_loop),
             AppEvent::Tray(TrayCmd::HideAll) => self.toggle_pins(),
@@ -882,22 +1044,81 @@ impl ApplicationHandler<AppEvent> for App {
                 if let Some(ov) = self.overlay.as_mut() {
                     ov.handle_x11_key(keysym, mods, pressed);
                     self.finish_overlay(event_loop);
+                } else if pressed && keysym == 0xffbe {
+                    // Esc already closed the overlay; the grab loop still
+                    // saw F1 and forwarded it as X11Key. Do not drop it.
+                    self.request_snip(event_loop, false);
                 }
             }
             AppEvent::PinMenu(action) => self.apply_pin_menu(action),
-            AppEvent::Ipc(cmd) if cmd == "reload-settings" => {
-                match config::load() {
-                    Ok(cfg) => self.apply_cfg(cfg),
-                    Err(e) => crate::logutil::log(&format!("reload settings: {e}")),
-                }
-            }
+            AppEvent::Ipc(cmd) if cmd == "reload-settings" => match config::load() {
+                Ok(cfg) => self.apply_cfg(cfg),
+                Err(e) => crate::logutil::log(&format!("reload settings: {e}")),
+            },
             AppEvent::Ipc(cmd) if cmd == "raise" => {
                 if let Some(fb) = &self.fallback {
                     fb.show();
                 }
             }
             AppEvent::Ipc(_) => {}
-            AppEvent::OcrDone(text, translate) => crate::result_win::open(text, translate),
+            AppEvent::OcrProgress { pin, message } => {
+                if let Some(p) = self.pins.iter_mut().find(|p| p.window_id() == pin) {
+                    p.set_status(Some(tr(&message)));
+                }
+            }
+            AppEvent::OcrDone {
+                pin,
+                result,
+                translate,
+            } => {
+                let mut follow = None;
+                if let Some(p) = self.pins.iter_mut().find(|p| p.window_id() == pin) {
+                    match result {
+                        Ok(page) => {
+                            let text = page.text.clone();
+                            p.attach_ocr(page);
+                            if translate && !text.trim().is_empty() {
+                                p.set_translating(true);
+                                follow = Some(text);
+                            }
+                        }
+                        Err(err) => {
+                            p.set_status(None);
+                            p.toast(tr(&err));
+                        }
+                    }
+                }
+                if let Some(text) = follow {
+                    self.spawn_translate(pin, text);
+                }
+            }
+            AppEvent::TranslateDone { pin, result } => {
+                if let Some(p) = self.pins.iter_mut().find(|p| p.window_id() == pin) {
+                    match result {
+                        Ok(text) => p.set_translation(text),
+                        Err(err) => {
+                            p.set_translating(false);
+                            p.toast(tr(&err));
+                        }
+                    }
+                }
+            }
+            AppEvent::SelectionText(result) => match result {
+                Ok(text) => {
+                    let img = clipboard::text_card(&text, 280, 120);
+                    let page = pinshot_core::ocr::page_from_plain(&text, img.width, img.height);
+                    self.spawn_pin(event_loop, img, None, None);
+                    let pin_id = self.pins.last().map(|p| p.window_id());
+                    if let Some(p) = self.pins.last_mut() {
+                        p.attach_ocr(page);
+                        p.set_translating(true);
+                    }
+                    if let Some(id) = pin_id {
+                        self.spawn_translate(id, text);
+                    }
+                }
+                Err(err) => eprintln!("{}", tr(&err)),
+            },
         }
     }
 
@@ -983,6 +1204,8 @@ impl ApplicationHandler<AppEvent> for App {
         }
         let mut open_menu = None;
         let mut close_menu = false;
+        let mut ocr_job = None;
+        let mut translate_pin = None;
         let swallow_keys = self.pin_esc_guarded();
         let menu_open = self.pin_menu.is_some();
         for p in &mut self.pins {
@@ -994,10 +1217,7 @@ impl ApplicationHandler<AppEvent> for App {
                 } = &event
                 {
                     let now = Instant::now();
-                    let pt = Point::new(
-                        p.last_cursor_i32().0 as f32,
-                        p.last_cursor_i32().1 as f32,
-                    );
+                    let pt = Point::new(p.last_cursor_i32().0 as f32, p.last_cursor_i32().1 as f32);
                     if let Some((wid, t, prev)) = self.last_click {
                         if wid == id
                             && now.duration_since(t).as_millis() < 350
@@ -1034,12 +1254,25 @@ impl ApplicationHandler<AppEvent> for App {
                 } else {
                     p.handle(&event);
                 }
+                if p.take_pending_ocr() {
+                    p.set_status(Some(tr("Recognizing…")));
+                    ocr_job = Some(p.rendered());
+                }
+                if p.take_pending_translate() {
+                    translate_pin = Some(id);
+                }
                 if p.pending_menu {
                     p.pending_menu = false;
                     open_menu = Some(id);
                 }
                 break;
             }
+        }
+        if let Some(img) = ocr_job {
+            self.spawn_ocr(id, img, false);
+        }
+        if let Some(pid) = translate_pin {
+            self.start_pin_translate(pid);
         }
         if close_menu {
             self.dismiss_pin_menu();
@@ -1090,9 +1323,10 @@ impl ApplicationHandler<AppEvent> for App {
         if let Some(ov) = &mut self.overlay {
             ov.pump_redraw();
         }
+        self.finish_overlay(event_loop);
         if self.overlay.is_some() {
-            // Poll while the overlay is up so QueryPointer can adopt a
-            // Button1 that XTEST / a pre-map drag never delivered to winit.
+            // Poll while the overlay is up so the InputHold connection can
+            // drain ButtonPress/Motion from the overlay pointer grab.
             event_loop.set_control_flow(ControlFlow::Poll);
         } else {
             let mut wake = self.snip_at;
@@ -1116,6 +1350,19 @@ impl ApplicationHandler<AppEvent> for App {
                 persist = true;
             }
         }
+        if let Some(until) = self.menu_raise_until {
+            if Instant::now() < until {
+                if let (Some(m), Some(pid)) = (&self.pin_menu, self.menu_pin) {
+                    if let Some(p) = self.pins.iter().find(|p| p.window_id() == pid) {
+                        m.restack_above(p.window());
+                    }
+                }
+                let next = Instant::now() + Duration::from_millis(50);
+                event_loop.set_control_flow(ControlFlow::WaitUntil(next.min(until)));
+            } else {
+                self.menu_raise_until = None;
+            }
+        }
         if self.pin_menu.as_ref().map(|m| m.closed).unwrap_or(false) {
             self.dismiss_pin_menu();
         }
@@ -1127,7 +1374,5 @@ impl ApplicationHandler<AppEvent> for App {
         if persist || self.pins.len() != before {
             self.persist_session();
         }
-        #[cfg(windows)]
-        crate::result_win::raise_above_pins();
     }
 }

@@ -5,6 +5,14 @@ Statuses: **done** / **partial** / **missing** / **impossible**.
 
 Counts at the bottom. Python sources are not modified.
 
+**UX reference for text / settings / OCR (2026-10-12):** Snipaste public docs
+([Getting Started](https://docs.snipaste.com/getting-started),
+[Key Bindings](https://docs.snipaste.com/key-bindings),
+[FAQ](https://docs.snipaste.com/faq)), not the Python PinShot UI.
+Clean-room only — no binary analysis, no copied assets. Snipaste has no
+OCR result window (PRO copies to clipboard); PinShot keeps its result
+window but styles it like Snipaste prefs (egui, CJK, always-on-top).
+
 ## Platform layer
 
 | Python | Rust | Status | Notes |
@@ -60,7 +68,7 @@ Counts at the bottom. Python sources are not modified.
 | Dim + hole + handles + size label | `draw::OverlayFront` | done |
 | Window hover / Tab element | `selection` + `detect` | done | Drag/move/resize also magnet-snaps edges to window + control rects (`snap.rs`, 8 px) |
 | Magnifier 15×15 @ 8×, C / Shift | `magnifier.rs` + overlay keys | done |
-| Drag / move / 8 handles | `selection.rs` | done | First F1 *selection* drag recovered via `QueryPointer`. Annotation press is winit-only — recover must not `annot.press` (that emptied the live shape) |
+| Drag / move / 8 handles | `selection.rs` | done | Click adopts hover window; press-and-drag always draws a fresh rect (even over a window). Overlay `XGrabPointer` on the InputHold connection **before the first frame** (replaces the root grab; no Chrome gap). Press origin is winit CursorMoved / grab ButtonPress, never QueryPointer. Recover only finishes a live drag if Release was dropped. Large-rect edge-band handle hit so screen-edge corners resize. Live handle hit beats a stale idle corner. |
 | Toolbar + OCR/Translate | `toolbar.rs` | done |
 | `,` `.` history / Shift+R last rect | `history.rs` + overlay + `data_dir/history` | done | `,`/`.` replay image+rect; **R applies last rect on the live capture** (not the old PNG); persist so R works after restart |
 | Esc confirm abort | in-overlay ConfirmAbort | done | Y/N / Esc / “Do not show again”; skip via prefs |
@@ -88,7 +96,7 @@ Counts at the bottom. Python sources are not modified.
 | `adjust_width` + 0.5s undo merge | done |
 | `wheel` trunc(angle/120) | `Annotator::wheel` | done |
 | `start_text` / `commit_text` / `begin_edit_text` | done + painted dashed editor | done |
-| `key` Esc/Enter/IME | overlay + pin + `Ime::Commit` + Linux `XGrabKeyboard` | done | Cached keymap; Latin stays grabbed; IME preedit pauses; Esc join-ungrabs so F1 is not eaten |
+| `key` Esc/Enter/IME | overlay + pin + `Ime::Commit` + Linux `XGrabKeyboard` | done | Keep grab while typing (xdotool CJK `0x01000000\|cp`); pause only during IME preedit. Esc cancels text, not snip ([FAQ #9](https://docs.snipaste.com/faq)). Click-outside commits (no handles, no new box). Drag moves committed text. Caret at click; hug-width editor; hide committed copy while editing. Right-click finishes. Mid-click / Ctrl+V paste. |
 | `press` select-on-click, mosaic no-steal | done |
 | `_resize_selected` number/polyline/rect | done |
 | `_push_edit` / undo 50 / redo | `UndoStack` | done |
@@ -109,9 +117,9 @@ Counts at the bottom. Python sources are not modified.
 | Tool order Rect Ellipse Line Arrow Pen Marker Mosaic Text Number | `toolbar.rs` | done |
 | OCR / Translate / Undo Redo Close Pin Save Copy | done |
 | Pin Check (done) | `TbAction::Check` | done |
-| Palette 20 + width −/+ | done | Panel shows `option_width` (selected/live), not the tool default |
-| Per-tool panel (filled, dash, blur, font…) | Fill/Dash/Dot; mode/effect; B/I/Outline; family chips | done | Mosaic/text −/+ show `size` / `font_size` via `option_width` |
-| Tips / i18n keys | `Tool::tip` + `tr` | done |
+| Palette 20 + width −/+ | done | Snipaste-style: blue width chip (dot or number) + 2×10 palette; mosaic uses a slider (`WidthSet`) instead of −/+ |
+| Per-tool panel (filled, dash, blur, font…) | Compact hugging one-row panel | done | Rect Fill/Outline/line-style; Line style combo; Pen colour-only; Mosaic mosaic/blur + slider; Text B/I/A + font combo; Eraser size + brush/rect. Red corner dot on the active tool. OCR has its own document icon + hover tooltip |
+| Tips / i18n keys | `Tool::tip` + `tr` painted on hover | done |
 
 ## Pin window (`pin_window.py`)
 
@@ -124,8 +132,8 @@ Counts at the bottom. Python sources are not modified.
 | TOOL_KEYS R E P T N … | R E P T N + 1/2/3/4 | done |
 | Esc close / Ctrl+W | done |
 | Double-click close/hide/none + tip | `PinWin::on_double_click` | done | First hit tips; `dblclick_tip_shown` persisted |
-| Context menu full (`build_menu`) | Win32 popup / in-process `PinMenuWin` | done | Height sums real row sizes (Sep=8); Esc closes menu only (pin ignores Esc ~450ms) |
-| Rotate / flip / paste / replace file | done |
+| Context menu full (`build_menu`) | Win32 popup / in-process `PinMenuWin` | done | Compact Snipaste flyouts: Zoom 33.3/50/100/200 + Current + Smoothing; Image processing rotate/flip; Move to group (name + count); size submenu (Group/Zoom/Rotation/Opacity/mirrors/Grayscale/Color inverted). Esc closes menu only |
+| Rotate / flip / paste / replace file | done | Also grayscale / invert / bilinear smoothing on paint |
 | Shadow / thumb | `shadow` + Shift+dblclick 72px thumb | done | Default on when `_NET_WM_CM_Sn` is owned; persisted. Widget is image+2M, photo at (M,M), `WA_TranslucentBackground` + premultiplied ARGB present; hairline `QRectF(r).adjusted(-0.5,-0.5,-0.5,-0.5)`; session stores image origin |
 | Click-through XShape / WS_EX_TRANSPARENT | done |
 | Groups move / new / rename | tray groups; pin menu New/Rename prompt | done | KeyboardInput when not IME preedit (overlay text same); Ime::Commit for CJK; empty Enter ignored; Default cannot be renamed |
@@ -136,7 +144,7 @@ Counts at the bottom. Python sources are not modified.
 
 | Python | Rust | Status |
 |---|---|---|
-| `prefs.PrefsDialog` General/Hotkeys/Output + Advanced | `prefs.rs` egui (Win) / `prefs_win.rs` main-loop (Linux) | done |
+| `prefs.PrefsDialog` General/Hotkeys/Output + Advanced | `prefs.rs` egui `--settings-window` (Linux + Windows) | done | Tabs match Snipaste Preferences: General / Interface / Snip / Paste / Output / Control / About (no Update — PinShot has no updater). Window hugs the form (measured widget height, 480×~100–320, not a fixed empty square). Restore Defaults per page; Apply/OK/Cancel footer. CJK: Noto/Source Han/wqy Linux, YaHei Windows. `prefs_win.rs` remains as in-process fallback. |
 | zh/en only, light/dark/system | done | Linux prefs/fallback repaint on Apply; system ≈ GTK_THEME |
 | Hotkey conflict detection | `hotkey::find_conflicts` | done |
 | Groups add/rename/remove | done |
@@ -156,10 +164,10 @@ Counts at the bottom. Python sources are not modified.
 
 | Python | Rust | Status |
 |---|---|---|
-| `translation.recognize` RapidOCR | `--features ocr` ort + PP-OCRv5 | partial | Band detector, not full DB |
-| Edge `translatetext` | `translate.rs` | done |
-| `ResultWindow` above pins | Win32 EDIT / egui | done |
-| `selection_text.send_copy` | `result_win::send_ctrl_c` | done (Windows) / impossible (Linux; Python same) |
+| `translation.recognize` RapidOCR | Linux always / `--features ocr` paddle-ocr-rs PP-OCRv5 **server default** | done | In-place on the pin: drag-select text, C copies. Prefetch on launch; pin shows download % then Recognizing. Brief highlight when text is ready. Settings: Server (~170 MB, default) or Mobile (~20 MB). Boxes clustered by y-overlap then x; CJK–Latin spaces kept as they appear. Pin right-click: Recognize text / Translate. F5 on a pin translates (OCR first if needed). |
+| Edge `translatetext` | `translate_run.rs` | done | Overlay F5 pins + OCR + a wrapping translation strip. Settings → Translate: provider (Edge free / OpenAI-compatible / DeepL), API URL, key, model, target. Test button. Key never logged. |
+| `ResultWindow` above pins | in-place pin overlay | done | `--ocr-window` / egui result window removed. |
+| `selection_text.send_copy` | `win32::send_ctrl_c` | done (Windows) / impossible (Linux; Python same) |
 
 ## Hotkeys (`hotkeys.py`)
 
@@ -197,10 +205,10 @@ Rust config default `language = "zh_CN"` (Phase 1) vs Python QSettings default `
 
 | Status | Rows |
 |---|---|
-| done | 114 |
-| partial | 1 |
+| done | 115 |
+| partial | 0 |
 | missing | 0 |
 | impossible | 6 |
 | **total** | **121** |
 
-Remaining partial: RapidOCR band detector (full DBNet is large). Xvfb `:26` covered font chips + B/I/family paint diffs and pin-menu New/Rename typing (empty Enter ignored). Hands-on still wanted: OCR-above-pins restack, AT-SPI `{role}:{name}` on a live a11y bus, 3×3 hit feel vs geometry slop. Custom color is in-process (no zenity).
+OCR is DBNet (no remaining partial). Xvfb `:26` covered font chips + B/I/family paint diffs and pin-menu New/Rename typing (empty Enter ignored). Hands-on still wanted: OCR-above-pins restack, AT-SPI `{role}:{name}` on a live a11y bus, 3×3 hit feel vs geometry slop. Custom color is in-process (no zenity).

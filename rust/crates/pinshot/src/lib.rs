@@ -8,11 +8,13 @@ mod clipboard;
 mod draw;
 mod ocr_run;
 mod overlay;
+mod translate_run;
 mod pin;
 mod pin_menu;
 mod prefs;
 mod prefs_win;
 mod text;
+mod ui_font;
 mod toolbar;
 mod tray;
 mod fallback;
@@ -55,14 +57,7 @@ mod ipc;
 #[path = "ipc_unix.rs"]
 mod ipc;
 
-#[cfg(windows)]
-mod result_win;
-#[cfg(unix)]
-#[path = "result_win_unix.rs"]
-mod result_win;
-
 pub use app::run;
-#[cfg(windows)]
 pub use prefs::run_preferences;
 
 pub fn logutil_ensure() {

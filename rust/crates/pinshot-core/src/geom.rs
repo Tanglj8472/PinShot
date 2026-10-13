@@ -369,6 +369,9 @@ impl Handle {
 
 pub const HANDLE_SIZE: f32 = 6.0;
 
+/// Overlay selection handle slop. Matches Python `_hit_handle` (`HANDLE+2` = 8).
+pub const HANDLE_HIT: f32 = 8.0;
+
 /// Handle positions. Matches Python: xs = left / center / right+1, ys = top / center / bottom+1.
 pub fn handle_points(r: Rect) -> [(Handle, Point); 8] {
     let r = r.normalized();
@@ -399,6 +402,41 @@ pub fn hit_handle(r: Rect, p: Point, slop: f32) -> Option<Handle> {
     None
 }
 
+/// Overlay selection handles. `handle_points` sit on `right()+1` / `bottom()+1`,
+/// which a pointer clamped to the screen edge cannot reach. On a large rect,
+/// a grab within [`HANDLE_HIT`] of the border still resizes.
+pub fn hit_sel_handle(r: Rect, p: Point) -> Option<Handle> {
+    if let Some(h) = hit_handle(r, p, HANDLE_HIT) {
+        return Some(h);
+    }
+    let r = r.normalized();
+    if r.w < 80.0 || r.h < 80.0 {
+        return None;
+    }
+    if p.x < r.x - HANDLE_HIT
+        || p.x > r.right() + HANDLE_HIT
+        || p.y < r.y - HANDLE_HIT
+        || p.y > r.bottom() + HANDLE_HIT
+    {
+        return None;
+    }
+    let left = (p.x - r.x).abs() <= HANDLE_HIT;
+    let right = (p.x - r.right()).abs() <= HANDLE_HIT;
+    let top = (p.y - r.y).abs() <= HANDLE_HIT;
+    let bottom = (p.y - r.bottom()).abs() <= HANDLE_HIT;
+    match (left, right, top, bottom) {
+        (true, _, true, _) => Some(Handle::Tl),
+        (_, true, true, _) => Some(Handle::Tr),
+        (true, _, _, true) => Some(Handle::Bl),
+        (_, true, _, true) => Some(Handle::Br),
+        (true, false, false, false) => Some(Handle::L),
+        (false, true, false, false) => Some(Handle::R),
+        (false, false, true, false) => Some(Handle::T),
+        (false, false, false, true) => Some(Handle::B),
+        _ => None,
+    }
+}
+
 /// Resize `r` by dragging `handle` to `p` (Python overlay `resizing` branch).
 pub fn resize_rect(r: Rect, handle: Handle, p: Point) -> Rect {
     let mut r = r.normalized();
@@ -419,22 +457,44 @@ pub fn resize_rect(r: Rect, handle: Handle, p: Point) -> Rect {
     r.normalized()
 }
 
-/// Window / element hover: smallest containing element, else first containing window, else full screen.
+/// Panel / dock / taskbar: full-width short strip or full-height thin bar.
+pub fn is_shell_strip(r: Rect, full: Rect) -> bool {
+    if r.is_empty() || full.is_empty() {
+        return false;
+    }
+    let full_w = r.w >= full.w * 0.85;
+    let full_h = r.h >= full.h * 0.85;
+    let short_h = r.h <= full.h.max(1.0) * 0.18 && r.h <= 220.0;
+    let thin_w = r.w <= full.w.max(1.0) * 0.18 && r.w <= 220.0;
+    (full_w && short_h) || (full_h && thin_w)
+}
+
+/// Window / element hover: smallest containing element, else the topmost
+/// non-dock window under the cursor (`windows` is topmost-first), else full screen.
 pub fn hover_rect(cursor: Point, windows: &[Rect], elements: &[Rect], full: Rect) -> Rect {
     if let Some(r) = elements
         .iter()
         .copied()
         .filter(|r| r.contains(cursor))
-        .min_by(|a, b| a.area().partial_cmp(&b.area()).unwrap_or(std::cmp::Ordering::Equal))
+        .min_by(|a, b| {
+            a.area()
+                .partial_cmp(&b.area())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
     {
         return r;
     }
-    windows
+    let under: Vec<Rect> = windows
         .iter()
         .copied()
-        .find(|r| r.contains(cursor))
         .map(|r| r.intersect(full))
-        .filter(|r| !r.is_empty())
+        .filter(|r| !r.is_empty() && r.contains(cursor))
+        .collect();
+    under
+        .iter()
+        .copied()
+        .find(|r| !is_shell_strip(*r, full))
+        .or_else(|| under.first().copied())
         .unwrap_or(full)
 }
 
@@ -546,8 +606,25 @@ mod tests {
     #[test]
     fn handle_hit() {
         let r = Rect::new(100.0, 100.0, 50.0, 40.0);
-        assert_eq!(hit_handle(r, Point::new(100.0, 100.0), 4.0), Some(Handle::Tl));
+        assert_eq!(
+            hit_handle(r, Point::new(100.0, 100.0), 4.0),
+            Some(Handle::Tl)
+        );
         assert_eq!(hit_handle(r, Point::new(125.0, 200.0), 4.0), None);
+    }
+
+    #[test]
+    fn handle_hit_inside_screen_edge_corner() {
+        let r = Rect::new(0.0, 0.0, 1920.0, 1080.0);
+        assert_eq!(
+            hit_sel_handle(r, Point::new(1916.0, 1076.0)),
+            Some(Handle::Br)
+        );
+        assert_eq!(hit_sel_handle(r, Point::new(4.0, 4.0)), Some(Handle::Tl));
+        assert_eq!(hit_sel_handle(r, Point::new(960.0, 540.0)), None);
+        // Small rect: interior stays Move (not a border grab).
+        let small = Rect::new(10.0, 10.0, 40.0, 20.0);
+        assert_eq!(hit_sel_handle(small, Point::new(20.0, 15.0)), None);
     }
 
     #[test]
@@ -574,6 +651,21 @@ mod tests {
             hover_rect(Point::new(90.0, 90.0), &windows, &[], full),
             full
         );
+    }
+
+    #[test]
+    fn hover_skips_dock_strip_for_window_under_cursor() {
+        let full = Rect::new(0.0, 0.0, 1920.0, 1200.0);
+        let dock = Rect::new(0.0, 1063.0, 1920.0, 137.0);
+        let chrome = Rect::new(0.0, 0.0, 1920.0, 1063.0);
+        // Topmost-first list: always-on-top panel, then Chrome.
+        let windows = [dock, chrome];
+        let h = hover_rect(Point::new(400.0, 720.0), &windows, &[], full);
+        assert_eq!(h, chrome);
+        let over_dock = hover_rect(Point::new(400.0, 1100.0), &windows, &[], full);
+        assert_eq!(over_dock, dock);
+        assert!(is_shell_strip(dock, full));
+        assert!(!is_shell_strip(chrome, full));
     }
 
     #[test]

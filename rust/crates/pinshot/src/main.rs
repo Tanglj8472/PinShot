@@ -5,7 +5,6 @@
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    #[cfg(windows)]
     if args.iter().any(|a| a == "--settings-window") {
         pinshot::run_preferences();
         return;

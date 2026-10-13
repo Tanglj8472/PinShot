@@ -8,14 +8,14 @@ use pinshot_core::color::Rgba;
 use pinshot_core::colorpicker::{color_picker_layout, ColorPicker, PickerAction};
 use pinshot_core::confirm::{confirm_abort_layout, ConfirmAbortHit};
 use pinshot_core::cursor::cursor_for;
-use pinshot_core::geom::{hit_handle, hover_rect, Point, Rect};
+use pinshot_core::geom::{hit_sel_handle, hover_rect, Point, Rect};
 use pinshot_core::history::{HistoryEntry, HistoryView, SnipHistory};
-use pinshot_core::snap::SnapGuides;
 use pinshot_core::i18n::tr;
 use pinshot_core::magnifier::magnifier_visible;
 use pinshot_core::raster::Raster;
 use pinshot_core::render::compose;
 use pinshot_core::selection::{DetectMode, Nudge, PressKind, SelState, Selection};
+use pinshot_core::snap::SnapGuides;
 use pinshot_core::wheel::WheelGate;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
@@ -35,7 +35,7 @@ pub enum OverlayResult {
     Copy(Raster, Rect),
     Pin(Raster, Rect, (i32, i32)),
     Save(Raster),
-    Ocr(Raster, bool),
+    Ocr(Raster, bool, (i32, i32)),
     Cancel,
     /// Esc then F1 (or F1 while the overlay still holds the grab): start a new snip.
     Resnip,
@@ -73,6 +73,16 @@ pub struct Overlay {
     mods: ModifiersState,
     history_max: u32,
     held_btn1: bool,
+    /// Left-button gesture started on this overlay (Esc then asks 放弃截图?).
+    interacted: bool,
+    #[cfg(unix)]
+    ptr_grab_ok: bool,
+    /// Consecutive QueryPointer Button1-up samples. Used only to finish an
+    /// in-progress drag if Release was dropped — never as a press origin.
+    btn1_up_streak: u8,
+    /// Last CursorMoved / grab motion while Button1 was up. A 2-point handle
+    /// drag can skip the press pixel; this is the real corner.
+    last_idle_pointer: Option<Point>,
     wheel: WheelGate,
     confirm: Option<ConfirmAbort>,
     color_picker: Option<ColorPicker>,
@@ -81,8 +91,11 @@ pub struct Overlay {
     proxy: winit::event_loop::EventLoopProxy<crate::event::AppEvent>,
     #[cfg(unix)]
     key_grab: Option<crate::x11util::OverlayKeyGrab>,
+    #[cfg(unix)]
+    ptr_hold: Option<crate::x11util::InputHold>,
     #[cfg(not(windows))]
     surface: Option<softbuffer::Surface<Rc<Window>, Rc<Window>>>,
+    ime_preedit: bool,
 }
 
 impl Overlay {
@@ -93,7 +106,7 @@ impl Overlay {
         history_max: u32,
         translate_on_select: bool,
         proxy: winit::event_loop::EventLoopProxy<crate::event::AppEvent>,
-        #[cfg(unix)] pre_hold: Option<crate::x11util::InputHold>,
+        #[cfg(unix)] mut pre_hold: Option<crate::x11util::InputHold>,
     ) -> Result<Self, String> {
         let (vx, vy) = capture.virtual_origin;
         let w = capture.composed.width;
@@ -160,6 +173,11 @@ impl Overlay {
             mods: ModifiersState::empty(),
             history_max: history_max.max(1),
             held_btn1: false,
+            interacted: false,
+            #[cfg(unix)]
+            ptr_grab_ok: false,
+            btn1_up_streak: 0,
+            last_idle_pointer: None,
             wheel: WheelGate::new(),
             confirm: None,
             color_picker: None,
@@ -168,8 +186,11 @@ impl Overlay {
             proxy: proxy.clone(),
             #[cfg(unix)]
             key_grab: None,
+            #[cfg(unix)]
+            ptr_hold: None,
             #[cfg(not(windows))]
             surface,
+            ime_preedit: false,
         };
         s.window.set_visible(true);
         native::focus_window(&s.window);
@@ -178,27 +199,34 @@ impl Overlay {
         }
         #[cfg(unix)]
         {
-            // Release InputHold *before* the exclusive overlay grab, otherwise
-            // the first XGrabKeyboard fails (AlreadyGrabbed) and Tab leaks to
-            // Chrome for ~80 ms.
-            drop(pre_hold);
+            // Grab the pointer on the overlay *before* the first frame, on the
+            // same connection as InputHold (replaces the root grab; no gap for
+            // Chrome). Ungrab keyboard inside grab_overlay_pointer so
+            // OverlayKeyGrab can take keys.
+            if pre_hold.is_none() {
+                pre_hold = Some(crate::x11util::InputHold::grab());
+            }
+            if let Some(xid) = crate::x11util::xid_of(&s.window) {
+                if let Some(hold) = pre_hold.as_mut() {
+                    s.ptr_grab_ok = hold.grab_overlay_pointer(xid);
+                    if !s.ptr_grab_ok {
+                        s.ptr_grab_ok = hold.grab_overlay_pointer(xid);
+                    }
+                }
+            }
+            s.ptr_hold = pre_hold;
             s.key_grab = native::grab_overlay_keys(&s.window, proxy);
-            crate::logutil::log("overlay mapped (pointer left on winit window)");
+            crate::logutil::log(&format!(
+                "overlay mapped (pointer grab ok={})",
+                s.ptr_grab_ok
+            ));
+            s.sync_pointer();
+            s.update_hover();
+            s.poll_overlay_pointer();
         }
         #[cfg(not(unix))]
         {
             let _ = proxy;
-        }
-        if let Some((x, y, down)) = native::pointer_in_window(&s.window) {
-            let (vx, vy) = s.capture.virtual_origin;
-            s.cursor = Point::new((x - vx) as f32, (y - vy) as f32);
-            if down && s.sel.state == pinshot_core::selection::SelState::Idle {
-                let _ = s.sel.press(s.cursor, s.bounds(), false);
-                crate::logutil::log(&format!(
-                    "recover Button1 at start ({:.0},{:.0})",
-                    s.cursor.x, s.cursor.y
-                ));
-            }
         }
         s.redraw();
         Ok(s)
@@ -228,7 +256,7 @@ impl Overlay {
         hint.sel_state = Some(self.sel.state);
         hint.hover_sel_handle = self.sel.resize_handle().or_else(|| {
             if self.annot.tool.is_none() && self.sel.has_sel() {
-                hit_handle(self.sel.normalized(), self.cursor, 8.0)
+                hit_sel_handle(self.sel.normalized(), self.cursor)
             } else {
                 None
             }
@@ -241,6 +269,10 @@ impl Overlay {
         #[cfg(unix)]
         if let Some(mut g) = self.key_grab.take() {
             g.release();
+        }
+        #[cfg(unix)]
+        {
+            self.ptr_hold = None;
         }
     }
 
@@ -264,7 +296,18 @@ impl Overlay {
     }
 
     fn sync_ime(&mut self) {
-        self.window.set_ime_allowed(self.annot.text_edit.is_some());
+        let editing = self.annot.text_edit.is_some();
+        self.window.set_ime_allowed(editing);
+        // Keep XGrabKeyboard while typing so xdotool / Unicode keysyms reach
+        // the overlay. Pause only during IME preedit so XIM can compose.
+        self.set_ime_pause(editing && self.ime_preedit);
+        if let Some(r) = self.annot.text_edit_rect() {
+            let dpr = self.dpr.max(0.01);
+            self.window.set_ime_cursor_area(
+                PhysicalPosition::new((r.x / dpr) as f64, (r.y / dpr) as f64),
+                PhysicalSize::new((r.w / dpr).max(8.0) as f64, (r.h / dpr).max(8.0) as f64),
+            );
+        }
     }
 
     fn commit_annot_release(&mut self, pt: Point) {
@@ -293,6 +336,10 @@ impl Overlay {
 
     pub fn take_result(&mut self) -> Option<OverlayResult> {
         self.result.take()
+    }
+
+    pub fn peek_result(&self) -> Option<&OverlayResult> {
+        self.result.as_ref()
     }
 
     fn bounds(&self) -> Rect {
@@ -337,16 +384,20 @@ impl Overlay {
         SnapGuides::from_rects(rects)
     }
 
-    fn update_hover(&mut self) {
-        if self.sel.state != SelState::Idle || self.sel.has_sel() {
-            return;
-        }
+    fn hover_at(&self, pt: Point) -> Rect {
         let elems = if self.detect == DetectMode::Element {
             self.elements.as_slice()
         } else {
             &[]
         };
-        self.hover = hover_rect(self.cursor, &self.windows, elems, self.bounds());
+        hover_rect(pt, &self.windows, elems, self.bounds())
+    }
+
+    fn update_hover(&mut self) {
+        if self.sel.state != SelState::Idle || self.sel.has_sel() {
+            return;
+        }
+        self.hover = self.hover_at(self.cursor);
     }
 
     fn relayout_toolbar(&mut self) {
@@ -373,11 +424,25 @@ impl Overlay {
             "tb bar {:.0},{:.0} {:.0}x{:.0}",
             tb.bar.x, tb.bar.y, tb.bar.w, tb.bar.h
         ));
-        if let Some(c) = tb.button_center(TbAction::Tool(Tool::Text)) {
-            crate::logutil::log(&format!("tb Text at {:.0},{:.0}", c.x, c.y));
+        for (name, act) in [
+            ("Rect", TbAction::Tool(Tool::Rect)),
+            ("Line", TbAction::Tool(Tool::Line)),
+            ("Pen", TbAction::Tool(Tool::Pen)),
+            ("Mosaic", TbAction::Tool(Tool::Mosaic)),
+            ("Text", TbAction::Tool(Tool::Text)),
+            ("Eraser", TbAction::Tool(Tool::Eraser)),
+            ("Ocr", TbAction::Ocr),
+            ("Pin", TbAction::Pin),
+        ] {
+            if let Some(c) = tb.button_center(act) {
+                crate::logutil::log(&format!("tb {name} at {:.0},{:.0}", c.x, c.y));
+            }
         }
-        if let Some(c) = tb.button_center(TbAction::Pin) {
-            crate::logutil::log(&format!("tb Pin at {:.0},{:.0}", c.x, c.y));
+        if let Some(pr) = tb.panel {
+            crate::logutil::log(&format!(
+                "tb panel {:.0},{:.0} {:.0}x{:.0}",
+                pr.x, pr.y, pr.w, pr.h
+            ));
         }
     }
 
@@ -448,8 +513,14 @@ impl Overlay {
         }
         let img = self.capture.composed.crop(self.sel.normalized());
         self.remember();
+        let (vx, vy) = self.capture.virtual_origin;
+        let r = self.sel.normalized();
         self.release_grab();
-        self.result = Some(OverlayResult::Ocr(img, translate));
+        self.result = Some(OverlayResult::Ocr(
+            img,
+            translate,
+            (vx + r.x as i32, vy + r.y as i32),
+        ));
         self.window.set_visible(false);
     }
 
@@ -517,12 +588,13 @@ impl Overlay {
     }
 
     fn cancel(&mut self) {
+        crate::logutil::log("overlay cancel");
         self.release_grab();
         self.result = Some(OverlayResult::Cancel);
         self.window.set_visible(false);
     }
 
-    fn resnip(&mut self) {
+    pub fn resnip(&mut self) {
         crate::logutil::log("overlay F1 resnip");
         self.release_grab();
         self.result = Some(OverlayResult::Resnip);
@@ -545,10 +617,12 @@ impl Overlay {
             TbAction::Save => self.finish_save(),
             TbAction::Copy => self.finish_copy(),
             TbAction::Ocr => self.finish_ocr(false),
-            TbAction::Translate => self.finish_ocr(true),
             TbAction::Check => {}
             TbAction::Width(d) => {
                 self.annot.adjust_width(d);
+            }
+            TbAction::WidthSet(v) => {
+                self.annot.set_option_width(v);
             }
             TbAction::Color(i) => {
                 if let Some(tool) = self.annot.tool.filter(|t| *t != Tool::Select) {
@@ -666,8 +740,19 @@ impl Overlay {
 
     fn finish_sel_drag(&mut self, pt: Point) {
         let guides = self.snap_guides();
+        // Recompute at the click, not a stale hover from before the overlay
+        // mapped (that is how a dock strip was adopted over Chrome).
+        let hover = self.hover_at(pt);
+        self.hover = hover;
         self.sel
-            .release_snapped(pt, self.hover, self.bounds(), Some(&guides));
+            .release_snapped(pt, hover, self.bounds(), Some(&guides));
+        if self.sel.has_sel() {
+            let r = self.sel.normalized();
+            crate::logutil::log(&format!(
+                "sel done {:.0}x{:.0} at {:.0},{:.0}",
+                r.w, r.h, r.x, r.y
+            ));
+        }
         self.log_sel_translate();
         self.relayout_toolbar();
         self.log_tb_chrome();
@@ -706,8 +791,231 @@ impl Overlay {
         }
     }
 
+    #[cfg(unix)]
+    fn overlay_pt_from_root(&self, root_x: i32, root_y: i32) -> Point {
+        let (vx, vy) = self.capture.virtual_origin;
+        Point::new((root_x - vx) as f32, (root_y - vy) as f32)
+    }
+
+    #[cfg(unix)]
+    fn ensure_overlay_grab(&mut self) {
+        if self.ptr_grab_ok {
+            return;
+        }
+        let Some(xid) = crate::x11util::xid_of(&self.window) else {
+            return;
+        };
+        if self.ptr_hold.is_none() {
+            self.ptr_hold = Some(crate::x11util::InputHold::grab());
+        }
+        if let Some(hold) = self.ptr_hold.as_mut() {
+            self.ptr_grab_ok = hold.grab_overlay_pointer(xid);
+            if self.ptr_grab_ok {
+                crate::logutil::log("overlay XGrabPointer recovered");
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    fn poll_overlay_pointer(&mut self) {
+        let evs = match self.ptr_hold.as_mut() {
+            Some(hold) => hold.poll_pointer(),
+            None => return,
+        };
+        for ev in evs {
+            let pt = self.overlay_pt_from_root(ev.root_x, ev.root_y);
+            match ev.kind {
+                crate::x11util::PtrKind::Move => self.on_cursor_moved(pt),
+                crate::x11util::PtrKind::Press => {
+                    if let Some(btn) = xbutton(ev.detail) {
+                        self.cursor = pt;
+                        self.on_mouse_button(btn, true);
+                    } else {
+                        self.on_cursor_moved(pt);
+                    }
+                }
+                crate::x11util::PtrKind::Release => {
+                    if let Some(btn) = xbutton(ev.detail) {
+                        self.cursor = pt;
+                        self.on_mouse_button(btn, false);
+                    } else {
+                        self.on_cursor_moved(pt);
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    fn poll_overlay_pointer(&mut self) {}
+
+    fn on_cursor_moved(&mut self, next: Point) {
+        if self.color_picker.is_some() {
+            self.cursor = next;
+            self.picker_drag(self.cursor);
+            return;
+        }
+        if !self.held_btn1 {
+            self.last_idle_pointer = Some(next);
+        }
+        if self.confirm.is_some() {
+            self.cursor = next;
+            return;
+        }
+        let same_px =
+            next.x.round() == self.cursor.x.round() && next.y.round() == self.cursor.y.round();
+        self.cursor = next;
+        if self.annot.is_brush_live()
+            || self.annot.is_selecting()
+            || self.annot.is_dragging_text()
+            || self.annot.live.is_some()
+        {
+            self.annot.move_to(self.img_pt(self.cursor), false);
+            self.dirty = true;
+        } else if self
+            .toolbar
+            .as_ref()
+            .is_some_and(|t| t.contains(self.cursor))
+        {
+            self.dirty = true;
+        } else if matches!(
+            self.sel.state,
+            SelState::Creating | SelState::Moving | SelState::Resizing
+        ) {
+            self.apply_sel_motion(self.cursor);
+            self.dirty = true;
+        } else {
+            let prev_hover = self.hover;
+            self.update_hover();
+            if !same_px || prev_hover != self.hover {
+                self.dirty = true;
+            }
+        }
+    }
+
+    fn on_mouse_button(&mut self, button: MouseButton, pressed: bool) {
+        if self.color_picker.is_some() {
+            if pressed && button == MouseButton::Left {
+                self.picker_press(self.cursor);
+            } else if !pressed && button == MouseButton::Left {
+                if let Some(p) = self.color_picker.as_mut() {
+                    p.release();
+                }
+            }
+            return;
+        }
+        let live_sel = matches!(
+            self.sel.state,
+            SelState::Creating | SelState::Moving | SelState::Resizing
+        );
+        let pt = self.cursor;
+        if pressed && self.confirm.is_some() {
+            if !self.held_btn1 {
+                let _ = self.hit_confirm(pt);
+            }
+            self.held_btn1 = button == MouseButton::Left;
+            return;
+        }
+        if pressed {
+            native::focus_window(&self.window);
+        }
+        if pressed && button == MouseButton::Left {
+            self.held_btn1 = true;
+            self.interacted = true;
+            if let Some(tb) = &self.toolbar {
+                if let Some(a) = tb.hit(pt) {
+                    self.apply_tb(a);
+                    return;
+                }
+            }
+            if live_sel {
+                self.apply_sel_motion(pt);
+                self.dirty = true;
+                return;
+            }
+            if self.sel.has_sel() && self.annot.press(self.img_pt(pt), false) {
+                self.sync_ime();
+                self.relayout_toolbar();
+                self.mark_dirty();
+                return;
+            }
+            let anchor = handle_press_point(
+                self.last_idle_pointer,
+                pt,
+                self.sel.has_sel(),
+                self.sel.normalized(),
+            );
+            let mut kind = self
+                .sel
+                .press(anchor, self.bounds(), self.annot.tool.is_some());
+            if kind == PressKind::Ignore && self.sel.has_sel() {
+                kind = self.sel.press(pt, self.bounds(), self.annot.tool.is_some());
+            }
+            match kind {
+                PressKind::Ignore => {}
+                PressKind::Move => {
+                    self.sel_move0 = Some(self.sel.normalized());
+                    self.toolbar = None;
+                }
+                _ => self.toolbar = None,
+            }
+            if matches!(
+                self.sel.state,
+                SelState::Creating | SelState::Moving | SelState::Resizing
+            ) {
+                self.apply_sel_motion(pt);
+            }
+            self.dirty = true;
+        } else if pressed && button == MouseButton::Middle {
+            if self.annot.text_edit.is_some() {
+                if let Ok(s) = crate::clipboard::read_text() {
+                    self.annot.insert_str(&s);
+                    self.sync_ime();
+                    self.mark_dirty();
+                }
+            }
+        } else if pressed && button == MouseButton::Right {
+            if self.annot.right_click() {
+                self.sync_ime();
+                self.relayout_toolbar();
+                self.mark_dirty();
+                return;
+            }
+            if self.sel.has_sel() {
+                self.sel.reset();
+                self.annot.set_tool(None);
+                self.annot.clear();
+                self.toolbar = None;
+                self.update_hover();
+            } else {
+                self.cancel();
+            }
+            self.dirty = true;
+        } else if !pressed && button == MouseButton::Left {
+            self.held_btn1 = false;
+            if self.annot.live.is_some()
+                || self.annot.is_selecting()
+                || self.annot.is_dragging_text()
+                || self.annot.is_swallowing_text_click()
+                || self.annot.is_editing_text()
+            {
+                self.commit_annot_release(pt);
+            } else {
+                self.finish_sel_drag(pt);
+                if self.translate_on_select && self.sel.has_sel() {
+                    self.finish_ocr(true);
+                }
+            }
+            self.dirty = true;
+        }
+    }
+
     fn request_abort(&mut self) {
-        if !self.sel.has_sel() {
+        let gesturing = self.sel.has_sel()
+            || self.interacted
+            || self.held_btn1
+            || !matches!(self.sel.state, SelState::Idle);
+        if !gesturing {
             self.cancel();
             return;
         }
@@ -771,6 +1079,7 @@ impl Overlay {
 
     pub fn handle(&mut self, event: &WindowEvent) {
         self.poll_elements();
+        self.poll_overlay_pointer();
         if self.color_picker.is_some() {
             match event {
                 WindowEvent::CursorMoved { position, .. } => {
@@ -798,7 +1107,9 @@ impl Overlay {
                     }
                 }
                 WindowEvent::RedrawRequested => self.redraw(),
-                WindowEvent::CloseRequested => self.cancel(),
+                WindowEvent::CloseRequested => {
+                    crate::logutil::log("overlay CloseRequested ignored");
+                }
                 _ => {}
             }
             if self.dirty {
@@ -808,88 +1119,11 @@ impl Overlay {
             return;
         }
         match event {
-            WindowEvent::CursorMoved { position, .. } if self.confirm.is_some() => {
-                self.cursor = Point::new(position.x as f32, position.y as f32);
-            }
             WindowEvent::CursorMoved { position, .. } => {
-                let next = Point::new(position.x as f32, position.y as f32);
-                let same_px = next.x.round() == self.cursor.x.round()
-                    && next.y.round() == self.cursor.y.round();
-                self.cursor = next;
-                if self.annot.is_brush_live()
-                    || self.annot.is_selecting()
-                    || self.annot.live.is_some()
-                {
-                    self.annot.move_to(self.img_pt(self.cursor), false);
-                    self.dirty = true;
-                } else if matches!(
-                    self.sel.state,
-                    SelState::Creating | SelState::Moving | SelState::Resizing
-                ) {
-                    self.apply_sel_motion(self.cursor);
-                    self.dirty = true;
-                } else {
-                    let prev_hover = self.hover;
-                    self.update_hover();
-                    if !same_px || prev_hover != self.hover {
-                        self.dirty = true;
-                    }
-                }
+                self.on_cursor_moved(Point::new(position.x as f32, position.y as f32));
             }
             WindowEvent::MouseInput { state, button, .. } => {
-                self.sync_pointer();
-                let pt = self.cursor;
-                if *state == ElementState::Pressed && self.hit_confirm(pt) {
-                    return;
-                }
-                if *state == ElementState::Pressed {
-                    native::focus_window(&self.window);
-                }
-                if *state == ElementState::Pressed && *button == MouseButton::Left {
-                    self.held_btn1 = true;
-                    if let Some(tb) = &self.toolbar {
-                        if let Some(a) = tb.hit(pt) {
-                            self.apply_tb(a);
-                            return;
-                        }
-                    }
-                    if self.sel.has_sel() && self.annot.press(self.img_pt(pt), false) {
-                        self.sync_ime();
-                        self.mark_dirty();
-                        return;
-                    }
-                    match self.sel.press(pt, self.bounds(), self.annot.tool.is_some()) {
-                        PressKind::Ignore => {}
-                        PressKind::Move => {
-                            self.sel_move0 = Some(self.sel.normalized());
-                            self.toolbar = None;
-                        }
-                        _ => self.toolbar = None,
-                    }
-                    self.dirty = true;
-                } else if *state == ElementState::Pressed && *button == MouseButton::Right {
-                    if self.sel.has_sel() {
-                        self.sel.reset();
-                        self.annot.set_tool(None);
-                        self.annot.clear();
-                        self.toolbar = None;
-                        self.update_hover();
-                    } else {
-                        self.cancel();
-                    }
-                    self.dirty = true;
-                } else if *state == ElementState::Released && *button == MouseButton::Left {
-                    self.held_btn1 = false;
-                    if self.annot.live.is_some() || self.annot.is_selecting() {
-                        self.commit_annot_release(pt);
-                    } else {
-                        self.finish_sel_drag(pt);
-                        if self.translate_on_select && self.sel.has_sel() {
-                            self.finish_ocr(true);
-                        }
-                    }
-                    self.dirty = true;
-                }
+                self.on_mouse_button(*button, *state == ElementState::Pressed);
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 if self.confirm.is_some() {
@@ -914,18 +1148,22 @@ impl Overlay {
             }
             WindowEvent::Ime(ime) => match ime {
                 winit::event::Ime::Commit(s) => {
-                    for ch in s.chars() {
-                        self.annot.type_text(ch);
-                    }
-                    self.set_ime_pause(false);
+                    crate::logutil::log(&format!("text ime commit {:?}", s));
+                    self.annot.insert_str(s);
+                    self.ime_preedit = false;
                     self.sync_ime();
                     self.mark_dirty();
                 }
-                winit::event::Ime::Enabled | winit::event::Ime::Preedit(_, _) => {
-                    self.set_ime_pause(true);
+                winit::event::Ime::Preedit(s, _) => {
+                    self.ime_preedit = !s.is_empty();
+                    self.sync_ime();
+                }
+                winit::event::Ime::Enabled => {
+                    self.sync_ime();
                 }
                 winit::event::Ime::Disabled => {
-                    self.set_ime_pause(false);
+                    self.ime_preedit = false;
+                    self.sync_ime();
                 }
             },
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
@@ -939,12 +1177,14 @@ impl Overlay {
                     if let Some(g) = &self.key_grab {
                         g.kick();
                     }
+                    self.sync_ime();
                 } else if self.result.is_none() {
                     native::focus_window(&self.window);
                     #[cfg(unix)]
                     if let Some(g) = &self.key_grab {
                         g.kick();
                     }
+                    self.sync_ime();
                 }
             }
             WindowEvent::ModifiersChanged(m) => {
@@ -953,7 +1193,9 @@ impl Overlay {
                 self.dirty = true;
             }
             WindowEvent::RedrawRequested => self.redraw(),
-            WindowEvent::CloseRequested => self.cancel(),
+            WindowEvent::CloseRequested => {
+                crate::logutil::log("overlay CloseRequested ignored");
+            }
             _ => {}
         }
         if self.dirty {
@@ -969,7 +1211,15 @@ impl Overlay {
             self.mark_dirty();
             return;
         }
-        let Some((key, text)) = keysym_to_winit(keysym) else {
+        let Some((key, text)) = keysym_to_winit(keysym).or_else(|| {
+            // Direct UCS keysym without the 0x01000000 prefix (some xdotool setups).
+            let ch = char::from_u32(keysym)?;
+            if ch.is_control() || (keysym >= 0xff00 && keysym <= 0xffff) {
+                return None;
+            }
+            let s = ch.to_string();
+            Some((Key::Character(s.clone().into()), Some(s)))
+        }) else {
             return;
         };
         self.key(&key, text.as_deref());
@@ -991,6 +1241,10 @@ impl Overlay {
             match key {
                 Key::Named(NamedKey::Enter) => self.confirm_yes(),
                 Key::Named(NamedKey::Escape) => self.confirm_no(),
+                Key::Named(NamedKey::F1) => {
+                    self.confirm = None;
+                    self.resnip();
+                }
                 Key::Character(c) if c.eq_ignore_ascii_case("y") => self.confirm_yes(),
                 Key::Character(c) if c.eq_ignore_ascii_case("n") => self.confirm_no(),
                 _ => {}
@@ -998,29 +1252,49 @@ impl Overlay {
             return;
         }
         if self.annot.text_edit.is_some() {
+            let ctrl = self.mods.control_key();
+            let shift = self.mods.shift_key();
             match key {
                 Key::Named(NamedKey::Escape) => self.annot.commit_text(true),
                 Key::Named(NamedKey::Enter) => {
-                    if let Some(ed) = &self.annot.text_edit {
-                        crate::logutil::log(&format!("text commit {:?}", ed.text));
+                    if shift {
+                        self.annot.type_text('\n');
+                    } else {
+                        if let Some(ed) = &self.annot.text_edit {
+                            crate::logutil::log(&format!("text commit {:?}", ed.text));
+                        }
+                        self.annot.commit_text(false);
                     }
-                    self.annot.commit_text(false);
                 }
                 Key::Named(NamedKey::Backspace) => self.annot.type_text('\u{8}'),
+                Key::Named(NamedKey::Delete) => self.annot.type_text('\u{7f}'),
+                Key::Named(NamedKey::ArrowLeft) => self.annot.move_caret(-1),
+                Key::Named(NamedKey::ArrowRight) => self.annot.move_caret(1),
+                Key::Named(NamedKey::Home) => self.annot.move_caret(-2),
+                Key::Named(NamedKey::End) => self.annot.move_caret(2),
                 Key::Named(NamedKey::F1) => {
                     self.annot.commit_text(true);
                     self.resnip();
                     return;
                 }
+                Key::Character(c) if c == "v" && ctrl => {
+                    if let Ok(s) = crate::clipboard::read_text() {
+                        self.annot.insert_str(&s);
+                    }
+                }
+                Key::Character(c) if (c == "1" || c == "[") && !ctrl => {
+                    self.annot.adjust_width(-1);
+                    self.relayout_toolbar();
+                }
+                Key::Character(c) if (c == "2" || c == "]") && !ctrl => {
+                    self.annot.adjust_width(1);
+                    self.relayout_toolbar();
+                }
                 _ => {
-                    // Insert printable chars even if Control is already down —
-                    // delayed X11Key after a fast "hello"+Ctrl+Enter must not drop 'l'/'o'.
-                    if let Some(t) = text {
-                        for ch in t.chars() {
-                            if !ch.is_control() {
-                                self.annot.type_text(ch);
-                            }
-                        }
+                    if ctrl {
+                        // Ctrl+Enter already handled; do not insert 'c' from Ctrl+C etc.
+                    } else if let Some(t) = text {
+                        self.annot.insert_str(t);
                     }
                 }
             }
@@ -1033,6 +1307,11 @@ impl Overlay {
         match key {
             Key::Named(NamedKey::Escape) => self.request_abort(),
             Key::Named(NamedKey::F1) => self.resnip(),
+            Key::Named(NamedKey::F5) => {
+                if self.sel.has_sel() {
+                    self.finish_ocr(true);
+                }
+            }
             Key::Named(NamedKey::Enter) => {
                 if self.sel.has_sel() {
                     self.finish_copy();
@@ -1043,6 +1322,11 @@ impl Overlay {
             Key::Character(c) if c.eq_ignore_ascii_case("c") && ctrl => self.finish_copy(),
             Key::Named(NamedKey::F3) => self.finish_pin(),
             Key::Character(c) if c.eq_ignore_ascii_case("t") && ctrl => self.finish_pin(),
+            Key::Character(c) if c.eq_ignore_ascii_case("t") && self.sel.has_sel() => {
+                self.annot.set_tool(Some(Tool::Text));
+                self.relayout_toolbar();
+                self.dirty = true;
+            }
             Key::Character(c) if c.eq_ignore_ascii_case("s") && ctrl => self.finish_save(),
             Key::Character(c) if c.eq_ignore_ascii_case("z") && ctrl => {
                 self.annot.undo();
@@ -1105,11 +1389,11 @@ impl Overlay {
                 self.relayout_toolbar();
                 self.dirty = true;
             }
-            Key::Character(c) if c == "1" && self.annot.tool.is_some() => {
+            Key::Character(c) if (c == "1" || c == "[") && self.annot.tool.is_some() => {
                 self.annot.adjust_width(-1);
                 self.dirty = true;
             }
-            Key::Character(c) if c == "2" && self.annot.tool.is_some() => {
+            Key::Character(c) if (c == "2" || c == "]") && self.annot.tool.is_some() => {
                 self.annot.adjust_width(1);
                 self.dirty = true;
             }
@@ -1193,6 +1477,7 @@ impl Overlay {
             if let Some(i) = hit {
                 if self.annot.shapes.get(i).map(|s| s.kind) == Some(Tool::Text) {
                     self.annot.begin_edit_text(i);
+                    self.sync_ime();
                     self.dirty = true;
                     return;
                 }
@@ -1261,86 +1546,64 @@ impl Overlay {
 
     pub fn pump_redraw(&mut self) {
         self.poll_elements();
+        #[cfg(unix)]
+        self.ensure_overlay_grab();
+        self.poll_overlay_pointer();
         self.recover_pointer_drag();
         self.expire_toast();
+        if self.annot.text_edit.is_some() {
+            self.dirty = true;
+        }
+        if self
+            .toolbar
+            .as_ref()
+            .is_some_and(|t| t.contains(self.cursor))
+        {
+            // Keep tooltips live even when winit skipped CursorMoved (XGrab).
+            self.dirty = true;
+        }
         if self.dirty {
             self.window.request_redraw();
         }
     }
 
-    /// If ButtonPress landed on the window underneath before the overlay
-    /// mapped, adopt the still-held Button1 as a selection drag.
-    ///
-    /// Recover must **not** start `annot.press`. A QueryPointer rising edge
-    /// plus the real winit press (or a same-point recover release) `finish()`es
-    /// an empty live shape, after which the physical drag has `held_btn1` and
-    /// no live — rect/ellipse/arrow draw nothing. MouseInput owns press;
-    /// recover only continues or commits a stroke that already has extent.
+    /// QueryPointer is never the press origin. The overlay grab delivers
+    /// ButtonPress / Motion; recover only finishes a live drag if Release
+    /// was dropped (two consecutive ups).
     fn recover_pointer_drag(&mut self) {
-        if self.confirm.is_some() || self.color_picker.is_some() {
+        if self.color_picker.is_some() || self.confirm.is_some() {
             return;
         }
-        let Some((x, y, down)) = native::pointer_in_window(&self.window) else {
+        let Some((_, _, down)) = native::pointer_in_window(&self.window) else {
             return;
         };
-        let vx = self.capture.virtual_origin.0;
-        let vy = self.capture.virtual_origin.1;
-        let pt = Point::new((x - vx) as f32, (y - vy) as f32);
-        self.cursor = pt;
-        let over_tb = self
-            .toolbar
-            .as_ref()
-            .map(|t| t.contains(pt))
-            .unwrap_or(false);
-        if self.sel.has_sel() && self.annot.tool.is_some() && !over_tb {
-            let drawing = self.annot.live.is_some()
-                || self.annot.is_selecting()
-                || self.annot.is_brush_live();
-            match recover_stroke_action(down, drawing, annot_stroke_extent(&self.annot)) {
-                RecoverStroke::Move => {
-                    self.annot.move_to(self.img_pt(pt), false);
-                    self.dirty = true;
-                }
-                RecoverStroke::Release => {
-                    self.commit_annot_release(pt);
-                    self.dirty = true;
-                }
-                RecoverStroke::Idle => {}
-            }
-        } else if down
-            && self.sel.state == SelState::Idle
-            && !self.sel.has_sel()
-            && self.annot.tool.is_none()
+        if down {
+            self.btn1_up_streak = 0;
+            return;
+        }
+        self.btn1_up_streak = self.btn1_up_streak.saturating_add(1);
+        let drawing = self.annot.live.is_some()
+            || self.annot.is_selecting()
+            || self.annot.is_dragging_text()
+            || self.annot.is_brush_live();
+        if drawing
+            && recover_stroke_action(false, drawing, annot_stroke_extent(&self.annot))
+                == RecoverStroke::Release
         {
-            let _ = self.sel.press(pt, self.bounds(), false);
-            crate::logutil::log(&format!("recover Button1 drag ({:.0},{:.0})", pt.x, pt.y));
+            self.commit_annot_release(self.cursor);
             self.dirty = true;
-        } else if down
-            && matches!(
-                self.sel.state,
-                SelState::Creating | SelState::Moving | SelState::Resizing
-            )
-        {
-            self.apply_sel_motion(pt);
-            self.dirty = true;
-        } else if !down
-            && matches!(
-                self.sel.state,
-                SelState::Creating | SelState::Moving | SelState::Resizing
-            )
-        {
-            self.finish_sel_drag(pt);
+        } else if recover_should_commit_sel(false, self.btn1_up_streak, self.sel.state) {
+            self.finish_sel_drag(self.cursor);
             if self.sel.has_sel() {
                 let r = self.sel.normalized();
                 crate::logutil::log(&format!("recover release sel {:.0}x{:.0}", r.w, r.h));
             }
             self.dirty = true;
         }
-        self.held_btn1 = down;
     }
 
     pub fn next_wake(&self) -> Option<Instant> {
-        let ms = if self.annot.is_brush_live() { 8 } else { 16 };
+        let ms = 8;
         let poll = Instant::now() + Duration::from_millis(ms);
         match self.toast_until {
             Some(t) => Some(if t < poll { t } else { poll }),
@@ -1354,6 +1617,45 @@ enum RecoverStroke {
     Idle,
     Move,
     Release,
+}
+
+/// Create uses the live ButtonPress / MouseInput cursor. A 2-point handle
+/// grab still uses the last idle pixel if the press skipped the handle;
+/// a press that itself hits a handle wins over a stale idle corner.
+fn handle_press_point(idle: Option<Point>, live: Point, has_sel: bool, sel: Rect) -> Point {
+    if has_sel {
+        if hit_sel_handle(sel, live).is_some() {
+            return live;
+        }
+        if let Some(p) = idle {
+            if hit_sel_handle(sel, p).is_some() {
+                return p;
+            }
+        }
+    }
+    live
+}
+
+#[cfg(unix)]
+fn xbutton(detail: u8) -> Option<MouseButton> {
+    match detail {
+        1 => Some(MouseButton::Left),
+        2 => Some(MouseButton::Middle),
+        3 => Some(MouseButton::Right),
+        _ => None,
+    }
+}
+
+/// Two consecutive QueryPointer ups commit Creating (window-adopt if the
+/// span is a click), Moving, and Resizing. A single false up is ignored.
+fn recover_should_commit_sel(down: bool, up_streak: u8, state: SelState) -> bool {
+    if down || up_streak < 2 {
+        return false;
+    }
+    matches!(
+        state,
+        SelState::Creating | SelState::Moving | SelState::Resizing
+    )
 }
 
 /// Recover continues a live stroke; it never starts one (see `recover_pointer_drag`).
@@ -1371,7 +1673,7 @@ fn recover_stroke_action(down: bool, drawing: bool, live_has_extent: bool) -> Re
 }
 
 fn annot_stroke_extent(annot: &Annotator) -> bool {
-    if annot.is_selecting() {
+    if annot.is_selecting() || annot.is_dragging_text() {
         return true;
     }
     let Some(sh) = annot.live.as_ref() else {
@@ -1431,10 +1733,16 @@ fn keysym_to_winit(keysym: u32) -> Option<(Key, Option<String>)> {
     }
     // X11 function-key range (0xff00–0xffff): never treat as Unicode text.
     // Control_L is 0xffe3; char::from_u32 maps that to '￣' and used to leak into text.
-    if keysym >= 0xff00 {
+    if keysym >= 0xff00 && keysym <= 0xffff {
         return None;
     }
-    let ch = char::from_u32(keysym)?;
+    // Unicode keysym: 0x01000000 | codepoint (xdotool CJK, X11 UTF-8).
+    let cp = if keysym & 0xff000000 == 0x01000000 {
+        keysym & 0x00ffffff
+    } else {
+        keysym
+    };
+    let ch = char::from_u32(cp)?;
     if ch.is_control() {
         return None;
     }
@@ -1445,9 +1753,13 @@ fn keysym_to_winit(keysym: u32) -> Option<(Key, Option<String>)> {
 #[cfg(test)]
 mod keysym_tests {
     use super::keysym_to_winit;
-    use super::{annot_stroke_extent, recover_stroke_action, RecoverStroke};
+    use super::{
+        annot_stroke_extent, handle_press_point, recover_should_commit_sel, recover_stroke_action,
+        RecoverStroke,
+    };
     use pinshot_core::annotation::{Annotator, Tool};
     use pinshot_core::geom::Point;
+    use pinshot_core::selection::SelState;
     use winit::keyboard::{Key, NamedKey};
 
     #[test]
@@ -1464,6 +1776,13 @@ mod keysym_tests {
         let (k, t) = keysym_to_winit(b'h' as u32).unwrap();
         assert!(matches!(k, Key::Character(c) if c.as_str() == "h"));
         assert_eq!(t.as_deref(), Some("h"));
+    }
+
+    #[test]
+    fn unicode_keysym_inserts_cjk() {
+        let (k, t) = keysym_to_winit(0x01004f60).unwrap();
+        assert!(matches!(k, Key::Character(c) if c.as_str() == "你"));
+        assert_eq!(t.as_deref(), Some("你"));
     }
 
     #[test]
@@ -1494,5 +1813,41 @@ mod keysym_tests {
         assert!(!annot_stroke_extent(&a));
         a.move_to(Point::new(40.0, 30.0), false);
         assert!(annot_stroke_extent(&a));
+    }
+
+    #[test]
+    fn create_uses_live_press_not_stale_idle() {
+        let stale = Point::new(40.0, 80.0);
+        let press = Point::new(400.0, 300.0);
+        assert_eq!(
+            handle_press_point(Some(stale), press, false, pinshot_core::geom::Rect::EMPTY),
+            press
+        );
+    }
+
+    #[test]
+    fn two_point_handle_uses_idle_pixel_not_drop() {
+        let handle = Point::new(300.0, 200.0);
+        let drop = Point::new(380.0, 250.0);
+        let sel = pinshot_core::geom::Rect::new(100.0, 80.0, 200.0, 120.0);
+        assert_eq!(handle_press_point(Some(handle), drop, true, sel), handle);
+        assert_eq!(handle_press_point(Some(drop), drop, true, sel), drop);
+    }
+
+    #[test]
+    fn live_handle_beats_stale_idle_handle() {
+        let br = Point::new(300.0, 200.0);
+        let tl = Point::new(100.0, 80.0);
+        let sel = pinshot_core::geom::Rect::new(100.0, 80.0, 200.0, 120.0);
+        assert_eq!(handle_press_point(Some(br), tl, true, sel), tl);
+    }
+
+    #[test]
+    fn recover_does_not_commit_click_or_single_up() {
+        assert!(!recover_should_commit_sel(false, 1, SelState::Creating));
+        assert!(recover_should_commit_sel(false, 2, SelState::Creating));
+        assert!(recover_should_commit_sel(false, 2, SelState::Resizing));
+        assert!(!recover_should_commit_sel(true, 2, SelState::Creating));
+        assert!(!recover_should_commit_sel(false, 2, SelState::Selected));
     }
 }

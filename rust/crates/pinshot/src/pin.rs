@@ -5,8 +5,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use crate::draw::{
-    fill_rect, paint_color_picker, paint_pin, paint_toolbar, present_argb, stroke_rect,
-    PIN_SHADOW_M,
+    fill_rect, paint_color_picker, paint_toolbar, present_argb, stroke_rect, PIN_SHADOW_M,
 };
 use crate::native;
 use crate::toolbar::{TbAction, Toolbar};
@@ -18,6 +17,7 @@ use pinshot_core::geom::{handle_points, HANDLE_SIZE};
 use pinshot_core::geom::{Point, Rect};
 use pinshot_core::groups;
 use pinshot_core::i18n::tr;
+use pinshot_core::ocr::{hit_token, nearest_token, selected_text, tokens_in_rect, OcrPage};
 use pinshot_core::raster::Raster;
 use pinshot_core::render::compose;
 use pinshot_core::wheel::WheelGate;
@@ -25,7 +25,7 @@ use softbuffer::{Context, Surface};
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
-use winit::keyboard::{Key, NamedKey};
+use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
 
 #[cfg(windows)]
@@ -50,6 +50,26 @@ const ID_Z150: usize = 14;
 const ID_Z200: usize = 15;
 const ID_Z400: usize = 16;
 const ID_TOOLBAR: usize = 5;
+const OCR_STRIP_MIN_H: u32 = 40;
+const OCR_STRIP_LINE: f32 = 18.0;
+const OCR_STRIP_PAD: f32 = 8.0;
+const OCR_STRIP_MAX_H: u32 = 160;
+
+struct OcrOverlay {
+    page: OcrPage,
+    sel: Option<(usize, usize)>,
+    translation: Option<String>,
+    translating: bool,
+}
+
+/// Drag-select on the pin image. Empty-space drags still move the pin.
+#[derive(Clone, Copy)]
+struct OcrGesture {
+    img0: Point,
+    win0: Point,
+    tl0: (i32, i32),
+    selecting: bool,
+}
 
 pub struct PinWin {
     window: Rc<Window>,
@@ -82,6 +102,21 @@ pub struct PinWin {
     pub can_shadow: bool,
     pub thumb: bool,
     color_picker: Option<ColorPicker>,
+    mods: ModifiersState,
+    pub smooth: bool,
+    pub grayscale: bool,
+    pub invert: bool,
+    pub rotation: i32,
+    pub mirror_x: bool,
+    pub mirror_y: bool,
+    ocr: Option<OcrOverlay>,
+    ocr_gesture: Option<OcrGesture>,
+    pending_ocr: bool,
+    pending_translate: bool,
+    /// Sticky banner (download / recognize). Unlike toast it does not expire.
+    status: Option<String>,
+    ocr_flash_until: Option<Instant>,
+    hovered: bool,
 }
 
 impl PinWin {
@@ -143,6 +178,20 @@ impl PinWin {
             shadow: can_shadow,
             thumb: false,
             color_picker: None,
+            mods: ModifiersState::empty(),
+            smooth: true,
+            grayscale: false,
+            invert: false,
+            rotation: 0,
+            mirror_x: false,
+            mirror_y: false,
+            ocr: None,
+            ocr_gesture: None,
+            pending_ocr: false,
+            pending_translate: false,
+            status: None,
+            ocr_flash_until: None,
+            hovered: false,
         };
         pin.redraw();
         crate::logutil::log(&format!(
@@ -157,6 +206,10 @@ impl PinWin {
 
     pub fn window_id(&self) -> WindowId {
         self.window.id()
+    }
+
+    pub fn window(&self) -> &Window {
+        &self.window
     }
 
     #[cfg(windows)]
@@ -269,6 +322,125 @@ impl PinWin {
         self.toast = Some(text);
         self.toast_until = Some(Instant::now() + Duration::from_millis(1200));
         self.dirty = true;
+        self.window.request_redraw();
+    }
+
+    pub fn toast(&mut self, text: String) {
+        self.show_toast(text);
+    }
+
+    pub fn attach_ocr(&mut self, page: OcrPage) {
+        self.ocr = Some(OcrOverlay {
+            page,
+            sel: None,
+            translation: None,
+            translating: false,
+        });
+        self.ocr_gesture = None;
+        self.status = None;
+        self.ocr_flash_until = Some(Instant::now() + Duration::from_millis(900));
+        self.show_toast(tr("OCR ready — drag to select text"));
+        self.dirty = true;
+        self.window.request_redraw();
+    }
+
+    pub fn set_status(&mut self, text: Option<String>) {
+        self.status = text;
+        self.dirty = true;
+        self.window.request_redraw();
+    }
+
+    pub fn ocr_text(&self) -> Option<String> {
+        self.ocr.as_ref().map(|o| o.page.text.clone())
+    }
+
+    pub fn request_ocr(&mut self) {
+        self.pending_ocr = true;
+    }
+
+    pub fn request_translate(&mut self) {
+        self.pending_translate = true;
+    }
+
+    pub fn set_translating(&mut self, on: bool) {
+        if let Some(ocr) = self.ocr.as_mut() {
+            ocr.translating = on;
+            if on {
+                ocr.translation = None;
+            }
+        }
+        self.apply_size();
+        self.dirty = true;
+        self.window.request_redraw();
+    }
+
+    pub fn set_translation(&mut self, text: String) {
+        if let Some(ocr) = self.ocr.as_mut() {
+            ocr.translating = false;
+            ocr.translation = Some(text);
+        }
+        self.apply_size();
+        self.dirty = true;
+        self.window.request_redraw();
+    }
+
+    pub fn take_pending_ocr(&mut self) -> bool {
+        let v = self.pending_ocr;
+        self.pending_ocr = false;
+        v
+    }
+
+    pub fn take_pending_translate(&mut self) -> bool {
+        let v = self.pending_translate;
+        self.pending_translate = false;
+        v
+    }
+
+    fn clear_ocr(&mut self) {
+        self.ocr = None;
+        self.ocr_gesture = None;
+    }
+
+    fn ocr_select_to(&mut self, img_pt: Point) {
+        let Some(g) = self.ocr_gesture.as_mut() else {
+            return;
+        };
+        let Some(ocr) = self.ocr.as_mut() else {
+            return;
+        };
+        let band = Rect::from_points(g.img0, img_pt);
+        let range = tokens_in_rect(&ocr.page.tokens, band).or_else(|| {
+            let start = hit_token(&ocr.page.tokens, g.img0)
+                .or_else(|| nearest_token(&ocr.page.tokens, g.img0))?;
+            let end = nearest_token(&ocr.page.tokens, img_pt).unwrap_or(start);
+            Some((start, end))
+        });
+        if let Some(range) = range {
+            ocr.sel = Some(range);
+            g.selecting = true;
+            self.dirty = true;
+        }
+    }
+
+    fn copy_hotkey(&mut self) {
+        if self.ocr_over_strip(self.last_cursor) {
+            if let Some(t) = self.ocr.as_ref().and_then(|o| o.translation.clone()) {
+                let _ = crate::clipboard::write_text(&t);
+                self.show_toast(tr("Copied to clipboard"));
+                return;
+            }
+        }
+        if let Some(ocr) = &self.ocr {
+            if let Some((a, b)) = ocr.sel {
+                let s = selected_text(&ocr.page.tokens, a, b);
+                if !s.is_empty() {
+                    let _ = crate::clipboard::write_text(&s);
+                    self.show_toast(tr("Copied to clipboard"));
+                    return;
+                }
+            }
+        }
+        let _ = crate::clipboard::write_image(&self.rendered());
     }
 
     fn expire_toast(&mut self) {
@@ -340,6 +512,32 @@ impl PinWin {
         self.toolbar = Some(tb);
     }
 
+    fn relayout_hover_tb(&mut self) {
+        let m = self.margin() as f32;
+        let (iw, ih) = self.img_px();
+        let (ww, hh) = self.win_px();
+        let sel = Rect::new(m, m, iw as f32, ih as f32);
+        let over = Rect::new(0.0, 0.0, ww as f32, hh as f32);
+        self.toolbar = Some(Toolbar::layout_pin_hover(sel, over));
+    }
+
+    fn show_hover_tb(&mut self, on: bool) {
+        if self.annotating || self.thumb {
+            return;
+        }
+        if on {
+            if !self.hovered {
+                self.hovered = true;
+                self.relayout_hover_tb();
+                self.dirty = true;
+            }
+        } else if self.hovered {
+            self.hovered = false;
+            self.toolbar = None;
+            self.dirty = true;
+        }
+    }
+
     fn margin(&self) -> i32 {
         if self.shadow {
             crate::draw::PIN_SHADOW_M as i32
@@ -357,15 +555,73 @@ impl PinWin {
         (w, h)
     }
 
+    fn strip_lines(&self) -> Vec<String> {
+        let Some(ocr) = &self.ocr else {
+            return Vec::new();
+        };
+        let msg = if ocr.translating {
+            tr("Translating…")
+        } else {
+            ocr.translation.clone().unwrap_or_default()
+        };
+        if msg.is_empty() && !ocr.translating {
+            return Vec::new();
+        }
+        let (iw, _) = self.img_px();
+        let max_w = (iw as f32 - OCR_STRIP_PAD * 2.0).max(24.0);
+        pinshot_core::font::wrap_chrome(&msg, 14.0, max_w)
+    }
+
+    fn strip_h(&self) -> u32 {
+        match &self.ocr {
+            Some(o) if o.translation.is_some() || o.translating => {
+                let n = self.strip_lines().len().max(1) as f32;
+                let h = (OCR_STRIP_PAD * 2.0 + n * OCR_STRIP_LINE).ceil() as u32;
+                h.clamp(OCR_STRIP_MIN_H, OCR_STRIP_MAX_H)
+            }
+            _ => 0,
+        }
+    }
+
     fn win_px(&self) -> (u32, u32) {
         let (w, h) = self.img_px();
         let m = (self.margin() * 2) as u32;
-        let (ww, hh) = (w + m, h + m);
+        let (ww, hh) = (w + m, h + m + self.strip_h());
         if self.annotating {
             (ww.max(420), hh + 90)
         } else {
             (ww, hh)
         }
+    }
+
+    fn token_win_rect(&self, r: Rect) -> Rect {
+        let m = self.margin() as f32;
+        Rect::new(
+            m + r.x * self.scale,
+            m + r.y * self.scale,
+            r.w * self.scale,
+            r.h * self.scale,
+        )
+    }
+
+    fn strip_rect(&self) -> Option<Rect> {
+        let h = self.strip_h();
+        if h == 0 {
+            return None;
+        }
+        let m = self.margin() as f32;
+        let (iw, ih) = self.img_px();
+        Some(Rect::new(m, m + ih as f32, iw as f32, h as f32))
+    }
+
+    fn ocr_over_strip(&self, p: Point) -> bool {
+        self.strip_rect().is_some_and(|r| r.contains(p))
+    }
+
+    fn ocr_hit(&self, img_pt: Point) -> Option<usize> {
+        self.ocr
+            .as_ref()
+            .and_then(|o| hit_token(&o.page.tokens, img_pt))
     }
 
     fn apply_size(&mut self) {
@@ -420,11 +676,23 @@ impl PinWin {
             return;
         }
         if !self.annotating {
+            let m = self.margin() as f32;
+            let (iw, ih) = self.img_px();
+            let p = self.last_cursor;
+            let over_img = p.x >= m && p.y >= m && p.x <= m + iw as f32 && p.y <= m + ih as f32;
+            let over_text =
+                (self.ocr.is_some() && !self.thumb && over_img) || self.ocr_over_strip(p);
+            let over_chrome = self.color_picker.is_some()
+                || self
+                    .toolbar
+                    .as_ref()
+                    .is_some_and(|t| t.contains(self.last_cursor));
             crate::cursor::apply(
                 &self.window,
                 cursor_for(pinshot_core::CursorHint {
-                    pin_idle: true,
-                    over_chrome: self.color_picker.is_some(),
+                    pin_idle: !over_text && !over_chrome,
+                    editing_text: over_text && !over_chrome,
+                    over_chrome,
                     ..Default::default()
                 }),
             );
@@ -454,11 +722,14 @@ impl PinWin {
             TbAction::Close => self.close(),
             TbAction::Save => self.save(),
             TbAction::Copy => {
-                let _ = crate::clipboard::write_image(&self.rendered());
+                self.copy_hotkey();
             }
             TbAction::Check => self.show_toolbar(false),
             TbAction::Width(d) => {
                 let _ = self.annot.adjust_width(d);
+            }
+            TbAction::WidthSet(v) => {
+                let _ = self.annot.set_option_width(v);
             }
             TbAction::Color(i) => {
                 if let Some(tool) = self.annot.tool.filter(|t| *t != Tool::Select) {
@@ -510,10 +781,15 @@ impl PinWin {
                 self.annot
                     .set_style_value(Tool::Text, |s| s.family = fam.to_string());
             }
-            TbAction::Ocr | TbAction::Translate | TbAction::Pin => {}
+            TbAction::Ocr => {
+                self.pending_ocr = true;
+            }
+            TbAction::Pin => {}
         }
         if self.annotating {
             self.relayout_tb();
+        } else if self.hovered {
+            self.relayout_hover_tb();
         }
         self.persist_needed = true;
         self.dirty = true;
@@ -607,6 +883,12 @@ impl PinWin {
             return;
         }
         match event {
+            WindowEvent::CursorEntered { .. } => {
+                self.show_hover_tb(true);
+            }
+            WindowEvent::CursorLeft { .. } => {
+                self.show_hover_tb(false);
+            }
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x as f32, position.y as f32);
                 let was_over_tb = self
@@ -615,9 +897,17 @@ impl PinWin {
                     .map(|t| t.contains(self.last_cursor))
                     .unwrap_or(false);
                 self.last_cursor = p;
+                if !self.annotating && !self.thumb {
+                    let show = self.drag.is_none() && self.ocr_gesture.is_none();
+                    self.show_hover_tb(show);
+                    if show {
+                        self.dirty = true;
+                    }
+                }
                 if self.annotating
                     && (self.annot.is_brush_live()
                         || self.annot.is_selecting()
+                        || self.annot.is_dragging_text()
                         || self.annot.live.is_some())
                 {
                     self.annot.move_to(self.img_pt(p), false);
@@ -626,6 +916,29 @@ impl PinWin {
                     && (was_over_tb || self.toolbar.as_ref().is_some_and(|t| t.contains(p)))
                 {
                     self.dirty = true;
+                } else if self.ocr_gesture.is_some_and(|g| g.selecting) {
+                    self.ocr_select_to(self.img_pt(p));
+                } else if let Some(g) = self.ocr_gesture {
+                    let img = self.img_pt(p);
+                    let band = Rect::from_points(g.img0, img);
+                    let hit = self
+                        .ocr
+                        .as_ref()
+                        .and_then(|o| tokens_in_rect(&o.page.tokens, band));
+                    if hit.is_some() {
+                        self.ocr_select_to(img);
+                    } else if (p.x - g.win0.x).hypot(p.y - g.win0.y) > 8.0 {
+                        self.ocr_gesture = None;
+                        if let Some(ocr) = self.ocr.as_mut() {
+                            ocr.sel = None;
+                        }
+                        self.drag = Some((g.win0, g.tl0));
+                        let nx = g.tl0.0 + (p.x - g.win0.x) as i32;
+                        let ny = g.tl0.1 + (p.y - g.win0.y) as i32;
+                        self.window
+                            .set_outer_position(PhysicalPosition::new(nx, ny));
+                        self.geom_pos = Some((nx, ny));
+                    }
                 } else if let Some((off, tl)) = self.drag {
                     let nx = tl.0 + (p.x - off.x) as i32;
                     let ny = tl.1 + (p.y - off.y) as i32;
@@ -635,13 +948,27 @@ impl PinWin {
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => {
-                if *state == ElementState::Pressed {
+                if *state == ElementState::Pressed && *button != MouseButton::Right {
                     native::focus_window(&self.window);
                     native::raise_on_top(&self.window);
                 }
                 if *button == MouseButton::Right && *state == ElementState::Pressed {
+                    if self.annotating && self.annot.right_click() {
+                        self.relayout_tb();
+                        self.dirty = true;
+                        return;
+                    }
                     self.popup_menu();
                     return;
+                }
+                if *button == MouseButton::Middle && *state == ElementState::Pressed {
+                    if self.annot.text_edit.is_some() {
+                        if let Ok(s) = crate::clipboard::read_text() {
+                            self.annot.insert_str(&s);
+                            self.dirty = true;
+                        }
+                        return;
+                    }
                 }
                 if *button != MouseButton::Left {
                     return;
@@ -666,13 +993,52 @@ impl PinWin {
                             self.dirty = true;
                             return;
                         }
+                    } else if let Some(tb) = &self.toolbar {
+                        if let Some(a) = tb.hit(p) {
+                            self.apply_tb(a);
+                            return;
+                        }
+                    }
+                    if !self.annotating && self.ocr.is_some() && !self.thumb {
+                        if self.ocr_over_strip(p) {
+                            return;
+                        }
+                        let img = self.img_pt(p);
+                        let hit = self.ocr_hit(img);
+                        self.ocr_gesture = Some(OcrGesture {
+                            img0: img,
+                            win0: p,
+                            tl0: self.current_tl(),
+                            selecting: hit.is_some(),
+                        });
+                        if let Some(i) = hit {
+                            if let Some(ocr) = self.ocr.as_mut() {
+                                ocr.sel = Some((i, i));
+                            }
+                            self.dirty = true;
+                        }
+                        return;
                     }
                     self.drag = Some((p, self.current_tl()));
                 } else {
-                    if self.annotating && (self.annot.live.is_some() || self.annot.is_selecting()) {
+                    if self.annotating
+                        && (self.annot.live.is_some()
+                            || self.annot.is_selecting()
+                            || self.annot.is_dragging_text()
+                            || self.annot.is_swallowing_text_click()
+                            || self.annot.is_editing_text())
+                    {
                         self.annot.release(self.img_pt(p));
                         self.persist_needed = true;
                         self.dirty = true;
+                    }
+                    if let Some(g) = self.ocr_gesture.take() {
+                        if !g.selecting {
+                            if let Some(ocr) = self.ocr.as_mut() {
+                                ocr.sel = None;
+                            }
+                            self.dirty = true;
+                        }
                     }
                     self.drag = None;
                 }
@@ -710,10 +1076,12 @@ impl PinWin {
                     self.set_scale_at(self.scale / 1.1, Some(self.last_cursor));
                 }
             }
+            WindowEvent::ModifiersChanged(m) => {
+                self.mods = m.state();
+            }
             WindowEvent::Ime(winit::event::Ime::Commit(s)) => {
-                for ch in s.chars() {
-                    self.annot.type_text(ch);
-                }
+                crate::logutil::log(&format!("pin text ime commit {:?}", s));
+                self.annot.insert_str(s);
                 self.dirty = true;
             }
             WindowEvent::Focused(true) => {
@@ -721,14 +1089,40 @@ impl PinWin {
             }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
                 if self.annot.text_edit.is_some() {
+                    let ctrl = self.mods.control_key();
+                    let shift = self.mods.shift_key();
                     match &event.logical_key {
                         Key::Named(NamedKey::Escape) => self.annot.commit_text(true),
-                        Key::Named(NamedKey::Enter) => self.annot.commit_text(false),
+                        Key::Named(NamedKey::Enter) if shift => self.annot.type_text('\n'),
+                        Key::Named(NamedKey::Enter) => {
+                            if let Some(ed) = &self.annot.text_edit {
+                                crate::logutil::log(&format!("text commit {:?}", ed.text));
+                            }
+                            self.annot.commit_text(false);
+                        }
                         Key::Named(NamedKey::Backspace) => self.annot.type_text('\u{8}'),
+                        Key::Named(NamedKey::Delete) => self.annot.type_text('\u{7f}'),
+                        Key::Named(NamedKey::ArrowLeft) => self.annot.move_caret(-1),
+                        Key::Named(NamedKey::ArrowRight) => self.annot.move_caret(1),
+                        Key::Named(NamedKey::Home) => self.annot.move_caret(-2),
+                        Key::Named(NamedKey::End) => self.annot.move_caret(2),
+                        Key::Character(c) if c.as_str() == "v" && ctrl => {
+                            if let Ok(s) = crate::clipboard::read_text() {
+                                self.annot.insert_str(&s);
+                            }
+                        }
+                        Key::Character(c) if (c.as_str() == "1" || c.as_str() == "[") && !ctrl => {
+                            self.annot.adjust_width(-1);
+                            self.relayout_tb();
+                        }
+                        Key::Character(c) if (c.as_str() == "2" || c.as_str() == "]") && !ctrl => {
+                            self.annot.adjust_width(1);
+                            self.relayout_tb();
+                        }
                         _ => {
-                            if let Some(t) = event.text.as_deref() {
-                                for ch in t.chars() {
-                                    self.annot.type_text(ch);
+                            if !ctrl {
+                                if let Some(t) = event.text.as_deref() {
+                                    self.annot.insert_str(t);
                                 }
                             }
                         }
@@ -745,8 +1139,11 @@ impl PinWin {
                         }
                     }
                     Key::Named(NamedKey::Space) => self.show_toolbar(!self.annotating),
+                    Key::Named(NamedKey::F5) => {
+                        self.pending_translate = true;
+                    }
                     Key::Character(c) if c.eq_ignore_ascii_case("c") => {
-                        let _ = crate::clipboard::write_image(&self.rendered());
+                        self.copy_hotkey();
                     }
                     Key::Character(c) if c.eq_ignore_ascii_case("s") => self.save(),
                     Key::Character(c) if c.eq_ignore_ascii_case("w") => self.close(),
@@ -783,18 +1180,20 @@ impl PinWin {
                         self.annot.set_tool(Some(Tool::Number));
                         self.relayout_tb();
                     }
-                    Key::Character(c) if c == "1" => {
+                    Key::Character(c) if c == "1" || c == "[" => {
                         if self.annotating && self.annot.tool.is_some() {
                             self.annot.adjust_width(-1);
-                        } else {
+                            self.relayout_tb();
+                        } else if c == "1" {
                             self.rotate(-1);
                         }
                         self.dirty = true;
                     }
-                    Key::Character(c) if c == "2" => {
+                    Key::Character(c) if c == "2" || c == "]" => {
                         if self.annotating && self.annot.tool.is_some() {
                             self.annot.adjust_width(1);
-                        } else {
+                            self.relayout_tb();
+                        } else if c == "2" {
                             self.rotate(1);
                         }
                         self.dirty = true;
@@ -839,7 +1238,9 @@ impl PinWin {
 
     pub fn rotate(&mut self, turns: i32) {
         self.img = self.rendered().rotate90(turns);
+        self.rotation = ((self.rotation + turns * 90) % 360 + 360) % 360;
         self.annot.clear();
+        self.clear_ocr();
         self.apply_size();
         self.persist_needed = true;
         self.dirty = true;
@@ -847,7 +1248,13 @@ impl PinWin {
 
     pub fn flip(&mut self, horizontal: bool) {
         self.img = self.rendered().flip(horizontal);
+        if horizontal {
+            self.mirror_x = !self.mirror_x;
+        } else {
+            self.mirror_y = !self.mirror_y;
+        }
         self.annot.clear();
+        self.clear_ocr();
         self.apply_size();
         self.persist_needed = true;
         self.dirty = true;
@@ -857,6 +1264,7 @@ impl PinWin {
         if let crate::clipboard::ClipContent::Image(img) = crate::clipboard::read_best() {
             self.img = img;
             self.annot.clear();
+            self.clear_ocr();
             self.apply_size();
             self.persist_needed = true;
             self.dirty = true;
@@ -901,7 +1309,7 @@ impl PinWin {
             let _ = DestroyMenu(menu);
             match cmd.0 as usize {
                 ID_COPY => {
-                    let _ = crate::clipboard::write_image(&self.rendered());
+                    self.copy_hotkey();
                 }
                 ID_SAVE => self.save(),
                 ID_CLOSE => self.close(),
@@ -931,13 +1339,20 @@ impl PinWin {
         use crate::event::PinMenuAction;
         match a {
             PinMenuAction::Copy => {
-                let _ = crate::clipboard::write_image(&self.rendered());
+                self.copy_hotkey();
             }
             PinMenuAction::Save => self.save(),
             PinMenuAction::ToggleToolbar => self.show_toolbar(!self.annotating),
             PinMenuAction::ToggleClickThrough => self.set_click_through(!self.click_through),
             PinMenuAction::ToggleShadow => self.set_shadow(!self.shadow),
-            PinMenuAction::Zoom(pct) => self.set_scale(pct as f32 / 100.0),
+            PinMenuAction::Zoom(pct) => {
+                let s = if pct == 33 {
+                    1.0 / 3.0
+                } else {
+                    pct as f32 / 100.0
+                };
+                self.set_scale(s);
+            }
             PinMenuAction::Rotate(t) => self.rotate(t),
             PinMenuAction::FlipH => self.flip(true),
             PinMenuAction::FlipV => self.flip(false),
@@ -961,6 +1376,20 @@ impl PinWin {
                 ));
             }
             PinMenuAction::ResetZoom => self.set_scale(1.0),
+            PinMenuAction::ToggleSmooth => {
+                self.smooth = !self.smooth;
+                self.dirty = true;
+            }
+            PinMenuAction::ToggleGrayscale => {
+                self.grayscale = !self.grayscale;
+                self.dirty = true;
+            }
+            PinMenuAction::ToggleInvert => {
+                self.invert = !self.invert;
+                self.dirty = true;
+            }
+            PinMenuAction::Ocr => self.pending_ocr = true,
+            PinMenuAction::Translate => self.pending_translate = true,
         }
     }
 
@@ -983,6 +1412,7 @@ impl PinWin {
         if let Some(r) = Raster::from_rgba(rgba.width(), rgba.height(), rgba.into_raw()) {
             self.img = r;
             self.annot.clear();
+            self.clear_ocr();
             self.apply_size();
             self.persist_needed = true;
             self.dirty = true;
@@ -1078,7 +1508,7 @@ impl PinWin {
         {
             return;
         }
-        let img_pm = paint_pin(
+        let img_pm = crate::draw::paint_pin_ex(
             &self.img,
             &self.annot,
             self.scale,
@@ -1086,6 +1516,9 @@ impl PinWin {
             self.glow,
             self.shadow,
             self.thumb,
+            self.smooth,
+            self.grayscale,
+            self.invert,
         );
         let mut pm =
             tiny_skia::Pixmap::new(ww, hh).unwrap_or_else(|| tiny_skia::Pixmap::new(8, 8).unwrap());
@@ -1103,6 +1536,54 @@ impl PinWin {
                 let n = (img_w as usize) * 4;
                 if so + n <= src.len() && doff + n <= dst.len() {
                     dst[doff..doff + n].copy_from_slice(&src[so..so + n]);
+                }
+            }
+        }
+        if let Some(ocr) = &self.ocr {
+            let flashing = self.ocr_flash_until.is_some_and(|t| Instant::now() < t);
+            if let Some((a, b)) = ocr.sel {
+                let lo = a.min(b);
+                let hi = a.max(b);
+                for (i, tok) in ocr.page.tokens.iter().enumerate() {
+                    if i < lo || i > hi {
+                        continue;
+                    }
+                    fill_rect(
+                        &mut pm,
+                        self.token_win_rect(tok.rect),
+                        Rgba::rgba(61, 143, 209, 90),
+                    );
+                }
+            } else if flashing {
+                for tok in &ocr.page.tokens {
+                    fill_rect(
+                        &mut pm,
+                        self.token_win_rect(tok.rect),
+                        Rgba::rgba(255, 196, 72, 70),
+                    );
+                }
+            }
+            if let Some(sr) = self.strip_rect() {
+                fill_rect(&mut pm, sr, Rgba::rgba(252, 252, 253, 255));
+                stroke_rect(&mut pm, sr, Rgba::rgba(206, 208, 214, 255), 1.0);
+                let lines = self.strip_lines();
+                for (i, line) in lines.iter().enumerate() {
+                    if line.is_empty() {
+                        continue;
+                    }
+                    let y = sr.y + OCR_STRIP_PAD + i as f32 * OCR_STRIP_LINE;
+                    if y + OCR_STRIP_LINE > sr.bottom() + 1.0 {
+                        break;
+                    }
+                    pinshot_core::font::blit_pixmap(
+                        &mut pm,
+                        line,
+                        sr.x + OCR_STRIP_PAD,
+                        y,
+                        14.0,
+                        Rgba::rgb(36, 36, 40),
+                        false,
+                    );
                 }
             }
         }
@@ -1127,8 +1608,8 @@ impl PinWin {
                         rr,
                         pinshot_core::color::Rgba::rgba(255, 255, 255, 90),
                     );
-                    crate::draw::stroke_rect(&mut pm, rr, self.annot.style(Tool::Text).color, 1.0);
-                    let st = self.annot.style(Tool::Text);
+                    let st = self.annot.text_edit_style();
+                    crate::draw::stroke_rect(&mut pm, rr, st.color, 1.0);
                     pinshot_core::font::blit_pixmap_ex(
                         &mut pm,
                         &ed.text,
@@ -1141,10 +1622,31 @@ impl PinWin {
                         st.bold,
                         st.italic,
                     );
+                    if self.annot.caret_visible() {
+                        let caret_x = rr.x + 2.0 + self.annot.caret_x() * self.scale;
+                        let ch = (rr.h - 4.0).max(8.0);
+                        crate::draw::fill_rect(
+                            &mut pm,
+                            Rect::new(caret_x - 1.0, rr.y + 1.0, 4.0, ch + 2.0),
+                            pinshot_core::color::Rgba::rgba(255, 255, 255, 200),
+                        );
+                        crate::draw::fill_rect(
+                            &mut pm,
+                            Rect::new(caret_x, rr.y + 2.0, 2.0, ch),
+                            st.color,
+                        );
+                    }
                 }
             }
+        } else if self.hovered && !self.thumb {
+            if self.toolbar.is_none() {
+                self.relayout_hover_tb();
+            }
+            if let Some(tb) = &self.toolbar {
+                paint_toolbar(&mut pm, tb, Some(self.last_cursor));
+            }
         }
-        if let Some(i) = self.annot.option_target() {
+        if let Some(i) = self.annot.selected {
             if let Some(sh) = self.annot.shapes.get(i) {
                 let hb = sh.bounds().adjusted(-2.0, -2.0, 2.0, 2.0);
                 let m = self.margin() as f32;
@@ -1170,7 +1672,7 @@ impl PinWin {
         if let Some(picker) = &self.color_picker {
             paint_color_picker(&mut pm, ww, hh, picker);
         }
-        if let Some(t) = &self.toast {
+        if let Some(t) = self.status.as_ref().or(self.toast.as_ref()) {
             crate::draw::paint_toast(&mut pm, t, ww, hh);
         }
         if let Ok(mut buf) = self.surface.buffer_mut() {
@@ -1182,13 +1684,34 @@ impl PinWin {
 
     pub fn pump_redraw(&mut self) {
         self.expire_toast();
+        if let Some(t) = self.ocr_flash_until {
+            if Instant::now() >= t {
+                self.ocr_flash_until = None;
+                self.dirty = true;
+            } else {
+                self.dirty = true;
+            }
+        }
+        if self.status.is_some() {
+            self.dirty = true;
+        }
+        if self.annot.text_edit.is_some() {
+            self.dirty = true;
+        }
         if self.dirty {
             self.window.request_redraw();
         }
     }
 
     pub fn next_wake(&self) -> Option<Instant> {
-        self.toast_until
+        if self.annot.text_edit.is_some() || self.status.is_some() {
+            return Some(Instant::now() + Duration::from_millis(80));
+        }
+        match (self.toast_until, self.ocr_flash_until) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (Some(a), None) | (None, Some(a)) => Some(a),
+            (None, None) => None,
+        }
     }
 }
 

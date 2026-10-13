@@ -1,5 +1,7 @@
 use pinshot_core::config::Config;
+use pinshot_core::ocr::OcrPage;
 use pinshot_core::Command;
+use winit::window::WindowId;
 
 #[derive(Clone, Debug)]
 pub enum AppEvent {
@@ -8,7 +10,21 @@ pub enum AppEvent {
     PrefsApplied(Config),
     RaisePrefs,
     Ipc(String),
-    OcrDone(String, bool),
+    OcrDone {
+        pin: WindowId,
+        result: Result<OcrPage, String>,
+        translate: bool,
+    },
+    OcrProgress {
+        pin: WindowId,
+        message: String,
+    },
+    TranslateDone {
+        pin: WindowId,
+        result: Result<String, String>,
+    },
+    #[cfg_attr(not(windows), allow(dead_code))]
+    SelectionText(Result<String, String>),
     OpenPrefs,
     X11Key {
         keysym: u32,
@@ -41,6 +57,11 @@ pub enum PinMenuAction {
     Destroy,
     CopySize,
     ResetZoom,
+    ToggleSmooth,
+    ToggleGrayscale,
+    ToggleInvert,
+    Ocr,
+    Translate,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
