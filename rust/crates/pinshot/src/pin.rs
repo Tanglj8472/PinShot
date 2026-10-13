@@ -13,8 +13,7 @@ use pinshot_core::annotation::{Annotator, ArrowKind, Tool};
 use pinshot_core::color::Rgba;
 use pinshot_core::colorpicker::{color_picker_layout, ColorPicker, PickerAction};
 use pinshot_core::cursor::cursor_for;
-use pinshot_core::geom::{handle_points, HANDLE_SIZE};
-use pinshot_core::geom::{Point, Rect};
+use pinshot_core::geom::{Point, Rect, HANDLE_SIZE};
 use pinshot_core::groups;
 use pinshot_core::i18n::tr;
 use pinshot_core::ocr::{hit_token, nearest_token, selected_text, tokens_in_rect, OcrPage};
@@ -1016,7 +1015,7 @@ impl PinWin {
                         || self.annot.is_dragging_text()
                         || self.annot.live.is_some())
                 {
-                    self.annot.move_to(self.img_pt(p), false);
+                    self.annot.move_to(self.img_pt(p), self.mods.shift_key());
                     self.dirty = true;
                 } else if self.annotating
                     && (was_over_tb || self.toolbar.as_ref().is_some_and(|t| t.contains(p)))
@@ -1095,7 +1094,7 @@ impl PinWin {
                             let steal_shape = self.annot.hit_handle_of_selected(img).is_some()
                                 || self.annot.hit_test(img).is_some();
                             if steal_shape {
-                                if self.annot.press(img, false) {
+                                if self.annot.press(img, self.mods.shift_key()) {
                                     self.dirty = true;
                                 }
                                 return;
@@ -1103,7 +1102,7 @@ impl PinWin {
                             self.begin_ocr_select(p);
                             return;
                         }
-                        if over_img && self.annot.press(self.img_pt(p), false) {
+                        if over_img && self.annot.press(self.img_pt(p), self.mods.shift_key()) {
                             self.dirty = true;
                             return;
                         }
@@ -1770,19 +1769,21 @@ impl PinWin {
         }
         if let Some(i) = self.annot.selected {
             if let Some(sh) = self.annot.shapes.get(i) {
-                let hb = sh.bounds().adjusted(-2.0, -2.0, 2.0, 2.0);
                 let m = self.margin() as f32;
-                let sr = Rect::new(
-                    m + hb.x * self.scale,
-                    m + hb.y * self.scale,
-                    hb.w * self.scale,
-                    hb.h * self.scale,
-                );
-                stroke_rect(&mut pm, sr, Rgba::BLUE, 1.0);
-                for (_, c) in handle_points(sr) {
+                if sh.kind != pinshot_core::annotation::Tool::Line {
+                    let hb = sh.bounds().adjusted(-2.0, -2.0, 2.0, 2.0);
+                    let sr = Rect::new(
+                        m + hb.x * self.scale,
+                        m + hb.y * self.scale,
+                        hb.w * self.scale,
+                        hb.h * self.scale,
+                    );
+                    stroke_rect(&mut pm, sr, Rgba::BLUE, 1.0);
+                }
+                for (_, c) in self.annot.selected_handle_points() {
                     let hr = Rect::new(
-                        c.x - HANDLE_SIZE / 2.0,
-                        c.y - HANDLE_SIZE / 2.0,
+                        m + c.x * self.scale - HANDLE_SIZE / 2.0,
+                        m + c.y * self.scale - HANDLE_SIZE / 2.0,
                         HANDLE_SIZE,
                         HANDLE_SIZE,
                     );

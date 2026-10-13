@@ -749,10 +749,16 @@ impl OverlayFront {
         // width_target but must not keep a blue box and 8 nubs.
         if let Some(i) = annot.selected {
             if let Some(sh) = annot.shapes.get(i) {
-                // Same box `hit_handle_of_selected` / Python `render` use.
-                let hb = sh.bounds().adjusted(-2.0, -2.0, 2.0, 2.0);
-                stroke_rect(&mut self.frame, hb, Rgba::BLUE, 1.0);
-                for (_, c) in handle_points(hb) {
+                let handles = annot.selected_handle_points();
+                // Lines are a segment between endpoints, not an AABB with a
+                // diagonal. Skip the blue box so dragging does not look like
+                // rubber-banding a selection rect.
+                if sh.kind != Tool::Line {
+                    let hb = sh.bounds().adjusted(-2.0, -2.0, 2.0, 2.0);
+                    stroke_rect(&mut self.frame, hb, Rgba::BLUE, 1.0);
+                    chrome.push(hb.inflated(HANDLE_SIZE));
+                }
+                for (_, c) in handles {
                     let hr = Rect::new(
                         c.x - HANDLE_SIZE / 2.0,
                         c.y - HANDLE_SIZE / 2.0,
@@ -763,7 +769,6 @@ impl OverlayFront {
                     stroke_rect(&mut self.frame, hr, Rgba::WHITE, 1.0);
                     chrome.push(hr.inflated(2.0));
                 }
-                chrome.push(hb.inflated(HANDLE_SIZE));
             }
         }
 

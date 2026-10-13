@@ -1118,7 +1118,7 @@ impl Overlay {
             || self.annot.is_dragging_text()
             || self.annot.live.is_some()
         {
-            self.annot.move_to(self.img_pt(self.cursor), false);
+            self.annot.move_to(self.img_pt(self.cursor), self.mods.shift_key());
             self.dirty = true;
         } else if self
             .toolbar
@@ -1187,7 +1187,7 @@ impl Overlay {
                 self.dirty = true;
                 return;
             }
-            if self.sel.has_sel() && self.annot.press(self.img_pt(pt), false) {
+            if self.sel.has_sel() && self.annot.press(self.img_pt(pt), self.mods.shift_key()) {
                 self.sync_ime();
                 self.relayout_toolbar();
                 self.mark_dirty();

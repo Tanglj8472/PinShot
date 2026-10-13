@@ -294,6 +294,14 @@ impl Shape {
     }
 }
 
+/// Start / end nubs for a 2-point line (not the 8-handle AABB of `bounds()`).
+fn line_endpoint_handles(sh: &Shape) -> Option<[(Handle, Point); 2]> {
+    if sh.kind != Tool::Line || sh.pts.len() != 2 {
+        return None;
+    }
+    Some([(Handle::Tl, sh.pts[0]), (Handle::Br, sh.pts[1])])
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct UndoStack {
     undo: Vec<Vec<Shape>>,
@@ -1037,8 +1045,18 @@ impl Annotator {
 
     pub fn hit_handle_of_selected(&self, img_pt: Point) -> Option<Handle> {
         let i = self.selected?;
-        let b = self.shapes.get(i)?.bounds().adjusted(-2.0, -2.0, 2.0, 2.0);
-        hit_handle(b, img_pt, HANDLE_SIZE / 2.0 + 2.0)
+        let sh = self.shapes.get(i)?;
+        let slop = HANDLE_SIZE / 2.0 + 2.0;
+        if let Some(pts) = line_endpoint_handles(sh) {
+            for (h, c) in pts {
+                if (img_pt.x - c.x).abs() <= slop && (img_pt.y - c.y).abs() <= slop {
+                    return Some(h);
+                }
+            }
+            return None;
+        }
+        let b = sh.bounds().adjusted(-2.0, -2.0, 2.0, 2.0);
+        hit_handle(b, img_pt, slop)
     }
 
     pub fn delete_selected(&mut self) -> bool {
@@ -1531,6 +1549,13 @@ impl Annotator {
         if shift && matches!(sh.kind, Tool::Rect | Tool::Ellipse) {
             pt = constrain_square(sh.pts[0], img_pt);
         }
+        if sh.kind == Tool::Line && sh.pts.len() >= 2 {
+            // Segment from the press origin to the pointer. Never fold into
+            // Rect::normalized() corners (that is the selection-box diagonal).
+            let n = sh.pts.len();
+            sh.pts[n - 1] = pt;
+            return true;
+        }
         if let Some(last) = sh.pts.last_mut() {
             *last = pt;
         }
@@ -1565,6 +1590,22 @@ impl Annotator {
                 .iter()
                 .map(|p| c.add(p.sub(c).scale(s)))
                 .collect();
+            return;
+        }
+        // Two-point line/arrow: drag moves that endpoint. Do not rewrite as
+        // the AABB diagonal (top-left → bottom-right of a selection box).
+        if sh.kind == Tool::Line && self.sel_pts0.len() >= 2 {
+            let a0 = self.sel_pts0[0];
+            let b0 = *self.sel_pts0.last().unwrap();
+            if h == Handle::Tl {
+                sh.pts[0] = pt;
+                let n = sh.pts.len();
+                sh.pts[n - 1] = b0;
+            } else {
+                sh.pts[0] = a0;
+                let n = sh.pts.len();
+                sh.pts[n - 1] = pt;
+            }
             return;
         }
         let mut b = if self.sel_pts0.len() >= 2 {
@@ -1661,6 +1702,9 @@ impl Annotator {
     pub fn selected_handle_points(&self) -> Vec<(Handle, Point)> {
         if let Some(i) = self.selected {
             if let Some(sh) = self.shapes.get(i) {
+                if let Some(pts) = line_endpoint_handles(sh) {
+                    return pts.to_vec();
+                }
                 return handle_points(sh.bounds().adjusted(-2.0, -2.0, 2.0, 2.0)).to_vec();
             }
         }
@@ -2222,6 +2266,53 @@ mod tests {
             assert_eq!(a.selected, Some(0), "{tool:?} just-drawn is selected");
             assert_eq!(a.option_target(), Some(0));
         }
+    }
+
+    #[test]
+    fn line_drag_is_press_to_cursor_not_rect_diagonal() {
+        for arrow in [false, true] {
+            let mut a = Annotator::new();
+            a.set_tool(Some(Tool::Line));
+            if arrow {
+                a.set_style_default(Tool::Line, |s| s.arrow = true);
+            }
+            let start = Point::new(80.0, 70.0);
+            let end = Point::new(20.0, 10.0);
+            assert!(a.press(start, false));
+            assert_eq!(a.live.as_ref().unwrap().pts[0], start);
+            assert!(a.move_to(end, false));
+            let live = a.live.as_ref().unwrap();
+            assert_eq!(live.pts[0], start, "press stays the start point");
+            assert_eq!(live.pts[1], end, "cursor is the end, not AABB BR");
+            assert_ne!(
+                live.pts,
+                vec![Point::new(20.0, 10.0), Point::new(80.0, 70.0)],
+                "must not be the selection-box diagonal"
+            );
+            assert!(a.release(end));
+            assert_eq!(a.shapes[0].pts, vec![start, end]);
+            a.undo();
+            assert!(a.shapes.is_empty());
+        }
+    }
+
+    #[test]
+    fn line_handle_moves_endpoint_not_box_corner() {
+        let mut a = Annotator::new();
+        a.set_tool(Some(Tool::Line));
+        a.press(Point::new(80.0, 70.0), false);
+        a.move_to(Point::new(20.0, 10.0), false);
+        a.release(Point::new(20.0, 10.0));
+        assert_eq!(a.selected, Some(0));
+        let end = Point::new(20.0, 10.0);
+        assert_eq!(a.hit_handle_of_selected(end), Some(Handle::Br));
+        assert!(a.press(end, false));
+        a.move_to(Point::new(30.0, 15.0), false);
+        a.release(Point::new(30.0, 15.0));
+        assert_eq!(a.shapes[0].pts[0], Point::new(80.0, 70.0));
+        assert_eq!(a.shapes[0].pts[1], Point::new(30.0, 15.0));
+        let hs = a.selected_handle_points();
+        assert_eq!(hs.len(), 2);
     }
 
     #[test]
