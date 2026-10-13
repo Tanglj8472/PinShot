@@ -127,7 +127,7 @@ impl Overlay {
         let (vx, vy) = capture.virtual_origin;
         let w = capture.composed.width;
         let h = capture.composed.height;
-        let mut attrs = Window::default_attributes()
+        let attrs = Window::default_attributes()
             .with_title("PinShot Snip")
             .with_decorations(false)
             .with_resizable(false)
@@ -136,10 +136,10 @@ impl Overlay {
             .with_inner_size(PhysicalSize::new(w, h))
             .with_window_level(winit::window::WindowLevel::AlwaysOnTop);
         #[cfg(all(unix, not(target_os = "macos")))]
-        {
+        let attrs = {
             use winit::platform::x11::WindowAttributesExtX11;
-            attrs = attrs.with_override_redirect(true);
-        }
+            attrs.with_override_redirect(true)
+        };
         let window = Rc::new(event_loop.create_window(attrs).map_err(|e| e.to_string())?);
         native::apply_overlay_style(&window);
         window.set_cursor(CursorIcon::Crosshair);

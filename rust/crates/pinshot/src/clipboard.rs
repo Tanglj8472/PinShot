@@ -1,8 +1,10 @@
 use arboard::{Clipboard, ImageData};
 use pinshot_core::color::{parse_color_text, Rgba};
 use pinshot_core::raster::Raster;
+#[cfg(unix)]
 use std::io::Write;
 use std::sync::{Mutex, OnceLock};
+#[cfg(unix)]
 use std::time::{Duration, Instant};
 
 pub enum ClipContent {

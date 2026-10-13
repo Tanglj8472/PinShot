@@ -3,7 +3,7 @@
 use std::ffi::c_void;
 
 use pinshot_core::hotkey::Command;
-use windows::core::{w, PCWSTR, PWSTR};
+use windows::core::{PCWSTR, PWSTR};
 use windows::Win32::Foundation::{
     CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, ERROR_PIPE_CONNECTED, GENERIC_READ,
     GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,

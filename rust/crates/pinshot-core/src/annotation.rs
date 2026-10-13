@@ -6,8 +6,7 @@
 
 use crate::color::{palette_colors, Rgba};
 use crate::geom::{
-    constrain_square, dist_to_polyline, handle_points, hit_handle, point_in_ellipse, Handle, Point,
-    Rect, HANDLE_SIZE,
+    constrain_square, dist_to_polyline, handle_points, hit_handle, Handle, Point, Rect, HANDLE_SIZE,
 };
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
@@ -255,10 +254,6 @@ impl Shape {
         }
         Rect::from_points(self.pts[0], *self.pts.last().unwrap()).normalized()
     }
-}
-
-fn approx_text_width(text: &str, font_size: i32) -> f32 {
-    crate::font::measure_ex(text, font_size.max(8) as f32, "", false, false).0
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -680,10 +675,17 @@ impl Annotator {
     /// Mosaic uses `size`; text uses `font_size` (Python panel spins).
     pub fn option_width(&self) -> i32 {
         let (kind, st) = if self.text_edit.is_some() {
-            (Tool::Text, match self.text_edit.as_ref().and_then(|e| e.existing) {
-                Some(i) => self.shapes.get(i).map(|s| &s.style).unwrap_or_else(|| self.style(Tool::Text)),
-                None => self.style(Tool::Text),
-            })
+            (
+                Tool::Text,
+                match self.text_edit.as_ref().and_then(|e| e.existing) {
+                    Some(i) => self
+                        .shapes
+                        .get(i)
+                        .map(|s| &s.style)
+                        .unwrap_or_else(|| self.style(Tool::Text)),
+                    None => self.style(Tool::Text),
+                },
+            )
         } else if let Some(live) = &self.live {
             (live.kind, &live.style)
         } else if let Some(i) = self.option_target() {
@@ -1481,8 +1483,7 @@ impl Annotator {
                     if let Some(i) = idx {
                         if i < self.shapes.len() && !self.sel_pts0.is_empty() {
                             self.push_edit();
-                            self.shapes[i].pts =
-                                self.sel_pts0.iter().map(|p| p.add(d)).collect();
+                            self.shapes[i].pts = self.sel_pts0.iter().map(|p| p.add(d)).collect();
                             if let Some(ed) = self.text_edit.as_mut() {
                                 if ed.existing == Some(i) {
                                     if let Some(p) = self.shapes[i].pts.first() {
@@ -1539,13 +1540,6 @@ impl Annotator {
     pub fn palette() -> [Rgba; 20] {
         palette_colors()
     }
-}
-
-fn near_rect_edge(p: Point, r: Rect, tol: f32) -> bool {
-    let on_v = p.y >= r.y - tol && p.y <= r.bottom() + tol;
-    let on_h = p.x >= r.x - tol && p.x <= r.right() + tol;
-    (on_v && ((p.x - r.x).abs() <= tol || (p.x - r.right()).abs() <= tol))
-        || (on_h && ((p.y - r.y).abs() <= tol || (p.y - r.bottom()).abs() <= tol))
 }
 
 #[cfg(test)]
@@ -1713,7 +1707,10 @@ mod tests {
         assert_eq!(a.shapes[0].text, "Hi");
         assert!(a.text_edit.is_none());
         assert!(a.selected.is_none(), "committed text has no handles");
-        assert!(a.option_target().is_none(), "no leftover width_target chrome");
+        assert!(
+            a.option_target().is_none(),
+            "no leftover width_target chrome"
+        );
         assert!(a.selected_handle_points().is_empty());
     }
 
@@ -1952,7 +1949,10 @@ mod tests {
         assert!(a.press(Point::new(200.0, 180.0), false));
         assert!(a.text_edit.is_some());
         assert_eq!(a.shapes.len(), 1);
-        assert_eq!(a.text_edit.as_ref().unwrap().img_pt, Point::new(200.0, 180.0));
+        assert_eq!(
+            a.text_edit.as_ref().unwrap().img_pt,
+            Point::new(200.0, 180.0)
+        );
     }
 
     #[test]
