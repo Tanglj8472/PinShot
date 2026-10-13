@@ -6,7 +6,8 @@ use crate::raster::Raster;
 
 pub const MAG_N: i32 = 15;
 pub const MAG_ZOOM: i32 = 12;
-pub const MAG_INFO_H: f32 = 66.0;
+pub const MAG_INFO_H: f32 = 88.0;
+pub const MAG_HINT_PX: i32 = 13;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Magnifier {
@@ -88,6 +89,9 @@ mod tests {
         let mag = layout_magnifier(Point::new(40.0, 40.0), overlay, Rgba::RED, Point::ZERO);
         assert_eq!(mag.grid.w, (MAG_N * MAG_ZOOM) as f32);
         assert_eq!(mag.grid.w, 180.0);
+        assert!(MAG_INFO_H >= 84.0);
+        assert!(MAG_HINT_PX >= 13);
+        assert_eq!(mag.info.h, MAG_INFO_H);
     }
 
     #[test]

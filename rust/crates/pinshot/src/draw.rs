@@ -12,7 +12,7 @@ use pinshot_core::color::Rgba;
 use pinshot_core::geom::{handle_points, Point, Rect, HANDLE_SIZE};
 use pinshot_core::i18n::tr;
 use pinshot_core::icons::{draw_icon, IconKind};
-use pinshot_core::magnifier::{layout_magnifier, Magnifier, MAG_N, MAG_ZOOM};
+use pinshot_core::magnifier::{layout_magnifier, Magnifier, MAG_HINT_PX, MAG_N, MAG_ZOOM};
 use pinshot_core::raster::Raster;
 use pinshot_core::render::{compose, paint_shapes};
 use pinshot_core::selection::{SelState, Selection};
@@ -1047,49 +1047,49 @@ fn paint_magnifier(
         1.5,
     );
     fill_rect(pm, mag.info, Rgba::rgba(0, 0, 0, 210));
+    let hint = MAG_HINT_PX;
     let coord = format!("({}, {})", mag.phys.x as i32, mag.phys.y as i32);
+    blit_centered(pm, &coord, mag.info, mag.info.y + 6.0, hint, Rgba::WHITE);
+    let hex_s = mag.color.format(hex);
+    let (hex_w, _) = pinshot_core::font::measure_chrome(&hex_s, hint as f32);
+    let sw = 12.0;
+    let gap = 6.0;
+    let row_w = sw + gap + hex_w;
+    let row_x = mag.info.x + ((mag.info.w - row_w) * 0.5).round();
+    fill_rect(pm, Rect::new(row_x, mag.info.y + 28.0, sw, sw), mag.color);
     blit_into(
         pm,
-        &coord,
-        mag.info.x as i32 + 8,
-        mag.info.y as i32 + 4,
-        11,
+        &hex_s,
+        (row_x + sw + gap) as i32,
+        mag.info.y as i32 + 26,
+        hint,
         Rgba::WHITE,
         false,
     );
-    fill_rect(
-        pm,
-        Rect::new(mag.info.x + 8.0, mag.info.y + 20.0, 10.0, 10.0),
-        mag.color,
-    );
-    blit_into(
-        pm,
-        &mag.color.format(hex),
-        mag.info.x as i32 + 22,
-        mag.info.y as i32 + 18,
-        11,
-        Rgba::WHITE,
-        false,
-    );
-    blit_into(
+    let hint_c = Rgba::rgb(220, 220, 220);
+    blit_centered(
         pm,
         &tr("Press C to copy color"),
-        mag.info.x as i32 + 4,
-        mag.info.y as i32 + 34,
-        10,
-        Rgba::rgb(210, 210, 210),
-        false,
+        mag.info,
+        mag.info.y + 48.0,
+        hint,
+        hint_c,
     );
-    blit_into(
+    blit_centered(
         pm,
         &tr("Shift: switch RGB/HEX"),
-        mag.info.x as i32 + 4,
-        mag.info.y as i32 + 48,
-        10,
-        Rgba::rgb(210, 210, 210),
-        false,
+        mag.info,
+        mag.info.y + 66.0,
+        hint,
+        hint_c,
     );
     mag.grid.union(mag.info).inflated(2.0)
+}
+
+fn blit_centered(pm: &mut Pixmap, text: &str, boxr: Rect, y: f32, px: i32, color: Rgba) {
+    let (tw, _) = pinshot_core::font::measure_chrome(text, px as f32);
+    let x = boxr.x + ((boxr.w - tw) * 0.5).round();
+    blit_into(pm, text, x as i32, y as i32, px, color, false);
 }
 
 pub fn paint_toolbar(pm: &mut Pixmap, tb: &Toolbar, cursor: Option<Point>) -> Rect {
@@ -2425,6 +2425,28 @@ mod tests {
             left.red(),
             left.green(),
             left.blue()
+        );
+        let hint_y = (mag.info.y + 54.0) as u32;
+        let mut best_x = 0u32;
+        let mut best_luma = 0u16;
+        let x0 = mag.info.x.max(0.0) as u32;
+        let x1 = mag.info.right().min(pm.width() as f32) as u32;
+        for x in x0..x1 {
+            let p = pm.pixel(x, hint_y).unwrap().demultiply();
+            let luma = p.red() as u16 + p.green() as u16 + p.blue() as u16;
+            if luma > best_luma {
+                best_luma = luma;
+                best_x = x;
+            }
+        }
+        let mid = mag.info.x + mag.info.w * 0.5;
+        assert!(
+            best_luma > 400,
+            "hint glyphs should be larger/brighter, luma={best_luma}"
+        );
+        assert!(
+            (best_x as f32 - mid).abs() < mag.info.w * 0.28,
+            "hint text should sit near the info panel center, best_x={best_x} mid={mid}"
         );
         if let Ok(dir) = std::env::var("PINSHOT_DUMP_UI") {
             let crop = mag.grid.union(mag.info).inflated(8.0);
