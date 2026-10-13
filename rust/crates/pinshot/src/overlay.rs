@@ -280,30 +280,34 @@ impl Overlay {
         Ok(s)
     }
 
-    /// Map a throwaway fullscreen HWND off-screen so DWM allocates the
-    ///  virtual-desktop redirect surface before the first F1.
-    pub fn warmup_present(event_loop: &ActiveEventLoop) {
+    /// Map a fullscreen HWND off-screen so DWM allocates the virtual-desktop
+    /// redirect surface before the first F1. Keep the window: winit's Windows
+    /// pump stalls if every winit HWND is destroyed (tray-only).
+    pub fn warmup_present(event_loop: &ActiveEventLoop) -> Option<Window> {
         #[cfg(not(windows))]
-        let _ = event_loop;
+        {
+            let _ = event_loop;
+            return None;
+        }
         #[cfg(windows)]
         {
             let Ok((vx, vy, vw, vh)) = crate::capture::virtual_desktop() else {
-                return;
+                return None;
             };
             let t0 = Instant::now();
             let attrs = Window::default_attributes()
-                .with_title("PinShot Warmup")
+                .with_title("PinShot")
                 .with_decorations(false)
                 .with_resizable(false)
                 .with_visible(true)
                 .with_position(PhysicalPosition::new(vx - vw, vy - vh))
                 .with_inner_size(PhysicalSize::new(vw as u32, vh as u32));
-            if let Ok(window) = event_loop.create_window(attrs) {
-                native::apply_overlay_style(&window);
-                crate::draw::warmup_gdi_present(hwnd_of(&window), vw as u32, vh as u32);
-                window.set_visible(false);
-            }
+            let window = event_loop.create_window(attrs).ok()?;
+            native::apply_overlay_style(&window);
+            crate::draw::warmup_gdi_present(hwnd_of(&window), vw as u32, vh as u32);
+            window.set_visible(false);
             crate::logutil::ms("overlay present warmup", t0);
+            Some(window)
         }
     }
 
@@ -821,6 +825,9 @@ impl Overlay {
             }
         }
         crate::logutil::log(&format!("tb {a:?}"));
+        if self.result.is_some() {
+            return;
+        }
         self.relayout_toolbar();
         self.held_btn1 = true;
         self.mark_dirty();

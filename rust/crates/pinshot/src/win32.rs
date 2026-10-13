@@ -49,7 +49,8 @@ pub fn init_dpi() {
 pub fn hide_sync(hwnd: HWND) {
     unsafe {
         let _ = ShowWindow(hwnd, SW_HIDE);
-        let _ = UpdateWindow(hwnd);
+        // Do not UpdateWindow here: a synchronous WM_PAINT on a 4160×1400
+        // overlay from about_to_wait / DestroyWindow deadlocks the pump.
     }
 }
 

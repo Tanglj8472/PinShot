@@ -16,7 +16,7 @@ use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
-use winit::window::WindowId;
+use winit::window::{Window, WindowId};
 
 use crate::autostart;
 use crate::capture::Capture;
@@ -96,6 +96,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         menu_raise_until: None,
         #[cfg(unix)]
         input_hold: None,
+        pump_win: None,
     };
     event_loop.run_app(&mut app).map_err(|e| e.to_string())
 }
@@ -137,6 +138,8 @@ struct App {
     menu_raise_until: Option<Instant>,
     #[cfg(unix)]
     input_hold: Option<crate::x11util::InputHold>,
+    /// Hidden winit HWND so the event loop still pumps after the overlay drops.
+    pump_win: Option<Window>,
 }
 
 impl App {
@@ -381,18 +384,20 @@ impl App {
     }
 
     fn finish_overlay(&mut self, event_loop: &ActiveEventLoop) {
-        let Some(ov) = self.overlay.as_mut() else {
+        let Some(mut ov) = self.overlay.take() else {
             return;
         };
         let Some(res) = ov.take_result() else {
+            self.overlay = Some(ov);
             return;
         };
-        self.history = ov.history.clone();
+        self.history = std::mem::take(&mut ov.history);
         self.history.entries.truncate(self.cfg.history_max as usize);
         let persist = res.writes_history();
         let resnip = matches!(res, OverlayResult::Resnip);
         ov.hide_for_capture();
-        self.overlay = None;
+        drop(ov);
+        crate::logutil::log("overlay closed");
         crate::native::release_stray_grabs();
         if persist {
             self.persist_history();
@@ -440,6 +445,48 @@ impl App {
         } else {
             self.restore_fallback_if_needed();
         }
+    }
+
+    fn request_quit(&mut self, event_loop: &ActiveEventLoop) {
+        crate::logutil::log("quit");
+        self.persist_session();
+        self.tray = None;
+        self.hotkeys = None;
+        self.overlay = None;
+        self.countdown = None;
+        self.pins.clear();
+        self.fallback = None;
+        self.prefs = None;
+        self.pin_menu = None;
+        self.pump_win = None;
+        event_loop.exit();
+        // tray-icon / named-pipe thread can keep the process alive after the
+        // winit loop returns. Force the process down once session is saved.
+        std::process::exit(0);
+    }
+
+    fn ensure_pump_window(&mut self, event_loop: &ActiveEventLoop) {
+        if self.pump_win.is_some() {
+            return;
+        }
+        #[cfg(windows)]
+        {
+            if let Some(w) = Overlay::warmup_present(event_loop) {
+                self.pump_win = Some(w);
+                return;
+            }
+            let attrs = Window::default_attributes()
+                .with_title("PinShot")
+                .with_decorations(false)
+                .with_visible(false)
+                .with_inner_size(winit::dpi::LogicalSize::new(1.0, 1.0));
+            if let Ok(w) = event_loop.create_window(attrs) {
+                w.set_visible(false);
+                self.pump_win = Some(w);
+            }
+        }
+        #[cfg(not(windows))]
+        let _ = event_loop;
     }
 
     fn spawn_ocr(&self, pin: winit::window::WindowId, img: Raster, translate: bool) {
@@ -1008,11 +1055,9 @@ impl ApplicationHandler<AppEvent> for App {
             self.restore_history();
             crate::ocr_run::prefetch_models();
             #[cfg(windows)]
-            {
-                crate::capture::Capture::prefetch();
-                Overlay::warmup_present(event_loop);
-            }
+            crate::capture::Capture::prefetch();
         }
+        self.ensure_pump_window(event_loop);
         if self.start_prefs {
             self.start_prefs = false;
             prefs::open(self.cfg.clone(), self.proxy.clone());
@@ -1047,10 +1092,7 @@ impl ApplicationHandler<AppEvent> for App {
                     p.set_click_through(on);
                 }
             }
-            AppEvent::Hotkey(Command::Quit) => {
-                self.persist_session();
-                event_loop.exit();
-            }
+            AppEvent::Hotkey(Command::Quit) => self.request_quit(event_loop),
             AppEvent::Hotkey(Command::OpenSettings) => {
                 prefs::open(self.cfg.clone(), self.proxy.clone());
             }
@@ -1066,10 +1108,7 @@ impl ApplicationHandler<AppEvent> for App {
             AppEvent::Tray(TrayCmd::Pin) => self.pin_clipboard(event_loop),
             AppEvent::Tray(TrayCmd::HideAll) => self.toggle_pins(),
             AppEvent::Tray(TrayCmd::Settings) => prefs::open(self.cfg.clone(), self.proxy.clone()),
-            AppEvent::Tray(TrayCmd::Quit) => {
-                self.persist_session();
-                event_loop.exit();
-            }
+            AppEvent::Tray(TrayCmd::Quit) => self.request_quit(event_loop),
             AppEvent::Tray(TrayCmd::Translate) => self.request_snip(event_loop, true),
             AppEvent::Tray(TrayCmd::Restore) => self.restore_closed(event_loop),
             AppEvent::Tray(TrayCmd::ToggleGroup(name)) => self.toggle_group(name),
@@ -1329,6 +1368,9 @@ impl ApplicationHandler<AppEvent> for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if event_loop.exiting() {
+            return;
+        }
         event_loop.set_control_flow(ControlFlow::Wait);
         if self.hotkeys.is_none() {
             if let Ok(h) = native::install_hotkeys(self.proxy.clone(), &self.cfg) {
@@ -1367,7 +1409,9 @@ impl ApplicationHandler<AppEvent> for App {
             }
         }
         if let Some(ov) = &mut self.overlay {
-            ov.pump_redraw();
+            if ov.peek_result().is_none() {
+                ov.pump_redraw();
+            }
         }
         self.finish_overlay(event_loop);
         if self.overlay.is_some() {
