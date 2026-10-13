@@ -385,7 +385,14 @@ fn ocr_gpu_pref() -> OcrGpuPref {
     }
 }
 
+fn gpu_ep_available() -> bool {
+    cfg!(windows) || cfg!(feature = "ocr-cuda")
+}
+
 fn want_ocr_gpu() -> bool {
+    if !gpu_ep_available() {
+        return false;
+    }
     match ocr_gpu_pref() {
         OcrGpuPref::ForceCpu => false,
         OcrGpuPref::ForceGpu => true,
@@ -497,16 +504,11 @@ fn session_gpu(
     {
         eps.push(ort::execution_providers::CUDAExecutionProvider::default().build());
     }
-    #[cfg(not(feature = "ocr-cuda"))]
+    #[cfg(all(windows, not(feature = "ocr-cuda")))]
     {
         use ort::execution_providers::{DirectMLExecutionProvider, WebGPUExecutionProvider};
-        let wgpu = WebGPUExecutionProvider::default();
-        #[cfg(windows)]
-        let wgpu = wgpu
-            .with_dawn_backend_type(ort::execution_providers::webgpu::WebGPUDawnBackendType::D3D12);
-        #[cfg(not(windows))]
-        let wgpu = wgpu.with_dawn_backend_type(
-            ort::execution_providers::webgpu::WebGPUDawnBackendType::Vulkan,
+        let wgpu = WebGPUExecutionProvider::default().with_dawn_backend_type(
+            ort::execution_providers::webgpu::WebGPUDawnBackendType::D3D12,
         );
         eps.push(wgpu.build());
         eps.push(DirectMLExecutionProvider::default().build());
@@ -1039,7 +1041,7 @@ mod gpu_pref_tests {
         let _g = ENV.lock().unwrap();
         std::env::set_var("PINSHOT_OCR_GPU", "gpu");
         assert_eq!(ocr_gpu_pref(), OcrGpuPref::ForceGpu);
-        assert!(want_ocr_gpu());
+        assert_eq!(want_ocr_gpu(), gpu_ep_available());
         std::env::remove_var("PINSHOT_OCR_GPU");
         assert_eq!(ocr_gpu_pref(), OcrGpuPref::Auto);
     }

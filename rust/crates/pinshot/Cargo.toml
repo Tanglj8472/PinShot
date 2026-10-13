@@ -14,7 +14,8 @@ path = "src/main.rs"
 default = []
 ocr = ["dep:ort", "dep:paddle-ocr-rs"]
 # NVIDIA CUDA 12 ONNX Runtime. Do not combine with WebGPU (pyke then
-# downloads the CPU `none` flavor). Default Windows/Linux OCR uses WebGPU.
+# downloads the CPU `none` flavor). WebGPU/Dawn is Windows-only so the
+# Linux release binary does not DT_NEEDED libwebgpu_dawn.so.
 ocr-cuda = ["ocr", "ort/cuda"]
 
 [dependencies]
@@ -69,5 +70,5 @@ windows = { version = "0.58", features = [
 x11rb = { version = "0.13", default-features = true, features = ["allow-unsafe-code"] }
 libc = "0.2"
 gtk = "0.18"
-ort = { version = "=2.0.0-rc.10", default-features = false, features = ["download-binaries", "std", "copy-dylibs", "webgpu"] }
+ort = { version = "=2.0.0-rc.10", default-features = false, features = ["download-binaries", "std"] }
 paddle-ocr-rs = { version = "0.6.1", default-features = false, features = ["download-binaries"] }

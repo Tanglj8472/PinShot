@@ -40,6 +40,11 @@ jobs:
         run: cargo build --release --bin pinshot
       - name: version smoke
         run: |
+          if ldd ./target/release/pinshot | grep -E 'libwebgpu_dawn'; then
+            echo "Linux release must not DT_NEEDED libwebgpu_dawn.so" >&2
+            ldd ./target/release/pinshot
+            exit 1
+          fi
           out="$(./target/release/pinshot --version)"
           echo "$out"
           echo "$out" | grep -E "PinShot .*linux-rust"
