@@ -191,12 +191,12 @@ pub fn draw_icon(pixmap: &mut Pixmap, kind: IconKind, cell: Rect, color: Option<
             }
         }
         IconKind::RoundRect => {
-            // Combined rect/ellipse entry: rectangle with a circle overlapping
-            // its bottom-left (Snipaste).
-            if let Some(r) = tiny_skia::Rect::from_xywh(6.2, 3.0, 11.2, 9.0) {
+            // Combined rect/ellipse entry: rectangle with an ellipse overlapping
+            // its bottom-right.
+            if let Some(r) = tiny_skia::Rect::from_xywh(2.6, 2.8, 11.6, 9.2) {
                 pixmap.stroke_path(&PathBuilder::from_rect(r), &p, &st, t, None);
             }
-            if let Some(r) = tiny_skia::Rect::from_xywh(2.4, 7.4, 10.4, 10.4) {
+            if let Some(r) = tiny_skia::Rect::from_xywh(6.6, 8.6, 11.6, 8.0) {
                 if let Some(path) = PathBuilder::from_oval(r) {
                     pixmap.stroke_path(&path, &p, &st, t, None);
                 }
@@ -637,7 +637,7 @@ mod tests {
     }
 
     #[test]
-    fn shape_group_icon_is_rect_over_circle() {
+    fn shape_group_icon_is_rect_over_ellipse() {
         let cell = Rect::new(2.0, 2.0, 20.0, 20.0);
         let ink = |pm: &Pixmap, x: u32, y: u32| pm.pixel(x, y).unwrap().alpha() > 40;
         let mut grouped = Pixmap::new(24, 24).unwrap();
@@ -648,13 +648,10 @@ mod tests {
         draw_icon(&mut ellipse, IconKind::Ellipse, cell, None);
         assert_ne!(grouped.data(), rect.data());
         assert_ne!(grouped.data(), ellipse.data());
-        // Cell is origin (2,2). Rect sits top-right; circle sits bottom-left.
-        assert!(ink(&grouped, 18, 6), "rectangle stroke at top-right");
-        assert!(ink(&grouped, 7, 18), "circle stroke at bottom-left");
-        assert!(
-            !ink(&grouped, 3, 4),
-            "top-left of the cell stays empty"
-        );
+        // Cell origin (2,2). Rect top-left; flattened ellipse bottom-right.
+        assert!(ink(&grouped, 5, 5), "rectangle stroke at top-left");
+        assert!(ink(&grouped, 19, 16), "ellipse stroke at bottom-right");
+        assert!(!ink(&grouped, 6, 20), "bottom-left is not a circle");
         if let Ok(dir) = std::env::var("PINSHOT_DUMP_ICONS") {
             let dir = std::path::PathBuf::from(dir);
             let _ = std::fs::create_dir_all(&dir);
