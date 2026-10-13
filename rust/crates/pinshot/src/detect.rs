@@ -4,7 +4,7 @@
 //! cursor (skip our overlay), then go deeper in that process only
 //! (UIA control-view walk, else nested child HWND). No full-desktop tree dump.
 
-use std::sync::OnceLock;
+use std::cell::OnceCell;
 use std::time::{Duration, Instant};
 
 use pinshot_core::geom::{Point, Rect};
@@ -169,7 +169,7 @@ fn try_uia() -> Option<Vec<(Rect, String)>> {
         if Instant::now() > deadline {
             break;
         }
-        let el = uia.element_from_handle(hwnd.into()).ok();
+        let el = uia.element_from_handle(uia_handle(hwnd)).ok();
         if let Some(el) = el {
             walk_uia(&walker, &el, 0, deadline, &mut out);
         }
@@ -256,18 +256,27 @@ pub fn element_source() -> &'static str {
     }
 }
 
-fn uia_instance() -> Option<&'static uiautomation::UIAutomation> {
-    static UIA: OnceLock<Option<uiautomation::UIAutomation>> = OnceLock::new();
-    UIA.get_or_init(|| {
-        unsafe {
-            let _ = windows::Win32::System::Com::CoInitializeEx(
-                None,
-                windows::Win32::System::Com::COINIT_APARTMENTTHREADED,
-            );
-        }
-        uiautomation::UIAutomation::new().ok()
+fn uia_handle(hwnd: HWND) -> uiautomation::types::Handle {
+    // pinshot's `windows` crate and `uiautomation`'s crate are different versions.
+    uiautomation::types::Handle::from(hwnd.0 as isize)
+}
+
+fn uia_instance() -> Option<uiautomation::UIAutomation> {
+    thread_local! {
+        static UIA: OnceCell<Option<uiautomation::UIAutomation>> = const { OnceCell::new() };
+    }
+    UIA.with(|cell| {
+        cell.get_or_init(|| {
+            unsafe {
+                let _ = windows::Win32::System::Com::CoInitializeEx(
+                    None,
+                    windows::Win32::System::Com::COINIT_APARTMENTTHREADED,
+                );
+            }
+            uiautomation::UIAutomation::new().ok()
+        })
+        .clone()
     })
-    .as_ref()
 }
 
 fn hwnd_nonzero(hwnd: HWND) -> bool {
@@ -392,7 +401,7 @@ fn better_hit(best: Option<(Rect, u32)>, rect: Rect, depth: u32) -> bool {
 fn deepest_uia_at(top: HWND, sx: i32, sy: i32, deadline: Instant) -> Option<(Rect, u32)> {
     let uia = uia_instance()?;
     let walker = uia.get_control_view_walker().ok()?;
-    let root = uia.element_from_handle(top.into()).ok()?;
+    let root = uia.element_from_handle(uia_handle(top)).ok()?;
     let mut best: Option<(Rect, u32)> = None;
     walk_uia_at(&walker, &root, sx, sy, 0, deadline, &mut best);
     best
