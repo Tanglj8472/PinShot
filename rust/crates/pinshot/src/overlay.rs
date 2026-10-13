@@ -79,6 +79,8 @@ pub struct Overlay {
     toast: Option<String>,
     toast_until: Option<Instant>,
     arrow_on: bool,
+    ellipse_on: bool,
+    line_menu_open: bool,
     dpr: f32,
     result: Option<OverlayResult>,
     dirty: bool,
@@ -190,7 +192,9 @@ impl Overlay {
             detect: DetectMode::Element,
             toast: None,
             toast_until: None,
-            arrow_on: true,
+            arrow_on: false,
+            ellipse_on: false,
+            line_menu_open: false,
             dpr: 1.0,
             result: None,
             dirty: true,
@@ -474,6 +478,13 @@ impl Overlay {
                 self.annot.option_style(),
             );
             tb.set_width_value(self.annot.option_width());
+            if self.line_menu_open && self.annot.tool == Some(Tool::Line) {
+                if let Some(st) = self.annot.option_style() {
+                    tb.attach_line_menu(self.bounds(), st);
+                }
+            } else {
+                self.line_menu_open = false;
+            }
             self.toolbar = Some(tb);
         } else {
             self.toolbar = None;
@@ -489,8 +500,8 @@ impl Overlay {
             tb.bar.x, tb.bar.y, tb.bar.w, tb.bar.h
         ));
         for (name, act) in [
-            ("Rect", TbAction::Tool(Tool::Rect)),
-            ("Line", TbAction::Tool(Tool::Line)),
+            ("Rect", TbAction::Shape),
+            ("Line", TbAction::LineStroke),
             ("Pen", TbAction::Tool(Tool::Pen)),
             ("Mosaic", TbAction::Tool(Tool::Mosaic)),
             ("Text", TbAction::Tool(Tool::Text)),
@@ -681,8 +692,46 @@ impl Overlay {
 
     fn apply_tb(&mut self, a: TbAction) {
         match a {
-            TbAction::Tool(_) | TbAction::Arrow => {
-                crate::toolbar::toggle_tool(&mut self.annot, &mut self.arrow_on, a)
+            TbAction::Shape
+            | TbAction::LineStroke
+            | TbAction::Tool(Tool::Pen)
+            | TbAction::Tool(Tool::Marker)
+            | TbAction::Tool(Tool::Mosaic)
+            | TbAction::Tool(Tool::Text)
+            | TbAction::Tool(Tool::Number)
+            | TbAction::Tool(Tool::Eraser)
+            | TbAction::Tool(Tool::Select) => {
+                self.line_menu_open = false;
+                crate::toolbar::toggle_tool(
+                    &mut self.annot,
+                    &mut self.arrow_on,
+                    &mut self.ellipse_on,
+                    a,
+                )
+            }
+            TbAction::Tool(Tool::Rect) => {
+                self.line_menu_open = false;
+                crate::toolbar::set_shape_kind(&mut self.annot, &mut self.ellipse_on, false);
+            }
+            TbAction::Tool(Tool::Ellipse) => {
+                self.line_menu_open = false;
+                crate::toolbar::set_shape_kind(&mut self.annot, &mut self.ellipse_on, true);
+            }
+            TbAction::Tool(Tool::Line) => {
+                self.line_menu_open = false;
+                crate::toolbar::toggle_tool(
+                    &mut self.annot,
+                    &mut self.arrow_on,
+                    &mut self.ellipse_on,
+                    TbAction::LineStroke,
+                )
+            }
+            TbAction::ToggleLineMenu => {
+                self.line_menu_open = !self.line_menu_open;
+            }
+            TbAction::LinePreset { arrow, style } => {
+                crate::toolbar::set_line_preset(&mut self.annot, &mut self.arrow_on, arrow, style);
+                self.line_menu_open = false;
             }
             TbAction::Undo => {
                 self.annot.undo();
@@ -1005,6 +1054,12 @@ impl Overlay {
                     self.apply_tb(a);
                     return;
                 }
+            }
+            if self.line_menu_open {
+                self.line_menu_open = false;
+                self.relayout_toolbar();
+                self.mark_dirty();
+                return;
             }
             if live_sel {
                 self.apply_sel_motion(pt);

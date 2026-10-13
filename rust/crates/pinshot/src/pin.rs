@@ -92,6 +92,8 @@ pub struct PinWin {
     pub annotating: bool,
     toolbar: Option<Toolbar>,
     arrow_on: bool,
+    ellipse_on: bool,
+    line_menu_open: bool,
     toast: Option<String>,
     toast_until: Option<Instant>,
     pub persist_needed: bool,
@@ -166,7 +168,9 @@ impl PinWin {
             group: groups::DEFAULT.into(),
             annotating: false,
             toolbar: None,
-            arrow_on: true,
+            arrow_on: false,
+            ellipse_on: false,
+            line_menu_open: false,
             toast: None,
             toast_until: None,
             persist_needed: false,
@@ -441,10 +445,10 @@ impl PinWin {
         // Reading-order caret range (RapidOCR / Snipaste style), not a
         // geometric band: a tall drag used to copy every token between the
         // first and last box that touched the rectangle.
-        let start = hit_token(&ocr.page.tokens, g.img0)
-            .or_else(|| nearest_token(&ocr.page.tokens, g.img0));
-        let end = hit_token(&ocr.page.tokens, img_pt)
-            .or_else(|| nearest_token(&ocr.page.tokens, img_pt));
+        let start =
+            hit_token(&ocr.page.tokens, g.img0).or_else(|| nearest_token(&ocr.page.tokens, g.img0));
+        let end =
+            hit_token(&ocr.page.tokens, img_pt).or_else(|| nearest_token(&ocr.page.tokens, img_pt));
         if let (Some(start), Some(end)) = (start, end) {
             ocr.sel = Some((start, end));
             g.selecting = true;
@@ -559,6 +563,13 @@ impl PinWin {
             self.annot.option_style(),
         );
         tb.set_width_value(self.annot.option_width());
+        if self.line_menu_open && self.annot.tool == Some(Tool::Line) {
+            if let Some(st) = self.annot.option_style() {
+                tb.attach_line_menu(over, st);
+            }
+        } else {
+            self.line_menu_open = false;
+        }
         self.toolbar = Some(tb);
     }
 
@@ -729,8 +740,7 @@ impl PinWin {
             let (iw, ih) = self.img_px();
             let p = self.last_cursor;
             let over_img = p.x >= m && p.y >= m && p.x <= m + iw as f32 && p.y <= m + ih as f32;
-            let over_text =
-                (self.ocr_text_mode() && over_img) || self.ocr_over_strip(p);
+            let over_text = (self.ocr_text_mode() && over_img) || self.ocr_over_strip(p);
             if over_text && !over_chrome {
                 crate::cursor::apply(
                     &self.window,
@@ -761,8 +771,46 @@ impl PinWin {
 
     fn apply_tb(&mut self, a: TbAction) {
         match a {
-            TbAction::Tool(_) | TbAction::Arrow => {
-                crate::toolbar::toggle_tool(&mut self.annot, &mut self.arrow_on, a)
+            TbAction::Shape
+            | TbAction::LineStroke
+            | TbAction::Tool(Tool::Pen)
+            | TbAction::Tool(Tool::Marker)
+            | TbAction::Tool(Tool::Mosaic)
+            | TbAction::Tool(Tool::Text)
+            | TbAction::Tool(Tool::Number)
+            | TbAction::Tool(Tool::Eraser)
+            | TbAction::Tool(Tool::Select) => {
+                self.line_menu_open = false;
+                crate::toolbar::toggle_tool(
+                    &mut self.annot,
+                    &mut self.arrow_on,
+                    &mut self.ellipse_on,
+                    a,
+                )
+            }
+            TbAction::Tool(Tool::Rect) => {
+                self.line_menu_open = false;
+                crate::toolbar::set_shape_kind(&mut self.annot, &mut self.ellipse_on, false);
+            }
+            TbAction::Tool(Tool::Ellipse) => {
+                self.line_menu_open = false;
+                crate::toolbar::set_shape_kind(&mut self.annot, &mut self.ellipse_on, true);
+            }
+            TbAction::Tool(Tool::Line) => {
+                self.line_menu_open = false;
+                crate::toolbar::toggle_tool(
+                    &mut self.annot,
+                    &mut self.arrow_on,
+                    &mut self.ellipse_on,
+                    TbAction::LineStroke,
+                )
+            }
+            TbAction::ToggleLineMenu => {
+                self.line_menu_open = !self.line_menu_open;
+            }
+            TbAction::LinePreset { arrow, style } => {
+                crate::toolbar::set_line_preset(&mut self.annot, &mut self.arrow_on, arrow, style);
+                self.line_menu_open = false;
             }
             TbAction::Undo => {
                 let _ = self.annot.undo();
@@ -1011,12 +1059,16 @@ impl PinWin {
                                 return;
                             }
                         }
+                        if self.line_menu_open {
+                            self.line_menu_open = false;
+                            self.relayout_tb();
+                            self.dirty = true;
+                            return;
+                        }
                         let m = self.margin() as f32;
                         let (iw, ih) = self.img_px();
-                        let over_img = p.x >= m
-                            && p.y >= m
-                            && p.x <= m + iw as f32
-                            && p.y <= m + ih as f32;
+                        let over_img =
+                            p.x >= m && p.y >= m && p.x <= m + iw as f32 && p.y <= m + ih as f32;
                         if over_img && self.ocr_text_mode() {
                             let img = self.img_pt(p);
                             let steal_shape = self.annot.hit_handle_of_selected(img).is_some()
@@ -1182,12 +1234,16 @@ impl PinWin {
                     }
                     Key::Character(c) if c.eq_ignore_ascii_case("r") => {
                         self.show_toolbar(true);
-                        self.annot.set_tool(Some(Tool::Rect));
+                        crate::toolbar::set_shape_kind(
+                            &mut self.annot,
+                            &mut self.ellipse_on,
+                            false,
+                        );
                         self.relayout_tb();
                     }
                     Key::Character(c) if c.eq_ignore_ascii_case("e") => {
                         self.show_toolbar(true);
-                        self.annot.set_tool(Some(Tool::Ellipse));
+                        crate::toolbar::set_shape_kind(&mut self.annot, &mut self.ellipse_on, true);
                         self.relayout_tb();
                     }
                     Key::Character(c) if c.eq_ignore_ascii_case("p") => {
@@ -1741,15 +1797,8 @@ impl PinWin {
 
 /// OCR drag-select is allowed when the pin is idle, or the toolbar is open
 /// on Select / no drawing tool. An explicit Rect/Pen/… still draws.
-pub fn pin_ocr_text_mode(
-    has_ocr: bool,
-    thumb: bool,
-    annotating: bool,
-    tool: Option<Tool>,
-) -> bool {
-    has_ocr
-        && !thumb
-        && (!annotating || matches!(tool, None | Some(Tool::Select)))
+pub fn pin_ocr_text_mode(has_ocr: bool, thumb: bool, annotating: bool, tool: Option<Tool>) -> bool {
+    has_ocr && !thumb && (!annotating || matches!(tool, None | Some(Tool::Select)))
 }
 
 pub fn pin_grab_offset(tl: (i32, i32), cursor: (i32, i32)) -> (i32, i32) {
@@ -1792,12 +1841,7 @@ mod tests {
     #[test]
     fn toolbar_default_select_lets_ocr_pick_text() {
         assert!(pin_ocr_text_mode(true, false, false, None));
-        assert!(pin_ocr_text_mode(
-            true,
-            false,
-            true,
-            Some(Tool::Select)
-        ));
+        assert!(pin_ocr_text_mode(true, false, true, Some(Tool::Select)));
         assert!(pin_ocr_text_mode(true, false, true, None));
         assert!(
             !pin_ocr_text_mode(true, false, true, Some(Tool::Rect)),

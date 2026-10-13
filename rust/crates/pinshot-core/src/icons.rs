@@ -15,6 +15,7 @@ const FG: Rgba = Rgba {
 pub enum IconKind {
     Rect,
     Ellipse,
+    RoundRect,
     Line,
     Arrow,
     Pen,
@@ -46,6 +47,7 @@ impl IconKind {
         Some(match s {
             "rect" => Self::Rect,
             "ellipse" => Self::Ellipse,
+            "shape" | "roundrect" => Self::RoundRect,
             "line" => Self::Line,
             "arrow" => Self::Arrow,
             "pen" | "pencil" => Self::Pen,
@@ -95,6 +97,22 @@ fn line_path(a: (f32, f32), b: (f32, f32)) -> Option<Path> {
     let mut pb = PathBuilder::new();
     pb.move_to(a.0, a.1);
     pb.line_to(b.0, b.1);
+    pb.finish()
+}
+
+fn rounded_rect_path(x: f32, y: f32, w: f32, h: f32, r: f32) -> Option<Path> {
+    let r = r.min(w * 0.5).min(h * 0.5);
+    let mut pb = PathBuilder::new();
+    pb.move_to(x + r, y);
+    pb.line_to(x + w - r, y);
+    pb.quad_to(x + w, y, x + w, y + r);
+    pb.line_to(x + w, y + h - r);
+    pb.quad_to(x + w, y + h, x + w - r, y + h);
+    pb.line_to(x + r, y + h);
+    pb.quad_to(x, y + h, x, y + h - r);
+    pb.line_to(x, y + r);
+    pb.quad_to(x, y, x + r, y);
+    pb.close();
     pb.finish()
 }
 
@@ -161,6 +179,12 @@ pub fn draw_icon(pixmap: &mut Pixmap, kind: IconKind, cell: Rect, color: Option<
         IconKind::Ellipse => {
             if let Some(r) = tiny_skia::Rect::from_xywh(3.0, 5.0, 14.0, 10.0) {
                 let path = PathBuilder::from_oval(r).unwrap();
+                pixmap.stroke_path(&path, &p, &st, t, None);
+            }
+        }
+        IconKind::RoundRect => {
+            // Combined rect/ellipse entry (Snipaste rounded-rect glyph).
+            if let Some(path) = rounded_rect_path(3.5, 5.5, 13.0, 9.0, 2.6) {
                 pixmap.stroke_path(&path, &p, &st, t, None);
             }
         }
@@ -506,6 +530,7 @@ mod tests {
         for kind in [
             IconKind::Rect,
             IconKind::Ellipse,
+            IconKind::RoundRect,
             IconKind::Line,
             IconKind::Arrow,
             IconKind::Pen,

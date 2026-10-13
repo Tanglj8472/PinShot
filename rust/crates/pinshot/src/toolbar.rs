@@ -1,31 +1,78 @@
 //! Self-drawn annotation toolbar + colour/width/style sub-panel (hit-testing only).
 
+use pinshot_core::annotation::{Annotator, Tool};
 use pinshot_core::annotation::{DrawMode, Effect, LineStyleKind, Style};
 use pinshot_core::color::{palette_colors, Rgba};
 use pinshot_core::geom::{clamp_f32, Point, Rect};
 use pinshot_core::i18n::tr;
 use pinshot_core::icons::IconKind;
-use pinshot_core::annotation::{Annotator, Tool};
 
-/// Clicking an active drawing tool switches back to selection/move mode.
-pub fn toggle_tool(annot: &mut Annotator, arrow_on: &mut bool, action: TbAction) {
-    let (tool, arrow) = match action {
-        TbAction::Tool(tool) => (tool, false),
-        TbAction::Arrow => (Tool::Line, true),
-        _ => return,
-    };
-    let same = annot.tool == Some(tool) && (tool != Tool::Line || *arrow_on == arrow);
-    annot.set_tool(if same { None } else { Some(tool) });
-    if tool == Tool::Line && !same {
-        annot.set_style_default(tool, |s| s.arrow = arrow);
+/// Clicking an active drawing tool (or grouped Shape / Line entry) deselects it.
+pub fn toggle_tool(
+    annot: &mut Annotator,
+    arrow_on: &mut bool,
+    ellipse_on: &mut bool,
+    action: TbAction,
+) {
+    match action {
+        TbAction::Shape => {
+            let in_group = matches!(annot.tool, Some(Tool::Rect | Tool::Ellipse));
+            if in_group {
+                annot.set_tool(None);
+            } else {
+                annot.set_tool(Some(if *ellipse_on {
+                    Tool::Ellipse
+                } else {
+                    Tool::Rect
+                }));
+            }
+        }
+        TbAction::LineStroke => {
+            let in_group = annot.tool == Some(Tool::Line);
+            if in_group {
+                annot.set_tool(None);
+            } else {
+                annot.set_tool(Some(Tool::Line));
+                annot.set_style_default(Tool::Line, |s| s.arrow = *arrow_on);
+            }
+        }
+        TbAction::Tool(tool) => {
+            let same = annot.tool == Some(tool);
+            annot.set_tool(if same { None } else { Some(tool) });
+            if tool == Tool::Line && !same {
+                annot.set_style_default(tool, |s| s.arrow = *arrow_on);
+            }
+        }
+        _ => {}
     }
-    *arrow_on = !same && arrow;
+}
+
+pub fn set_shape_kind(annot: &mut Annotator, ellipse_on: &mut bool, ellipse: bool) {
+    *ellipse_on = ellipse;
+    annot.set_tool(Some(if ellipse { Tool::Ellipse } else { Tool::Rect }));
+}
+
+pub fn set_line_preset(
+    annot: &mut Annotator,
+    arrow_on: &mut bool,
+    arrow: bool,
+    style: LineStyleKind,
+) {
+    *arrow_on = arrow;
+    annot.set_tool(Some(Tool::Line));
+    annot.set_style_default(Tool::Line, |s| {
+        s.arrow = arrow;
+        s.line_style = style;
+    });
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TbAction {
     Tool(Tool),
-    Arrow,
+    /// Combined rectangle / ellipse entry (Snipaste).
+    Shape,
+    /// Combined line / arrow entry (Snipaste).
+    LineStroke,
     Undo,
     Redo,
     Close,
@@ -38,6 +85,11 @@ pub enum TbAction {
     CustomColor,
     Fill(bool),
     LineStyle(LineStyleKind),
+    ToggleLineMenu,
+    LinePreset {
+        arrow: bool,
+        style: LineStyleKind,
+    },
     SetMode(DrawMode),
     SetEffect(Effect),
     Bold(bool),
@@ -91,6 +143,13 @@ pub struct Toolbar {
     pub slider: Rect,
     pub slider_min: i32,
     pub slider_max: i32,
+    pub menu: Option<TbMenu>,
+}
+
+#[derive(Clone, Debug)]
+pub struct TbMenu {
+    pub rect: Rect,
+    pub items: Vec<TbButton>,
 }
 
 /// Compact cells (Snipaste-like density). Hit-testing uses the same metrics.
@@ -127,16 +186,32 @@ impl Toolbar {
         for_pin: bool,
         style: Option<&Style>,
     ) -> Self {
+        let shape_icon = if active == Some(Tool::Ellipse) {
+            IconKind::Ellipse
+        } else {
+            IconKind::RoundRect
+        };
+        let line_icon = if arrow_on {
+            IconKind::Arrow
+        } else {
+            IconKind::Line
+        };
         let tools = [
-            (IconKind::Rect, TbAction::Tool(Tool::Rect), "Rectangle"),
-            (IconKind::Ellipse, TbAction::Tool(Tool::Ellipse), "Ellipse"),
-            (IconKind::Line, TbAction::Tool(Tool::Line), "Line"),
-            (IconKind::Arrow, TbAction::Arrow, "Arrow"),
+            (shape_icon, TbAction::Shape, "Rectangle / Ellipse"),
+            (line_icon, TbAction::LineStroke, "Line / Arrow"),
             (IconKind::Pen, TbAction::Tool(Tool::Pen), "Pencil"),
             (IconKind::Marker, TbAction::Tool(Tool::Marker), "Marker"),
-            (IconKind::Mosaic, TbAction::Tool(Tool::Mosaic), "Mosaic / blur"),
+            (
+                IconKind::Mosaic,
+                TbAction::Tool(Tool::Mosaic),
+                "Mosaic / blur",
+            ),
             (IconKind::Text, TbAction::Tool(Tool::Text), "Text"),
-            (IconKind::Number, TbAction::Tool(Tool::Number), "Numbered marker (N)"),
+            (
+                IconKind::Number,
+                TbAction::Tool(Tool::Number),
+                "Numbered marker (N)",
+            ),
             (IconKind::Eraser, TbAction::Tool(Tool::Eraser), "Eraser"),
         ];
         let acts: Vec<(IconKind, TbAction, &'static str)> = if for_pin {
@@ -178,8 +253,9 @@ impl Toolbar {
         let mut cx = x + PAD;
         for (icon, action, tip) in tools {
             let checked = match action {
-                TbAction::Tool(t) => Some(t) == active && !arrow_on,
-                TbAction::Arrow => active == Some(Tool::Line) && arrow_on,
+                TbAction::Shape => matches!(active, Some(Tool::Rect | Tool::Ellipse)),
+                TbAction::LineStroke => active == Some(Tool::Line),
+                TbAction::Tool(t) => Some(t) == active,
                 _ => false,
             };
             buttons.push(TbButton {
@@ -225,7 +301,16 @@ impl Toolbar {
             let mut chip_x = 6.0;
             let show_width = matches!(
                 active,
-                Some(Tool::Rect | Tool::Ellipse | Tool::Line | Tool::Pen | Tool::Marker | Tool::Mosaic | Tool::Eraser | Tool::Number)
+                Some(
+                    Tool::Rect
+                        | Tool::Ellipse
+                        | Tool::Line
+                        | Tool::Pen
+                        | Tool::Marker
+                        | Tool::Mosaic
+                        | Tool::Eraser
+                        | Tool::Number
+                )
             );
             let numeric_width = matches!(active, Some(Tool::Mosaic | Tool::Eraser));
             if show_width {
@@ -236,21 +321,48 @@ impl Toolbar {
             if let Some(st) = style {
                 match active {
                     Some(Tool::Rect) | Some(Tool::Ellipse) => {
-                        push_icon(&mut extras, &mut chip_x, chip_y, IconKind::Fill, TbAction::Fill(true), st.filled);
-                        push_icon(&mut extras, &mut chip_x, chip_y, IconKind::Outline, TbAction::Fill(false), !st.filled);
-                        push_icon(&mut extras, &mut chip_x, chip_y, IconKind::Line, TbAction::LineStyle(LineStyleKind::Solid), st.line_style == LineStyleKind::Solid);
-                        push_icon(&mut extras, &mut chip_x, chip_y, IconKind::Dash, TbAction::LineStyle(LineStyleKind::Dash), st.line_style == LineStyleKind::Dash);
+                        push_icon(
+                            &mut extras,
+                            &mut chip_x,
+                            chip_y,
+                            IconKind::Fill,
+                            TbAction::Fill(true),
+                            st.filled,
+                        );
+                        push_icon(
+                            &mut extras,
+                            &mut chip_x,
+                            chip_y,
+                            IconKind::Outline,
+                            TbAction::Fill(false),
+                            !st.filled,
+                        );
+                        push_icon(
+                            &mut extras,
+                            &mut chip_x,
+                            chip_y,
+                            IconKind::Rect,
+                            TbAction::Tool(Tool::Rect),
+                            active == Some(Tool::Rect),
+                        );
+                        push_icon(
+                            &mut extras,
+                            &mut chip_x,
+                            chip_y,
+                            IconKind::Ellipse,
+                            TbAction::Tool(Tool::Ellipse),
+                            active == Some(Tool::Ellipse),
+                        );
                     }
                     Some(Tool::Line) => {
-                        let icon = match st.line_style {
-                            LineStyleKind::Solid => IconKind::Line,
-                            LineStyleKind::Dash => IconKind::Dash,
-                            LineStyleKind::Dot => IconKind::Dot,
-                        };
-                        let next = match st.line_style {
-                            LineStyleKind::Solid => LineStyleKind::Dash,
-                            LineStyleKind::Dash => LineStyleKind::Dot,
-                            LineStyleKind::Dot => LineStyleKind::Solid,
+                        let icon = if st.arrow {
+                            IconKind::Arrow
+                        } else {
+                            match st.line_style {
+                                LineStyleKind::Solid => IconKind::Line,
+                                LineStyleKind::Dash => IconKind::Dash,
+                                LineStyleKind::Dot => IconKind::Dot,
+                            }
                         };
                         push_combo(
                             &mut extras,
@@ -259,26 +371,92 @@ impl Toolbar {
                             56.0,
                             String::new(),
                             Some(icon),
-                            TbAction::LineStyle(next),
+                            TbAction::ToggleLineMenu,
                         );
                     }
                     Some(Tool::Mosaic) => {
-                        push_icon(&mut extras, &mut chip_x, chip_y, IconKind::Mosaic, TbAction::SetEffect(Effect::Mosaic), st.effect == Effect::Mosaic);
-                        push_icon(&mut extras, &mut chip_x, chip_y, IconKind::Blur, TbAction::SetEffect(Effect::Blur), st.effect == Effect::Blur);
-                        push_icon(&mut extras, &mut chip_x, chip_y, IconKind::Pen, TbAction::SetMode(DrawMode::Brush), st.mode == DrawMode::Brush);
-                        push_icon(&mut extras, &mut chip_x, chip_y, IconKind::Rect, TbAction::SetMode(DrawMode::Rect), st.mode == DrawMode::Rect);
+                        push_icon(
+                            &mut extras,
+                            &mut chip_x,
+                            chip_y,
+                            IconKind::Mosaic,
+                            TbAction::SetEffect(Effect::Mosaic),
+                            st.effect == Effect::Mosaic,
+                        );
+                        push_icon(
+                            &mut extras,
+                            &mut chip_x,
+                            chip_y,
+                            IconKind::Blur,
+                            TbAction::SetEffect(Effect::Blur),
+                            st.effect == Effect::Blur,
+                        );
+                        push_icon(
+                            &mut extras,
+                            &mut chip_x,
+                            chip_y,
+                            IconKind::Pen,
+                            TbAction::SetMode(DrawMode::Brush),
+                            st.mode == DrawMode::Brush,
+                        );
+                        push_icon(
+                            &mut extras,
+                            &mut chip_x,
+                            chip_y,
+                            IconKind::Rect,
+                            TbAction::SetMode(DrawMode::Rect),
+                            st.mode == DrawMode::Rect,
+                        );
                         slider = Rect::new(chip_x, chip_y + 6.0, 72.0, 12.0);
                         slider_max = 30;
                         chip_x += 80.0;
                     }
                     Some(Tool::Eraser) => {
-                        push_icon(&mut extras, &mut chip_x, chip_y, IconKind::Pen, TbAction::SetMode(DrawMode::Brush), st.mode == DrawMode::Brush);
-                        push_icon(&mut extras, &mut chip_x, chip_y, IconKind::Rect, TbAction::SetMode(DrawMode::Rect), st.mode == DrawMode::Rect);
+                        push_icon(
+                            &mut extras,
+                            &mut chip_x,
+                            chip_y,
+                            IconKind::Pen,
+                            TbAction::SetMode(DrawMode::Brush),
+                            st.mode == DrawMode::Brush,
+                        );
+                        push_icon(
+                            &mut extras,
+                            &mut chip_x,
+                            chip_y,
+                            IconKind::Rect,
+                            TbAction::SetMode(DrawMode::Rect),
+                            st.mode == DrawMode::Rect,
+                        );
                     }
                     Some(Tool::Text) => {
-                        push_chip(&mut extras, &mut chip_x, chip_y, 22.0, "B".into(), TbAction::Bold(!st.bold), st.bold);
-                        push_chip(&mut extras, &mut chip_x, chip_y, 22.0, "I".into(), TbAction::Italic(!st.italic), st.italic);
-                        push_chip(&mut extras, &mut chip_x, chip_y, 22.0, "A".into(), TbAction::Outline(!st.outline), st.outline);
+                        push_chip(
+                            &mut extras,
+                            &mut chip_x,
+                            chip_y,
+                            22.0,
+                            "B".into(),
+                            TbAction::Bold(!st.bold),
+                            st.bold,
+                        );
+                        push_chip(
+                            &mut extras,
+                            &mut chip_x,
+                            chip_y,
+                            22.0,
+                            "I".into(),
+                            TbAction::Italic(!st.italic),
+                            st.italic,
+                        );
+                        push_chip(
+                            &mut extras,
+                            &mut chip_x,
+                            chip_y,
+                            22.0,
+                            "A".into(),
+                            TbAction::Outline(!st.outline),
+                            st.outline,
+                        );
                         let presets = pinshot_core::font::FAMILY_PRESETS;
                         let idx = presets
                             .iter()
@@ -303,8 +481,22 @@ impl Toolbar {
                         );
                     }
                     Some(Tool::Number) => {
-                        push_icon(&mut extras, &mut chip_x, chip_y, IconKind::Fill, TbAction::Fill(true), st.filled);
-                        push_icon(&mut extras, &mut chip_x, chip_y, IconKind::Outline, TbAction::Fill(false), !st.filled);
+                        push_icon(
+                            &mut extras,
+                            &mut chip_x,
+                            chip_y,
+                            IconKind::Fill,
+                            TbAction::Fill(true),
+                            st.filled,
+                        );
+                        push_icon(
+                            &mut extras,
+                            &mut chip_x,
+                            chip_y,
+                            IconKind::Outline,
+                            TbAction::Fill(false),
+                            !st.filled,
+                        );
                     }
                     _ => {}
                 }
@@ -363,6 +555,7 @@ impl Toolbar {
             slider,
             slider_min,
             slider_max,
+            menu: None,
         }
     }
 
@@ -416,7 +609,51 @@ impl Toolbar {
             slider: Rect::EMPTY,
             slider_min: 1,
             slider_max: 30,
+            menu: None,
         }
+    }
+
+    pub fn attach_line_menu(&mut self, overlay: Rect, style: &Style) {
+        let Some(combo) = self
+            .extras
+            .iter()
+            .find(|e| matches!(e.action, TbAction::ToggleLineMenu))
+        else {
+            self.menu = None;
+            return;
+        };
+        let presets = [
+            (false, LineStyleKind::Solid, IconKind::Line, "Line"),
+            (true, LineStyleKind::Solid, IconKind::Arrow, "Arrow"),
+            (false, LineStyleKind::Dash, IconKind::Dash, "Dash"),
+            (false, LineStyleKind::Dot, IconKind::Dot, "Dot"),
+        ];
+        let iw = combo.rect.w.max(72.0);
+        let ih = 24.0;
+        let h = presets.len() as f32 * ih + 6.0;
+        let mut mx = combo.rect.x;
+        let mut my = combo.rect.bottom() + 2.0;
+        if my + h > overlay.bottom() {
+            my = combo.rect.y - h - 2.0;
+        }
+        mx = clamp_f32(mx, overlay.x, overlay.right() - iw);
+        my = my.max(overlay.y);
+        let rect = Rect::new(mx, my, iw, h);
+        let mut items = Vec::new();
+        for (i, (arrow, ls, icon, tip)) in presets.iter().enumerate() {
+            let checked = style.arrow == *arrow && style.line_style == *ls;
+            items.push(TbButton {
+                rect: Rect::new(mx + 3.0, my + 3.0 + i as f32 * ih, iw - 6.0, ih - 2.0),
+                icon: *icon,
+                action: TbAction::LinePreset {
+                    arrow: *arrow,
+                    style: *ls,
+                },
+                tip,
+                checked,
+            });
+        }
+        self.menu = Some(TbMenu { rect, items });
     }
 
     pub fn set_width_value(&mut self, w: i32) {
@@ -444,12 +681,27 @@ impl Toolbar {
                 return true;
             }
         }
+        if let Some(menu) = &self.menu {
+            if menu.rect.contains(p) {
+                return true;
+            }
+        }
         false
     }
 
     pub fn hit(&self, p: Point) -> Option<TbAction> {
         if !self.visible {
             return None;
+        }
+        if let Some(menu) = &self.menu {
+            for b in &menu.items {
+                if b.rect.contains(p) {
+                    return Some(b.action);
+                }
+            }
+            if menu.rect.contains(p) {
+                return None;
+            }
         }
         if !self.slider.is_empty() && self.slider.contains(p) {
             let t = ((p.x - self.slider.x) / self.slider.w.max(1.0)).clamp(0.0, 1.0);
@@ -560,15 +812,20 @@ mod tests {
     fn tool_click_toggles_and_line_arrow_switches_without_editing_shapes() {
         let mut ann = Annotator::new();
         let mut arrow = false;
-        toggle_tool(&mut ann, &mut arrow, TbAction::Tool(Tool::Rect));
+        let mut ellipse = false;
+        toggle_tool(&mut ann, &mut arrow, &mut ellipse, TbAction::Shape);
         assert_eq!(ann.tool, Some(Tool::Rect));
-        toggle_tool(&mut ann, &mut arrow, TbAction::Tool(Tool::Rect));
+        toggle_tool(&mut ann, &mut arrow, &mut ellipse, TbAction::Shape);
         assert_eq!(ann.tool, None);
-        toggle_tool(&mut ann, &mut arrow, TbAction::Tool(Tool::Line));
-        toggle_tool(&mut ann, &mut arrow, TbAction::Arrow);
+        set_shape_kind(&mut ann, &mut ellipse, true);
+        assert_eq!(ann.tool, Some(Tool::Ellipse));
+        toggle_tool(&mut ann, &mut arrow, &mut ellipse, TbAction::LineStroke);
+        assert_eq!(ann.tool, Some(Tool::Line));
+        assert!(!ann.style(Tool::Line).arrow);
+        set_line_preset(&mut ann, &mut arrow, true, LineStyleKind::Solid);
         assert_eq!(ann.tool, Some(Tool::Line));
         assert!(ann.style(Tool::Line).arrow);
-        toggle_tool(&mut ann, &mut arrow, TbAction::Arrow);
+        toggle_tool(&mut ann, &mut arrow, &mut ellipse, TbAction::LineStroke);
         assert_eq!(ann.tool, None);
     }
 
@@ -577,7 +834,10 @@ mod tests {
         let sel = Rect::new(0.0, 0.0, 240.0, 120.0);
         let over = Rect::new(0.0, 0.0, 400.0, 300.0);
         let tb = Toolbar::layout_pin(sel, over, Some(Tool::Select), false, None);
-        assert!(tb.panel.is_none(), "Select must not open a rect style panel");
+        assert!(
+            tb.panel.is_none(),
+            "Select must not open a rect style panel"
+        );
         let rect = Toolbar::layout_pin(sel, over, Some(Tool::Rect), false, None);
         assert!(rect.panel.is_some());
     }
@@ -642,9 +902,23 @@ mod tests {
             tb.hit(Point::new(tb.custom_color.x + 2.0, tb.custom_color.y + 2.0)),
             Some(TbAction::CustomColor)
         );
-        assert!(tb.extras.iter().any(|e| e.action == TbAction::LineStyle(LineStyleKind::Dash)));
-        let dash = tb.extras.iter().find(|e| e.action == TbAction::LineStyle(LineStyleKind::Dash)).unwrap();
-        assert_eq!(tb.hit(dash.rect.center()), Some(TbAction::LineStyle(LineStyleKind::Dash)));
+        assert!(tb
+            .extras
+            .iter()
+            .any(|e| e.action == TbAction::Tool(Tool::Rect)));
+        assert!(tb
+            .extras
+            .iter()
+            .any(|e| e.action == TbAction::Tool(Tool::Ellipse)));
+        let ell = tb
+            .extras
+            .iter()
+            .find(|e| e.action == TbAction::Tool(Tool::Ellipse))
+            .unwrap();
+        assert_eq!(
+            tb.hit(ell.rect.center()),
+            Some(TbAction::Tool(Tool::Ellipse))
+        );
         let pw = tb.panel.unwrap().w;
         assert!(
             pw < 420.0,
@@ -663,9 +937,30 @@ mod tests {
             .iter()
             .find(|e| e.kind == ExtraKind::Combo)
             .expect("line-style combo");
-        assert!(matches!(combo.action, TbAction::LineStyle(_)));
-        assert_eq!(tb.hit(combo.rect.center()), Some(combo.action));
-        let pen = Toolbar::layout(sel, over, Some(Tool::Pen), false, Some(&Style::for_tool(Tool::Pen)));
+        assert_eq!(combo.action, TbAction::ToggleLineMenu);
+        assert_eq!(tb.hit(combo.rect.center()), Some(TbAction::ToggleLineMenu));
+        let mut open = tb.clone();
+        open.attach_line_menu(over, &st);
+        let menu = open.menu.as_ref().expect("line preset menu");
+        assert!(menu.items.len() >= 2);
+        assert!(menu
+            .items
+            .iter()
+            .any(|b| matches!(b.action, TbAction::LinePreset { arrow: true, .. })));
+        assert_eq!(
+            open.hit(menu.items[1].rect.center()),
+            Some(TbAction::LinePreset {
+                arrow: true,
+                style: LineStyleKind::Solid
+            })
+        );
+        let pen = Toolbar::layout(
+            sel,
+            over,
+            Some(Tool::Pen),
+            false,
+            Some(&Style::for_tool(Tool::Pen)),
+        );
         assert!(
             pen.panel.unwrap().w < tb.panel.unwrap().w,
             "pen is colour-only; line adds a style combo"
@@ -684,7 +979,11 @@ mod tests {
             .find(|e| e.kind == ExtraKind::Combo)
             .expect("font combo");
         assert!(matches!(combo.action, TbAction::Family(_)));
-        assert!(combo.label.contains(char::is_numeric), "combo shows size, got {}", combo.label);
+        assert!(
+            combo.label.contains(char::is_numeric),
+            "combo shows size, got {}",
+            combo.label
+        );
         assert_eq!(tb.hit(combo.rect.center()), Some(combo.action));
     }
 
@@ -715,7 +1014,20 @@ mod tests {
                 .all(|b| b.tip != "Recognize and translate"),
             "translate is F5-only, not a toolbar button"
         );
-        assert!(tb.buttons.iter().any(|b| b.action == TbAction::Tool(Tool::Eraser)));
+        assert!(tb
+            .buttons
+            .iter()
+            .any(|b| b.action == TbAction::Tool(Tool::Eraser)));
+        assert!(tb.buttons.iter().any(|b| b.action == TbAction::Shape));
+        assert!(tb.buttons.iter().any(|b| b.action == TbAction::LineStroke));
+        assert!(
+            tb.buttons
+                .iter()
+                .all(|b| b.action != TbAction::Tool(Tool::Ellipse)
+                    && b.action != TbAction::Tool(Tool::Rect)
+                    && b.action != TbAction::Tool(Tool::Line)),
+            "rect/ellipse and line/arrow are grouped main entries"
+        );
     }
 
     #[test]
@@ -724,10 +1036,19 @@ mod tests {
         let over = Rect::new(0.0, 0.0, 1920.0, 1200.0);
         let st = Style::for_tool(Tool::Text);
         let tb = Toolbar::layout(sel, over, Some(Tool::Text), false, Some(&st));
-        let a = tb.extras.iter().find(|e| e.action == TbAction::Outline(true) || e.action == TbAction::Outline(false));
+        let a = tb
+            .extras
+            .iter()
+            .find(|e| e.action == TbAction::Outline(true) || e.action == TbAction::Outline(false));
         assert_eq!(a.map(|e| e.label.as_str()), Some("A"));
         assert!(tb.panel.unwrap().h <= 36.0, "Snipaste sub-panel is one row");
-        let mos = Toolbar::layout(sel, over, Some(Tool::Mosaic), false, Some(&Style::for_tool(Tool::Mosaic)));
+        let mos = Toolbar::layout(
+            sel,
+            over,
+            Some(Tool::Mosaic),
+            false,
+            Some(&Style::for_tool(Tool::Mosaic)),
+        );
         assert!(!mos.slider.is_empty(), "mosaic panel has a size slider");
         let at = Point::new(mos.slider.x + mos.slider.w * 0.5, mos.slider.y + 4.0);
         assert!(matches!(mos.hit(at), Some(TbAction::WidthSet(_))));

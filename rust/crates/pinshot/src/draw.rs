@@ -1000,7 +1000,12 @@ pub fn paint_toolbar(pm: &mut Pixmap, tb: &Toolbar, cursor: Option<Point>) -> Re
     let tool_end = tb
         .buttons
         .iter()
-        .position(|b| !matches!(b.action, TbAction::Tool(_) | TbAction::Arrow))
+        .position(|b| {
+            !matches!(
+                b.action,
+                TbAction::Tool(_) | TbAction::Shape | TbAction::LineStroke
+            )
+        })
         .unwrap_or(tb.buttons.len());
     if tool_end > 0 && tool_end < tb.buttons.len() {
         let left = tb.buttons[tool_end - 1].rect.right();
@@ -1036,6 +1041,27 @@ pub fn paint_toolbar(pm: &mut Pixmap, tb: &Toolbar, cursor: Option<Point>) -> Re
         }
         for extra in &tb.extras {
             paint_extra(pm, extra, cursor);
+        }
+        if let Some(menu) = &tb.menu {
+            paint_chrome_surface(pm, menu.rect, 5.0);
+            for b in &menu.items {
+                let hot = hover_at(cursor, b.rect);
+                if b.checked || hot {
+                    fill_rounded_rect(
+                        pm,
+                        b.rect,
+                        3.0,
+                        if b.checked {
+                            CHROME_SELECTED
+                        } else {
+                            CHROME_HOVER
+                        },
+                    );
+                }
+                let ink = if b.checked { Rgba::WHITE } else { CHROME_ICON };
+                draw_icon(pm, b.icon, b.rect.adjusted(4.0, 2.0, -4.0, -2.0), Some(ink));
+            }
+            dirty = dirty.union(menu.rect);
         }
         if !tb.custom_color.is_empty() {
             fill_rounded_rect(pm, tb.custom_color, 3.0, tb.custom_value);
@@ -1948,6 +1974,26 @@ mod tests {
                 [60, 64, 72],
             ) {
                 let _ = out.save_png(format!("{dir}/toolbar_rect.png"));
+            }
+            let lst = Style::for_tool(Tool::Line);
+            let mut ltb = Toolbar::layout(sel, over, Some(Tool::Line), false, Some(&lst));
+            ltb.attach_line_menu(over, &lst);
+            let crop = ltb
+                .bar
+                .union(ltb.panel.unwrap_or(ltb.bar))
+                .union(ltb.menu.as_ref().map(|m| m.rect).unwrap_or(ltb.bar))
+                .inflated(12.0);
+            if let Some(out) = crop_rect(
+                &{
+                    let mut full = Pixmap::new(1920, 1200).unwrap();
+                    full.fill(tiny_skia::Color::from_rgba8(60, 64, 72, 255));
+                    paint_toolbar(&mut full, &ltb, None);
+                    full
+                },
+                crop,
+                [60, 64, 72],
+            ) {
+                let _ = out.save_png(format!("{dir}/toolbar_line.png"));
             }
         }
     }

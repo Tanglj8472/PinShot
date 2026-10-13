@@ -58,6 +58,8 @@ const PAIRS: &[(&str, &str)] = &[
     ("Clipboard has no image or text", "剪贴板中没有图片或文字"),
     ("Rectangle", "矩形"),
     ("Ellipse", "椭圆"),
+    ("Rectangle / Ellipse", "矩形 / 椭圆"),
+    ("Line / Arrow", "直线 / 箭头"),
     ("Line / arrow (Shift+drag continues polyline)", "直线 / 箭头（Shift+拖动继续折线）"),
     ("Pencil", "铅笔"),
     ("Marker", "记号笔"),
