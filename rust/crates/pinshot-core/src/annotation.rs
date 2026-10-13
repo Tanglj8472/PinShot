@@ -695,6 +695,49 @@ impl Annotator {
         self.set_tool(Some(to));
     }
 
+    /// Line and arrow share one tool; switching the chip (or Tab) retargets the
+    /// live / selected line instead of starting a new one.
+    pub fn convert_line_arrow(&mut self, kind: ArrowKind) {
+        if let Some(live) = self.live.as_mut() {
+            if live.kind == Tool::Line {
+                live.style.set_arrow_kind(kind);
+                self.tool = Some(Tool::Line);
+                *self.style_mut(Tool::Line) = live.style.clone();
+                return;
+            }
+        }
+        if let Some(idx) = self.option_target() {
+            if self.shapes[idx].kind == Tool::Line {
+                if self.shapes[idx].style.arrow_kind() != kind {
+                    self.push_edit();
+                    self.shapes[idx].style.set_arrow_kind(kind);
+                }
+                self.tool = Some(Tool::Line);
+                self.selected = Some(idx);
+                self.edit_target = Some(idx);
+                self.width_target = Some(idx);
+                *self.style_mut(Tool::Line) = self.shapes[idx].style.clone();
+                return;
+            }
+        }
+        self.set_tool(Some(Tool::Line));
+        self.style_mut(Tool::Line).set_arrow_kind(kind);
+    }
+
+    pub fn current_line_arrow(&self) -> ArrowKind {
+        if let Some(live) = self.live.as_ref() {
+            if live.kind == Tool::Line {
+                return live.style.arrow_kind();
+            }
+        }
+        if let Some(idx) = self.option_target() {
+            if self.shapes[idx].kind == Tool::Line {
+                return self.shapes[idx].style.arrow_kind();
+            }
+        }
+        self.style(Tool::Line).arrow_kind()
+    }
+
     fn copy_draw_style(&mut self, from: Tool, to: Tool) {
         if from == to {
             return;
@@ -2269,5 +2312,46 @@ mod tests {
         assert!(a.shapes.is_empty());
         a.release(Point::new(40.0, 30.0));
         assert_eq!(a.shapes[0].kind, Tool::Ellipse);
+    }
+
+    #[test]
+    fn selected_line_converts_to_arrow_and_undo_restores() {
+        let mut a = Annotator::new();
+        a.set_tool(Some(Tool::Line));
+        a.press(Point::new(10.0, 10.0), false);
+        a.move_to(Point::new(80.0, 10.0), false);
+        a.release(Point::new(80.0, 10.0));
+        assert_eq!(a.shapes[0].style.arrow_kind(), ArrowKind::None);
+        assert_eq!(a.selected, Some(0));
+        a.convert_line_arrow(ArrowKind::Thin);
+        assert_eq!(a.shapes[0].style.arrow_kind(), ArrowKind::Thin);
+        assert_eq!(a.tool, Some(Tool::Line));
+        assert_eq!(a.selected, Some(0));
+        a.convert_line_arrow(ArrowKind::Hollow);
+        assert_eq!(a.shapes[0].style.arrow_kind(), ArrowKind::Hollow);
+        a.convert_line_arrow(ArrowKind::None);
+        assert_eq!(a.shapes[0].style.arrow_kind(), ArrowKind::None);
+        a.undo();
+        assert_eq!(a.shapes[0].style.arrow_kind(), ArrowKind::Hollow);
+    }
+
+    #[test]
+    fn live_line_converts_to_arrow_before_commit() {
+        let mut a = Annotator::new();
+        a.set_tool(Some(Tool::Line));
+        a.press(Point::new(4.0, 4.0), false);
+        a.move_to(Point::new(40.0, 4.0), false);
+        assert_eq!(
+            a.live.as_ref().map(|s| s.style.arrow_kind()),
+            Some(ArrowKind::None)
+        );
+        a.convert_line_arrow(ArrowKind::Thick);
+        assert_eq!(
+            a.live.as_ref().map(|s| s.style.arrow_kind()),
+            Some(ArrowKind::Thick)
+        );
+        assert!(a.shapes.is_empty());
+        a.release(Point::new(40.0, 4.0));
+        assert_eq!(a.shapes[0].style.arrow_kind(), ArrowKind::Thick);
     }
 }

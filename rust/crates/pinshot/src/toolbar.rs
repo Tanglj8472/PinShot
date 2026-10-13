@@ -54,8 +54,7 @@ pub fn set_shape_kind(annot: &mut Annotator, ellipse_on: &mut bool, ellipse: boo
 
 pub fn set_line_preset(annot: &mut Annotator, arrow_kind: &mut ArrowKind, kind: ArrowKind) {
     *arrow_kind = kind;
-    annot.set_tool(Some(Tool::Line));
-    annot.set_style_default(Tool::Line, |s| s.set_arrow_kind(kind));
+    annot.convert_line_arrow(kind);
 }
 
 /// Tab while annotating: rectangle ↔ ellipse, or line ↔ arrow (Snipaste).
@@ -74,7 +73,8 @@ pub fn toggle_grouped_variant(
             true
         }
         Some(Tool::Line) => {
-            let next = if *arrow_kind == ArrowKind::None {
+            let current = annot.current_line_arrow();
+            let next = if current == ArrowKind::None {
                 ArrowKind::Thin
             } else {
                 ArrowKind::None
@@ -841,6 +841,25 @@ mod tests {
         assert_eq!(ann.style(Tool::Line).arrow_kind(), ArrowKind::Hollow);
         toggle_tool(&mut ann, &mut arrow, &mut ellipse, TbAction::LineStroke);
         assert_eq!(ann.tool, None);
+    }
+
+    #[test]
+    fn line_chip_converts_selected_line_to_arrow() {
+        let mut ann = Annotator::new();
+        let mut arrow = ArrowKind::None;
+        let mut ellipse = false;
+        ann.set_tool(Some(Tool::Line));
+        ann.press(Point::new(8.0, 8.0), false);
+        ann.move_to(Point::new(60.0, 8.0), false);
+        ann.release(Point::new(60.0, 8.0));
+        assert_eq!(ann.shapes[0].style.arrow_kind(), ArrowKind::None);
+        set_line_preset(&mut ann, &mut arrow, ArrowKind::Thin);
+        assert_eq!(arrow, ArrowKind::Thin);
+        assert_eq!(ann.shapes[0].style.arrow_kind(), ArrowKind::Thin);
+        assert_eq!(ann.selected, Some(0));
+        assert!(toggle_grouped_variant(&mut ann, &mut arrow, &mut ellipse));
+        assert_eq!(ann.shapes[0].style.arrow_kind(), ArrowKind::None);
+        assert_eq!(arrow, ArrowKind::None);
     }
 
     #[test]

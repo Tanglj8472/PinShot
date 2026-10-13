@@ -130,7 +130,29 @@ fn arrow_head(
     color: Rgba,
     t: Transform,
 ) {
-    arrow_head_ex(pixmap, a, b, head, 0.5, color, t, false);
+    arrow_head_ex(pixmap, a, b, head, head * 0.55, color, t, false);
+}
+
+fn arrow_geom(
+    a: (f32, f32),
+    b: (f32, f32),
+    head: f32,
+    half_w: f32,
+) -> Option<((f32, f32), (f32, f32), (f32, f32))> {
+    let dx = b.0 - a.0;
+    let dy = b.1 - a.1;
+    let len = (dx * dx + dy * dy).sqrt();
+    if len < 0.5 {
+        return None;
+    }
+    let ux = dx / len;
+    let uy = dy / len;
+    let vx = -uy;
+    let vy = ux;
+    let left = (b.0 - head * ux + half_w * vx, b.1 - head * uy + half_w * vy);
+    let right = (b.0 - head * ux - half_w * vx, b.1 - head * uy - half_w * vy);
+    let base = (b.0 - head * ux, b.1 - head * uy);
+    Some((left, right, base))
 }
 
 fn arrow_head_ex(
@@ -138,20 +160,14 @@ fn arrow_head_ex(
     a: (f32, f32),
     b: (f32, f32),
     head: f32,
-    spread: f32,
+    half_w: f32,
     color: Rgba,
     t: Transform,
     hollow: bool,
 ) {
-    let ang = (b.1 - a.1).atan2(b.0 - a.0);
-    let left = (
-        b.0 - head * (ang - spread).cos(),
-        b.1 - head * (ang - spread).sin(),
-    );
-    let right = (
-        b.0 - head * (ang + spread).cos(),
-        b.1 - head * (ang + spread).sin(),
-    );
+    let Some((left, right, _)) = arrow_geom(a, b, head, half_w) else {
+        return;
+    };
     if hollow {
         let mut pb = PathBuilder::new();
         pb.move_to(left.0, left.1);
@@ -216,22 +232,30 @@ pub fn draw_icon(pixmap: &mut Pixmap, kind: IconKind, cell: Rect, color: Option<
             }
         }
         IconKind::Arrow => {
-            if let Some(path) = line_path((4.0, 16.0), (13.6, 6.4)) {
+            let a = (4.0, 16.0);
+            let b = (16.0, 4.0);
+            let (head, half_w) = (5.2, 2.2);
+            let shaft_end = arrow_geom(a, b, head, half_w).map(|g| g.2).unwrap_or(b);
+            if let Some(path) = line_path(a, shaft_end) {
                 pixmap.stroke_path(&path, &p, &st, t, None);
             }
-            arrow_head_ex(pixmap, (4.0, 16.0), (16.0, 4.0), 5.2, 0.40, color, t, false);
+            arrow_head_ex(pixmap, a, b, head, half_w, color, t, false);
         }
         IconKind::ArrowThick => {
-            if let Some(path) = line_path((4.0, 16.0), (12.4, 7.6)) {
+            let a = (4.0, 16.0);
+            let b = (16.2, 3.8);
+            let (head, half_w) = (7.2, 3.6);
+            let shaft_end = arrow_geom(a, b, head, half_w).map(|g| g.2).unwrap_or(b);
+            if let Some(path) = line_path(a, shaft_end) {
                 pixmap.stroke_path(&path, &p, &st, t, None);
             }
-            arrow_head_ex(pixmap, (4.0, 16.0), (16.2, 3.8), 7.2, 0.44, color, t, false);
+            arrow_head_ex(pixmap, a, b, head, half_w, color, t, false);
         }
         IconKind::ArrowHollow => {
             if let Some(path) = line_path((4.0, 16.0), (16.0, 4.0)) {
                 pixmap.stroke_path(&path, &p, &st, t, None);
             }
-            arrow_head_ex(pixmap, (4.0, 16.0), (16.0, 4.0), 6.4, 0.50, color, t, true);
+            arrow_head_ex(pixmap, (4.0, 16.0), (16.0, 4.0), 6.4, 3.3, color, t, true);
         }
         IconKind::Pen => {
             let mut pb = PathBuilder::new();

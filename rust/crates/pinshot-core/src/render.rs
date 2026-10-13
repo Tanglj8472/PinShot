@@ -225,7 +225,13 @@ fn draw_shape_t(pm: &mut Pixmap, sh: &Shape, t: Transform) {
             let kind = sh.style.arrow_kind();
             let pts = shaft_pts(&sh.pts, sh.style.width, kind);
             if let Some(path) = polyline(&pts) {
-                pm.stroke_path(&path, &paint(sh.style.color), &stroke_for(sh), t, None);
+                let mut st = stroke_for(sh);
+                // Filled heads: Butt at the perpendicular base so the shaft
+                // does not round past the triangle (standard GDI construction).
+                if matches!(kind, ArrowKind::Thin | ArrowKind::Thick) {
+                    st.line_cap = LineCap::Butt;
+                }
+                pm.stroke_path(&path, &paint(sh.style.color), &st, t, None);
             }
             if kind.is_arrow() && sh.pts.len() > 1 {
                 draw_arrow_head(pm, sh, kind, t);
@@ -326,87 +332,104 @@ fn draw_shape_t(pm: &mut Pixmap, sh: &Shape, t: Transform) {
     }
 }
 
-/// `(length, half-angle rad, shaft pull as a fraction of length)`.
-/// Snipaste: filled isosceles triangle, or an open V of two strokes.
-fn arrow_metrics(width: i32, kind: ArrowKind) -> Option<(f32, f32, f32)> {
+/// `(head length along the shaft, half-width of the perpendicular base)`.
+///
+/// Textbook construction (GDI / unit dir + perp): tip at B, base corners
+/// `B - length·U ± half_width·V` with `U = normalize(B−A)`, `V = (−Uy, Ux)`.
+/// Filled: isosceles triangle, shaft only to the base. Hollow: open V, shaft to tip.
+fn arrow_metrics(width: i32, kind: ArrowKind) -> Option<(f32, f32)> {
     let w = width.max(1) as f32;
     match kind {
         ArrowKind::None => None,
-        ArrowKind::Thin => Some(((w * 3.1 + 7.0).max(11.0), 0.40, 0.90)),
-        ArrowKind::Thick => Some(((w * 4.4 + 10.0).max(16.0), 0.44, 0.90)),
-        // Shaft runs to the tip; the head is two wings, not a closed triangle.
-        ArrowKind::Hollow => Some(((w * 3.8 + 9.0).max(14.0), 0.50, 0.12)),
+        ArrowKind::Thin => {
+            let len = (w * 3.1 + 7.0).max(11.0);
+            Some((len, len * 0.42))
+        }
+        ArrowKind::Thick => {
+            let len = (w * 4.4 + 10.0).max(16.0);
+            Some((len, len * 0.50))
+        }
+        ArrowKind::Hollow => {
+            let len = (w * 3.8 + 9.0).max(14.0);
+            Some((len, len * 0.52))
+        }
     }
+}
+
+struct ArrowHead {
+    tip: Point,
+    left: Point,
+    right: Point,
+    /// Midpoint of the perpendicular base (filled shaft ends here).
+    base: Point,
+}
+
+fn arrow_head_geom(a: Point, b: Point, length: f32, half_w: f32) -> Option<ArrowHead> {
+    let dx = b.x - a.x;
+    let dy = b.y - a.y;
+    let len = (dx * dx + dy * dy).sqrt();
+    if len < 0.5 {
+        return None;
+    }
+    let ux = dx / len;
+    let uy = dy / len;
+    let vx = -uy;
+    let vy = ux;
+    let l = length.min(len * 0.85);
+    Some(ArrowHead {
+        tip: b,
+        left: Point::new(b.x - l * ux + half_w * vx, b.y - l * uy + half_w * vy),
+        right: Point::new(b.x - l * ux - half_w * vx, b.y - l * uy - half_w * vy),
+        base: Point::new(b.x - l * ux, b.y - l * uy),
+    })
 }
 
 fn shaft_pts(pts: &[Point], width: i32, kind: ArrowKind) -> Vec<Point> {
     let mut out = pts.to_vec();
-    let Some((l, _, pull)) = arrow_metrics(width, kind) else {
+    if matches!(kind, ArrowKind::None | ArrowKind::Hollow) {
+        return out;
+    }
+    let Some((l, hw)) = arrow_metrics(width, kind) else {
         return out;
     };
     if out.len() < 2 {
         return out;
     }
     let n = out.len();
-    let a = out[n - 2];
-    let b = out[n - 1];
-    let dx = b.x - a.x;
-    let dy = b.y - a.y;
-    let len = (dx * dx + dy * dy).sqrt();
-    if len < 1.0 {
-        return out;
+    if let Some(head) = arrow_head_geom(out[n - 2], out[n - 1], l, hw) {
+        out[n - 1] = head.base;
     }
-    let back = (l * pull).min(len * 0.85);
-    out[n - 1] = Point::new(b.x - dx / len * back, b.y - dy / len * back);
     out
-}
-
-fn wing(b: Point, ang: f32, spread: f32, l: f32) -> (Point, Point) {
-    (
-        Point::new(
-            b.x - l * (ang - spread).cos(),
-            b.y - l * (ang - spread).sin(),
-        ),
-        Point::new(
-            b.x - l * (ang + spread).cos(),
-            b.y - l * (ang + spread).sin(),
-        ),
-    )
 }
 
 fn draw_arrow_head(pm: &mut Pixmap, sh: &Shape, kind: ArrowKind, t: Transform) {
     let a = sh.pts[sh.pts.len() - 2];
     let bpt = sh.pts[sh.pts.len() - 1];
-    let dx = bpt.x - a.x;
-    let dy = bpt.y - a.y;
-    if dx.abs() + dy.abs() < 0.5 {
-        return;
-    }
-    let ang = dy.atan2(dx);
-    let Some((l, spread, _)) = arrow_metrics(sh.style.width, kind) else {
+    let Some((l, hw)) = arrow_metrics(sh.style.width, kind) else {
         return;
     };
-    let (left, right) = wing(bpt, ang, spread, l);
+    let Some(head) = arrow_head_geom(a, bpt, l, hw) else {
+        return;
+    };
     match kind {
         ArrowKind::None => {}
         ArrowKind::Hollow => {
-            // Open V: two strokes, same width as the shaft (Snipaste).
             let mut st = stroke_for(sh);
             st.line_cap = LineCap::Round;
             st.line_join = LineJoin::Round;
             let mut pb = PathBuilder::new();
-            pb.move_to(left.x, left.y);
-            pb.line_to(bpt.x, bpt.y);
-            pb.line_to(right.x, right.y);
+            pb.move_to(head.left.x, head.left.y);
+            pb.line_to(head.tip.x, head.tip.y);
+            pb.line_to(head.right.x, head.right.y);
             if let Some(path) = pb.finish() {
                 pm.stroke_path(&path, &paint(sh.style.color), &st, t, None);
             }
         }
         ArrowKind::Thin | ArrowKind::Thick => {
             let mut pb = PathBuilder::new();
-            pb.move_to(bpt.x, bpt.y);
-            pb.line_to(left.x, left.y);
-            pb.line_to(right.x, right.y);
+            pb.move_to(head.tip.x, head.tip.y);
+            pb.line_to(head.left.x, head.left.y);
+            pb.line_to(head.right.x, head.right.y);
             pb.close();
             if let Some(path) = pb.finish() {
                 pm.fill_path(&path, &paint(sh.style.color), FillRule::Winding, t, None);
@@ -537,8 +560,8 @@ mod tests {
         let out = compose(&base, &[line_shape(crate::annotation::ArrowKind::Hollow)]);
         let edge = count_red(&out, 38..62, 10..30);
         assert!(edge > 12, "hollow outline pixels={edge}");
-        // Off the shaft, inside the V — must stay empty (not a filled triangle).
-        let interior = count_red(&out, 40..43, 25..28);
+        // Off the shaft, inside the open V — must stay empty (not a filled triangle).
+        let interior = count_red(&out, 42..46, 26..30);
         assert!(
             interior < 8,
             "hollow should not fill the wedge, interior={interior}"
@@ -550,9 +573,56 @@ mod tests {
         let mut base = Raster::new(80, 40);
         base.fill(Rgba::WHITE);
         let out = compose(&base, &[line_shape(crate::annotation::ArrowKind::Thin)]);
-        // Centroid of the filled head sits a few px behind the tip at (50,20).
-        let core = count_red(&out, 44..48, 18..23);
+        // Centroid of the perp-base triangle (tip at 50,20; length ~16).
+        let core = count_red(&out, 36..42, 18..23);
         assert!(core > 8, "filled triangle core pixels={core}");
+    }
+
+    #[test]
+    fn filled_arrow_base_is_perpendicular_to_shaft() {
+        let mut base = Raster::new(80, 40);
+        base.fill(Rgba::WHITE);
+        let out = compose(&base, &[line_shape(crate::annotation::ArrowKind::Thin)]);
+        // Horizontal shaft to (50, 20); barbs sit on a vertical line behind the tip.
+        let barb = count_red(&out, 33..36, 14..17) + count_red(&out, 33..36, 23..26);
+        assert!(barb > 4, "perpendicular barbs should paint, pixels={barb}");
+        // Behind the base the head must not flare (angle-spread chevrons did).
+        let behind = count_red(&out, 20..28, 12..16);
+        assert!(behind < 3, "no chevron flare behind the base, pixels={behind}");
+        if let Ok(dir) = std::env::var("PINSHOT_DUMP_ARROWS") {
+            let mut canvas = Raster::new(280, 200);
+            canvas.fill(Rgba::WHITE);
+            let kinds = [
+                crate::annotation::ArrowKind::None,
+                crate::annotation::ArrowKind::Thin,
+                crate::annotation::ArrowKind::Thick,
+                crate::annotation::ArrowKind::Hollow,
+            ];
+            let shapes: Vec<Shape> = kinds
+                .into_iter()
+                .enumerate()
+                .map(|(i, kind)| {
+                    let mut st = Style::for_tool(Tool::Line);
+                    st.set_arrow_kind(kind);
+                    st.color = Rgba::RED;
+                    st.width = 4;
+                    let y = 28.0 + i as f32 * 44.0;
+                    Shape::new(
+                        Tool::Line,
+                        vec![Point::new(24.0, y), Point::new(250.0, y)],
+                        st,
+                    )
+                })
+                .collect();
+            let preview = compose(&canvas, &shapes);
+            if let Some(pm) = preview.to_skia() {
+                if let Ok(png) = pm.encode_png() {
+                    let path = std::path::PathBuf::from(dir).join("line_arrow_geometry.png");
+                    let _ = std::fs::create_dir_all(path.parent().unwrap_or(std::path::Path::new(".")));
+                    let _ = std::fs::write(path, png);
+                }
+            }
+        }
     }
 
     #[test]
