@@ -1,11 +1,11 @@
-//! Magnifier layout + colour sampling (15×15 @ 8×, RGB/HEX).
+//! Magnifier layout + colour sampling (15×15 @ 10×, RGB/HEX).
 
 use crate::color::Rgba;
 use crate::geom::{Point, Rect};
 use crate::raster::Raster;
 
 pub const MAG_N: i32 = 15;
-pub const MAG_ZOOM: i32 = 8;
+pub const MAG_ZOOM: i32 = 10;
 pub const MAG_INFO_H: f32 = 66.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -33,7 +33,7 @@ pub fn magnifier_visible(
     creating_or_resizing || idle_without_sel
 }
 
-/// Place the 15×15 ×8 grid next to the cursor, flipping when it would clip.
+/// Place the 15×15 ×10 grid next to the cursor, flipping when it would clip.
 pub fn layout_magnifier(cursor: Point, overlay: Rect, color: Rgba, phys: Point) -> Magnifier {
     let size = (MAG_N * MAG_ZOOM) as f32;
     let mut x = (cursor.x + 22.0).floor();
@@ -80,6 +80,14 @@ mod tests {
         let mag = layout_magnifier(Point::new(190.0, 190.0), overlay, Rgba::RED, Point::ZERO);
         assert!(mag.grid.right() <= 200.0 + 1.0);
         assert!(mag.info.bottom() <= 200.0 + 1.0);
+    }
+
+    #[test]
+    fn grid_is_a_quarter_larger_than_the_old_8x_preview() {
+        let overlay = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let mag = layout_magnifier(Point::new(40.0, 40.0), overlay, Rgba::RED, Point::ZERO);
+        assert_eq!(mag.grid.w, (MAG_N * MAG_ZOOM) as f32);
+        assert_eq!(mag.grid.w, 150.0, "15×10 is 25% longer than 15×8=120");
     }
 
     #[test]
