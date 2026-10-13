@@ -20,12 +20,12 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetCursorPos, GetWindowLongPtrW, IsWindow,
-    PostMessageW, RegisterClassW, SetLayeredWindowAttributes, SetWindowDisplayAffinity,
-    SetWindowLongPtrW, SetWindowPos, ShowWindow, GWL_EXSTYLE, HWND_TOPMOST, LWA_ALPHA,
-    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOREDRAW, SWP_NOSIZE, SWP_NOZORDER,
-    SW_HIDE, SW_SHOWNOACTIVATE, WINDOW_DISPLAY_AFFINITY, WM_DESTROY, WM_HOTKEY, WNDCLASSW,
-    WS_EX_APPWINDOW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
-    WS_EX_TRANSPARENT, WS_POPUP,
+    PostMessageW, RegisterClassW, SetCursorPos, SetLayeredWindowAttributes,
+    SetWindowDisplayAffinity, SetWindowLongPtrW, SetWindowPos, ShowWindow, GWL_EXSTYLE,
+    HWND_TOPMOST, LWA_ALPHA, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOREDRAW,
+    SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOWNOACTIVATE, WINDOW_DISPLAY_AFFINITY, WM_DESTROY,
+    WM_HOTKEY, WNDCLASSW, WS_EX_APPWINDOW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 use winit::event_loop::EventLoopProxy;
 use winit::window::Window;
@@ -158,7 +158,9 @@ pub fn apply_pin_style(hwnd: HWND) {
         SetWindowLongPtrW(
             hwnd,
             GWL_EXSTYLE,
-            (ex | WS_EX_TOPMOST.0 as isize | WS_EX_TOOLWINDOW.0 as isize | WS_EX_LAYERED.0 as isize)
+            (ex | WS_EX_TOPMOST.0 as isize
+                | WS_EX_TOOLWINDOW.0 as isize
+                | WS_EX_LAYERED.0 as isize)
                 & !(WS_EX_APPWINDOW.0 as isize),
         );
         let _ = SetWindowPos(
@@ -184,6 +186,18 @@ pub fn cursor_pos() -> Option<(i32, i32)> {
         let mut p = windows::Win32::Foundation::POINT::default();
         GetCursorPos(&mut p).ok()?;
         Some((p.x, p.y))
+    }
+}
+
+/// One-pixel SetCursorPos round-trip so a still mouse still delivers WM_MOUSEMOVE.
+pub fn nudge_cursor() {
+    unsafe {
+        let mut p = windows::Win32::Foundation::POINT::default();
+        if GetCursorPos(&mut p).is_err() {
+            return;
+        }
+        let _ = SetCursorPos(p.x + 1, p.y);
+        let _ = SetCursorPos(p.x, p.y);
     }
 }
 

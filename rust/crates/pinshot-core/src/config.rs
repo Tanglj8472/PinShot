@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -69,7 +69,7 @@ impl Default for Config {
             history_max: 10,
             closed_pins_max: 10,
             theme: "system".into(),
-            dim_alpha: 110,
+            dim_alpha: 160,
             ocr_model: "mobile".into(),
             translate: TranslateSettings::default(),
         }
@@ -159,6 +159,11 @@ impl Config {
         self.history_max = self.history_max.max(1);
         self.closed_pins_max = self.closed_pins_max.max(1);
         self.dim_alpha = self.dim_alpha.min(200);
+        // v1 overlay hardcoded 110, which is too light vs Snipaste and makes
+        // the magnifier look like it paints an extra shadow on the freeze.
+        if self.schema_version < 2 && self.dim_alpha == 110 {
+            self.dim_alpha = 160;
+        }
         if !matches!(self.theme.as_str(), "system" | "light" | "dark") {
             self.theme = "system".into();
         }
@@ -176,7 +181,7 @@ impl Config {
         if self.hotkey_clickthrough.trim().is_empty() {
             self.hotkey_clickthrough = "F4".into();
         }
-        if self.schema_version == 0 {
+        if self.schema_version < SCHEMA_VERSION {
             self.schema_version = SCHEMA_VERSION;
         }
         self.translate.provider = self.translate.normalized_provider().to_string();
@@ -312,7 +317,8 @@ mod tests {
         assert_eq!(c.hotkey_snip, "F1");
         assert_eq!(c.hotkey_pin, "F3");
         assert_eq!(c.hotkey_clickthrough, "F4");
-        assert_eq!(c.schema_version, 1);
+        assert_eq!(c.schema_version, 2);
+        assert_eq!(c.dim_alpha, 160);
     }
 
     #[test]
@@ -369,6 +375,13 @@ mod tests {
         std::env::set_var("PINSHOT_DATA_DIR", &p);
         assert_eq!(data_dir(), p);
         std::env::remove_var("PINSHOT_DATA_DIR");
+    }
+
+    #[test]
+    fn v1_light_mask_becomes_snipaste_dim() {
+        let c = Config::from_toml("schema_version = 1\ndim_alpha = 110\n").unwrap();
+        assert_eq!(c.dim_alpha, 160);
+        assert_eq!(c.schema_version, 2);
     }
 
     #[test]

@@ -178,6 +178,7 @@ impl Overlay {
         capture: Capture,
         history: SnipHistory,
         history_max: u32,
+        dim_alpha: u8,
         translate_on_select: bool,
         proxy: winit::event_loop::EventLoopProxy<crate::event::AppEvent>,
         recycled: Option<Rc<Window>>,
@@ -198,7 +199,8 @@ impl Overlay {
             Some(softbuffer::Surface::new(&ctx, window.clone()).map_err(|e| format!("{e:?}"))?)
         };
         let t_front = Instant::now();
-        let front = OverlayFront::new(&capture.composed, 110)?;
+        let dim = dim_alpha.max(160);
+        let front = OverlayFront::new(&capture.composed, dim)?;
         crate::logutil::ms("overlay front", t_front);
         let t_enum = Instant::now();
         let windows = translated_windows(capture.virtual_origin);
@@ -332,6 +334,12 @@ impl Overlay {
         native::cloak_window(&s.window, false);
         #[cfg(not(unix))]
         native::focus_window(&s.window);
+        // Recycled HWND often skips CursorMoved until the mouse actually
+        // moves. Nudge 1px (and back) so hover paints on a still cursor.
+        s.synth_pointer_hover();
+        if s.dirty {
+            s.redraw();
+        }
         crate::logutil::ms("overlay start", t0);
         Ok(s)
     }
@@ -580,6 +588,30 @@ impl Overlay {
             return;
         }
         self.hover = self.hover_at(self.cursor);
+    }
+
+    /// Pretend the mouse moved one overlay pixel so live hit-test / winit
+    /// CursorMoved run even when the user has not moved.
+    fn synth_pointer_hover(&mut self) {
+        native::nudge_cursor();
+        #[cfg(windows)]
+        if let Some((sx, sy)) = native::cursor_screen() {
+            let (ox, oy) = self.capture.virtual_origin;
+            self.cursor = Point::new((sx - ox) as f32, (sy - oy) as f32);
+        }
+        let origin = self.cursor;
+        let b = self.bounds();
+        let dx = if origin.x + 1.0 < b.w.max(1.0) {
+            1.0
+        } else {
+            -1.0
+        };
+        self.hit_px = None;
+        self.hit_rect = None;
+        self.on_cursor_moved(Point::new(origin.x + dx, origin.y));
+        self.hit_px = None;
+        self.hit_rect = None;
+        self.on_cursor_moved(origin);
     }
 
     fn relayout_toolbar(&mut self) {

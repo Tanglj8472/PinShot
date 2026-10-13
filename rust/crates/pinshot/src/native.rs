@@ -105,6 +105,12 @@ pub fn cursor_screen() -> Option<(i32, i32)> {
     }
 }
 
+/// Fake a 1px mouse move and restore so overlay hover runs without the user moving.
+pub fn nudge_cursor() {
+    #[cfg(windows)]
+    crate::win32::nudge_cursor();
+}
+
 pub fn move_window(window: &Window, x: i32, y: i32) {
     #[cfg(windows)]
     crate::win32::move_window(hwnd_of(window), x, y);

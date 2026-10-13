@@ -309,6 +309,7 @@ impl App {
                 cap,
                 SnipHistory::new(),
                 self.cfg.history_max,
+                self.cfg.dim_alpha,
                 translate,
                 self.proxy.clone(),
                 self.pump_win.clone(),
@@ -1021,18 +1022,10 @@ fn encode_png(img: &Raster) -> Vec<u8> {
     use image::codecs::png::{CompressionType, FilterType, PngEncoder};
     use image::{ExtendedColorType, ImageEncoder};
     let mut buf = Vec::new();
-    let encoder = PngEncoder::new_with_quality(
-        &mut buf,
-        CompressionType::Fast,
-        FilterType::NoFilter,
-    );
+    let encoder =
+        PngEncoder::new_with_quality(&mut buf, CompressionType::Fast, FilterType::NoFilter);
     if encoder
-        .write_image(
-            &img.pixels,
-            img.width,
-            img.height,
-            ExtendedColorType::Rgba8,
-        )
+        .write_image(&img.pixels, img.width, img.height, ExtendedColorType::Rgba8)
         .is_err()
     {
         return Vec::new();
