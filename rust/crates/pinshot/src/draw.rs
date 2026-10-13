@@ -2070,7 +2070,7 @@ mod tests {
         let w = 640u32;
         let h = 400u32;
         let shot = gray_shot(w, h, 210);
-        let mut clean = OverlayFront::new(&shot, 160).expect("clean");
+        let clean = OverlayFront::new(&shot, 160).expect("clean");
         let mut front = OverlayFront::new(&shot, 160).expect("front");
         let bounds = Rect::new(0.0, 0.0, w as f32, h as f32);
         let idle = Selection::new();
@@ -2154,7 +2154,7 @@ mod tests {
         for (x, y) in [
             (info.x as u32 - 1, (info.y + 54.0) as u32),
             ((info.right() as u32) + 1, (info.y + 54.0) as u32),
-            ((info.x + 4.0) as u32, info.y as u32 - 1),
+            ((info.x + 4.0) as u32, (info.bottom() as u32) + 1),
         ] {
             if x >= 400 || y >= 400 {
                 continue;
@@ -2264,7 +2264,8 @@ mod tests {
         let mut pm = Pixmap::new(80, 60).unwrap();
         pm.fill(tiny_skia::Color::from_rgba8(40, 40, 40, 255));
         paint_snip_ring(&mut pm, Rect::new(10.0, 8.0, 50.0, 36.0));
-        let p = pm.pixel(10, 20).expect("edge").demultiply();
+        // Ring is inset so AA cannot stain the dim mask outside the hole.
+        let p = pm.pixel(13, 20).expect("edge").demultiply();
         assert!(
             p.green() > 140 && p.blue() > 180 && (p.green() as i16) > (p.red() as i16) + 80,
             "ring should be cyan, got {},{},{}",
