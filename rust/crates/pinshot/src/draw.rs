@@ -302,6 +302,18 @@ fn clip_rect(r: Rect, bounds: Rect) -> Rect {
     r.intersect(bounds)
 }
 
+/// Pixel-aligned dirty rect so hover-leave copies cover the same samples as `dimmed`.
+fn align_dirty(r: Rect) -> Rect {
+    if r.is_empty() {
+        return Rect::EMPTY;
+    }
+    let x0 = r.x.floor();
+    let y0 = r.y.floor();
+    let x1 = r.right().ceil();
+    let y1 = r.bottom().ceil();
+    Rect::new(x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0))
+}
+
 fn copy_rect(dst: &mut Pixmap, src: &Pixmap, r: Rect) {
     let bounds = Rect::new(0.0, 0.0, dst.width() as f32, dst.height() as f32).intersect(Rect::new(
         0.0,
@@ -651,8 +663,8 @@ impl OverlayFront {
         Ok(())
     }
 
-    fn restore(&mut self, r: Rect, _hole: Rect) {
-        let r = clip_rect(r, self.bounds());
+    fn restore(&mut self, r: Rect) {
+        let r = clip_rect(align_dirty(r), self.bounds());
         if r.is_empty() {
             return;
         }
@@ -707,44 +719,22 @@ impl OverlayFront {
         let hole_pad = hole.inflated(10.0).union(size_label).intersect(bounds);
 
         let mut present: Vec<Rect> = Vec::new();
-        // GDI already holds the dimmed desktop from `new()`; first paint only
-        // dirty-swizzles the hover hole instead of the whole virtual desktop.
-
-        // Symmetric difference of the (padded) hole — thin bands, not the whole desktop.
-        for r in self.last_hole.subtract(hole) {
-            if !r.is_empty() {
-                self.restore(r, hole);
-                present.push(r);
-            }
-        }
-        for r in hole_pad.subtract(self.last_hole) {
-            if !r.is_empty() {
-                self.restore(r, hole);
-                present.push(r);
-            }
-        }
-        // Old stroke / handles sit on the previous rim.
-        if !self.last_hole.is_empty() {
-            let rim = self.last_hole.inflated(8.0).intersect(bounds);
-            for r in rim.subtract(self.last_hole.inflated(-2.0)) {
-                if !r.is_empty() {
-                    self.restore(r, hole);
-                    present.push(r);
-                }
-            }
-        }
-        if !size_clear.is_empty() {
-            self.restore(size_clear, hole);
-            present.push(size_clear);
-        }
+        // Copy the pre-dimmed freeze over the previous hole + chrome as one
+        // rect. Band-subtraction left a darker footprint on a window that had
+        // been the hover hole, while never-hovered pixels stayed at the
+        // original (lighter) dim — the magnifier then looked like extra shadow.
+        let mut stale = self
+            .last_hole
+            .inflated(16.0)
+            .union(hole_pad)
+            .union(size_clear);
         for r in std::mem::take(&mut self.last_chrome) {
-            // Glyph / rounded-rect AA can sit a few px outside the chip.
-            let r = clip_rect(r.inflated(4.0), bounds);
-            if r.is_empty() {
-                continue;
-            }
-            self.restore(r, hole);
-            present.push(r);
+            stale = stale.union(r.inflated(16.0));
+        }
+        stale = clip_rect(align_dirty(stale), bounds);
+        if !stale.is_empty() {
+            self.restore(stale);
+            present.push(stale);
         }
 
         // Hole interior: undimmed capture + vector annotations (no full compose).
@@ -1046,7 +1036,7 @@ fn paint_magnifier(
         Rgba::WHITE,
         1.5,
     );
-    fill_rect(pm, mag.info, Rgba::rgba(0, 0, 0, 210));
+    fill_rect(pm, mag.info, Rgba::rgb(22, 22, 22));
     let hint = MAG_HINT_PX;
     let coord = format!("({}, {})", mag.phys.x as i32, mag.phys.y as i32);
     blit_centered(pm, &coord, mag.info, mag.info.y + 6.0, hint, Rgba::WHITE);
@@ -1083,7 +1073,7 @@ fn paint_magnifier(
         hint,
         hint_c,
     );
-    mag.grid.union(mag.info).inflated(2.0)
+    mag.grid.union(mag.info).inflated(12.0)
 }
 
 fn blit_centered(pm: &mut Pixmap, text: &str, boxr: Rect, y: f32, px: i32, color: Rgba) {
@@ -1986,6 +1976,69 @@ mod tests {
                 p.blue()
             );
         }
+    }
+
+    #[test]
+    fn leaving_hover_hole_matches_never_hovered_dim() {
+        let w = 640u32;
+        let h = 400u32;
+        let shot = gray_shot(w, h, 210);
+        let mut front = OverlayFront::new(&shot, 160).expect("front");
+        let idle = Selection::new();
+        let base = front.pixmap().pixel(40, 40).expect("px").demultiply();
+        let paint_hover = |front: &mut OverlayFront, hover: Rect, mag: bool, cursor: Point| {
+            front.paint(
+                dummy_hwnd(),
+                &idle,
+                hover,
+                cursor,
+                1.0,
+                false,
+                mag,
+                &Annotator::new(),
+                None,
+                None,
+                false,
+                &shot,
+                None,
+                None,
+            );
+        };
+        paint_hover(
+            &mut front,
+            Rect::new(10.0, 10.0, 180.0, 120.0),
+            true,
+            Point::new(40.0, 40.0),
+        );
+        let lit = front.pixmap().pixel(40, 40).expect("px").demultiply();
+        assert!(
+            lit.red() > 180,
+            "hover hole should be undimmed, got {}",
+            lit.red()
+        );
+        paint_hover(
+            &mut front,
+            Rect::new(400.0, 200.0, 160.0, 100.0),
+            true,
+            Point::new(500.0, 250.0),
+        );
+        let after = front.pixmap().pixel(40, 40).expect("px").demultiply();
+        assert!(
+            (after.red() as i16 - base.red() as i16).abs() <= 2
+                && (after.red() as i16 - after.green() as i16).abs() < 4,
+            "left hover must match never-hovered dim {} not extra-dark {},{},{}",
+            base.red(),
+            after.red(),
+            after.green(),
+            after.blue()
+        );
+        let never = front.pixmap().pixel(250, 300).expect("px").demultiply();
+        assert!(
+            (never.red() as i16 - base.red() as i16).abs() <= 2,
+            "never-hovered should stay at the freeze dim, got {} vs {}",
+            never.red(),
+            base.red()
+        );
     }
 
     #[test]
