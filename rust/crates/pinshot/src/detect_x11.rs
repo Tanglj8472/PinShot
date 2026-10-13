@@ -436,6 +436,18 @@ pub fn element_source() -> &'static str {
     }
 }
 
+pub struct PointHit {
+    pub rect: Rect,
+    pub exe: String,
+    pub depth: u32,
+    pub elapsed_ms: u128,
+}
+
+/// Windows does a live HWND/UIA hit-test. Linux keeps the pre-walked list.
+pub fn element_at_point(_sx: i32, _sy: i32, _exclude: Option<isize>) -> Option<PointHit> {
+    None
+}
+
 /// Same safety rule as Python: Atspi.init() can abort, so probe in a subprocess.
 pub fn atspi_available() -> bool {
     static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -469,6 +481,11 @@ mod tests {
     #[test]
     fn x11_element_walk_matches_python_depth() {
         assert_eq!(X11_ELEM_MAX_DEPTH, 4);
+    }
+
+    #[test]
+    fn linux_live_hit_defers_to_prewalked_list() {
+        assert!(element_at_point(10, 10, None).is_none());
     }
 
     #[test]

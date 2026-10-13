@@ -5,9 +5,9 @@
 pub mod annotation;
 pub mod color;
 pub mod colorpicker;
+pub mod config;
 pub mod confirm;
 pub mod cursor;
-pub mod config;
 pub mod font;
 pub mod geom;
 pub mod groups;
@@ -27,16 +27,16 @@ pub mod translate;
 pub mod wheel;
 
 pub use annotation::{Annotator, DrawMode, Effect, LineStyleKind, Shape, Style, Tool, UndoStack};
-pub use cursor::{cursor_for, CursorHint, CursorKind};
-pub use confirm::{confirm_abort_layout, ConfirmAbortHit, ConfirmAbortLayout};
+pub use color::{hsv_to_rgb, palette_colors, parse_color_text, rgb_to_hsv, Rgba, PALETTE};
 pub use colorpicker::{
     color_picker_layout, ColorPicker, ColorPickerLayout, PickerAction, PickerHit,
 };
-pub use wheel::WheelGate;
-pub use color::{hsv_to_rgb, parse_color_text, palette_colors, rgb_to_hsv, Rgba, PALETTE};
 pub use config::{config_dir, config_path, data_dir, Config, ConfigError, TranslateSettings};
-pub use ocr::OcrModelKind;
-pub use geom::{hover_rect, phys_to_logical, Handle, Point, Rect};
+pub use confirm::{confirm_abort_layout, ConfirmAbortHit, ConfirmAbortLayout};
+pub use cursor::{cursor_for, CursorHint, CursorKind};
+pub use geom::{
+    hover_rect, overlay_from_screen, phys_to_logical, screen_from_overlay, Handle, Point, Rect,
+};
 pub use groups::{label as group_label, DEFAULT_GROUP};
 pub use history::{HistoryEntry, HistoryFile, HistoryMetaEntry, HistoryView, SnipHistory};
 pub use hooks::{
@@ -44,12 +44,14 @@ pub use hooks::{
     Translator, TranslatorStub,
 };
 pub use hotkey::{bindings_from_config, find_conflicts, parse_hotkey, Binding, Command, Hotkey};
-pub use session::{ClosedPin, ClosedStack, PinSnapshot, SessionFile};
 pub use i18n::{lang, set_lang, set_lang_code, tr, Lang};
 pub use icons::{app_icon_rgba, draw_app_icon, draw_icon, IconKind};
 pub use magnifier::{layout_magnifier, magnifier_visible, sample_color, Magnifier};
+pub use ocr::OcrModelKind;
 pub use raster::Raster;
 pub use selection::{DetectMode, Nudge, PressKind, SelState, Selection};
+pub use session::{ClosedPin, ClosedStack, PinSnapshot, SessionFile};
 pub use snap::{SnapGuides, SNAP_PX};
+pub use wheel::WheelGate;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

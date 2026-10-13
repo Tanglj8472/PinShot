@@ -8,7 +8,9 @@ use pinshot_core::color::Rgba;
 use pinshot_core::colorpicker::{color_picker_layout, ColorPicker, PickerAction};
 use pinshot_core::confirm::{confirm_abort_layout, ConfirmAbortHit};
 use pinshot_core::cursor::cursor_for;
-use pinshot_core::geom::{hit_sel_handle, hover_rect, Point, Rect};
+use pinshot_core::geom::{
+    hit_sel_handle, hover_rect, overlay_from_screen, screen_from_overlay, Point, Rect,
+};
 use pinshot_core::history::{HistoryEntry, HistoryView, SnipHistory};
 use pinshot_core::i18n::tr;
 use pinshot_core::magnifier::magnifier_visible;
@@ -24,7 +26,9 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{CursorIcon, Window, WindowId};
 
 use crate::capture::Capture;
-use crate::detect::{element_source, translated_elements, translated_windows};
+#[cfg(not(windows))]
+use crate::detect::translated_elements;
+use crate::detect::{element_at_point, element_source, translated_windows};
 #[cfg(not(windows))]
 use crate::draw::present;
 use crate::draw::OverlayFront;
@@ -65,6 +69,8 @@ pub struct Overlay {
     windows: Vec<Rect>,
     elements: Vec<Rect>,
     elements_rx: Option<std::sync::mpsc::Receiver<Vec<Rect>>>,
+    hit_px: Option<(i32, i32)>,
+    hit_rect: Option<Rect>,
     annot: Annotator,
     toolbar: Option<Toolbar>,
     hex: bool,
@@ -148,12 +154,22 @@ impl Overlay {
         let front = OverlayFront::new(&capture.composed, 110)?;
         let windows = translated_windows(capture.virtual_origin);
         crate::logutil::log(&format!("detect windows={}", windows.len()));
-        let (elem_tx, elem_rx) = std::sync::mpsc::channel();
-        let origin = capture.virtual_origin;
-        std::thread::spawn(move || {
-            let elems = translated_elements(origin);
-            let _ = elem_tx.send(elems);
-        });
+        let elements_rx = {
+            #[cfg(windows)]
+            {
+                None
+            }
+            #[cfg(not(windows))]
+            {
+                let (elem_tx, elem_rx) = std::sync::mpsc::channel();
+                let origin = capture.virtual_origin;
+                std::thread::spawn(move || {
+                    let elems = translated_elements(origin);
+                    let _ = elem_tx.send(elems);
+                });
+                Some(elem_rx)
+            }
+        };
         let overlay = Rect::new(0.0, 0.0, w as f32, h as f32);
         let mut s = Self {
             window,
@@ -164,7 +180,9 @@ impl Overlay {
             hover: overlay,
             windows,
             elements: Vec::new(),
-            elements_rx: Some(elem_rx),
+            elements_rx,
+            hit_px: None,
+            hit_rect: None,
             annot: Annotator::new(),
             toolbar: None,
             hex: false,
@@ -394,13 +412,48 @@ impl Overlay {
         SnapGuides::from_rects(rects)
     }
 
-    fn hover_at(&self, pt: Point) -> Rect {
-        let elems = if self.detect == DetectMode::Element {
-            self.elements.as_slice()
+    fn hover_at(&mut self, pt: Point) -> Rect {
+        if self.detect == DetectMode::Element {
+            self.live_element_at(pt)
         } else {
-            &[]
+            hover_rect(pt, &self.windows, &[], self.bounds())
+        }
+    }
+
+    fn exclude_hwnd(&self) -> Option<isize> {
+        #[cfg(windows)]
+        {
+            Some(hwnd_of(&self.window).0 as isize)
+        }
+        #[cfg(not(windows))]
+        {
+            None
+        }
+    }
+
+    fn live_element_at(&mut self, pt: Point) -> Rect {
+        let origin = self.capture.virtual_origin;
+        let key = screen_from_overlay(pt, origin);
+        if self.hit_px == Some(key) {
+            if let Some(r) = self.hit_rect {
+                return r;
+            }
+        }
+        self.hit_px = Some(key);
+        let hover = if let Some(hit) = element_at_point(key.0, key.1, self.exclude_hwnd()) {
+            crate::logutil::log(&format!(
+                "detect element for: {} depth={} {}ms ({})",
+                hit.exe,
+                hit.depth,
+                hit.elapsed_ms,
+                element_source()
+            ));
+            overlay_from_screen(hit.rect, origin)
+        } else {
+            hover_rect(pt, &self.windows, self.elements.as_slice(), self.bounds())
         };
-        hover_rect(pt, &self.windows, elems, self.bounds())
+        self.hit_rect = Some(hover);
+        hover
     }
 
     fn update_hover(&mut self) {
@@ -586,14 +639,23 @@ impl Overlay {
     }
 
     fn load_elements(&mut self) {
-        self.poll_elements();
-        if self.elements.is_empty() {
-            self.elements = translated_elements(self.capture.virtual_origin);
-            crate::logutil::log(&format!(
-                "detect elements={} ({})",
-                self.elements.len(),
-                element_source()
-            ));
+        self.hit_px = None;
+        self.hit_rect = None;
+        #[cfg(not(windows))]
+        {
+            self.poll_elements();
+            if self.elements.is_empty() {
+                self.elements = translated_elements(self.capture.virtual_origin);
+                crate::logutil::log(&format!(
+                    "detect elements={} ({})",
+                    self.elements.len(),
+                    element_source()
+                ));
+            }
+        }
+        #[cfg(windows)]
+        {
+            crate::logutil::log("detect element mode=live hit-test");
         }
     }
 

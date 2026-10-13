@@ -469,6 +469,19 @@ pub fn is_shell_strip(r: Rect, full: Rect) -> bool {
     (full_w && short_h) || (full_h && thin_w)
 }
 
+/// Overlay pixels → virtual-desktop (screen) pixels.
+pub fn screen_from_overlay(p: Point, origin: (i32, i32)) -> (i32, i32) {
+    (
+        (p.x + origin.0 as f32).round() as i32,
+        (p.y + origin.1 as f32).round() as i32,
+    )
+}
+
+/// Screen physical rect → overlay-local rect (`-virtual_origin`).
+pub fn overlay_from_screen(r: Rect, origin: (i32, i32)) -> Rect {
+    r.translated(-(origin.0 as f32), -(origin.1 as f32))
+}
+
 /// Window / element hover: smallest containing element, else the topmost
 /// non-dock window under the cursor (`windows` is topmost-first), else full screen.
 pub fn hover_rect(cursor: Point, windows: &[Rect], elements: &[Rect], full: Rect) -> Rect {
@@ -625,6 +638,26 @@ mod tests {
         // Small rect: interior stays Move (not a border grab).
         let small = Rect::new(10.0, 10.0, 40.0, 20.0);
         assert_eq!(hit_sel_handle(small, Point::new(20.0, 15.0)), None);
+    }
+
+    #[test]
+    fn overlay_screen_roundtrip_uses_virtual_origin() {
+        // Dual-monitor desktop like DISPLAY1 at (-2240, -186).
+        let origin = (-2240, -186);
+        let overlay_pt = Point::new(100.0, 50.0);
+        let (sx, sy) = screen_from_overlay(overlay_pt, origin);
+        assert_eq!((sx, sy), (-2140, -136));
+        let screen = Rect::from_i32(-2140, -136, 80, 24);
+        let local = overlay_from_screen(screen, origin);
+        assert_eq!(
+            (
+                local.x as i32,
+                local.y as i32,
+                local.w as i32,
+                local.h as i32
+            ),
+            (100, 50, 80, 24)
+        );
     }
 
     #[test]
