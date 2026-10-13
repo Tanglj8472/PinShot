@@ -630,6 +630,11 @@ impl OverlayFront {
             }
         }
         for r in std::mem::take(&mut self.last_chrome) {
+            // Glyph / rounded-rect AA can sit a few px outside the chip.
+            let r = clip_rect(r.inflated(4.0), bounds);
+            if r.is_empty() {
+                continue;
+            }
             self.restore(r, hole);
             present.push(r);
         }
@@ -852,31 +857,41 @@ fn fill_px(pm: &mut Pixmap, x: i32, y: i32, w: i32, h: i32, c: Rgba) {
     }
 }
 
-fn paint_size_label(pm: &mut Pixmap, hole: Rect, label: &str, ow: u32, oh: u32) -> Rect {
-    let lw = (label.len() as f32) * 7.5 + 12.0;
-    let ly = if hole.y >= 22.0 {
-        hole.y - 22.0
+/// Chip that sits just above the hole (or just inside if there is no room).
+fn size_label_box(hole: Rect, label: &str, ow: u32, oh: u32) -> Rect {
+    let (tw, th) = crate::text::measure(label, 12, false);
+    let lw = (tw as f32 + 12.0).max(56.0);
+    let lh = 20.0f32.max(th as f32);
+    let ly = if hole.y >= lh + 2.0 {
+        hole.y - lh - 2.0
     } else {
         hole.y + 2.0
     };
     let lx = if hole.x + lw < ow as f32 {
         hole.x
     } else {
-        ow as f32 - lw
+        (ow as f32 - lw).max(0.0)
     };
-    let boxr = Rect::new(lx, ly, lw, 20.0);
+    let _ = oh;
+    Rect::new(lx, ly, lw, lh)
+}
+
+fn paint_size_label(pm: &mut Pixmap, hole: Rect, label: &str, ow: u32, oh: u32) -> Rect {
+    let boxr = size_label_box(hole, label, ow, oh);
     fill_rounded_rect(pm, boxr, 4.0, Rgba::rgba(0, 0, 0, 170));
     blit_into(
         pm,
         label,
-        lx as i32 + 6,
-        ly as i32 + 3,
+        boxr.x as i32 + 6,
+        boxr.y as i32 + 3,
         12,
         Rgba::WHITE,
         false,
     );
-    let _ = oh;
-    boxr.inflated(1.0)
+    // blit_into_pm starts at (x-2,y-2) and the 2× atlas can hang past the
+    // chip. last_chrome uses this rect — too tight left a trail when the
+    // hole (and this chip) moved.
+    boxr.inflated(12.0)
 }
 
 fn paint_magnifier(
@@ -1597,6 +1612,107 @@ fn present_ex(buf: &mut [u32], pm: &Pixmap, argb: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn dummy_hwnd() -> crate::native::NativeWin {
+        #[cfg(windows)]
+        {
+            windows::Win32::Foundation::HWND::default()
+        }
+        #[cfg(not(windows))]
+        {
+            ()
+        }
+    }
+
+    fn gray_shot(w: u32, h: u32, v: u8) -> Raster {
+        let mut px = vec![0u8; (w * h * 4) as usize];
+        for p in px.chunks_exact_mut(4) {
+            p[0] = v;
+            p[1] = v;
+            p[2] = v;
+            p[3] = 255;
+        }
+        Raster::from_rgba(w, h, px).expect("raster")
+    }
+
+    fn paint_sel(front: &mut OverlayFront, shot: &Raster, sel: &Selection) {
+        front.paint(
+            dummy_hwnd(),
+            sel,
+            Rect::EMPTY,
+            Point::new(8.0, 8.0),
+            1.0,
+            false,
+            false,
+            &Annotator::new(),
+            None,
+            None,
+            false,
+            shot,
+            None,
+            None,
+        );
+    }
+
+    #[test]
+    fn size_label_restore_covers_measured_glyphs() {
+        let hole = Rect::new(40.0, 80.0, 220.0, 120.0);
+        let label = "6800 × 3780 px";
+        let boxr = size_label_box(hole, label, 1280, 800);
+        let dirty = boxr.inflated(12.0);
+        let (tw, _th) = crate::text::measure(label, 12, false);
+        assert!(
+            dirty.w >= tw as f32 + 16.0,
+            "size-label restore {} too narrow for glyphs {}",
+            dirty.w,
+            tw
+        );
+        assert!(dirty.x <= boxr.x && dirty.y <= boxr.y);
+        assert!(boxr.y + boxr.h <= hole.y + 0.5, "chip sits above the hole");
+    }
+
+    #[test]
+    fn size_label_drag_clears_old_chip() {
+        let w = 640u32;
+        let h = 400u32;
+        let shot = gray_shot(w, h, 210);
+        let mut front = OverlayFront::new(&shot, 110).expect("front");
+        let bounds = Rect::new(0.0, 0.0, w as f32, h as f32);
+        let mut sel = Selection::new();
+        let a = Rect::new(80.0, 90.0, 180.0, 100.0);
+        sel.set_rect(a, bounds);
+        paint_sel(&mut front, &shot, &sel);
+
+        let chip = size_label_box(a, &a.size_label(), w, h);
+        let sx = (chip.x + 18.0) as u32;
+        let sy = (chip.y + chip.h * 0.5) as u32;
+        let p0 = front.pixmap().pixel(sx, sy).expect("px").demultiply();
+        assert!(
+            p0.red() < 100,
+            "size chip should be a dark box, got {},{},{}",
+            p0.red(),
+            p0.green(),
+            p0.blue()
+        );
+
+        let b = Rect::new(300.0, 220.0, 180.0, 100.0);
+        sel.set_rect(b, bounds);
+        paint_sel(&mut front, &shot, &sel);
+
+        let p1 = front.pixmap().pixel(sx, sy).expect("px").demultiply();
+        assert!(
+            p1.red() > 110 && (p1.red() as i16 - p1.green() as i16).abs() < 10,
+            "old size chip must be restored to the dimmed capture, got {},{},{}",
+            p1.red(),
+            p1.green(),
+            p1.blue()
+        );
+        let ghost_luma = (p1.red() as u16 + p1.green() as u16 + p1.blue() as u16) / 3;
+        assert!(
+            ghost_luma > 110,
+            "leftover size-label trail at {sx},{sy} luma={ghost_luma}"
+        );
+    }
 
     #[test]
     fn toast_rect_covers_measured_glyphs() {
