@@ -144,24 +144,32 @@ fn arrow_head_ex(
     hollow: bool,
 ) {
     let ang = (b.1 - a.1).atan2(b.0 - a.0);
-    let mut pb = PathBuilder::new();
-    pb.move_to(b.0, b.1);
-    pb.line_to(
+    let left = (
         b.0 - head * (ang - spread).cos(),
         b.1 - head * (ang - spread).sin(),
     );
-    pb.line_to(
+    let right = (
         b.0 - head * (ang + spread).cos(),
         b.1 - head * (ang + spread).sin(),
     );
-    pb.close();
-    if let Some(path) = pb.finish() {
-        if hollow {
-            let mut outline = stroke(1.35);
-            outline.line_join = tiny_skia::LineJoin::Miter;
-            outline.miter_limit = 8.0;
-            pixmap.stroke_path(&path, &paint(color), &outline, t, None);
-        } else {
+    if hollow {
+        let mut pb = PathBuilder::new();
+        pb.move_to(left.0, left.1);
+        pb.line_to(b.0, b.1);
+        pb.line_to(right.0, right.1);
+        if let Some(path) = pb.finish() {
+            let mut st = stroke(1.6);
+            st.line_cap = tiny_skia::LineCap::Round;
+            st.line_join = tiny_skia::LineJoin::Round;
+            pixmap.stroke_path(&path, &paint(color), &st, t, None);
+        }
+    } else {
+        let mut pb = PathBuilder::new();
+        pb.move_to(b.0, b.1);
+        pb.line_to(left.0, left.1);
+        pb.line_to(right.0, right.1);
+        pb.close();
+        if let Some(path) = pb.finish() {
             pixmap.fill_path(&path, &paint(color), FillRule::Winding, t, None);
         }
     }
@@ -208,23 +216,22 @@ pub fn draw_icon(pixmap: &mut Pixmap, kind: IconKind, cell: Rect, color: Option<
             }
         }
         IconKind::Arrow => {
-            if let Some(path) = line_path((4.0, 16.0), (14.8, 5.2)) {
+            if let Some(path) = line_path((4.0, 16.0), (13.6, 6.4)) {
                 pixmap.stroke_path(&path, &p, &st, t, None);
             }
-            arrow_head_ex(pixmap, (4.0, 16.0), (16.0, 4.0), 4.6, 0.36, color, t, false);
+            arrow_head_ex(pixmap, (4.0, 16.0), (16.0, 4.0), 5.2, 0.40, color, t, false);
         }
         IconKind::ArrowThick => {
-            if let Some(path) = line_path((4.0, 16.0), (11.5, 8.5)) {
+            if let Some(path) = line_path((4.0, 16.0), (12.4, 7.6)) {
                 pixmap.stroke_path(&path, &p, &st, t, None);
             }
-            arrow_head_ex(pixmap, (4.0, 16.0), (16.8, 3.2), 8.6, 0.82, color, t, false);
+            arrow_head_ex(pixmap, (4.0, 16.0), (16.2, 3.8), 7.2, 0.44, color, t, false);
         }
         IconKind::ArrowHollow => {
-            if let Some(path) = line_path((4.0, 16.0), (12.2, 7.8)) {
+            if let Some(path) = line_path((4.0, 16.0), (16.0, 4.0)) {
                 pixmap.stroke_path(&path, &p, &st, t, None);
             }
-            // Large outlined triangle so the hole survives 20×20 toolbar cells.
-            arrow_head_ex(pixmap, (4.0, 16.0), (16.5, 3.5), 8.0, 0.58, color, t, true);
+            arrow_head_ex(pixmap, (4.0, 16.0), (16.0, 4.0), 6.4, 0.50, color, t, true);
         }
         IconKind::Pen => {
             let mut pb = PathBuilder::new();

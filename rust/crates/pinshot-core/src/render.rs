@@ -326,13 +326,16 @@ fn draw_shape_t(pm: &mut Pixmap, sh: &Shape, t: Transform) {
     }
 }
 
+/// `(length, half-angle rad, shaft pull as a fraction of length)`.
+/// Snipaste: filled isosceles triangle, or an open V of two strokes.
 fn arrow_metrics(width: i32, kind: ArrowKind) -> Option<(f32, f32, f32)> {
     let w = width.max(1) as f32;
     match kind {
         ArrowKind::None => None,
-        ArrowKind::Thin => Some(((10.0 + w * 2.0).max(12.0), 0.38, 0.72)),
-        ArrowKind::Thick => Some(((16.0 + w * 3.6).max(20.0), 0.72, 0.88)),
-        ArrowKind::Hollow => Some(((14.0 + w * 3.0).max(16.0), 0.55, 1.0)),
+        ArrowKind::Thin => Some(((w * 3.1 + 7.0).max(11.0), 0.40, 0.90)),
+        ArrowKind::Thick => Some(((w * 4.4 + 10.0).max(16.0), 0.44, 0.90)),
+        // Shaft runs to the tip; the head is two wings, not a closed triangle.
+        ArrowKind::Hollow => Some(((w * 3.8 + 9.0).max(14.0), 0.50, 0.12)),
     }
 }
 
@@ -358,6 +361,19 @@ fn shaft_pts(pts: &[Point], width: i32, kind: ArrowKind) -> Vec<Point> {
     out
 }
 
+fn wing(b: Point, ang: f32, spread: f32, l: f32) -> (Point, Point) {
+    (
+        Point::new(
+            b.x - l * (ang - spread).cos(),
+            b.y - l * (ang - spread).sin(),
+        ),
+        Point::new(
+            b.x - l * (ang + spread).cos(),
+            b.y - l * (ang + spread).sin(),
+        ),
+    )
+}
+
 fn draw_arrow_head(pm: &mut Pixmap, sh: &Shape, kind: ArrowKind, t: Transform) {
     let a = sh.pts[sh.pts.len() - 2];
     let bpt = sh.pts[sh.pts.len() - 1];
@@ -367,57 +383,33 @@ fn draw_arrow_head(pm: &mut Pixmap, sh: &Shape, kind: ArrowKind, t: Transform) {
         return;
     }
     let ang = dy.atan2(dx);
-    let w = sh.style.width.max(2) as f32;
     let Some((l, spread, _)) = arrow_metrics(sh.style.width, kind) else {
         return;
     };
-    let mut pb = PathBuilder::new();
-    pb.move_to(bpt.x, bpt.y);
-    pb.line_to(
-        bpt.x - l * (ang - spread).cos(),
-        bpt.y - l * (ang - spread).sin(),
-    );
-    if kind == ArrowKind::Thin {
-        pb.line_to(bpt.x - l * 0.55 * ang.cos(), bpt.y - l * 0.55 * ang.sin());
-    }
-    pb.line_to(
-        bpt.x - l * (ang + spread).cos(),
-        bpt.y - l * (ang + spread).sin(),
-    );
-    pb.close();
-    let Some(path) = pb.finish() else {
-        return;
-    };
+    let (left, right) = wing(bpt, ang, spread, l);
     match kind {
-        ArrowKind::Hollow => {
-            pm.stroke_path(
-                &path,
-                &paint(sh.style.color),
-                &Stroke {
-                    width: w.max(1.5),
-                    line_join: LineJoin::Miter,
-                    miter_limit: 8.0,
-                    line_cap: LineCap::Butt,
-                    ..Stroke::default()
-                },
-                t,
-                None,
-            );
-        }
         ArrowKind::None => {}
+        ArrowKind::Hollow => {
+            // Open V: two strokes, same width as the shaft (Snipaste).
+            let mut st = stroke_for(sh);
+            st.line_cap = LineCap::Round;
+            st.line_join = LineJoin::Round;
+            let mut pb = PathBuilder::new();
+            pb.move_to(left.x, left.y);
+            pb.line_to(bpt.x, bpt.y);
+            pb.line_to(right.x, right.y);
+            if let Some(path) = pb.finish() {
+                pm.stroke_path(&path, &paint(sh.style.color), &st, t, None);
+            }
+        }
         ArrowKind::Thin | ArrowKind::Thick => {
-            pm.fill_path(&path, &paint(sh.style.color), FillRule::Winding, t, None);
-            if kind == ArrowKind::Thin {
-                pm.stroke_path(
-                    &path,
-                    &paint(sh.style.color),
-                    &Stroke {
-                        width: (w * 0.45).max(1.0),
-                        ..Stroke::default()
-                    },
-                    t,
-                    None,
-                );
+            let mut pb = PathBuilder::new();
+            pb.move_to(bpt.x, bpt.y);
+            pb.line_to(left.x, left.y);
+            pb.line_to(right.x, right.y);
+            pb.close();
+            if let Some(path) = pb.finish() {
+                pm.fill_path(&path, &paint(sh.style.color), FillRule::Winding, t, None);
             }
         }
     }
@@ -545,12 +537,22 @@ mod tests {
         let out = compose(&base, &[line_shape(crate::annotation::ArrowKind::Hollow)]);
         let edge = count_red(&out, 38..62, 10..30);
         assert!(edge > 12, "hollow outline pixels={edge}");
-        // Interior of the wedge (behind the tip along the shaft) stays empty.
-        let interior = count_red(&out, 44..48, 19..22);
+        // Off the shaft, inside the V — must stay empty (not a filled triangle).
+        let interior = count_red(&out, 40..43, 25..28);
         assert!(
             interior < 8,
             "hollow should not fill the wedge, interior={interior}"
         );
+    }
+
+    #[test]
+    fn thin_arrow_fills_the_triangle() {
+        let mut base = Raster::new(80, 40);
+        base.fill(Rgba::WHITE);
+        let out = compose(&base, &[line_shape(crate::annotation::ArrowKind::Thin)]);
+        // Centroid of the filled head sits a few px behind the tip at (50,20).
+        let core = count_red(&out, 44..48, 18..23);
+        assert!(core > 8, "filled triangle core pixels={core}");
     }
 
     #[test]
