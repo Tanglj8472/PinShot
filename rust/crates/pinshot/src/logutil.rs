@@ -80,6 +80,16 @@ fn attach_console() {
     }
 }
 
+/// Release the parent PowerShell/cmd so typing works after we `process::exit`.
+pub fn detach_console() {
+    flush();
+    #[cfg(windows)]
+    unsafe {
+        use windows::Win32::System::Console::FreeConsole;
+        let _ = FreeConsole();
+    }
+}
+
 /// `--version` / `--help` must be visible even when the exe is a Windows GUI subsystem binary.
 pub fn ensure_stdio() {
     attach_console();

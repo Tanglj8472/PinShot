@@ -450,18 +450,12 @@ impl App {
     fn request_quit(&mut self, event_loop: &ActiveEventLoop) {
         crate::logutil::log("quit");
         self.persist_session();
-        self.tray = None;
-        self.hotkeys = None;
-        self.overlay = None;
-        self.countdown = None;
-        self.pins.clear();
-        self.fallback = None;
-        self.prefs = None;
-        self.pin_menu = None;
-        self.pump_win = None;
-        event_loop.exit();
-        // tray-icon / named-pipe thread can keep the process alive after the
-        // winit loop returns. Force the process down once session is saved.
+        crate::logutil::log("quit persist done");
+        crate::logutil::detach_console();
+        let _ = event_loop;
+        // Do not Drop tray / hotkey / overlay HWNDs here: DestroyWindow from
+        // inside the winit callback deadlocks, cargo run never returns, and
+        // the terminal looks frozen. ExitProcess tears them down.
         std::process::exit(0);
     }
 
