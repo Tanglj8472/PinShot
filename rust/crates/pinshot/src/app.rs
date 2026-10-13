@@ -407,11 +407,6 @@ impl App {
         drop(ov);
         crate::logutil::log("overlay closed");
         crate::native::release_stray_grabs();
-        if persist {
-            self.persist_history();
-        } else {
-            crate::logutil::log("skip history persist (cancel/resnip)");
-        }
         match res {
             OverlayResult::Copy(img, _) => {
                 if clipboard::write_image(&img).is_ok() {
@@ -445,6 +440,11 @@ impl App {
             }
             OverlayResult::Cancel => {}
             OverlayResult::Resnip => {}
+        }
+        if persist {
+            self.persist_history();
+        } else {
+            crate::logutil::log("skip history persist (cancel/resnip)");
         }
         if resnip {
             self.wait_after_overlay = true;

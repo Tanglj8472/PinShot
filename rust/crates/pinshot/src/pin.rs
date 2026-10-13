@@ -139,7 +139,7 @@ impl PinWin {
                 .with_title("PinShot Pin")
                 .with_decorations(false)
                 .with_resizable(false)
-                .with_visible(true)
+                .with_visible(false)
                 .with_transparent(can_shadow)
                 .with_position(PhysicalPosition::new(pos.0 - m, pos.1 - m))
                 .with_inner_size(PhysicalSize::new(
@@ -150,6 +150,12 @@ impl PinWin {
         );
         let window = Rc::new(event_loop.create_window(attrs).map_err(|e| e.to_string())?);
         native::apply_pin_style(&window);
+        // Paint while cloaked so DWM never shows an empty layered HWND.
+        #[cfg(windows)]
+        {
+            native::cloak_window(&window, true);
+            native::show_noactivate(&window);
+        }
         window.set_ime_allowed(true);
         let context = Context::new(window.clone()).map_err(|e| e.to_string())?;
         let surface = Surface::new(&context, window.clone()).map_err(|e| e.to_string())?;
@@ -199,6 +205,9 @@ impl PinWin {
             ocr_flash_until: None,
         };
         pin.redraw();
+        #[cfg(windows)]
+        native::cloak_window(&pin.window, false);
+        pin.show();
         crate::logutil::log(&format!(
             "pin create {}x{} at {},{} margin={m} transparent={can_shadow}",
             w as i32 + 2 * m,
