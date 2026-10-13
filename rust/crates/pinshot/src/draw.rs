@@ -1,8 +1,9 @@
 //! tiny-skia overlay / pin / toolbar painter.
 //!
 //! Overlay frames are composited incrementally: the 6k-class virtual desktop is
-//! *not* rebuilt on every mouse move. Only the hole ring + chrome (magnifier,
-//! size label, toolbar) are copied, then BitBlt'd to the HWND.
+//! *not* rebuilt on every mouse move. Previous hole/chrome tiles are copied
+//! back from the pre-dimmed freeze (never SrcOver extra dim), then the hole
+//! ring + chrome are painted and BitBlt'd as separate dirty rects.
 
 #[cfg(windows)]
 use std::ffi::c_void;
@@ -17,7 +18,8 @@ use pinshot_core::raster::Raster;
 use pinshot_core::render::{compose, paint_shapes};
 use pinshot_core::selection::{SelState, Selection};
 use tiny_skia::{
-    FillRule, Paint, Path, PathBuilder, Pixmap, PremultipliedColorU8, Stroke, Transform,
+    BlendMode, FillRule, Paint, Path, PathBuilder, Pixmap, PixmapPaint, PremultipliedColorU8,
+    Stroke, Transform,
 };
 #[cfg(windows)]
 use windows::Win32::Foundation::HWND;
@@ -294,8 +296,17 @@ pub fn stroke_rect(pm: &mut Pixmap, r: Rect, c: Rgba, width: f32) {
 }
 
 fn paint_snip_ring(pm: &mut Pixmap, r: Rect) {
-    stroke_rect(pm, r, Rgba::SNIP_RING_EDGE, 4.0);
-    stroke_rect(pm, r, Rgba::SNIP_RING, 2.0);
+    // Keep the stroke *inside* the hole. A centered 4px AA stroke hangs ~3px
+    // onto the dim mask; the next dirty restore then SrcOvers that navy fringe
+    // into an extra-dark footprint of the last window (classic leftover trail).
+    if r.w < 8.0 || r.h < 8.0 {
+        stroke_rect(pm, r, Rgba::SNIP_RING_EDGE, 2.0);
+        stroke_rect(pm, r, Rgba::SNIP_RING, 1.0);
+        return;
+    }
+    let inner = r.adjusted(3.0, 3.0, -3.0, -3.0);
+    stroke_rect(pm, inner, Rgba::SNIP_RING_EDGE, 4.0);
+    stroke_rect(pm, inner, Rgba::SNIP_RING, 2.0);
 }
 
 fn clip_rect(r: Rect, bounds: Rect) -> Rect {
@@ -312,6 +323,13 @@ fn align_dirty(r: Rect) -> Rect {
     let x1 = r.right().ceil();
     let y1 = r.bottom().ceil();
     Rect::new(x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0))
+}
+
+fn push_dirty(list: &mut Vec<Rect>, r: Rect, bounds: Rect) {
+    let r = clip_rect(align_dirty(r), bounds);
+    if !r.is_empty() {
+        list.push(r);
+    }
 }
 
 fn copy_rect(dst: &mut Pixmap, src: &Pixmap, r: Rect) {
@@ -692,21 +710,26 @@ impl OverlayFront {
         let hole_pad = hole.inflated(10.0).union(size_label).intersect(bounds);
 
         let mut present: Vec<Rect> = Vec::new();
-        // Copy the pre-dimmed freeze over the previous hole + chrome as one
-        // rect. Band-subtraction left a darker footprint on a window that had
-        // been the hover hole, while never-hovered pixels stayed at the
-        // original (lighter) dim — the magnifier then looked like extra shadow.
-        let mut stale = hole_pad.union(size_clear);
-        if !self.last_hole.is_empty() {
-            stale = stale.union(self.last_hole.inflated(16.0));
-        }
+        // Restore each previous tile from the pre-dimmed freeze. Do not form
+        // one bounding union: hole + magnifier on a 6k desktop is a giant
+        // BitBlt, and SrcOver AA / CJK glyph overflow outside that tile is
+        // the usual leftover-trail stain on the unselected mask.
+        // https://gist.github.com/AugusDogus/74416b933b407a0a0a9f64d38853cca6
+        let mut restore_list: Vec<Rect> = Vec::new();
+        push_dirty(&mut restore_list, self.last_hole.inflated(24.0), bounds);
+        push_dirty(
+            &mut restore_list,
+            self.last_size_label.inflated(24.0),
+            bounds,
+        );
         for r in std::mem::take(&mut self.last_chrome) {
-            stale = stale.union(r.inflated(16.0));
+            push_dirty(&mut restore_list, r.inflated(24.0), bounds);
         }
-        stale = clip_rect(align_dirty(stale), bounds);
-        if !stale.is_empty() {
-            self.restore(stale);
-            present.push(stale);
+        push_dirty(&mut restore_list, hole_pad, bounds);
+        push_dirty(&mut restore_list, size_clear, bounds);
+        for r in &restore_list {
+            self.restore(*r);
+            present.push(*r);
         }
 
         // Hole interior: undimmed capture + vector annotations (no full compose).
@@ -863,7 +886,7 @@ impl OverlayFront {
             self.primed = true;
         } else {
             for r in present {
-                let r = clip_rect(r, bounds);
+                let r = clip_rect(align_dirty(r), bounds);
                 if r.is_empty() {
                     continue;
                 }
@@ -886,6 +909,16 @@ impl OverlayFront {
         }
         let _ = hwnd;
     }
+}
+
+fn fill_px_border(pm: &mut Pixmap, x: i32, y: i32, w: i32, h: i32, t: i32, c: Rgba) {
+    if t <= 0 || w <= 0 || h <= 0 {
+        return;
+    }
+    fill_px(pm, x, y, w, t, c);
+    fill_px(pm, x, y + h - t, w, t, c);
+    fill_px(pm, x, y, t, h, c);
+    fill_px(pm, x + w - t, y, t, h, c);
 }
 
 fn fill_px(pm: &mut Pixmap, x: i32, y: i32, w: i32, h: i32, c: Rgba) {
@@ -977,12 +1010,9 @@ fn paint_magnifier(
             fill_px(pm, gx + i * z, gy + j * z, z, z, c);
         }
     }
-    stroke_rect(
-        pm,
-        Rect::new(gx as f32, gy as f32, (n * z) as f32, (n * z) as f32),
-        Rgba::WHITE,
-        1.0,
-    );
+    // Opaque 1px chrome — AA `stroke_rect` / `fill_rect` SrcOver onto the
+    // already-dimmed freeze leaves a darker halo that dirty-rects miss.
+    fill_px_border(pm, gx, gy, n * z, n * z, 1, Rgba::WHITE);
     // Snipaste: blue crosshair through the whole preview, white box on the
     // centre source pixel.
     let mid = n / 2;
@@ -993,50 +1023,63 @@ fn paint_magnifier(
     let hx = cell_x + z / 2 - 1;
     fill_px(pm, gx, hy, n * z, 2, cross);
     fill_px(pm, hx, gy, 2, n * z, cross);
-    stroke_rect(
-        pm,
-        Rect::new(cell_x as f32, cell_y as f32, z as f32, z as f32),
-        Rgba::WHITE,
-        1.5,
-    );
-    fill_rect(pm, mag.info, Rgba::rgb(22, 22, 22));
-    let hint = MAG_HINT_PX;
-    let coord = format!("({}, {})", mag.phys.x as i32, mag.phys.y as i32);
-    blit_centered(pm, &coord, mag.info, mag.info.y + 6.0, hint, Rgba::WHITE);
-    let hex_s = mag.color.format(hex);
-    let (hex_w, _) = pinshot_core::font::measure_chrome(&hex_s, hint as f32);
-    let sw = 12.0;
-    let gap = 6.0;
-    let row_w = sw + gap + hex_w;
-    let row_x = mag.info.x + ((mag.info.w - row_w) * 0.5).round();
-    fill_rect(pm, Rect::new(row_x, mag.info.y + 28.0, sw, sw), mag.color);
-    blit_into(
-        pm,
-        &hex_s,
-        (row_x + sw + gap) as i32,
-        mag.info.y as i32 + 26,
-        hint,
-        Rgba::WHITE,
-        false,
-    );
-    let hint_c = Rgba::rgb(220, 220, 220);
-    blit_centered(
-        pm,
-        &tr("Press C to copy color"),
-        mag.info,
-        mag.info.y + 48.0,
-        hint,
-        hint_c,
-    );
-    blit_centered(
-        pm,
-        &tr("Shift: switch RGB/HEX"),
-        mag.info,
-        mag.info.y + 66.0,
-        hint,
-        hint_c,
-    );
-    mag.grid.union(mag.info).inflated(12.0)
+    fill_px_border(pm, cell_x, cell_y, z, z, 1, Rgba::WHITE);
+
+    let ix = mag.info.x.floor() as i32;
+    let iy = mag.info.y.floor() as i32;
+    let iw = mag.info.w.round().max(1.0) as u32;
+    let ih = mag.info.h.round().max(1.0) as u32;
+    if let Some(mut panel) = Pixmap::new(iw, ih) {
+        fill_px(&mut panel, 0, 0, iw as i32, ih as i32, Rgba::rgb(22, 22, 22));
+        let local = Rect::new(0.0, 0.0, iw as f32, ih as f32);
+        let hint = MAG_HINT_PX;
+        let coord = format!("({}, {})", mag.phys.x as i32, mag.phys.y as i32);
+        blit_centered(&mut panel, &coord, local, 6.0, hint, Rgba::WHITE);
+        let hex_s = mag.color.format(hex);
+        let (hex_w, _) = pinshot_core::font::measure_chrome(&hex_s, hint as f32);
+        let sw = 12.0;
+        let gap = 6.0;
+        let row_w = sw + gap + hex_w;
+        let row_x = ((iw as f32 - row_w) * 0.5).round();
+        fill_px(
+            &mut panel,
+            row_x as i32,
+            28,
+            sw as i32,
+            sw as i32,
+            mag.color,
+        );
+        blit_into(
+            &mut panel,
+            &hex_s,
+            (row_x + sw + gap) as i32,
+            26,
+            hint,
+            Rgba::WHITE,
+            false,
+        );
+        let hint_c = Rgba::rgb(220, 220, 220);
+        blit_centered(
+            &mut panel,
+            &tr("Press C to copy color"),
+            local,
+            48.0,
+            hint,
+            hint_c,
+        );
+        blit_centered(
+            &mut panel,
+            &tr("Shift: switch RGB/HEX"),
+            local,
+            66.0,
+            hint,
+            hint_c,
+        );
+        let mut p = PixmapPaint::default();
+        p.blend_mode = BlendMode::Source;
+        pm.draw_pixmap(ix, iy, panel.as_ref(), &p, Transform::identity(), None);
+    }
+    align_dirty(mag.grid.union(mag.info).inflated(2.0))
 }
 
 fn blit_centered(pm: &mut Pixmap, text: &str, boxr: Rect, y: f32, px: i32, color: Rgba) {
@@ -2002,6 +2045,127 @@ mod tests {
             never.red(),
             base.red()
         );
+        // The navy AA ring sat *outside* the hole and used to remain as a
+        // darker window-shaped stain after the hover moved away.
+        let ring = front.pixmap().pixel(8, 8).expect("px").demultiply();
+        assert!(
+            (ring.red() as i16 - base.red() as i16).abs() <= 2
+                && (ring.red() as i16 - ring.green() as i16).abs() < 4,
+            "old hole ring must restore to the freeze dim {}, got {},{},{}",
+            base.red(),
+            ring.red(),
+            ring.green(),
+            ring.blue()
+        );
+    }
+
+    fn skip_chrome(p: Point, hole: Rect, mag: Magnifier, size: Rect) -> bool {
+        hole.inflated(10.0).contains(p)
+            || mag.grid.union(mag.info).inflated(4.0).contains(p)
+            || size.contains(p)
+    }
+
+    #[test]
+    fn magnifier_and_hover_must_not_stain_the_freeze() {
+        let w = 640u32;
+        let h = 400u32;
+        let shot = gray_shot(w, h, 210);
+        let mut clean = OverlayFront::new(&shot, 160).expect("clean");
+        let mut front = OverlayFront::new(&shot, 160).expect("front");
+        let bounds = Rect::new(0.0, 0.0, w as f32, h as f32);
+        let idle = Selection::new();
+        let paint = |front: &mut OverlayFront, hover: Rect, cursor: Point| {
+            front.paint(
+                dummy_hwnd(),
+                &idle,
+                hover,
+                cursor,
+                1.0,
+                false,
+                true,
+                &Annotator::new(),
+                None,
+                None,
+                false,
+                &shot,
+                None,
+                None,
+            );
+        };
+        paint(
+            &mut front,
+            Rect::new(10.0, 10.0, 180.0, 120.0),
+            Point::new(40.0, 40.0),
+        );
+        let c1 = Point::new(500.0, 250.0);
+        let h1 = Rect::new(400.0, 200.0, 160.0, 100.0);
+        paint(&mut front, h1, c1);
+        let mag = layout_magnifier(
+            c1,
+            bounds,
+            Rgba::rgb(40, 40, 40),
+            Point::new(500.0, 250.0),
+        );
+        let size = size_label_dirty(h1, &h1.size_label(), w, h);
+        let mut stained = 0u32;
+        for y in 0..h {
+            for x in 0..w {
+                let p = Point::new(x as f32 + 0.5, y as f32 + 0.5);
+                if skip_chrome(p, h1, mag, size) {
+                    continue;
+                }
+                let a = front.pixmap().pixel(x, y).expect("a");
+                let b = clean.pixmap().pixel(x, y).expect("b");
+                if a != b {
+                    stained += 1;
+                    if stained <= 3 {
+                        let da = a.demultiply();
+                        let db = b.demultiply();
+                        panic!(
+                            "freeze stained at {x},{y}: got {},{},{} want {},{},{}",
+                            da.red(),
+                            da.green(),
+                            da.blue(),
+                            db.red(),
+                            db.green(),
+                            db.blue()
+                        );
+                    }
+                }
+            }
+        }
+        assert_eq!(stained, 0);
+    }
+
+    #[test]
+    fn magnifier_hints_stay_inside_info_panel() {
+        let shot = gray_shot(80, 80, 40);
+        let cursor = Point::new(40.0, 40.0);
+        let mag = layout_magnifier(
+            Point::new(8.0, 8.0),
+            Rect::new(0.0, 0.0, 400.0, 400.0),
+            Rgba::rgb(40, 40, 40),
+            Point::new(40.0, 40.0),
+        );
+        let mut pm = Pixmap::new(400, 400).unwrap();
+        pm.fill(tiny_skia::Color::from_rgba8(119, 119, 119, 255));
+        let _ = paint_magnifier(&mut pm, &shot, cursor, 1.0, true, mag);
+        let info = mag.info;
+        for (x, y) in [
+            (info.x as u32 - 1, (info.y + 54.0) as u32),
+            ((info.right() as u32) + 1, (info.y + 54.0) as u32),
+            ((info.x + 4.0) as u32, info.y as u32 - 1),
+        ] {
+            if x >= 400 || y >= 400 {
+                continue;
+            }
+            let p = pm.pixel(x, y).unwrap().demultiply();
+            assert!(
+                (p.red() as i16 - 119).abs() <= 2,
+                "hint/panel must not SrcOver outside info at {x},{y} r={}",
+                p.red()
+            );
+        }
     }
 
     #[test]
