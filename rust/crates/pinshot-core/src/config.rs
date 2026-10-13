@@ -80,7 +80,8 @@ impl Default for Config {
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TranslateSettings {
-    /// `edge` (free default), `openai` (chat-completions), or `deepl`.
+    /// OpenAI-compatible preset (`openai` / `deepseek` / `qwen` / `ollama`),
+    /// `deepl`, or `edge` (free fallback).
     pub provider: String,
     pub api_url: String,
     pub api_key: String,
@@ -92,7 +93,7 @@ pub struct TranslateSettings {
 impl Default for TranslateSettings {
     fn default() -> Self {
         Self {
-            provider: "edge".into(),
+            provider: "openai".into(),
             api_url: String::new(),
             api_key: String::new(),
             model: String::new(),
@@ -117,9 +118,20 @@ impl TranslateSettings {
     pub fn normalized_provider(&self) -> &str {
         match self.provider.trim() {
             "openai" | "openai-compatible" | "openai_compatible" => "openai",
+            "deepseek" => "deepseek",
+            "qwen" | "tongyi" | "dashscope" => "qwen",
+            "ollama" => "ollama",
             "deepl" => "deepl",
-            _ => "edge",
+            "edge" | "microsoft" | "free" => "edge",
+            _ => "openai",
         }
+    }
+
+    pub fn uses_openai_compat(&self) -> bool {
+        matches!(
+            self.normalized_provider(),
+            "openai" | "deepseek" | "qwen" | "ollama"
+        )
     }
 }
 
@@ -166,13 +178,7 @@ impl Config {
         if self.schema_version == 0 {
             self.schema_version = SCHEMA_VERSION;
         }
-        match self.translate.provider.trim() {
-            "openai" | "openai-compatible" | "openai_compatible" => {
-                self.translate.provider = "openai".into();
-            }
-            "deepl" => self.translate.provider = "deepl".into(),
-            _ => self.translate.provider = "edge".into(),
-        }
+        self.translate.provider = self.translate.normalized_provider().to_string();
         self.translate.api_url = self.translate.api_url.trim().to_string();
         self.translate.api_key = self.translate.api_key.trim().to_string();
         self.translate.model = self.translate.model.trim().to_string();
@@ -401,9 +407,23 @@ mod tests {
     }
 
     #[test]
-    fn old_toml_defaults_translate_to_edge() {
+    fn old_toml_defaults_translate_to_openai() {
         let c = Config::from_toml("language = \"en\"\n").unwrap();
-        assert_eq!(c.translate.provider, "edge");
+        assert_eq!(c.translate.provider, "openai");
         assert!(c.translate.api_key.is_empty());
+    }
+
+    #[test]
+    fn validate_keeps_compat_presets() {
+        for id in ["deepseek", "qwen", "tongyi", "ollama"] {
+            let c = Config::from_toml(&format!("[translate]\nprovider = \"{id}\"\n")).unwrap();
+            assert!(
+                c.translate.uses_openai_compat(),
+                "{id} should stay OpenAI-compatible, got {}",
+                c.translate.provider
+            );
+        }
+        let edge = Config::from_toml("[translate]\nprovider = \"edge\"\n").unwrap();
+        assert_eq!(edge.translate.provider, "edge");
     }
 }

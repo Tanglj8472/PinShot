@@ -668,18 +668,17 @@ impl PrefsApp {
     }
 
     fn ui_translate(&mut self, ui: &mut Ui) {
+        let prev = self.draft.translate.provider.clone();
         form_grid(ui, "prefs_translate", |ui| {
             let prov = match self.draft.translate.normalized_provider() {
-                "openai" => tr("OpenAI-compatible"),
+                "deepseek" => tr("DeepSeek"),
+                "qwen" => tr("Tongyi Qwen"),
+                "ollama" => tr("Ollama"),
                 "deepl" => tr("DeepL"),
-                _ => tr("Microsoft Edge (free)"),
+                "edge" => tr("Microsoft Edge (free)"),
+                _ => tr("OpenAI-compatible"),
             };
             form_combo(ui, tr("Provider:"), "tr_prov", prov, |ui| {
-                ui.selectable_value(
-                    &mut self.draft.translate.provider,
-                    "edge".into(),
-                    tr("Microsoft Edge (free)"),
-                );
                 ui.selectable_value(
                     &mut self.draft.translate.provider,
                     "openai".into(),
@@ -687,8 +686,28 @@ impl PrefsApp {
                 );
                 ui.selectable_value(
                     &mut self.draft.translate.provider,
+                    "deepseek".into(),
+                    tr("DeepSeek"),
+                );
+                ui.selectable_value(
+                    &mut self.draft.translate.provider,
+                    "qwen".into(),
+                    tr("Tongyi Qwen"),
+                );
+                ui.selectable_value(
+                    &mut self.draft.translate.provider,
+                    "ollama".into(),
+                    tr("Ollama"),
+                );
+                ui.selectable_value(
+                    &mut self.draft.translate.provider,
                     "deepl".into(),
                     tr("DeepL"),
+                );
+                ui.selectable_value(
+                    &mut self.draft.translate.provider,
+                    "edge".into(),
+                    tr("Microsoft Edge (free)"),
                 );
             });
             let tgt = match self.draft.translate.target.as_str() {
@@ -722,13 +741,17 @@ impl PrefsApp {
                     tr("Traditional Chinese"),
                 );
             });
-            let openai = self.draft.translate.normalized_provider() == "openai";
+            let openai = self.draft.translate.uses_openai_compat();
             let deepl = self.draft.translate.normalized_provider() == "deepl";
             if openai || deepl {
                 let url_hint = if deepl {
                     pinshot_core::translate::DEEPL_URL_DEFAULT
                 } else {
-                    "https://api.openai.com/v1"
+                    pinshot_core::translate::service_preset(
+                        self.draft.translate.normalized_provider(),
+                    )
+                    .map(|p| p.default_url)
+                    .unwrap_or(pinshot_core::translate::OPENAI_URL_DEFAULT)
                 };
                 form_line_hint(
                     ui,
@@ -739,14 +762,22 @@ impl PrefsApp {
                 form_secret(ui, tr("API key:"), &mut self.draft.translate.api_key);
             }
             if openai {
+                let model_hint = pinshot_core::translate::service_preset(
+                    self.draft.translate.normalized_provider(),
+                )
+                .map(|p| p.default_model)
+                .unwrap_or(pinshot_core::translate::OPENAI_MODEL_DEFAULT);
                 form_line_hint(
                     ui,
                     tr("Model:"),
                     &mut self.draft.translate.model,
-                    pinshot_core::translate::OPENAI_MODEL_DEFAULT,
+                    model_hint,
                 );
             }
         });
+        if self.draft.translate.provider != prev {
+            pinshot_core::translate::apply_service_defaults(&mut self.draft.translate);
+        }
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             let testing = self.test_rx.is_some();
@@ -762,7 +793,7 @@ impl PrefsApp {
         });
         ui.add_space(2.0);
         ui.weak(tr(
-            "OpenAI-compatible covers OpenAI, DeepSeek, Qwen, Ollama, OpenRouter. Edge stays the free fallback.",
+            "Default is OpenAI-compatible (DeepSeek / Tongyi / Ollama fill URL and model). Edge is the free fallback if the API is unset or fails. F5 in-place translate still works.",
         ));
     }
 
@@ -773,7 +804,7 @@ impl PrefsApp {
         self.test_rx = Some(rx);
         self.status = tr("Testing…");
         std::thread::spawn(move || {
-            let r = crate::translate_run::translate_with(&settings, &ui_lang, "hello");
+            let r = crate::translate_run::translate_with_opts(&settings, &ui_lang, "hello", false);
             let _ = tx.send(r);
         });
     }
@@ -932,5 +963,30 @@ mod tests {
         assert_eq!(app.draft.language, d.language);
         assert_eq!(app.draft.run_at_login, d.run_at_login);
         assert_eq!(app.draft.start_minimized, d.start_minimized);
+    }
+
+    #[test]
+    fn restore_translate_resets_to_openai_compat() {
+        let mut app = PrefsApp {
+            draft: Config {
+                translate: pinshot_core::config::TranslateSettings {
+                    provider: "edge".into(),
+                    api_url: "https://example.invalid".into(),
+                    api_key: "sk-x".into(),
+                    model: "x".into(),
+                    target: "ja".into(),
+                },
+                ..Config::default()
+            },
+            tab: 6,
+            group_sel: 0,
+            group_edit: String::new(),
+            status: String::new(),
+            test_rx: None,
+        };
+        app.restore_tab();
+        assert_eq!(app.draft.translate.provider, "openai");
+        assert!(app.draft.translate.uses_openai_compat());
+        assert!(app.draft.translate.api_key.is_empty());
     }
 }

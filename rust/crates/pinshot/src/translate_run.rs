@@ -1,10 +1,10 @@
-//! F5 translation: Edge (free default), OpenAI-compatible chat-completions, or DeepL.
+//! F5 translation: OpenAI-compatible presets, DeepL, Edge as free fallback.
 
 use pinshot_core::config::TranslateSettings;
 use pinshot_core::translate::{
-    deepl_form_body, deepl_read_text, deepl_url, effective_target, lang_family, openai_chat_url,
-    openai_read_content, openai_request_body, read_translation_ex, redact_secret, request_body,
-    request_url, target_from_ui_lang,
+    deepl_form_body, deepl_read_text, deepl_url, effective_target, lang_family, openai_read_content,
+    openai_request_body, read_translation_ex, redact_secret, request_body, request_url,
+    resolved_openai_model, resolved_openai_url, target_from_ui_lang,
 };
 
 pub fn default_target() -> String {
@@ -35,12 +35,34 @@ pub fn translate_with(
     ui_lang: &str,
     text: &str,
 ) -> Result<String, String> {
+    translate_with_opts(settings, ui_lang, text, true)
+}
+
+/// `fallback`: F5 retries the free Edge endpoint if the configured API fails.
+/// The settings Test button passes `false` so the real error is visible.
+pub fn translate_with_opts(
+    settings: &TranslateSettings,
+    ui_lang: &str,
+    text: &str,
+    fallback: bool,
+) -> Result<String, String> {
     let configured = target_for(settings, ui_lang);
     let to = effective_target(text, &configured);
-    match settings.normalized_provider() {
-        "openai" => openai_translate(settings, text, &to),
+    let primary = match settings.normalized_provider() {
+        "edge" => edge_translate(text, &to),
         "deepl" => deepl_translate(settings, text, &to),
-        _ => edge_translate(text, &to),
+        _ => openai_translate(settings, text, &to),
+    };
+    match primary {
+        Ok(s) => Ok(s),
+        Err(e) if fallback && settings.normalized_provider() != "edge" => {
+            crate::logutil::log(&format!("translate fallback edge after: {e}"));
+            match edge_translate(text, &to) {
+                Ok(s) => Ok(s),
+                Err(_) => Err(e),
+            }
+        }
+        Err(e) => Err(e),
     }
 }
 
@@ -90,9 +112,9 @@ fn openai_translate(
     text: &str,
     target: &str,
 ) -> Result<String, String> {
-    let url = openai_chat_url(&settings.api_url);
-    let body = openai_request_body(&settings.model, text, target)?;
-    log_translate("openai", text.chars().count(), target);
+    let url = resolved_openai_url(settings);
+    let body = openai_request_body(&resolved_openai_model(settings), text, target)?;
+    log_translate(settings.normalized_provider(), text.chars().count(), target);
     let mut req = ureq::post(&url)
         .set("Content-Type", "application/json")
         .timeout(std::time::Duration::from_secs(30));
@@ -252,7 +274,7 @@ mod tests {
             model: "gpt-4o-mini".into(),
             target: "en".into(),
         };
-        let err = translate_with(&settings, "en", "hello").unwrap_err();
+        let err = translate_with_opts(&settings, "en", "hello", false).unwrap_err();
         let _ = h.join();
         assert!(!err.contains("sk-test-secret-key-xyz"), "leaked key: {err}");
         assert!(err.contains("***") || err.contains("Invalid") || err.contains("Incorrect"));

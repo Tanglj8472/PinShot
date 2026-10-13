@@ -19,6 +19,92 @@ pub const OPENAI_CHAT_DEFAULT: &str = "https://api.openai.com/v1/chat/completion
 pub const DEEPL_URL_DEFAULT: &str = "https://api-free.deepl.com/v2/translate";
 pub const OPENAI_MODEL_DEFAULT: &str = "gpt-4o-mini";
 
+/// Public OpenAI-compatible bases (Pot / STranslate service list style).
+pub const OPENAI_URL_DEFAULT: &str = "https://api.openai.com/v1";
+pub const DEEPSEEK_URL_DEFAULT: &str = "https://api.deepseek.com";
+pub const DEEPSEEK_MODEL_DEFAULT: &str = "deepseek-chat";
+pub const QWEN_URL_DEFAULT: &str = "https://dashscope.aliyuncs.com/compatible-mode/v1";
+pub const QWEN_MODEL_DEFAULT: &str = "qwen-turbo";
+pub const OLLAMA_URL_DEFAULT: &str = "http://127.0.0.1:11434/v1";
+pub const OLLAMA_MODEL_DEFAULT: &str = "llama3.2";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ServicePreset {
+    pub id: &'static str,
+    pub default_url: &'static str,
+    pub default_model: &'static str,
+}
+
+pub const COMPAT_PRESETS: &[ServicePreset] = &[
+    ServicePreset {
+        id: "openai",
+        default_url: OPENAI_URL_DEFAULT,
+        default_model: OPENAI_MODEL_DEFAULT,
+    },
+    ServicePreset {
+        id: "deepseek",
+        default_url: DEEPSEEK_URL_DEFAULT,
+        default_model: DEEPSEEK_MODEL_DEFAULT,
+    },
+    ServicePreset {
+        id: "qwen",
+        default_url: QWEN_URL_DEFAULT,
+        default_model: QWEN_MODEL_DEFAULT,
+    },
+    ServicePreset {
+        id: "ollama",
+        default_url: OLLAMA_URL_DEFAULT,
+        default_model: OLLAMA_MODEL_DEFAULT,
+    },
+];
+
+pub fn service_preset(id: &str) -> Option<&'static ServicePreset> {
+    let id = match id.trim() {
+        "tongyi" | "dashscope" => "qwen",
+        "openai-compatible" | "openai_compatible" => "openai",
+        other => other,
+    };
+    COMPAT_PRESETS.iter().find(|p| p.id == id)
+}
+
+/// Fill URL + model when the user picks a service (keeps the API key).
+pub fn apply_service_defaults(settings: &mut crate::config::TranslateSettings) {
+    let id = settings.normalized_provider().to_string();
+    settings.provider = id.clone();
+    match id.as_str() {
+        "deepl" => {
+            settings.api_url = DEEPL_URL_DEFAULT.into();
+        }
+        "edge" => {}
+        _ => {
+            if let Some(p) = service_preset(&id) {
+                settings.api_url = p.default_url.into();
+                settings.model = p.default_model.into();
+            }
+        }
+    }
+}
+
+pub fn resolved_openai_url(settings: &crate::config::TranslateSettings) -> String {
+    let raw = settings.api_url.trim();
+    if raw.is_empty() {
+        if let Some(p) = service_preset(settings.normalized_provider()) {
+            return openai_chat_url(p.default_url);
+        }
+    }
+    openai_chat_url(raw)
+}
+
+pub fn resolved_openai_model(settings: &crate::config::TranslateSettings) -> String {
+    let t = settings.model.trim();
+    if !t.is_empty() {
+        return t.to_string();
+    }
+    service_preset(settings.normalized_provider())
+        .map(|p| p.default_model.to_string())
+        .unwrap_or_else(|| OPENAI_MODEL_DEFAULT.to_string())
+}
+
 /// pot-desktop: if the path is not already `/chat/completions`, append
 /// `/v1/chat/completions` (covers OpenAI, DeepSeek, Qwen, Ollama, OpenRouter).
 pub fn openai_chat_url(raw: &str) -> String {
@@ -376,6 +462,38 @@ mod tests {
         assert_eq!(
             openai_chat_url("http://127.0.0.1:11434/v1/chat/completions"),
             "http://127.0.0.1:11434/v1/chat/completions"
+        );
+        assert_eq!(
+            openai_chat_url(QWEN_URL_DEFAULT),
+            "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn apply_service_defaults_fills_presets() {
+        let mut s = crate::config::TranslateSettings {
+            provider: "deepseek".into(),
+            api_key: "sk-keep".into(),
+            ..crate::config::TranslateSettings::default()
+        };
+        apply_service_defaults(&mut s);
+        assert_eq!(s.provider, "deepseek");
+        assert_eq!(s.api_url, DEEPSEEK_URL_DEFAULT);
+        assert_eq!(s.model, DEEPSEEK_MODEL_DEFAULT);
+        assert_eq!(s.api_key, "sk-keep");
+        s.provider = "qwen".into();
+        apply_service_defaults(&mut s);
+        assert_eq!(s.api_url, QWEN_URL_DEFAULT);
+        assert_eq!(s.model, QWEN_MODEL_DEFAULT);
+        s.provider = "ollama".into();
+        apply_service_defaults(&mut s);
+        assert_eq!(s.api_url, OLLAMA_URL_DEFAULT);
+        assert_eq!(resolved_openai_url(&s), "http://127.0.0.1:11434/v1/chat/completions");
+        let empty = crate::config::TranslateSettings::default();
+        assert_eq!(empty.provider, "openai");
+        assert_eq!(
+            resolved_openai_url(&empty),
+            OPENAI_CHAT_DEFAULT
         );
     }
 
