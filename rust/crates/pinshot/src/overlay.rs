@@ -332,6 +332,7 @@ impl Overlay {
         crate::logutil::ms("overlay first redraw", t_draw);
         #[cfg(windows)]
         native::cloak_window(&s.window, false);
+        s.cover_desktop();
         #[cfg(not(unix))]
         native::focus_window(&s.window);
         // Recycled HWND often skips CursorMoved until the mouse actually
@@ -1834,7 +1835,22 @@ impl Overlay {
             }
         }
         self.window.set_visible(true);
+        self.cover_desktop();
         self.dirty = false;
+    }
+
+    fn cover_desktop(&self) {
+        #[cfg(windows)]
+        {
+            let (vx, vy) = self.capture.virtual_origin;
+            native::cover_shell(
+                &self.window,
+                vx,
+                vy,
+                self.capture.composed.width,
+                self.capture.composed.height,
+            );
+        }
     }
 
     pub fn pump_redraw(&mut self) {

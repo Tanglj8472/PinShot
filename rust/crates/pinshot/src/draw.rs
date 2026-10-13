@@ -723,11 +723,10 @@ impl OverlayFront {
         // rect. Band-subtraction left a darker footprint on a window that had
         // been the hover hole, while never-hovered pixels stayed at the
         // original (lighter) dim — the magnifier then looked like extra shadow.
-        let mut stale = self
-            .last_hole
-            .inflated(16.0)
-            .union(hole_pad)
-            .union(size_clear);
+        let mut stale = hole_pad.union(size_clear);
+        if !self.last_hole.is_empty() {
+            stale = stale.union(self.last_hole.inflated(16.0));
+        }
         for r in std::mem::take(&mut self.last_chrome) {
             stale = stale.union(r.inflated(16.0));
         }

@@ -62,6 +62,14 @@ pub fn apply_overlay_style(window: &Window) {
     crate::x11util::apply_overlay_style(window);
 }
 
+/// Size and restack the overlay over the taskbar (Windows).
+pub fn cover_shell(window: &Window, x: i32, y: i32, w: u32, h: u32) {
+    #[cfg(windows)]
+    crate::win32::cover_shell(hwnd_of(window), x, y, w, h);
+    #[cfg(not(windows))]
+    let _ = (window, x, y, w, h);
+}
+
 pub fn cloak_window(window: &Window, cloak: bool) {
     #[cfg(windows)]
     crate::win32::cloak_window(hwnd_of(window), cloak);
