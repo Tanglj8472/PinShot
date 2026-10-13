@@ -45,6 +45,15 @@ pub fn init_dpi() {
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     }
+    ignore_ctrl_c();
+}
+
+/// F5 划词翻译 SendInput Ctrl+C. A debug console (`--debug` / cargo) would
+/// otherwise get CTRL_C_EVENT and die with STATUS_CONTROL_C_EXIT (0xC000013A).
+pub fn ignore_ctrl_c() {
+    unsafe {
+        let _ = windows::Win32::System::Console::SetConsoleCtrlHandler(None, true);
+    }
 }
 
 /// `ExitProcess` (Rust `process::exit`) still runs DLL detach. tray-icon /
@@ -410,6 +419,7 @@ pub fn send_ctrl_c() -> Result<(), String> {
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VIRTUAL_KEY,
     };
+    ignore_ctrl_c();
     unsafe {
         for vk in [0x12u16, 0x10, 0x5B, 0x5C] {
             if GetAsyncKeyState(vk as i32) as u16 & 0x8000 != 0 {

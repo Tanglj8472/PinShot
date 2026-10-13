@@ -77,6 +77,7 @@ fn attach_console() {
         if AttachConsole(ATTACH_PARENT_PROCESS).is_err() {
             let _ = AllocConsole();
         }
+        crate::win32::ignore_ctrl_c();
     }
 }
 
