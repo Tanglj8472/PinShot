@@ -89,7 +89,7 @@ const PAIRS: &[(&str, &str)] = &[
     ("Move the cursor by 1 pixel", "光标移动 1 像素"),
     ("Move the selection by 1 pixel", "选区移动 1 像素"),
     ("Enlarge selection / Shift: shrink", "扩大选区 / Shift：缩小"),
-    ("Toggle window / element detection", "切换窗口 / 元素检测"),
+    ("Toggle window / UI element detection", "切换窗口 / 界面元素检测"),
     ("Select full screen", "全屏选择"),
     ("Copy color / RGB↔HEX", "复制颜色 / RGB↔HEX"),
     ("Numbered marker", "序号标记"),
@@ -186,7 +186,7 @@ const PAIRS: &[(&str, &str)] = &[
     ("Show toolbar", "显示工具栏"),
     ("Recognize text", "识别文字"),
     ("Recognize and translate", "识别并翻译"),
-    ("Element detection", "控件检测"),
+    ("UI element detection", "界面元素检测"),
     ("Window detection", "窗口检测"),
     ("Last snip area", "上次选区"),
     ("Snip history", "截图历史"),
@@ -260,7 +260,7 @@ const PAIRS: &[(&str, &str)] = &[
     ("Move cursor 1 px", "光标移动 1 px"),
     ("Move selection 1 px", "选区移动 1 px"),
     ("Grow / Shift: shrink", "扩大选区 / Shift：缩小"),
-    ("Window / element", "窗口 / 控件"),
+    ("Window / UI element", "窗口 / 界面元素"),
     ("Full screen", "全屏"),
     ("Show cursor", "显示指针"),
     ("Select / edit", "选择 / 编辑"),
@@ -500,6 +500,8 @@ mod tests {
             assert_eq!(tr("Save"), "保存");
             assert_eq!(tr("Copy"), "复制");
             assert_eq!(tr("Close"), "关闭");
+            assert_eq!(tr("Window detection"), "窗口检测");
+            assert_eq!(tr("UI element detection"), "界面元素检测");
         });
     }
 

@@ -187,7 +187,7 @@ impl Overlay {
             toolbar: None,
             hex: false,
             mag_forced: false,
-            detect: DetectMode::Window,
+            detect: DetectMode::Element,
             toast: None,
             toast_until: None,
             arrow_on: true,
@@ -222,6 +222,7 @@ impl Overlay {
         };
         s.window.set_visible(true);
         native::focus_window(&s.window);
+        s.load_elements();
         if s.translate_on_select {
             s.show_toast(tr("Select text, then release"));
         }
@@ -1429,14 +1430,12 @@ impl Overlay {
                 self.detect = self.detect.toggle();
                 if self.detect == DetectMode::Element {
                     self.load_elements();
-                    self.show_toast(format!(
-                        "{} ({})",
-                        tr("Element detection"),
-                        element_source()
-                    ));
-                } else {
-                    self.show_toast(tr("Window detection"));
                 }
+                crate::logutil::log(&format!(
+                    "detect mode={} ({})",
+                    self.detect.id(),
+                    element_source()
+                ));
                 self.update_hover();
                 self.dirty = true;
             }
