@@ -658,6 +658,55 @@ impl Annotator {
         setter(self.style_mut(kind));
     }
 
+    /// Snipaste: rectangle and ellipse share one tool; switching the chip (or Tab)
+    /// retargets the live / selected shape instead of starting a new one.
+    pub fn convert_rect_ellipse(&mut self, to: Tool) {
+        if !matches!(to, Tool::Rect | Tool::Ellipse) {
+            return;
+        }
+        let from = if to == Tool::Ellipse {
+            Tool::Rect
+        } else {
+            Tool::Ellipse
+        };
+        if let Some(live) = self.live.as_mut() {
+            if matches!(live.kind, Tool::Rect | Tool::Ellipse) {
+                live.kind = to;
+                self.tool = Some(to);
+                *self.style_mut(to) = live.style.clone();
+                return;
+            }
+        }
+        if let Some(idx) = self.option_target() {
+            if matches!(self.shapes[idx].kind, Tool::Rect | Tool::Ellipse) {
+                if self.shapes[idx].kind != to {
+                    self.push_edit();
+                    self.shapes[idx].kind = to;
+                }
+                self.tool = Some(to);
+                self.selected = Some(idx);
+                self.edit_target = Some(idx);
+                self.width_target = Some(idx);
+                *self.style_mut(to) = self.shapes[idx].style.clone();
+                return;
+            }
+        }
+        self.copy_draw_style(from, to);
+        self.set_tool(Some(to));
+    }
+
+    fn copy_draw_style(&mut self, from: Tool, to: Tool) {
+        if from == to {
+            return;
+        }
+        let src = self.style(from).clone();
+        let dst = self.style_mut(to);
+        dst.color = src.color;
+        dst.width = src.width;
+        dst.filled = src.filled;
+        dst.line_style = src.line_style;
+    }
+
     /// Index of the committed shape that style/width edits apply to.
     /// Python: `live or selected or edit_target or width_target` — live is handled
     /// separately because it is not in `shapes`.
@@ -2187,5 +2236,38 @@ mod tests {
         assert_eq!(a.shapes.len(), 1);
         let b = a.shapes[0].bounds();
         assert!(b.w >= 30.0 && b.h >= 20.0);
+    }
+
+    #[test]
+    fn selected_rect_converts_to_ellipse_and_undo_restores() {
+        let mut a = Annotator::new();
+        a.set_tool(Some(Tool::Rect));
+        a.press(Point::new(10.0, 10.0), false);
+        a.move_to(Point::new(80.0, 50.0), false);
+        a.release(Point::new(80.0, 50.0));
+        assert_eq!(a.shapes[0].kind, Tool::Rect);
+        assert_eq!(a.selected, Some(0));
+        a.convert_rect_ellipse(Tool::Ellipse);
+        assert_eq!(a.shapes[0].kind, Tool::Ellipse);
+        assert_eq!(a.tool, Some(Tool::Ellipse));
+        assert_eq!(a.selected, Some(0));
+        a.convert_rect_ellipse(Tool::Rect);
+        assert_eq!(a.shapes[0].kind, Tool::Rect);
+        a.undo();
+        assert_eq!(a.shapes[0].kind, Tool::Ellipse);
+    }
+
+    #[test]
+    fn live_rect_converts_to_ellipse_before_commit() {
+        let mut a = Annotator::new();
+        a.set_tool(Some(Tool::Rect));
+        a.press(Point::new(4.0, 4.0), false);
+        a.move_to(Point::new(40.0, 30.0), false);
+        assert_eq!(a.live.as_ref().map(|s| s.kind), Some(Tool::Rect));
+        a.convert_rect_ellipse(Tool::Ellipse);
+        assert_eq!(a.live.as_ref().map(|s| s.kind), Some(Tool::Ellipse));
+        assert!(a.shapes.is_empty());
+        a.release(Point::new(40.0, 30.0));
+        assert_eq!(a.shapes[0].kind, Tool::Ellipse);
     }
 }

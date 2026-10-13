@@ -207,9 +207,9 @@ pub fn draw_icon(pixmap: &mut Pixmap, kind: IconKind, cell: Rect, color: Option<
             }
         }
         IconKind::RoundRect => {
-            // Combined rect/ellipse entry (Snipaste rounded-rect glyph).
-            if let Some(path) = rounded_rect_path(3.5, 5.5, 13.0, 9.0, 2.6) {
-                pixmap.stroke_path(&path, &p, &st, t, None);
+            // Combined rect/ellipse entry: filled rounded rect (Snipaste).
+            if let Some(path) = rounded_rect_path(3.2, 4.6, 13.6, 10.8, 4.4) {
+                pixmap.fill_path(&path, &p, FillRule::Winding, t, None);
             }
         }
         IconKind::Line => {
@@ -643,6 +643,28 @@ mod tests {
         );
         if let Ok(png) = pm.encode_png() {
             let _ = std::fs::write(path, png);
+        }
+    }
+
+    #[test]
+    fn round_rect_group_icon_is_filled_squircle() {
+        let cell = Rect::new(2.0, 2.0, 20.0, 20.0);
+        let mut pm = Pixmap::new(24, 24).unwrap();
+        draw_icon(&mut pm, IconKind::RoundRect, cell, None);
+        let center = pm.pixel(12, 12).unwrap();
+        assert!(
+            center.alpha() > 40,
+            "combined shape entry is a filled rounded rect"
+        );
+        let corner = pm.pixel(3, 3).unwrap();
+        assert!(
+            corner.alpha() < 20,
+            "rounded corners must not fill the cell corners"
+        );
+        if let Ok(dir) = std::env::var("PINSHOT_DUMP_ICONS") {
+            let dir = std::path::PathBuf::from(dir);
+            let _ = std::fs::create_dir_all(&dir);
+            dump_icon_preview(&dir.join("roundrect.png"), IconKind::RoundRect);
         }
     }
 

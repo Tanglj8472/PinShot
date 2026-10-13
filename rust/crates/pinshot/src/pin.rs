@@ -1216,6 +1216,16 @@ impl PinWin {
                         }
                     }
                     Key::Named(NamedKey::Space) => self.show_toolbar(!self.annotating),
+                    Key::Named(NamedKey::Tab) if self.annotating => {
+                        if crate::toolbar::toggle_grouped_variant(
+                            &mut self.annot,
+                            &mut self.arrow_kind,
+                            &mut self.ellipse_on,
+                        ) {
+                            self.relayout_tb();
+                            self.dirty = true;
+                        }
+                    }
                     Key::Named(NamedKey::F5) => {
                         self.pending_translate = true;
                     }

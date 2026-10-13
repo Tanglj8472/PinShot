@@ -1481,6 +1481,17 @@ impl Overlay {
                 self.dirty = true;
             }
             Key::Named(NamedKey::Tab) => {
+                if self.sel.has_sel()
+                    && crate::toolbar::toggle_grouped_variant(
+                        &mut self.annot,
+                        &mut self.arrow_kind,
+                        &mut self.ellipse_on,
+                    )
+                {
+                    self.relayout_toolbar();
+                    self.dirty = true;
+                    return;
+                }
                 crate::logutil::log("overlay Tab swallowed");
                 self.detect = self.detect.toggle();
                 if self.detect == DetectMode::Element {

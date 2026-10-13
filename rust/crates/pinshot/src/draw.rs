@@ -1987,6 +1987,27 @@ mod tests {
             ) {
                 let _ = out.save_png(format!("{dir}/toolbar_rect.png"));
             }
+            let est = Style::for_tool(Tool::Ellipse);
+            let etb = Toolbar::layout(
+                sel,
+                over,
+                Some(Tool::Ellipse),
+                pinshot_core::ArrowKind::None,
+                Some(&est),
+            );
+            let crop = etb.bar.union(etb.panel.unwrap_or(etb.bar)).inflated(12.0);
+            if let Some(out) = crop_rect(
+                &{
+                    let mut full = Pixmap::new(1920, 1200).unwrap();
+                    full.fill(tiny_skia::Color::from_rgba8(60, 64, 72, 255));
+                    paint_toolbar(&mut full, &etb, None);
+                    full
+                },
+                crop,
+                [60, 64, 72],
+            ) {
+                let _ = out.save_png(format!("{dir}/toolbar_ellipse.png"));
+            }
             let lst = Style::for_tool(Tool::Line);
             let mut ltb = Toolbar::layout(
                 sel,

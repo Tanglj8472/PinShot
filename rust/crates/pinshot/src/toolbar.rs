@@ -49,13 +49,41 @@ pub fn toggle_tool(
 
 pub fn set_shape_kind(annot: &mut Annotator, ellipse_on: &mut bool, ellipse: bool) {
     *ellipse_on = ellipse;
-    annot.set_tool(Some(if ellipse { Tool::Ellipse } else { Tool::Rect }));
+    annot.convert_rect_ellipse(if ellipse { Tool::Ellipse } else { Tool::Rect });
 }
 
 pub fn set_line_preset(annot: &mut Annotator, arrow_kind: &mut ArrowKind, kind: ArrowKind) {
     *arrow_kind = kind;
     annot.set_tool(Some(Tool::Line));
     annot.set_style_default(Tool::Line, |s| s.set_arrow_kind(kind));
+}
+
+/// Tab while annotating: rectangle ↔ ellipse, or line ↔ arrow (Snipaste).
+pub fn toggle_grouped_variant(
+    annot: &mut Annotator,
+    arrow_kind: &mut ArrowKind,
+    ellipse_on: &mut bool,
+) -> bool {
+    match annot.option_tool().or(annot.tool) {
+        Some(Tool::Rect) => {
+            set_shape_kind(annot, ellipse_on, true);
+            true
+        }
+        Some(Tool::Ellipse) => {
+            set_shape_kind(annot, ellipse_on, false);
+            true
+        }
+        Some(Tool::Line) => {
+            let next = if *arrow_kind == ArrowKind::None {
+                ArrowKind::Thin
+            } else {
+                ArrowKind::None
+            };
+            set_line_preset(annot, arrow_kind, next);
+            true
+        }
+        _ => false,
+    }
 }
 
 fn icon_for_arrow(kind: ArrowKind) -> IconKind {
@@ -184,11 +212,7 @@ impl Toolbar {
         for_pin: bool,
         style: Option<&Style>,
     ) -> Self {
-        let shape_icon = if active == Some(Tool::Ellipse) {
-            IconKind::Ellipse
-        } else {
-            IconKind::RoundRect
-        };
+        let shape_icon = IconKind::RoundRect;
         let line_icon = icon_for_arrow(if active == Some(Tool::Line) {
             style.map(|s| s.arrow_kind()).unwrap_or(arrow)
         } else {
@@ -806,6 +830,7 @@ mod tests {
         assert_eq!(ann.tool, None);
         set_shape_kind(&mut ann, &mut ellipse, true);
         assert_eq!(ann.tool, Some(Tool::Ellipse));
+        assert!(ellipse);
         toggle_tool(&mut ann, &mut arrow, &mut ellipse, TbAction::LineStroke);
         assert_eq!(ann.tool, Some(Tool::Line));
         assert!(!ann.style(Tool::Line).has_arrow());
@@ -816,6 +841,29 @@ mod tests {
         assert_eq!(ann.style(Tool::Line).arrow_kind(), ArrowKind::Hollow);
         toggle_tool(&mut ann, &mut arrow, &mut ellipse, TbAction::LineStroke);
         assert_eq!(ann.tool, None);
+    }
+
+    #[test]
+    fn shape_chip_converts_selected_rect_to_ellipse() {
+        let mut ann = Annotator::new();
+        let mut ellipse = false;
+        ann.set_tool(Some(Tool::Rect));
+        ann.press(Point::new(8.0, 8.0), false);
+        ann.move_to(Point::new(60.0, 40.0), false);
+        ann.release(Point::new(60.0, 40.0));
+        assert_eq!(ann.shapes[0].kind, Tool::Rect);
+        set_shape_kind(&mut ann, &mut ellipse, true);
+        assert!(ellipse);
+        assert_eq!(ann.shapes[0].kind, Tool::Ellipse);
+        assert_eq!(ann.selected, Some(0));
+        assert_eq!(ann.tool, Some(Tool::Ellipse));
+        assert!(toggle_grouped_variant(
+            &mut ann,
+            &mut ArrowKind::None,
+            &mut ellipse
+        ));
+        assert_eq!(ann.shapes[0].kind, Tool::Rect);
+        assert!(!ellipse);
     }
 
     #[test]
@@ -1014,6 +1062,15 @@ mod tests {
             .iter()
             .any(|b| b.action == TbAction::Tool(Tool::Eraser)));
         assert!(tb.buttons.iter().any(|b| b.action == TbAction::Shape));
+        assert!(tb
+            .buttons
+            .iter()
+            .any(|b| b.action == TbAction::Shape && b.icon == IconKind::RoundRect));
+        let ell = Toolbar::layout(sel, over, Some(Tool::Ellipse), ArrowKind::None, None);
+        assert!(ell
+            .buttons
+            .iter()
+            .any(|b| b.action == TbAction::Shape && b.icon == IconKind::RoundRect));
         assert!(tb.buttons.iter().any(|b| b.action == TbAction::LineStroke));
         assert!(
             tb.buttons
