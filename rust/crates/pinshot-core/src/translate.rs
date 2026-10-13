@@ -27,6 +27,8 @@ pub const QWEN_URL_DEFAULT: &str = "https://dashscope.aliyuncs.com/compatible-mo
 pub const QWEN_MODEL_DEFAULT: &str = "qwen-turbo";
 pub const OLLAMA_URL_DEFAULT: &str = "http://127.0.0.1:11434/v1";
 pub const OLLAMA_MODEL_DEFAULT: &str = "llama3.2";
+pub const BAIDU_URL_DEFAULT: &str = "https://qianfan.baidubce.com/v2";
+pub const BAIDU_MODEL_DEFAULT: &str = "ernie-3.5-8k";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ServicePreset {
@@ -56,11 +58,17 @@ pub const COMPAT_PRESETS: &[ServicePreset] = &[
         default_url: OLLAMA_URL_DEFAULT,
         default_model: OLLAMA_MODEL_DEFAULT,
     },
+    ServicePreset {
+        id: "baidu",
+        default_url: BAIDU_URL_DEFAULT,
+        default_model: BAIDU_MODEL_DEFAULT,
+    },
 ];
 
 pub fn service_preset(id: &str) -> Option<&'static ServicePreset> {
     let id = match id.trim() {
         "tongyi" | "dashscope" => "qwen",
+        "qianfan" | "ernie" | "wenxin" => "baidu",
         "openai-compatible" | "openai_compatible" => "openai",
         other => other,
     };
@@ -106,7 +114,8 @@ pub fn resolved_openai_model(settings: &crate::config::TranslateSettings) -> Str
 }
 
 /// pot-desktop: if the path is not already `/chat/completions`, append
-/// `/v1/chat/completions` (covers OpenAI, DeepSeek, Qwen, Ollama, OpenRouter).
+/// `/v1/chat/completions` (or `/chat/completions` when the base already ends
+/// in `/v1` or `/v2`, e.g. Baidu Qianfan).
 pub fn openai_chat_url(raw: &str) -> String {
     let mut u = raw.trim().to_string();
     if u.is_empty() {
@@ -121,7 +130,7 @@ pub fn openai_chat_url(raw: &str) -> String {
     if u.ends_with("/chat/completions") {
         return u;
     }
-    if u.ends_with("/v1") {
+    if u.ends_with("/v1") || u.ends_with("/v2") {
         return format!("{u}/chat/completions");
     }
     format!("{u}/v1/chat/completions")
@@ -467,6 +476,10 @@ mod tests {
             openai_chat_url(QWEN_URL_DEFAULT),
             "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
         );
+        assert_eq!(
+            openai_chat_url(BAIDU_URL_DEFAULT),
+            "https://qianfan.baidubce.com/v2/chat/completions"
+        );
     }
 
     #[test]
@@ -489,6 +502,14 @@ mod tests {
         apply_service_defaults(&mut s);
         assert_eq!(s.api_url, OLLAMA_URL_DEFAULT);
         assert_eq!(resolved_openai_url(&s), "http://127.0.0.1:11434/v1/chat/completions");
+        s.provider = "baidu".into();
+        apply_service_defaults(&mut s);
+        assert_eq!(s.api_url, BAIDU_URL_DEFAULT);
+        assert_eq!(s.model, BAIDU_MODEL_DEFAULT);
+        assert_eq!(
+            resolved_openai_url(&s),
+            "https://qianfan.baidubce.com/v2/chat/completions"
+        );
         let empty = crate::config::TranslateSettings::default();
         assert_eq!(empty.provider, "openai");
         assert_eq!(

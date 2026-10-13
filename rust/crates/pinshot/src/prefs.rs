@@ -674,6 +674,7 @@ impl PrefsApp {
                 "deepseek" => tr("DeepSeek"),
                 "qwen" => tr("Tongyi Qwen"),
                 "ollama" => tr("Ollama"),
+                "baidu" => tr("Baidu"),
                 "deepl" => tr("DeepL"),
                 "edge" => tr("Microsoft Edge (free)"),
                 _ => tr("OpenAI-compatible"),
@@ -698,6 +699,11 @@ impl PrefsApp {
                     &mut self.draft.translate.provider,
                     "ollama".into(),
                     tr("Ollama"),
+                );
+                ui.selectable_value(
+                    &mut self.draft.translate.provider,
+                    "baidu".into(),
+                    tr("Baidu"),
                 );
                 ui.selectable_value(
                     &mut self.draft.translate.provider,
@@ -793,7 +799,7 @@ impl PrefsApp {
         });
         ui.add_space(2.0);
         ui.weak(tr(
-            "Default is OpenAI-compatible (DeepSeek / Tongyi / Ollama fill URL and model). Edge is the free fallback if the API is unset or fails. F5 in-place translate still works.",
+            "Default is OpenAI-compatible (DeepSeek / Tongyi / Ollama / Baidu fill URL and model). Edge is the free fallback if the API is unset or fails. F5 in-place translate still works.",
         ));
     }
 

@@ -80,8 +80,8 @@ impl Default for Config {
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TranslateSettings {
-    /// OpenAI-compatible preset (`openai` / `deepseek` / `qwen` / `ollama`),
-    /// `deepl`, or `edge` (free fallback).
+    /// OpenAI-compatible preset (`openai` / `deepseek` / `qwen` / `ollama` /
+    /// `baidu`), `deepl`, or `edge` (free fallback).
     pub provider: String,
     pub api_url: String,
     pub api_key: String,
@@ -121,6 +121,7 @@ impl TranslateSettings {
             "deepseek" => "deepseek",
             "qwen" | "tongyi" | "dashscope" => "qwen",
             "ollama" => "ollama",
+            "baidu" | "qianfan" | "ernie" | "wenxin" => "baidu",
             "deepl" => "deepl",
             "edge" | "microsoft" | "free" => "edge",
             _ => "openai",
@@ -130,7 +131,7 @@ impl TranslateSettings {
     pub fn uses_openai_compat(&self) -> bool {
         matches!(
             self.normalized_provider(),
-            "openai" | "deepseek" | "qwen" | "ollama"
+            "openai" | "deepseek" | "qwen" | "ollama" | "baidu"
         )
     }
 }
@@ -415,7 +416,7 @@ mod tests {
 
     #[test]
     fn validate_keeps_compat_presets() {
-        for id in ["deepseek", "qwen", "tongyi", "ollama"] {
+        for id in ["deepseek", "qwen", "tongyi", "ollama", "baidu", "qianfan"] {
             let c = Config::from_toml(&format!("[translate]\nprovider = \"{id}\"\n")).unwrap();
             assert!(
                 c.translate.uses_openai_compat(),
