@@ -942,12 +942,21 @@ fn paint_magnifier(
         Rgba::WHITE,
         1.0,
     );
-    let c0 = (n / 2) as f32 * z as f32;
+    // Snipaste: blue crosshair through the whole preview, white box on the
+    // centre source pixel.
+    let mid = n / 2;
+    let cell_x = gx + mid * z;
+    let cell_y = gy + mid * z;
+    let cross = Rgba::rgb(30, 144, 255);
+    let hy = cell_y + z / 2 - 1;
+    let hx = cell_x + z / 2 - 1;
+    fill_px(pm, gx, hy, n * z, 2, cross);
+    fill_px(pm, hx, gy, 2, n * z, cross);
     stroke_rect(
         pm,
-        Rect::new(mag.grid.x + c0, mag.grid.y + c0, z as f32, z as f32),
-        Rgba::rgba(30, 144, 255, 220),
-        1.0,
+        Rect::new(cell_x as f32, cell_y as f32, z as f32, z as f32),
+        Rgba::WHITE,
+        1.5,
     );
     fill_rect(pm, mag.info, Rgba::rgba(0, 0, 0, 210));
     let coord = format!("({}, {})", mag.phys.x as i32, mag.phys.y as i32);
@@ -2164,5 +2173,54 @@ mod tests {
             }
         }
         let _ = menu.save_png(dir.join("pin-menu-labels.png"));
+    }
+
+    #[test]
+    fn magnifier_paints_snipaste_crosshair() {
+        let mut shot = gray_shot(80, 80, 40);
+        shot.set(40, 40, Rgba::rgb(200, 40, 40));
+        let cursor = Point::new(40.0, 40.0);
+        let mag = layout_magnifier(
+            Point::new(8.0, 8.0),
+            Rect::new(0.0, 0.0, 400.0, 400.0),
+            Rgba::rgb(40, 40, 40),
+            Point::new(40.0, 40.0),
+        );
+        let mut pm = Pixmap::new(400, 400).unwrap();
+        pm.fill(tiny_skia::Color::from_rgba8(32, 32, 32, 255));
+        let dirty = paint_magnifier(&mut pm, &shot, cursor, 1.0, true, mag);
+        assert!(dirty.w >= mag.grid.w);
+        let mid = MAG_N / 2;
+        let z = MAG_ZOOM;
+        let hx = mag.grid.x as i32 + mid * z + z / 2;
+        let hy = mag.grid.y as i32 + mid * z + z / 2;
+        let top = pm
+            .pixel(hx as u32, (mag.grid.y as i32 + 4) as u32)
+            .unwrap()
+            .demultiply();
+        assert!(
+            top.blue() > 180 && top.red() < 80,
+            "vertical crosshair should be blue, got {} {} {}",
+            top.red(),
+            top.green(),
+            top.blue()
+        );
+        let left = pm
+            .pixel((mag.grid.x as i32 + 4) as u32, hy as u32)
+            .unwrap()
+            .demultiply();
+        assert!(
+            left.blue() > 180 && left.red() < 80,
+            "horizontal crosshair should be blue, got {} {} {}",
+            left.red(),
+            left.green(),
+            left.blue()
+        );
+        if let Ok(dir) = std::env::var("PINSHOT_DUMP_UI") {
+            let crop = mag.grid.union(mag.info).inflated(8.0);
+            if let Some(out) = crop_rect(&pm, crop, [32, 32, 32]) {
+                let _ = out.save_png(format!("{dir}/magnifier.png"));
+            }
+        }
     }
 }
