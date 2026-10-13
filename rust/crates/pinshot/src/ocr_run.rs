@@ -41,10 +41,13 @@ pub fn ensure_models() -> Result<ModelPaths, String> {
     ensure_models_with_progress(&mut |_| {})
 }
 
-fn force_mobile() -> bool {
-    std::env::var("PINSHOT_OCR_MODEL")
-        .ok()
-        .is_some_and(|v| OcrModelKind::parse(&v) == OcrModelKind::Mobile)
+fn preferred_kind() -> OcrModelKind {
+    if let Ok(v) = std::env::var("PINSHOT_OCR_MODEL") {
+        return OcrModelKind::parse(&v);
+    }
+    pinshot_core::config::load()
+        .map(|c| OcrModelKind::parse(&c.ocr_model))
+        .unwrap_or(OcrModelKind::Server)
 }
 
 fn extra_model_dirs(data_models: &Path) -> Vec<std::path::PathBuf> {
@@ -77,26 +80,31 @@ fn ensure_models_with_progress(progress: &mut dyn FnMut(&str)) -> Result<ModelPa
         copy_if_present(&src, &server);
         copy_if_present(&src, &mobile);
     }
-    // Saved config from 88c3e4e still says mobile. Server is required for
-    // English on real Chrome; PINSHOT_OCR_MODEL=mobile is the only force.
-    if !force_mobile() && server.ready() {
+    let kind = preferred_kind();
+    let preferred = ModelPaths::for_kind(&dir, kind);
+    if preferred.ready() {
         crate::logutil::log(&format!(
-            "ocr using server det={} rec={}",
-            server.det.display(),
-            server.rec.display()
+            "ocr using {} det={} rec={}",
+            kind.as_str(),
+            preferred.det.display(),
+            preferred.rec.display()
         ));
-        return Ok(server);
+        return Ok(preferred);
     }
-    if mobile.ready() && (force_mobile() || !server.ready()) {
+    let other = match kind {
+        OcrModelKind::Mobile => OcrModelKind::Server,
+        OcrModelKind::Server => OcrModelKind::Mobile,
+    };
+    let fallback = ModelPaths::for_kind(&dir, other);
+    if fallback.ready() {
         crate::logutil::log(&format!(
-            "ocr using mobile det={} rec={} (server ready={})",
-            mobile.det.display(),
-            mobile.rec.display(),
-            server.ready()
+            "ocr using fallback {} det={} rec={}",
+            other.as_str(),
+            fallback.det.display(),
+            fallback.rec.display()
         ));
-        return Ok(mobile);
+        return Ok(fallback);
     }
-    let preferred = if force_mobile() { mobile } else { server };
     for (urls, dest) in preferred.downloads() {
         if dest.is_file() {
             continue;
@@ -280,7 +288,6 @@ fn infer(image: &Raster, paths: &ModelPaths) -> Result<OcrPage, String> {
         ));
         let mut blocks = Vec::new();
         for b in result.text_blocks {
-            crate::logutil::log(&format!("ocr line score={:.3} {:?}", b.text_score, b.text));
             // Keep low-score boxes; dropping them lost Wikipedia lines.
             if b.text.trim().is_empty() {
                 continue;
@@ -362,13 +369,17 @@ where
         let det = paths.det.to_string_lossy();
         let cls = paths.cls.to_string_lossy();
         let rec = paths.rec.to_string_lossy();
-        let init = ocr.init_models(&det, &cls, &rec, 2);
+        let threads = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(2)
+            .clamp(2, 8);
+        let init = ocr.init_models(&det, &cls, &rec, threads);
         if let Err(e) = init {
             crate::logutil::log(&format!(
                 "ocr init metadata dict fail: {e:?}; trying keys file"
             ));
             if paths.keys.is_file() {
-                ocr.init_models_with_dict(&det, &cls, &rec, &paths.keys.to_string_lossy(), 2)
+                ocr.init_models_with_dict(&det, &cls, &rec, &paths.keys.to_string_lossy(), threads)
                     .map_err(|e| format!("ocr models: {e:?}"))?;
             } else {
                 return Err(format!("ocr models: {e:?}"));

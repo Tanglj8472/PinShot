@@ -75,10 +75,9 @@ pub fn det_edge_pad(width: u32, height: u32) -> u32 {
     (short / 8).clamp(8, 32)
 }
 
-/// paddle-ocr-rs rec is hardcoded to H=48. Chrome Wikipedia is ~13px
-/// (glyph band ~14px). 1×/2× det misses those lines (`T` / `In` only);
-/// 3× on a real 790×120 F1 crop recovered the 2010s sentence with spaces.
-/// Full-screen stays 1× so det does not melt columns. Unclip stays 1.7.
+/// paddle-ocr-rs rec is hardcoded to H=48. Chrome Wikipedia is ~13px.
+/// 3× on a 500px clip makes a 1500px det + server rec feel frozen; 2× is
+/// enough for H=48 rec. Full-screen stays 1×. Unclip stays 1.7.
 pub fn ocr_upsample(width: u32, height: u32) -> u32 {
     if let Ok(v) = std::env::var("PINSHOT_OCR_SCALE") {
         if let Ok(n) = v.trim().parse::<u32>() {
@@ -86,9 +85,7 @@ pub fn ocr_upsample(width: u32, height: u32) -> u32 {
         }
     }
     let short = width.min(height);
-    if short < 480 {
-        3
-    } else if short < 900 {
+    if short < 720 {
         2
     } else {
         1
@@ -184,6 +181,8 @@ pub struct OcrToken {
     pub rect: Rect,
     pub text: String,
     pub line: usize,
+    /// Word break from the recognized line (so per-char tokens still copy with spaces).
+    pub space_before: bool,
 }
 
 /// Recognized page: reading-order tokens plus joined plain text.
@@ -264,45 +263,35 @@ fn glue_cjk_gap(prev: Option<char>, next: Option<char>) -> bool {
     }
 }
 
-/// Split a line box into CJK characters / Latin words, mapped by character width.
+/// Split a line box into one token per character, mapped by character width.
 pub fn tokenize_line(line: usize, text: &str, box_rect: Rect) -> Vec<OcrToken> {
     let text = collapse_cjk_spaces(text.trim());
     if text.is_empty() || box_rect.w <= 0.0 || box_rect.h <= 0.0 {
         return Vec::new();
     }
-    let mut units: Vec<String> = Vec::new();
-    let mut buf = String::new();
+    let mut units: Vec<(String, bool)> = Vec::new();
+    let mut space_before = false;
     for c in text.chars() {
         if c.is_whitespace() {
-            if !buf.is_empty() {
-                units.push(std::mem::take(&mut buf));
-            }
+            space_before = !units.is_empty();
             continue;
         }
-        if is_cjk(c) {
-            if !buf.is_empty() {
-                units.push(std::mem::take(&mut buf));
-            }
-            units.push(c.to_string());
-        } else {
-            buf.push(c);
-        }
-    }
-    if !buf.is_empty() {
-        units.push(buf);
+        units.push((c.to_string(), space_before));
+        space_before = false;
     }
     if units.is_empty() {
         return Vec::new();
     }
-    let total: f32 = units.iter().map(|u| u.chars().count().max(1) as f32).sum();
+    let total = units.len().max(1) as f32;
     let mut x = box_rect.x;
     let mut out = Vec::with_capacity(units.len());
-    for u in units {
-        let w = box_rect.w * (u.chars().count().max(1) as f32 / total);
+    for (u, space_before) in units {
+        let w = box_rect.w / total;
         out.push(OcrToken {
             rect: Rect::new(x, box_rect.y, w.max(1.0), box_rect.h.max(1.0)),
             text: u,
             line,
+            space_before,
         });
         x += w;
     }
@@ -859,7 +848,7 @@ pub fn page_from_blocks(blocks: Vec<(Vec<(u32, u32)>, String)>) -> OcrPage {
         })
         .collect();
 
-    let mut tokens = Vec::new();
+    let mut tokens: Vec<OcrToken> = Vec::new();
     let mut lines: Vec<String> = Vec::new();
     for (line_i, mut line_boxes) in cluster_lines(items).into_iter().enumerate() {
         dedupe_line_seams(&mut line_boxes);
@@ -870,7 +859,16 @@ pub fn page_from_blocks(blocks: Vec<(Vec<(u32, u32)>, String)>) -> OcrPage {
             if text.is_empty() {
                 continue;
             }
-            tokens.extend(tokenize_line(line_i, &text, rect));
+            let mut added = tokenize_line(line_i, &text, rect);
+            if let (Some(prev), Some(first)) = (tokens.last(), added.first_mut()) {
+                if first.line == prev.line
+                    && !first.space_before
+                    && needs_space(prev.text.chars().last(), first.text.chars().next())
+                {
+                    first.space_before = true;
+                }
+            }
+            tokens.extend(added);
             polished.push((rect, text));
         }
         if !polished.is_empty() {
@@ -908,7 +906,7 @@ pub fn hit_token(tokens: &[OcrToken], p: Point) -> Option<usize> {
         tokens
             .iter()
             .enumerate()
-            .filter(|(_, t)| t.rect.inflated(8.0).contains(p))
+            .filter(|(_, t)| t.rect.inflated(2.0).contains(p))
             .min_by(|a, b| {
                 a.1.rect
                     .center()
@@ -984,9 +982,7 @@ pub fn selected_text(tokens: &[OcrToken], a: usize, b: usize) -> String {
                 } else if translate_join_space(s.chars().last(), t.text.chars().next()) {
                     s.push(' ');
                 }
-            } else if !cite_glue(s.chars().last(), &t.text)
-                && needs_space(s.chars().last(), t.text.chars().next())
-            {
+            } else if t.space_before {
                 s.push(' ');
             }
         }
@@ -1023,23 +1019,30 @@ mod tests {
 
     #[test]
     fn ocr_upsample_lifts_short_chrome_clips() {
-        assert_eq!(ocr_upsample(1100, 400), 3);
-        assert_eq!(ocr_upsample(900, 120), 3);
+        assert_eq!(ocr_upsample(1100, 400), 2);
+        assert_eq!(ocr_upsample(900, 120), 2);
         assert_eq!(ocr_upsample(1920, 1200), 1);
-        assert_eq!(ocr_upsample(2000, 300), 3);
-        assert_eq!(ocr_upsample(800, 479), 3);
-        assert_eq!(ocr_upsample(800, 480), 2);
+        assert_eq!(ocr_upsample(2000, 300), 2);
+        assert_eq!(ocr_upsample(800, 479), 2);
+        assert_eq!(ocr_upsample(800, 719), 2);
+        assert_eq!(ocr_upsample(800, 720), 1);
         assert_eq!(ocr_upsample(1000, 900), 1);
     }
 
     #[test]
-    fn tokenize_splits_latin_words_and_cjk_chars() {
+    fn tokenize_splits_latin_and_cjk_chars() {
         let r = Rect::new(0.0, 0.0, 120.0, 16.0);
         let toks = tokenize_line(0, "Hello 你好 PinShot", r);
         let texts: Vec<&str> = toks.iter().map(|t| t.text.as_str()).collect();
-        assert_eq!(texts, ["Hello", "你", "好", "PinShot"]);
-        assert!(toks[0].rect.w > toks[1].rect.w);
+        assert_eq!(texts.concat(), "Hello你好PinShot");
+        assert_eq!(toks.len(), "Hello你好PinShot".chars().count());
+        assert!(toks[5].space_before);
+        assert!(toks.iter().any(|t| t.text == "你"));
         assert!((toks.last().unwrap().rect.right() - r.right()).abs() < 0.01);
+        assert_eq!(
+            selected_text(&toks, 0, toks.len() - 1),
+            "Hello 你好 PinShot"
+        );
     }
 
     #[test]
@@ -1069,22 +1072,27 @@ mod tests {
             selected_text(&toks, 0, toks.len() - 1),
             "Mozilla officially sponsored"
         );
-        assert_eq!(selected_text(&toks, 1, 1), "officially");
+        let off = toks
+            .iter()
+            .position(|t| t.text == "o" && t.space_before)
+            .expect("officially");
+        let end = off + "officially".len() - 1;
+        assert_eq!(selected_text(&toks, off, end), "officially");
         let band = Rect::from_xyxy(
             toks[0].rect.x,
             toks[0].rect.y,
-            toks[1].rect.right(),
-            toks[1].rect.bottom(),
+            toks[off - 1].rect.right(),
+            toks[off - 1].rect.bottom(),
         );
-        assert_eq!(tokens_in_rect(&toks, band), Some((0, 1)));
-        assert_eq!(selected_text(&toks, 0, 1), "Mozilla officially");
+        assert_eq!(tokens_in_rect(&toks, band), Some((0, off - 1)));
+        assert_eq!(selected_text(&toks, 0, off - 1), "Mozilla");
     }
 
     #[test]
     fn page_from_plain_covers_image() {
         let page = page_from_plain("Hello world", 100, 40);
         assert_eq!(page.text, "Hello world");
-        assert_eq!(page.tokens.len(), 2);
+        assert_eq!(page.tokens.len(), "Helloworld".len());
         assert!(hit_token(&page.tokens, Point::new(20.0, 20.0)).is_some());
     }
 
