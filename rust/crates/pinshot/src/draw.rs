@@ -405,6 +405,9 @@ fn blit_raster_copy(pm: &mut Pixmap, img: &Raster, x: i32, y: i32) {
 /// Persistent overlay compositor: cached capture + dirty GDI present.
 pub struct OverlayFront {
     shot: Pixmap,
+    /// Pre-dimmed desktop. Restores copy this instead of alpha-blending
+    /// black onto `shot`, so magnifier dirty rects cannot stack extra dim.
+    dimmed: Pixmap,
     frame: Pixmap,
     #[cfg(windows)]
     gdi: GdiBits,
@@ -582,8 +585,9 @@ impl OverlayFront {
         let shot_pm = shot.to_skia().ok_or("capture pixmap")?;
         crate::logutil::ms("overlay to_skia", t0);
         let t_dim = std::time::Instant::now();
-        let frame = dim_pixmap(&shot_pm, dim).ok_or("dim pixmap")?;
+        let dimmed = dim_pixmap(&shot_pm, dim).ok_or("dim pixmap")?;
         crate::logutil::ms("overlay dim", t_dim);
+        let frame = dimmed.clone();
         #[cfg(windows)]
         let t_gdi = std::time::Instant::now();
         #[cfg(windows)]
@@ -598,6 +602,7 @@ impl OverlayFront {
         }
         Ok(Self {
             shot: shot_pm,
+            dimmed,
             frame,
             #[cfg(windows)]
             gdi,
@@ -631,7 +636,8 @@ impl OverlayFront {
             return Ok(());
         }
         self.shot = shot_pm;
-        self.frame = dim_pixmap(&self.shot, self.dim).ok_or("dim pixmap")?;
+        self.dimmed = dim_pixmap(&self.shot, self.dim).ok_or("dim pixmap")?;
+        self.frame = self.dimmed.clone();
         let bounds = self.bounds();
         self.last_hole = Rect::EMPTY;
         self.last_chrome.clear();
@@ -645,16 +651,12 @@ impl OverlayFront {
         Ok(())
     }
 
-    fn restore(&mut self, r: Rect, hole: Rect) {
+    fn restore(&mut self, r: Rect, _hole: Rect) {
         let r = clip_rect(r, self.bounds());
         if r.is_empty() {
             return;
         }
-        copy_rect(&mut self.frame, &self.shot, r);
-        let dim_c = Rgba::rgba(0, 0, 0, self.dim);
-        for band in r.subtract(hole) {
-            fill_rect(&mut self.frame, band, dim_c);
-        }
+        copy_rect(&mut self.frame, &self.dimmed, r);
     }
 
     pub fn paint(
@@ -1927,6 +1929,63 @@ mod tests {
         let y = (small_chip.y + small_chip.h * 0.5) as u32;
         let px = front.pixmap().pixel(x, y).expect("px").demultiply();
         assert!(px.red() < 100, "resized chip should still be dark");
+    }
+
+    #[test]
+    fn magnifier_outside_sel_does_not_double_dim() {
+        let w = 640u32;
+        let h = 400u32;
+        let shot = gray_shot(w, h, 210);
+        let mut front = OverlayFront::new(&shot, 110).expect("front");
+        let bounds = Rect::new(0.0, 0.0, w as f32, h as f32);
+        let mut sel = Selection::new();
+        sel.set_rect(Rect::new(20.0, 20.0, 100.0, 100.0), bounds);
+        let c0 = Point::new(200.0, 40.0);
+        let c1 = Point::new(400.0, 280.0);
+        let paint = |front: &mut OverlayFront, cursor: Point| {
+            front.paint(
+                dummy_hwnd(),
+                &sel,
+                Rect::EMPTY,
+                cursor,
+                1.0,
+                false,
+                true,
+                &Annotator::new(),
+                None,
+                None,
+                false,
+                &shot,
+                None,
+                None,
+            );
+        };
+        paint(&mut front, c0);
+        let mag0 = layout_magnifier(c0, bounds, Rgba::rgb(40, 40, 40), Point::new(200.0, 40.0));
+        let sx = (mag0.grid.x + 4.0) as u32;
+        let sy = (mag0.grid.y + 4.0) as u32;
+        let p_mag = front.pixmap().pixel(sx, sy).expect("px").demultiply();
+        assert!(
+            p_mag.red() > 150,
+            "magnifier should show the undimmed capture, got {}",
+            p_mag.red()
+        );
+        paint(&mut front, c1);
+        let p = front.pixmap().pixel(sx, sy).expect("px").demultiply();
+        let mag1 = layout_magnifier(c1, bounds, Rgba::rgb(40, 40, 40), Point::new(400.0, 280.0));
+        let still_on_mag = mag1
+            .grid
+            .union(mag1.info)
+            .contains(Point::new(sx as f32, sy as f32));
+        if !still_on_mag {
+            assert!(
+                (p.red() as i16 - 119).abs() <= 3 && (p.red() as i16 - p.green() as i16).abs() < 4,
+                "old magnifier outside the sel must restore to one dim layer, got {},{},{}",
+                p.red(),
+                p.green(),
+                p.blue()
+            );
+        }
     }
 
     #[test]

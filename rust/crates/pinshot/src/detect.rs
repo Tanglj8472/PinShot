@@ -18,11 +18,11 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::UI::Accessibility::{AccessibleObjectFromPoint, IAccessible};
 use windows::Win32::UI::WindowsAndMessaging::{
-    ChildWindowFromPointEx, EnumChildWindows, EnumWindows, GetTopWindow, GetWindow, GetWindowLongW,
-    GetWindowRect, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsIconic,
-    IsWindowVisible, RealChildWindowFromPoint, SendMessageTimeoutW, CWP_SKIPINVISIBLE,
-    CWP_SKIPTRANSPARENT, GWL_EXSTYLE, GW_HWNDNEXT, OBJID_CLIENT, SMTO_ABORTIFHUNG, WM_GETOBJECT,
-    WS_EX_TOOLWINDOW,
+    ChildWindowFromPointEx, EnumChildWindows, EnumWindows, GetAncestor, GetTopWindow, GetWindow,
+    GetWindowLongW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
+    IsIconic, IsWindowVisible, RealChildWindowFromPoint, SendMessageTimeoutW, WindowFromPoint,
+    CWP_SKIPINVISIBLE, CWP_SKIPTRANSPARENT, GA_ROOT, GWL_EXSTYLE, GW_HWNDNEXT, OBJID_CLIENT,
+    SMTO_ABORTIFHUNG, WM_GETOBJECT, WS_EX_TOOLWINDOW,
 };
 
 use crate::win32::{is_cloaked, window_frame, with_hit_through};
@@ -292,22 +292,40 @@ fn exclude_hwnd(raw: Option<isize>) -> HWND {
     raw.map(|v| HWND(v as *mut _)).unwrap_or_default()
 }
 
+fn usable_top(hwnd: HWND, exclude: HWND, exclude_pid: u32) -> bool {
+    if !hwnd_nonzero(hwnd) || hwnd == exclude {
+        return false;
+    }
+    unsafe {
+        if !IsWindowVisible(hwnd).as_bool() || IsIconic(hwnd).as_bool() || is_cloaked(hwnd) {
+            return false;
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        pid != exclude_pid
+    }
+}
+
 fn top_window_at(sx: i32, sy: i32, exclude: HWND, exclude_pid: u32) -> Option<HWND> {
     unsafe {
+        let hit = WindowFromPoint(POINT { x: sx, y: sy });
+        if hwnd_nonzero(hit) {
+            let root = GetAncestor(hit, GA_ROOT);
+            let top = if hwnd_nonzero(root) { root } else { hit };
+            if usable_top(top, exclude, exclude_pid) {
+                if let Some((x, y, w, h)) = window_frame(top) {
+                    if sx >= x && sy >= y && sx < x + w && sy < y + h {
+                        return Some(top);
+                    }
+                }
+            }
+        }
         let mut hwnd = GetTopWindow(HWND::default()).ok()?;
         loop {
-            if hwnd != exclude
-                && IsWindowVisible(hwnd).as_bool()
-                && !IsIconic(hwnd).as_bool()
-                && !is_cloaked(hwnd)
-            {
-                let mut pid = 0u32;
-                GetWindowThreadProcessId(hwnd, Some(&mut pid));
-                if pid != exclude_pid {
-                    if let Some((x, y, w, h)) = window_frame(hwnd) {
-                        if sx >= x && sy >= y && sx < x + w && sy < y + h {
-                            return Some(hwnd);
-                        }
+            if usable_top(hwnd, exclude, exclude_pid) {
+                if let Some((x, y, w, h)) = window_frame(hwnd) {
+                    if sx >= x && sy >= y && sx < x + w && sy < y + h {
+                        return Some(hwnd);
                     }
                 }
             }
@@ -569,6 +587,18 @@ pub fn element_at_point(sx: i32, sy: i32, exclude: Option<isize>) -> Option<Poin
     let t0 = Instant::now();
     let self_pid = unsafe { GetCurrentProcessId() };
     let skip = exclude_hwnd(exclude);
+    // Hit-through for z-order and UIA: a recycled overlay HWND stays in the
+    // stack even when hidden, and otherwise absorbs ElementFromPoint.
+    with_hit_through(skip, || element_at_point_inner(sx, sy, skip, self_pid, t0))
+}
+
+fn element_at_point_inner(
+    sx: i32,
+    sy: i32,
+    skip: HWND,
+    self_pid: u32,
+    t0: Instant,
+) -> Option<PointHit> {
     let top = top_window_at(sx, sy, skip, self_pid)?;
     let mut pid = 0u32;
     unsafe {
@@ -581,12 +611,8 @@ pub fn element_at_point(sx: i32, sy: i32, exclude: Option<isize>) -> Option<Poin
     wake_accessibility(child);
 
     let deadline = Instant::now() + Duration::from_millis(25);
-    let (uia_hit, msaa_hit) = with_hit_through(skip, || {
-        (
-            uia_from_point(sx, sy, top, skip, self_pid, deadline),
-            msaa_from_point(sx, sy),
-        )
-    });
+    let uia_hit = uia_from_point(sx, sy, top, skip, self_pid, deadline);
+    let msaa_hit = msaa_from_point(sx, sy);
 
     let mut cands = Vec::new();
     if let Some((r, d)) = uia_hit {

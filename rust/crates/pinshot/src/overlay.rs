@@ -140,6 +140,9 @@ fn overlay_window(
                 let _ = window.request_inner_size(PhysicalSize::new(w, h));
             }
             native::apply_overlay_style(&window);
+            // Recycled HWND was uncloaked on the last F1. Cloak before the
+            // live hit-test so a still mouse still sees the window underneath.
+            native::cloak_window(&window, true);
             return Ok(window);
         }
         crate::logutil::log(&format!(
@@ -275,7 +278,10 @@ impl Overlay {
             s.cursor = Point::new((sx - ox) as f32, (sy - oy) as f32);
         }
         // Hit-test now, not on the first CursorMoved: F1 with a still mouse
-        // must still draw the window / control ring.
+        // must still draw the window / control ring. Stay cloaked so the
+        // recycled overlay is not the UIA / z-order hit.
+        #[cfg(windows)]
+        native::cloak_window(&s.window, true);
         s.update_hover();
         crate::logutil::log(&format!(
             "overlay hover {:.0}x{:.0} at {:.0},{:.0}",
@@ -794,6 +800,8 @@ impl Overlay {
     }
 
     pub fn hide_for_capture(&self) {
+        #[cfg(windows)]
+        native::cloak_window(&self.window, true);
         self.window.set_visible(false);
         crate::native::unmap_sync(&self.window);
     }
