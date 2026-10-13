@@ -51,6 +51,24 @@ pub fn apply_pin_style(window: &Window) {
     crate::x11util::apply_pin_style(window);
 }
 
+pub fn cursor_screen() -> Option<(i32, i32)> {
+    #[cfg(windows)]
+    {
+        crate::win32::cursor_pos()
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
+pub fn move_window(window: &Window, x: i32, y: i32) {
+    #[cfg(windows)]
+    crate::win32::move_window(hwnd_of(window), x, y);
+    #[cfg(not(windows))]
+    window.set_outer_position(winit::dpi::PhysicalPosition::new(x, y));
+}
+
 pub fn set_opacity(window: &Window, opacity: f32) {
     #[cfg(windows)]
     crate::win32::set_opacity(hwnd_of(window), opacity);

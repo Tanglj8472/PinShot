@@ -80,7 +80,8 @@ pub struct PinWin {
     pub opacity: f32,
     pub click_through: bool,
     glow: f32,
-    drag: Option<(Point, (i32, i32))>,
+    /// Grab offset from the window origin to the screen cursor while dragging.
+    drag: Option<(i32, i32)>,
     last_cursor: Point,
     /// Last applied outer origin. winit `outer_position` stays stale on xfwm4
     /// after `request_inner_size`, so consecutive wheel notches must not reread it.
@@ -240,6 +241,37 @@ impl PinWin {
         self.geom_pos
             .or_else(|| self.window.outer_position().ok().map(|p| (p.x, p.y)))
             .unwrap_or((40, 40))
+    }
+
+    fn screen_pointer(&self) -> (i32, i32) {
+        if let Some(p) = native::cursor_screen() {
+            return p;
+        }
+        let tl = self.current_tl();
+        (
+            tl.0 + self.last_cursor.x.round() as i32,
+            tl.1 + self.last_cursor.y.round() as i32,
+        )
+    }
+
+    fn begin_drag(&mut self) {
+        self.show_hover_tb(false);
+        self.dirty = false;
+        let tl = self.current_tl();
+        let (sx, sy) = self.screen_pointer();
+        self.drag = Some(pin_grab_offset(tl, (sx, sy)));
+    }
+
+    fn drag_to_cursor(&mut self) {
+        let Some(grab) = self.drag else {
+            return;
+        };
+        let (nx, ny) = pin_origin_from_cursor(self.screen_pointer(), grab);
+        if self.geom_pos == Some((nx, ny)) {
+            return;
+        }
+        native::move_window(&self.window, nx, ny);
+        self.geom_pos = Some((nx, ny));
     }
 
     fn apply_geom(&mut self, x: i32, y: i32, w: u32, h: u32) {
@@ -472,7 +504,9 @@ impl PinWin {
     pub fn tick_glow(&mut self) {
         if self.glow > 0.0 {
             self.glow = (self.glow - 0.05).max(0.0);
-            self.dirty = true;
+            if self.drag.is_none() {
+                self.dirty = true;
+            }
         }
     }
 
@@ -896,12 +930,16 @@ impl PinWin {
                     .as_ref()
                     .map(|t| t.contains(self.last_cursor))
                     .unwrap_or(false);
+                let prev = self.last_cursor;
                 self.last_cursor = p;
                 if !self.annotating && !self.thumb {
                     let show = self.drag.is_none() && self.ocr_gesture.is_none();
                     self.show_hover_tb(show);
                     if show {
-                        self.dirty = true;
+                        let over = self.toolbar.as_ref().is_some_and(|t| t.contains(p));
+                        if over != was_over_tb || (over && t_hot_changed(&self.toolbar, prev, p)) {
+                            self.dirty = true;
+                        }
                     }
                 }
                 if self.annotating
@@ -932,19 +970,11 @@ impl PinWin {
                         if let Some(ocr) = self.ocr.as_mut() {
                             ocr.sel = None;
                         }
-                        self.drag = Some((g.win0, g.tl0));
-                        let nx = g.tl0.0 + (p.x - g.win0.x) as i32;
-                        let ny = g.tl0.1 + (p.y - g.win0.y) as i32;
-                        self.window
-                            .set_outer_position(PhysicalPosition::new(nx, ny));
-                        self.geom_pos = Some((nx, ny));
+                        self.begin_drag();
+                        self.drag_to_cursor();
                     }
-                } else if let Some((off, tl)) = self.drag {
-                    let nx = tl.0 + (p.x - off.x) as i32;
-                    let ny = tl.1 + (p.y - off.y) as i32;
-                    self.window
-                        .set_outer_position(PhysicalPosition::new(nx, ny));
-                    self.geom_pos = Some((nx, ny));
+                } else if self.drag.is_some() {
+                    self.drag_to_cursor();
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => {
@@ -1019,7 +1049,7 @@ impl PinWin {
                         }
                         return;
                     }
-                    self.drag = Some((p, self.current_tl()));
+                    self.begin_drag();
                 } else {
                     if self.annotating
                         && (self.annot.live.is_some()
@@ -1499,6 +1529,9 @@ impl PinWin {
     }
 
     pub fn redraw(&mut self) {
+        if self.drag.is_some() {
+            return;
+        }
         self.expire_toast();
         let (ww, hh) = self.win_px();
         if self
@@ -1698,7 +1731,7 @@ impl PinWin {
         if self.annot.text_edit.is_some() {
             self.dirty = true;
         }
-        if self.dirty {
+        if self.dirty && self.drag.is_none() {
             self.window.request_redraw();
         }
     }
@@ -1715,6 +1748,21 @@ impl PinWin {
     }
 }
 
+pub fn pin_grab_offset(tl: (i32, i32), cursor: (i32, i32)) -> (i32, i32) {
+    (cursor.0 - tl.0, cursor.1 - tl.1)
+}
+
+pub fn pin_origin_from_cursor(cursor: (i32, i32), grab: (i32, i32)) -> (i32, i32) {
+    (cursor.0 - grab.0, cursor.1 - grab.1)
+}
+
+fn t_hot_changed(tb: &Option<Toolbar>, a: Point, b: Point) -> bool {
+    let Some(tb) = tb else {
+        return false;
+    };
+    tb.hit(a) != tb.hit(b)
+}
+
 /// Keep the image pixel under `anchor` fixed while the scale changes.
 pub fn zoom_pos(tl: (i32, i32), anchor: Point, old: f32, new: f32, margin: f32) -> (i32, i32) {
     let old = old.max(0.01);
@@ -1728,6 +1776,14 @@ pub fn zoom_pos(tl: (i32, i32), anchor: Point, old: f32, new: f32, margin: f32) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[test]
+    fn drag_uses_screen_cursor_minus_grab() {
+        let grab = pin_grab_offset((100, 80), (140, 110));
+        assert_eq!(grab, (40, 30));
+        assert_eq!(pin_origin_from_cursor((200, 160), grab), (160, 130));
+    }
 
     #[test]
     fn zoom_out_moves_origin_so_pointer_stays() {
