@@ -264,9 +264,15 @@ pub fn draw_icon(pixmap: &mut Pixmap, kind: IconKind, cell: Rect, color: Option<
             }
         }
         IconKind::Line => {
-            if let Some(path) = line_path((4.0, 16.0), (16.0, 4.0)) {
+            // Snipaste-style: diagonal stroke with a small filled head.
+            let a = (3.8, 16.2);
+            let b = (16.4, 3.6);
+            let (head, half_w) = (5.4, 2.35);
+            let shaft_end = arrow_geom(a, b, head, half_w).map(|g| g.2).unwrap_or(b);
+            if let Some(path) = line_path(a, shaft_end) {
                 pixmap.stroke_path(&path, &p, &st, t, None);
             }
+            arrow_head_ex(pixmap, a, b, head, half_w, color, t, false);
         }
         IconKind::Arrow => {
             fill_sharp_icon(pixmap, (3.5, 16.5), (16.5, 3.5), color, t);
@@ -288,24 +294,44 @@ pub fn draw_icon(pixmap: &mut Pixmap, kind: IconKind, cell: Rect, color: Option<
             arrow_head_ex(pixmap, (4.0, 16.0), (16.0, 4.0), 6.4, 3.3, color, t, true);
         }
         IconKind::Pen => {
-            let mut pb = PathBuilder::new();
-            pb.move_to(3.0, 14.0);
-            pb.cubic_to(6.0, 4.0, 10.0, 18.0, 17.0, 5.0);
-            if let Some(path) = pb.finish() {
+            // Pencil pointing up-right: tip, wood, shaft, ferrule.
+            let mut body = PathBuilder::new();
+            body.move_to(16.7, 3.3);
+            body.line_to(14.15, 3.85);
+            body.line_to(6.15, 11.85);
+            body.line_to(5.15, 13.55);
+            body.line_to(6.85, 15.25);
+            body.line_to(8.55, 14.25);
+            body.line_to(16.15, 6.25);
+            body.close();
+            if let Some(path) = body.finish() {
                 pixmap.stroke_path(&path, &p, &st, t, None);
+            }
+            if let Some(path) = line_path((6.35, 12.55), (7.85, 14.05)) {
+                pixmap.stroke_path(&path, &p, &st, t, None);
+            }
+            if let Some(path) = line_path((16.7, 3.3), (14.9, 5.1)) {
+                pixmap.stroke_path(&path, &p, &stroke(1.15), t, None);
             }
         }
         IconKind::Marker => {
-            let mut fat = stroke(6.0);
-            fat.line_cap = tiny_skia::LineCap::Butt;
-            let mp = paint(color.with_alpha(110));
-            if let Some(path) = line_path((3.0, 12.0), (17.0, 12.0)) {
-                pixmap.stroke_path(&path, &mp, &fat, t, None);
-            }
-            if let Some(path) = line_path((5.0, 6.0), (14.0, 6.0)) {
+            // Highlighter: thick barrel + chisel nib, pointing up-right.
+            let mut body = PathBuilder::new();
+            body.move_to(4.1, 12.4);
+            body.line_to(11.6, 4.9);
+            body.line_to(13.55, 4.55);
+            body.line_to(16.85, 6.15);
+            body.line_to(15.55, 8.35);
+            body.line_to(13.7, 7.85);
+            body.line_to(6.15, 15.4);
+            body.line_to(3.55, 14.55);
+            body.close();
+            if let Some(path) = body.finish() {
                 pixmap.stroke_path(&path, &p, &st, t, None);
             }
-            let _ = mp;
+            if let Some(path) = line_path((11.6, 4.9), (13.7, 7.85)) {
+                pixmap.stroke_path(&path, &p, &st, t, None);
+            }
         }
         IconKind::Mosaic => {
             for i in 0..3 {
@@ -356,14 +382,12 @@ pub fn draw_icon(pixmap: &mut Pixmap, kind: IconKind, cell: Rect, color: Option<
             }
         }
         IconKind::Undo | IconKind::Redo => {
-            let flip = matches!(kind, IconKind::Redo);
-            let tf = if flip {
-                t.pre_translate(20.0, 0.0).pre_scale(-1.0, 1.0)
-            } else {
-                t
-            };
-            // Reply / forward: parallel bars, semicircle on the right, arrow on the
-            // bottom (↩ / ↪). Redo is a horizontal flip of Undo.
+            // Flip 180° about the horizontal axis so the arrow sits on top
+            // (↶ / ↷). Redo is then mirrored left-right.
+            let mut tf = t.pre_translate(0.0, 20.0).pre_scale(1.0, -1.0);
+            if matches!(kind, IconKind::Redo) {
+                tf = tf.pre_translate(20.0, 0.0).pre_scale(-1.0, 1.0);
+            }
             let top = 5.4;
             let bot = 14.6;
             let mid = (top + bot) * 0.5;
@@ -661,19 +685,19 @@ mod tests {
         );
 
         let ink = |pm: &Pixmap, x: u32, y: u32| pm.pixel(x, y).unwrap().alpha() > 40;
-        // Undo: left-pointing head on the bottom, curve on the right.
-        assert!(ink(&undo, 5, 16), "undo arrow tip should sit bottom-left");
+        // Undo: left-pointing head on the top, curve on the right.
+        assert!(ink(&undo, 5, 7), "undo arrow tip should sit top-left");
         assert!(ink(&undo, 18, 12), "undo should curve on the right");
         assert!(
-            !ink(&undo, 18, 5),
-            "undo should not put the arrow in the top-right"
+            !ink(&undo, 18, 18),
+            "undo should not put the arrow in the bottom-right"
         );
-        // Redo: right-pointing head on the bottom, curve on the left.
-        assert!(ink(&redo, 18, 16), "redo arrow tip should sit bottom-right");
+        // Redo: right-pointing head on the top, curve on the left.
+        assert!(ink(&redo, 18, 7), "redo arrow tip should sit top-right");
         assert!(ink(&redo, 5, 12), "redo should curve on the left");
         assert!(
-            !ink(&redo, 5, 5),
-            "redo should not put the arrow in the top-left"
+            !ink(&redo, 5, 18),
+            "redo should not put the arrow in the bottom-left"
         );
         if let Ok(dir) = std::env::var("PINSHOT_DUMP_ICONS") {
             let dir = std::path::PathBuf::from(dir);
@@ -732,6 +756,9 @@ mod tests {
             arrow.data(),
             "Line and Arrow must be distinct icons"
         );
+        let ink = |pm: &Pixmap, x: u32, y: u32| pm.pixel(x, y).unwrap().alpha() > 40;
+        assert!(ink(&line, 17, 6), "line icon keeps a small arrow at the tip");
+        assert!(ink(&line, 6, 17), "line icon still has the diagonal shaft");
         let mut thick = Pixmap::new(24, 24).unwrap();
         let mut hollow = Pixmap::new(24, 24).unwrap();
         draw_icon(&mut thick, IconKind::ArrowThick, cell, None);
@@ -742,6 +769,52 @@ mod tests {
             hollow.data(),
             "thick and hollow arrows differ"
         );
+    }
+
+    #[test]
+    fn pen_and_marker_are_tool_glyphs() {
+        let cell = Rect::new(2.0, 2.0, 20.0, 20.0);
+        let ink = |pm: &Pixmap, x: u32, y: u32| pm.pixel(x, y).unwrap().alpha() > 40;
+        let mut pen = Pixmap::new(24, 24).unwrap();
+        let mut marker = Pixmap::new(24, 24).unwrap();
+        draw_icon(&mut pen, IconKind::Pen, cell, None);
+        draw_icon(&mut marker, IconKind::Marker, cell, None);
+        assert_ne!(pen.data(), marker.data());
+        assert!(ink(&pen, 18, 5), "pencil tip points up-right");
+        assert!(ink(&pen, 8, 16), "pencil eraser sits bottom-left");
+        assert!(ink(&marker, 18, 8), "highlighter nib points up-right");
+        assert!(ink(&marker, 6, 16), "highlighter barrel sits bottom-left");
+        if let Ok(dir) = std::env::var("PINSHOT_DUMP_ICONS") {
+            let dir = std::path::PathBuf::from(dir);
+            let _ = std::fs::create_dir_all(&dir);
+            dump_icon_preview(&dir.join("line.png"), IconKind::Line);
+            dump_icon_preview(&dir.join("pen.png"), IconKind::Pen);
+            dump_icon_preview(&dir.join("marker.png"), IconKind::Marker);
+            dump_icon_preview(&dir.join("undo.png"), IconKind::Undo);
+            dump_icon_preview(&dir.join("redo.png"), IconKind::Redo);
+            let mut strip = Pixmap::new(420, 88).unwrap();
+            strip.fill(tiny_skia::Color::from_rgba8(245, 245, 245, 255));
+            for (i, kind) in [
+                IconKind::Line,
+                IconKind::Pen,
+                IconKind::Marker,
+                IconKind::Undo,
+                IconKind::Redo,
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                draw_icon(
+                    &mut strip,
+                    kind,
+                    Rect::new(12.0 + i as f32 * 82.0, 12.0, 64.0, 64.0),
+                    Some(Rgba::rgb(40, 40, 40)),
+                );
+            }
+            if let Ok(png) = strip.encode_png() {
+                let _ = std::fs::write(dir.join("toolbar-icons.png"), png);
+            }
+        }
     }
 
     #[test]
