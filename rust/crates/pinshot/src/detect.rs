@@ -541,7 +541,7 @@ fn msaa_from_point(sx: i32, sy: i32) -> Option<(Rect, u32)> {
         let mut top = 0i32;
         let mut width = 0i32;
         let mut height = 0i32;
-        acc.accLocation(&mut left, &mut top, &mut width, &mut height, child)
+        acc.accLocation(&mut left, &mut top, &mut width, &mut height, &child)
             .ok()?;
         if width <= 3 || height <= 3 {
             return None;
