@@ -467,6 +467,11 @@ impl App {
 
     fn request_quit(&mut self, event_loop: &ActiveEventLoop) {
         crate::logutil::log("quit");
+        prefs::close_settings();
+        if let Some(w) = self.prefs.as_mut() {
+            w.close();
+        }
+        self.prefs = None;
         self.persist_session();
         crate::logutil::log("quit persist done");
         // Schedule the kill *before* hiding the tray: NIM_DELETE is a

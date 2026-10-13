@@ -8,6 +8,7 @@
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 use eframe::egui::{self, Color32, RichText, Ui, Visuals};
 use pinshot_core::config::{self, Config};
@@ -20,6 +21,7 @@ use winit::event_loop::EventLoopProxy;
 use crate::event::AppEvent;
 
 static OPEN: AtomicBool = AtomicBool::new(false);
+static CHILD: Mutex<Option<std::process::Child>> = Mutex::new(None);
 
 /// Snipaste Preferences uses one fixed height (tallest tab). Width hugs the form.
 const PREFS_W: f32 = 540.0;
@@ -58,7 +60,6 @@ pub fn mark_closed() {
 pub fn open(cfg: Config, proxy: EventLoopProxy<AppEvent>) {
     crate::logutil::log("prefs: open requested");
     let _ = (cfg, &proxy);
-    static CHILD: std::sync::Mutex<Option<std::process::Child>> = std::sync::Mutex::new(None);
     let mut child = CHILD.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(proc) = child.as_mut() {
         if matches!(proc.try_wait(), Ok(None)) {
@@ -80,6 +81,17 @@ pub fn open(cfg: Config, proxy: EventLoopProxy<AppEvent>) {
             let _ = proxy.send_event(AppEvent::OpenPrefs);
         }
     }
+}
+
+/// Tray / hotkey quit: the settings child is a separate process (own HWND /
+/// default exe icon). Kill it so it cannot outlive the tray.
+pub fn close_settings() {
+    let mut child = CHILD.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(mut proc) = child.take() {
+        let _ = proc.kill();
+        let _ = proc.wait();
+    }
+    OPEN.store(false, Ordering::SeqCst);
 }
 
 fn raise_settings_window(pid: u32) {
@@ -118,6 +130,12 @@ pub fn run_preferences() {
     let cfg = config::load().unwrap_or_default();
     i18n::set_lang(cfg.lang());
     let size = prefs_inner_size();
+    let (iw, ih, rgba) = pinshot_core::icons::app_icon_rgba(32);
+    let icon = egui::IconData {
+        rgba,
+        width: iw,
+        height: ih,
+    };
     let opts = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(tr("PinShot Preferences"))
@@ -125,11 +143,20 @@ pub fn run_preferences() {
             .with_min_inner_size([PREFS_MIN_W, PREFS_H])
             .with_max_inner_size([PREFS_W, PREFS_H])
             .with_resizable(false)
-            .with_always_on_top(),
+            .with_always_on_top()
+            .with_taskbar(false)
+            .with_icon(icon),
         persist_window: false,
         centered: true,
         ..Default::default()
     };
+    #[cfg(windows)]
+    std::thread::spawn(|| {
+        for _ in 0..25 {
+            std::thread::sleep(std::time::Duration::from_millis(40));
+            crate::win32::restyle_prefs_windows();
+        }
+    });
     if let Err(e) = eframe::run_native(
         "PinShot Preferences",
         opts,

@@ -172,10 +172,10 @@ fn fill_sharp_icon(
     let uy = dy / len;
     let vx = -uy;
     let vy = ux;
-    let tail_hw = 1.85;
-    let head_len = (len * 0.20).max(3.4);
-    let barb_hw = 2.05;
-    let neck_hw = 0.55;
+    let tail_hw = 0.55;
+    let head_len = (len * 0.22).max(3.4);
+    let barb_hw = 2.35;
+    let neck_hw = 1.55;
     let nx = b.0 - ux * head_len;
     let ny = b.1 - uy * head_len;
     let mut pb = PathBuilder::new();

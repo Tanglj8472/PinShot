@@ -18,15 +18,17 @@ use windows::Win32::UI::HiDpi::{
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS, VK_CONTROL,
 };
+use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, FindWindowW, GetCursorPos, GetSystemMetrics,
-    GetWindowLongPtrW, IsWindow, PostMessageW, RegisterClassW, SetCursorPos,
-    SetLayeredWindowAttributes, SetWindowDisplayAffinity, SetWindowLongPtrW, SetWindowPos,
-    ShowWindow, GWL_EXSTYLE, GWL_STYLE, HWND_NOTOPMOST, HWND_TOPMOST, LWA_ALPHA, SM_REMOTESESSION,
-    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOREDRAW, SWP_NOSIZE, SWP_NOZORDER,
-    SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE, WINDOW_DISPLAY_AFFINITY, WM_DESTROY, WM_HOTKEY,
-    WNDCLASSW, WS_EX_APPWINDOW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
-    WS_EX_TRANSPARENT, WS_MAXIMIZE, WS_OVERLAPPEDWINDOW, WS_POPUP,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, EnumWindows, FindWindowW, GetCursorPos,
+    GetSystemMetrics, GetWindowLongPtrW, GetWindowTextW, GetWindowThreadProcessId, IsWindow,
+    PostMessageW, RegisterClassW, SetCursorPos, SetLayeredWindowAttributes,
+    SetWindowDisplayAffinity, SetWindowLongPtrW, SetWindowPos, ShowWindow, GWL_EXSTYLE, GWL_STYLE,
+    HWND_NOTOPMOST, HWND_TOPMOST, LWA_ALPHA, SM_REMOTESESSION, SWP_FRAMECHANGED, SWP_NOACTIVATE,
+    SWP_NOMOVE, SWP_NOREDRAW, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE,
+    WINDOW_DISPLAY_AFFINITY, WM_DESTROY, WM_HOTKEY, WNDCLASSW, WS_EX_APPWINDOW, WS_EX_LAYERED,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_MAXIMIZE,
+    WS_OVERLAPPEDWINDOW, WS_POPUP,
 };
 use winit::event_loop::EventLoopProxy;
 use winit::window::Window;
@@ -201,6 +203,49 @@ pub fn include_in_capture(hwnd: HWND) {
 
 pub fn is_remote_session() -> bool {
     unsafe { GetSystemMetrics(SM_REMOTESESSION) != 0 }
+}
+
+/// Snipaste-style: Preferences is a tool window, not a taskbar app.
+pub fn restyle_prefs_windows() {
+    unsafe {
+        let pid = GetCurrentProcessId();
+        let _ = EnumWindows(Some(restyle_prefs_visit), LPARAM(pid as isize));
+    }
+}
+
+unsafe extern "system" fn restyle_prefs_visit(hwnd: HWND, data: LPARAM) -> windows::Win32::Foundation::BOOL {
+    unsafe {
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if pid != data.0 as u32 {
+            return windows::Win32::Foundation::BOOL(1);
+        }
+        let mut buf = [0u16; 128];
+        let n = GetWindowTextW(hwnd, &mut buf);
+        if n <= 0 {
+            return windows::Win32::Foundation::BOOL(1);
+        }
+        let title = String::from_utf16_lossy(&buf[..n as usize]);
+        if !title.contains("Preferences") && !title.contains("首选项") && !title.contains("设置") {
+            return windows::Win32::Foundation::BOOL(1);
+        }
+        let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        SetWindowLongPtrW(
+            hwnd,
+            GWL_EXSTYLE,
+            (ex | WS_EX_TOOLWINDOW.0 as isize) & !(WS_EX_APPWINDOW.0 as isize),
+        );
+        let _ = SetWindowPos(
+            hwnd,
+            HWND_TOPMOST,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+        );
+        windows::Win32::Foundation::BOOL(1)
+    }
 }
 
 pub fn apply_pin_style(hwnd: HWND) {

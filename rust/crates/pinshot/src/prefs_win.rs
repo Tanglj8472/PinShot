@@ -71,12 +71,14 @@ impl PrefsWin {
         proxy: EventLoopProxy<AppEvent>,
     ) -> Result<Self, String> {
         crate::logutil::log("prefs: opening settings window");
-        let attrs = Window::default_attributes()
-            .with_title(tr("PinShot Preferences"))
-            .with_inner_size(LogicalSize::new(W, H))
-            .with_min_inner_size(LogicalSize::new(440.0, 360.0))
-            .with_resizable(true)
-            .with_window_level(WindowLevel::AlwaysOnTop);
+        let attrs = crate::native::as_tool_window(
+            Window::default_attributes()
+                .with_title(tr("PinShot Preferences"))
+                .with_inner_size(LogicalSize::new(W, H))
+                .with_min_inner_size(LogicalSize::new(440.0, 360.0))
+                .with_resizable(true)
+                .with_window_level(WindowLevel::AlwaysOnTop),
+        );
         let window = Rc::new(event_loop.create_window(attrs).map_err(|e| e.to_string())?);
         crate::native::raise_on_top(&window);
         crate::native::focus_window(&window);
