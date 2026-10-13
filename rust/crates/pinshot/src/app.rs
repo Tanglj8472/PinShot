@@ -459,22 +459,17 @@ impl App {
         crate::logutil::log("quit");
         self.persist_session();
         crate::logutil::log("quit persist done");
-        // Skip Drop of HWNDs: DestroyWindow from the tray/winit callback
-        // deadlocks. `process::exit` is still ExitProcess and hits the same
-        // deadlock in tray-icon DLL detach. Forget then TerminateProcess.
-        std::mem::forget(self.tray.take());
-        std::mem::forget(self.hotkeys.take());
-        std::mem::forget(self.overlay.take());
-        std::mem::forget(std::mem::take(&mut self.pins));
-        std::mem::forget(self.pump_win.take());
-        std::mem::forget(self.fallback.take());
-        std::mem::forget(self.prefs.take());
-        std::mem::forget(self.pin_menu.take());
-        std::mem::forget(self.countdown.take());
+        // Schedule the kill *before* hiding the tray: NIM_DELETE is a
+        // SendMessage to the tray HWND and can stall this thread.
+        native::schedule_kill_process(0);
+        if let Some(tray) = &self.tray {
+            tray.hide_icon();
+        }
+        crate::logutil::log("quit tray hidden");
         crate::logutil::log("quit exiting");
         crate::logutil::detach_console();
         let _ = event_loop;
-        native::kill_process(0);
+        native::park_until_killed();
     }
 
     fn ensure_pump_window(&mut self, event_loop: &ActiveEventLoop) {

@@ -58,17 +58,30 @@ pub fn ignore_ctrl_c() {
     }
 }
 
-/// `ExitProcess` (Rust `process::exit`) still runs DLL detach. tray-icon /
-/// winit then `DestroyWindow` on the GUI thread that is inside the tray
-/// callback — `cargo run` never returns. `TerminateProcess` skips detach.
-pub fn kill_process(code: u32) -> ! {
-    unsafe {
-        let _ = windows::Win32::System::Threading::TerminateProcess(
-            windows::Win32::System::Threading::GetCurrentProcess(),
-            code,
-        );
+/// `TerminateProcess` from another thread. Do not call it (or `ExitProcess`)
+/// on the GUI thread: tray-icon `DestroyWindow` deadlocks and the notify
+/// icon stays clickable but dead.
+pub fn schedule_kill_process(code: u32) {
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(80));
+        unsafe {
+            let _ = windows::Win32::System::Threading::TerminateProcess(
+                windows::Win32::System::Threading::GetCurrentProcess(),
+                code,
+            );
+        }
+    });
+}
+
+pub fn park_until_killed() -> ! {
+    loop {
+        std::thread::sleep(std::time::Duration::from_secs(1));
     }
-    std::process::exit(code as i32)
+}
+
+pub fn kill_process(code: u32) -> ! {
+    schedule_kill_process(code);
+    park_until_killed();
 }
 
 pub fn hide_sync(hwnd: HWND) {

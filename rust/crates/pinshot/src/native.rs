@@ -269,6 +269,20 @@ pub fn compositor_active() -> bool {
     }
 }
 
+pub fn schedule_kill_process(code: u32) {
+    #[cfg(windows)]
+    crate::win32::schedule_kill_process(code);
+    #[cfg(not(windows))]
+    let _ = code;
+}
+
+pub fn park_until_killed() -> ! {
+    #[cfg(windows)]
+    crate::win32::park_until_killed();
+    #[cfg(not(windows))]
+    std::process::exit(0)
+}
+
 pub fn kill_process(code: u32) -> ! {
     #[cfg(windows)]
     crate::win32::kill_process(code);

@@ -70,6 +70,12 @@ impl Tray {
         })
     }
 
+    /// NIM_DELETE only. Do not Drop the TrayIcon: DestroyWindow of its HWND
+    /// from the winit/tray callback deadlocks and leaves a dead icon.
+    pub fn hide_icon(&self) {
+        let _ = self._icon.set_visible(false);
+    }
+
     pub fn poll(&self) -> Option<TrayCmd> {
         // Menu ids first and drain the queue. Windows emits a tray Click when a
         // context item is chosen; treating any-button Click as Snip made every
