@@ -7,7 +7,8 @@ use std::sync::Mutex;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Graphics::Dwm::{
-    DwmGetWindowAttribute, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS,
+    DwmGetWindowAttribute, DwmSetWindowAttribute, DWMWA_CLOAK, DWMWA_CLOAKED,
+    DWMWA_EXTENDED_FRAME_BOUNDS,
 };
 use windows::Win32::Graphics::Gdi::UpdateWindow;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -22,7 +23,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     PostMessageW, RegisterClassW, SetLayeredWindowAttributes, SetWindowDisplayAffinity,
     SetWindowLongPtrW, SetWindowPos, ShowWindow, GWL_EXSTYLE, HWND_TOPMOST, LWA_ALPHA,
     SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOREDRAW, SWP_NOSIZE, SWP_NOZORDER,
-    SWP_SHOWWINDOW, SW_HIDE, WINDOW_DISPLAY_AFFINITY, WM_DESTROY, WM_HOTKEY, WNDCLASSW,
+    SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE, WINDOW_DISPLAY_AFFINITY, WM_DESTROY, WM_HOTKEY,
+    WNDCLASSW,
     WS_EX_APPWINDOW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
     WS_EX_TRANSPARENT, WS_POPUP,
 };
@@ -74,6 +76,30 @@ pub fn hide_sync(hwnd: HWND) {
         let _ = ShowWindow(hwnd, SW_HIDE);
         // Do not UpdateWindow here: a synchronous WM_PAINT on a 4160×1400
         // overlay from about_to_wait / DestroyWindow deadlocks the pump.
+    }
+}
+
+/// DWM still composes a cloaked HWND, but the user does not see it. Warmup
+/// must cloak *before* ShowWindow: an off-screen fullscreen window is clamped
+/// onto a monitor and flashes.
+pub fn cloak_window(hwnd: HWND, cloak: bool) {
+    if hwnd.is_invalid() {
+        return;
+    }
+    let v: i32 = i32::from(cloak);
+    unsafe {
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_CLOAK,
+            std::ptr::from_ref(&v).cast(),
+            std::mem::size_of::<i32>() as u32,
+        );
+    }
+}
+
+pub fn show_noactivate(hwnd: HWND) {
+    unsafe {
+        let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
     }
 }
 

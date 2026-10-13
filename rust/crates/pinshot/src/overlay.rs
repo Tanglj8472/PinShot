@@ -316,15 +316,19 @@ impl Overlay {
         let t_draw = Instant::now();
         s.redraw();
         crate::logutil::ms("overlay first redraw", t_draw);
+        #[cfg(windows)]
+        native::cloak_window(&s.window, false);
         #[cfg(not(unix))]
         native::focus_window(&s.window);
         crate::logutil::ms("overlay start", t0);
         Ok(s)
     }
 
-    /// Map a fullscreen HWND off-screen so DWM allocates the virtual-desktop
-    /// redirect surface before the first F1. Keep the window: winit's Windows
-    /// pump stalls if every winit HWND is destroyed (tray-only).
+    /// Map a fullscreen HWND so DWM allocates the virtual-desktop redirect
+    /// surface before the first F1. Cloak first: Windows clamps "off-screen"
+    /// fullscreen windows onto a monitor, which flashes the desktop.
+    /// Keep the window: winit's Windows pump stalls if every winit HWND is
+    /// destroyed (tray-only).
     pub fn warmup_present(event_loop: &ActiveEventLoop) -> Option<Window> {
         #[cfg(not(windows))]
         {
@@ -342,12 +346,14 @@ impl Overlay {
                     .with_title("PinShot")
                     .with_decorations(false)
                     .with_resizable(false)
-                    .with_visible(true)
-                    .with_position(PhysicalPosition::new(vx - vw, vy - vh))
+                    .with_visible(false)
+                    .with_position(PhysicalPosition::new(vx, vy))
                     .with_inner_size(PhysicalSize::new(vw as u32, vh as u32)),
             );
             let window = event_loop.create_window(attrs).ok()?;
             native::apply_overlay_style(&window);
+            native::cloak_window(&window, true);
+            native::show_noactivate(&window);
             crate::draw::warmup_gdi_present(hwnd_of(&window), vw as u32, vh as u32);
             window.set_visible(false);
             crate::logutil::ms("overlay present warmup", t0);

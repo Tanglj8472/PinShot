@@ -62,6 +62,20 @@ pub fn apply_overlay_style(window: &Window) {
     crate::x11util::apply_overlay_style(window);
 }
 
+pub fn cloak_window(window: &Window, cloak: bool) {
+    #[cfg(windows)]
+    crate::win32::cloak_window(hwnd_of(window), cloak);
+    #[cfg(not(windows))]
+    let _ = (window, cloak);
+}
+
+pub fn show_noactivate(window: &Window) {
+    #[cfg(windows)]
+    crate::win32::show_noactivate(hwnd_of(window));
+    #[cfg(not(windows))]
+    let _ = window;
+}
+
 pub fn exclude_from_capture(window: &Window) {
     #[cfg(windows)]
     crate::win32::exclude_from_capture(hwnd_of(window));
