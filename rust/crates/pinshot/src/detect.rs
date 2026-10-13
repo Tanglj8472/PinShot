@@ -605,6 +605,7 @@ fn element_at_point_inner(
         GetWindowThreadProcessId(top, Some(&mut pid));
     }
     let exe = process_exe(pid);
+    crate::logutil::log(&format!("detect cursor in window exe={exe}"));
 
     let (child, hwnd_depth) = deepest_child_hwnd(top, sx, sy);
     wake_accessibility(top);

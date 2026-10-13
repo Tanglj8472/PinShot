@@ -506,15 +506,19 @@ impl GdiBits {
         }
         let pw = pm.width() as usize;
         let src = pm.data();
-        let cols = (x1 - x0) as usize;
         unsafe {
             for y in y0..y1 {
                 let srow = (y as usize * pw + x0 as usize) * 4;
-                let drow = (y * self.stride + x0 * 4) as usize;
-                rgba_to_bgra(
-                    std::slice::from_raw_parts_mut(self.bits.add(drow), cols * 4),
-                    &src[srow..srow + cols * 4],
-                );
+                let drow = (y * self.stride + x0 * 4) as isize;
+                let dst = self.bits.offset(drow);
+                let cols = (x1 - x0) as usize;
+                for i in 0..cols {
+                    // tiny-skia RGBA premul → GDI BGRA
+                    *dst.add(i * 4) = src[srow + i * 4 + 2];
+                    *dst.add(i * 4 + 1) = src[srow + i * 4 + 1];
+                    *dst.add(i * 4 + 2) = src[srow + i * 4];
+                    *dst.add(i * 4 + 3) = 255;
+                }
             }
         }
     }
@@ -549,31 +553,6 @@ impl Drop for GdiBits {
     }
 }
 
-/// RGBA u8 `R G B A` → GDI `B G R A`, 4 bytes at a time.
-#[cfg(windows)]
-fn rgba_to_bgra(dst: &mut [u8], src: &[u8]) {
-    let n = src.len() / 4;
-    if n == 0 || dst.len() < n * 4 {
-        return;
-    }
-    let src32 = unsafe { std::slice::from_raw_parts(src.as_ptr() as *const u32, n) };
-    let dst32 = unsafe { std::slice::from_raw_parts_mut(dst.as_mut_ptr() as *mut u32, n) };
-    for i in 0..n {
-        let v = src32[i];
-        dst32[i] = (v & 0xFF00_FF00) | ((v & 0xFF) << 16) | ((v >> 16) & 0xFF);
-    }
-}
-
-#[cfg(windows)]
-pub fn warmup_gdi_present(hwnd: NativeWin, w: u32, h: u32) {
-    if w == 0 || h == 0 {
-        return;
-    }
-    if let Ok(gdi) = GdiBits::new(w, h) {
-        gdi.blit_rect(hwnd, Rect::new(0.0, 0.0, w as f32, h as f32));
-    }
-}
-
 fn dim_pixmap(src: &Pixmap, dim: u8) -> Option<Pixmap> {
     let mut frame = Pixmap::new(src.width(), src.height())?;
     let k = 255u16.saturating_sub(dim as u16);
@@ -605,13 +584,7 @@ impl OverlayFront {
         #[cfg(windows)]
         let gdi = GdiBits::new(frame.width(), frame.height())?;
         #[cfg(windows)]
-        {
-            gdi.write_rect(
-                &frame,
-                Rect::new(0.0, 0.0, frame.width() as f32, frame.height() as f32),
-            );
-            crate::logutil::ms("overlay gdi swizzle", t_gdi);
-        }
+        crate::logutil::ms("overlay gdi dib", t_gdi);
         Ok(Self {
             shot: shot_pm,
             dimmed,
@@ -884,17 +857,8 @@ impl OverlayFront {
         if !self.primed {
             #[cfg(windows)]
             {
-                let t_dirty = std::time::Instant::now();
-                for r in present {
-                    let r = clip_rect(r, bounds);
-                    if !r.is_empty() {
-                        self.gdi.write_rect(&self.frame, r);
-                    }
-                }
-                crate::logutil::ms("overlay gdi dirty", t_dirty);
-                let t_blit = std::time::Instant::now();
+                self.gdi.write_rect(&self.frame, bounds);
                 self.gdi.blit_rect(hwnd, bounds);
-                crate::logutil::ms("overlay gdi blit", t_blit);
             }
             self.primed = true;
         } else {

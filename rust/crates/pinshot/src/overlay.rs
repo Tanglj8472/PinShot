@@ -348,43 +348,6 @@ impl Overlay {
         Ok(s)
     }
 
-    /// Map a fullscreen HWND so DWM allocates the virtual-desktop redirect
-    /// surface before the first F1. Cloak first: Windows clamps "off-screen"
-    /// fullscreen windows onto a monitor, which flashes the desktop.
-    /// Keep the window: winit's Windows pump stalls if every winit HWND is
-    /// destroyed (tray-only).
-    pub fn warmup_present(event_loop: &ActiveEventLoop) -> Option<Window> {
-        #[cfg(not(windows))]
-        {
-            let _ = event_loop;
-            return None;
-        }
-        #[cfg(windows)]
-        {
-            let Ok((vx, vy, vw, vh)) = crate::capture::virtual_desktop() else {
-                return None;
-            };
-            let t0 = Instant::now();
-            let attrs = native::as_tool_window(
-                Window::default_attributes()
-                    .with_title("PinShot")
-                    .with_decorations(false)
-                    .with_resizable(false)
-                    .with_visible(false)
-                    .with_position(PhysicalPosition::new(vx, vy))
-                    .with_inner_size(PhysicalSize::new(vw as u32, vh as u32)),
-            );
-            let window = event_loop.create_window(attrs).ok()?;
-            native::apply_overlay_style(&window);
-            native::cloak_window(&window, true);
-            native::show_noactivate(&window);
-            crate::draw::warmup_gdi_present(hwnd_of(&window), vw as u32, vh as u32);
-            window.set_visible(false);
-            crate::logutil::ms("overlay present warmup", t0);
-            Some(window)
-        }
-    }
-
     fn show_toast(&mut self, text: String) {
         crate::logutil::log(&format!("toast: {text}"));
         self.toast = Some(text);
@@ -570,15 +533,13 @@ impl Overlay {
         }
         self.hit_px = Some(key);
         let hover = if let Some(hit) = element_at_point(key.0, key.1, self.exclude_hwnd()) {
-            if hit.elapsed_ms >= 16 {
-                crate::logutil::log(&format!(
-                    "detect element for: {} depth={} {}ms ({})",
-                    hit.exe,
-                    hit.depth,
-                    hit.elapsed_ms,
-                    element_source()
-                ));
-            }
+            crate::logutil::log(&format!(
+                "detect element for: {} depth={} {}ms ({})",
+                hit.exe,
+                hit.depth,
+                hit.elapsed_ms,
+                element_source()
+            ));
             overlay_from_screen(hit.rect, origin)
         } else {
             hover_rect(pt, &self.windows, self.elements.as_slice(), self.bounds())
