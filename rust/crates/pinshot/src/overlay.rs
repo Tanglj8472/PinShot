@@ -1757,6 +1757,11 @@ impl Overlay {
     pub fn redraw(&mut self) {
         self.expire_toast();
         if !self.dirty {
+            // SetWindowPos / DWM / RDP may ask for a paint without a new
+            // mouse sample. Replay the last DIB so the freeze is not erased
+            // down to black behind the loupe.
+            #[cfg(windows)]
+            self.front.present_full(hwnd_of(&self.window));
             return;
         }
         let over_tb = self
@@ -1809,7 +1814,9 @@ impl Overlay {
         #[cfg(windows)]
         native::cloak_window(&self.window, false);
         self.window.set_visible(true);
-        self.cover_desktop();
+        // Do not cover_desktop() on every mouse move: HWND_NOTOPMOST +
+        // SWP_FRAMECHANGED invalidates the client, and the next dirty BitBlt
+        // of the loupe is what left the staircase stain on the freeze.
         self.dirty = false;
     }
 

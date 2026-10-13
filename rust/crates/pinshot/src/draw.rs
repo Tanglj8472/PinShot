@@ -325,13 +325,6 @@ fn align_dirty(r: Rect) -> Rect {
     Rect::new(x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0))
 }
 
-fn push_dirty(list: &mut Vec<Rect>, r: Rect, bounds: Rect) {
-    let r = clip_rect(align_dirty(r), bounds);
-    if !r.is_empty() {
-        list.push(r);
-    }
-}
-
 fn copy_rect(dst: &mut Pixmap, src: &Pixmap, r: Rect) {
     let bounds = Rect::new(0.0, 0.0, dst.width() as f32, dst.height() as f32).intersect(Rect::new(
         0.0,
@@ -700,37 +693,15 @@ impl OverlayFront {
         } else {
             size_label_dirty(hole, &size_text, fw, fh).intersect(bounds)
         };
-        // Chip sits ~22px above the hole — wider than hole_pad (8px) — so it
-        // is a first-class dirty rect. Union old+new so a drag BitBlts both.
-        let size_clear = self
-            .last_size_label
-            .union(size_label)
-            .inflated(8.0)
-            .intersect(bounds);
         let hole_pad = hole.inflated(10.0).union(size_label).intersect(bounds);
 
-        let mut present: Vec<Rect> = Vec::new();
-        // Restore each previous tile from the pre-dimmed freeze. Do not form
-        // one bounding union: hole + magnifier on a 6k desktop is a giant
-        // BitBlt, and SrcOver AA / CJK glyph overflow outside that tile is
-        // the usual leftover-trail stain on the unselected mask.
+        // Rebuild from the pre-dimmed freeze every frame. Dirty-rect restore
+        // plus GDI BitBlt of only the loupe leaves a staircase of black panels
+        // on the unselected mask (and on RDP / ToDesk, which often drop the
+        // "restore to dim" blit as too similar). Textbook overlay paint:
+        // full dimmed base, then punch the hole.
         // https://gist.github.com/AugusDogus/74416b933b407a0a0a9f64d38853cca6
-        let mut restore_list: Vec<Rect> = Vec::new();
-        push_dirty(&mut restore_list, self.last_hole.inflated(24.0), bounds);
-        push_dirty(
-            &mut restore_list,
-            self.last_size_label.inflated(24.0),
-            bounds,
-        );
-        for r in std::mem::take(&mut self.last_chrome) {
-            push_dirty(&mut restore_list, r.inflated(24.0), bounds);
-        }
-        push_dirty(&mut restore_list, hole_pad, bounds);
-        push_dirty(&mut restore_list, size_clear, bounds);
-        for r in &restore_list {
-            self.restore(*r);
-            present.push(*r);
-        }
+        self.restore(bounds);
 
         // Hole interior: undimmed capture + vector annotations (no full compose).
         if !hole.is_empty() {
@@ -868,35 +839,18 @@ impl OverlayFront {
             }
         }
 
-        for r in &chrome {
-            if !r.is_empty() {
-                present.push(*r);
-            }
-        }
         self.last_hole = hole;
         self.last_chrome = chrome;
         self.last_size_label = size_label;
 
-        if !self.primed {
-            #[cfg(windows)]
-            {
-                self.gdi.write_rect(&self.frame, bounds);
-                self.gdi.blit_rect(hwnd, bounds);
-            }
-            self.primed = true;
-        } else {
-            for r in present {
-                let r = clip_rect(align_dirty(r), bounds);
-                if r.is_empty() {
-                    continue;
-                }
-                #[cfg(windows)]
-                {
-                    self.gdi.write_rect(&self.frame, r);
-                    self.gdi.blit_rect(hwnd, r);
-                }
-            }
+        // Always present the whole DIB. Partial BitBlt of the loupe is what
+        // stamped the staircase of extra-dark panels onto the freeze.
+        #[cfg(windows)]
+        {
+            self.gdi.write_rect(&self.frame, bounds);
+            self.gdi.blit_rect(hwnd, bounds);
         }
+        self.primed = true;
         let _ = FillRule::Winding;
         let _ = hwnd;
     }
