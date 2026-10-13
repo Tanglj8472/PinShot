@@ -368,6 +368,7 @@ impl PinWin {
         self.ocr_gesture = None;
         self.status = None;
         self.ocr_flash_until = Some(Instant::now() + Duration::from_millis(900));
+        self.prefer_select_for_ocr();
         self.show_toast(tr("OCR ready — drag to select text"));
         self.dirty = true;
         self.window.request_redraw();
@@ -514,7 +515,9 @@ impl PinWin {
                 self.toggle_thumb();
             }
             if self.annot.tool.is_none() {
-                self.annot.set_tool(Some(Tool::Rect));
+                // Select, not Rect: opening the bar must not start drawing a
+                // box, or OCR text cannot be dragged.
+                self.annot.set_tool(Some(Tool::Select));
             }
             self.relayout_tb();
         } else {
@@ -524,6 +527,22 @@ impl PinWin {
         self.apply_size();
         self.dirty = true;
         self.sync_cursor();
+    }
+
+    fn prefer_select_for_ocr(&mut self) {
+        if self.annotating {
+            self.annot.set_tool(Some(Tool::Select));
+            self.relayout_tb();
+        }
+    }
+
+    fn ocr_text_mode(&self) -> bool {
+        pin_ocr_text_mode(
+            self.ocr.is_some(),
+            self.thumb,
+            self.annotating,
+            self.annot.tool,
+        )
     }
 
     fn relayout_tb(&mut self) {
@@ -623,6 +642,26 @@ impl PinWin {
         self.strip_rect().is_some_and(|r| r.contains(p))
     }
 
+    fn begin_ocr_select(&mut self, p: Point) {
+        if self.ocr_over_strip(p) {
+            return;
+        }
+        let img = self.img_pt(p);
+        let hit = self.ocr_hit(img);
+        self.ocr_gesture = Some(OcrGesture {
+            img0: img,
+            win0: p,
+            tl0: self.current_tl(),
+            selecting: hit.is_some(),
+        });
+        if let Some(i) = hit {
+            if let Some(ocr) = self.ocr.as_mut() {
+                ocr.sel = Some((i, i));
+            }
+            self.dirty = true;
+        }
+    }
+
     fn ocr_hit(&self, img_pt: Point) -> Option<usize> {
         self.ocr
             .as_ref()
@@ -680,34 +719,41 @@ impl PinWin {
         if self.click_through {
             return;
         }
-        if !self.annotating {
-            let m = self.margin() as f32;
-            let (iw, ih) = self.img_px();
-            let p = self.last_cursor;
-            let over_img = p.x >= m && p.y >= m && p.x <= m + iw as f32 && p.y <= m + ih as f32;
-            let over_text =
-                (self.ocr.is_some() && !self.thumb && over_img) || self.ocr_over_strip(p);
-            let over_chrome = self.color_picker.is_some()
-                || self
-                    .toolbar
-                    .as_ref()
-                    .is_some_and(|t| t.contains(self.last_cursor));
-            crate::cursor::apply(
-                &self.window,
-                cursor_for(pinshot_core::CursorHint {
-                    pin_idle: !over_text && !over_chrome,
-                    editing_text: over_text && !over_chrome,
-                    over_chrome,
-                    ..Default::default()
-                }),
-            );
-            return;
-        }
         let over_chrome = self.color_picker.is_some()
             || self
                 .toolbar
                 .as_ref()
                 .is_some_and(|t| t.contains(self.last_cursor));
+        if !self.annotating || self.ocr_text_mode() {
+            let m = self.margin() as f32;
+            let (iw, ih) = self.img_px();
+            let p = self.last_cursor;
+            let over_img = p.x >= m && p.y >= m && p.x <= m + iw as f32 && p.y <= m + ih as f32;
+            let over_text =
+                (self.ocr_text_mode() && over_img) || self.ocr_over_strip(p);
+            if over_text && !over_chrome {
+                crate::cursor::apply(
+                    &self.window,
+                    cursor_for(pinshot_core::CursorHint {
+                        editing_text: true,
+                        over_chrome,
+                        ..Default::default()
+                    }),
+                );
+                return;
+            }
+            if !self.annotating {
+                crate::cursor::apply(
+                    &self.window,
+                    cursor_for(pinshot_core::CursorHint {
+                        pin_idle: !over_chrome,
+                        over_chrome,
+                        ..Default::default()
+                    }),
+                );
+                return;
+            }
+        }
         let mut hint = self.annot.cursor_hint(self.img_pt(self.last_cursor));
         hint.over_chrome = over_chrome;
         crate::cursor::apply(&self.window, cursor_for(hint));
@@ -788,6 +834,7 @@ impl PinWin {
             }
             TbAction::Ocr => {
                 self.pending_ocr = true;
+                self.prefer_select_for_ocr();
             }
             TbAction::Pin => {}
         }
@@ -966,12 +1013,24 @@ impl PinWin {
                         }
                         let m = self.margin() as f32;
                         let (iw, ih) = self.img_px();
-                        if p.x >= m
+                        let over_img = p.x >= m
                             && p.y >= m
                             && p.x <= m + iw as f32
-                            && p.y <= m + ih as f32
-                            && self.annot.press(self.img_pt(p), false)
-                        {
+                            && p.y <= m + ih as f32;
+                        if over_img && self.ocr_text_mode() {
+                            let img = self.img_pt(p);
+                            let steal_shape = self.annot.hit_handle_of_selected(img).is_some()
+                                || self.annot.hit_test(img).is_some();
+                            if steal_shape {
+                                if self.annot.press(img, false) {
+                                    self.dirty = true;
+                                }
+                                return;
+                            }
+                            self.begin_ocr_select(p);
+                            return;
+                        }
+                        if over_img && self.annot.press(self.img_pt(p), false) {
                             self.dirty = true;
                             return;
                         }
@@ -981,24 +1040,8 @@ impl PinWin {
                             return;
                         }
                     }
-                    if !self.annotating && self.ocr.is_some() && !self.thumb {
-                        if self.ocr_over_strip(p) {
-                            return;
-                        }
-                        let img = self.img_pt(p);
-                        let hit = self.ocr_hit(img);
-                        self.ocr_gesture = Some(OcrGesture {
-                            img0: img,
-                            win0: p,
-                            tl0: self.current_tl(),
-                            selecting: hit.is_some(),
-                        });
-                        if let Some(i) = hit {
-                            if let Some(ocr) = self.ocr.as_mut() {
-                                ocr.sel = Some((i, i));
-                            }
-                            self.dirty = true;
-                        }
+                    if self.ocr_text_mode() {
+                        self.begin_ocr_select(p);
                         return;
                     }
                     self.begin_drag();
@@ -1370,7 +1413,10 @@ impl PinWin {
                 self.invert = !self.invert;
                 self.dirty = true;
             }
-            PinMenuAction::Ocr => self.pending_ocr = true,
+            PinMenuAction::Ocr => {
+                self.pending_ocr = true;
+                self.prefer_select_for_ocr();
+            }
             PinMenuAction::Translate => self.pending_translate = true,
         }
     }
@@ -1693,6 +1739,19 @@ impl PinWin {
     }
 }
 
+/// OCR drag-select is allowed when the pin is idle, or the toolbar is open
+/// on Select / no drawing tool. An explicit Rect/Pen/… still draws.
+pub fn pin_ocr_text_mode(
+    has_ocr: bool,
+    thumb: bool,
+    annotating: bool,
+    tool: Option<Tool>,
+) -> bool {
+    has_ocr
+        && !thumb
+        && (!annotating || matches!(tool, None | Some(Tool::Select)))
+}
+
 pub fn pin_grab_offset(tl: (i32, i32), cursor: (i32, i32)) -> (i32, i32) {
     (cursor.0 - tl.0, cursor.1 - tl.1)
 }
@@ -1716,7 +1775,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[test]
     fn drag_uses_screen_cursor_minus_grab() {
         let grab = pin_grab_offset((100, 80), (140, 110));
         assert_eq!(grab, (40, 30));
@@ -1729,6 +1787,24 @@ mod tests {
         // the window by +25 so the same image pixel stays under the pointer.
         let (x, y) = zoom_pos((100, 100), Point::new(50.0, 40.0), 1.0, 0.5, 0.0);
         assert_eq!((x, y), (125, 120));
+    }
+
+    #[test]
+    fn toolbar_default_select_lets_ocr_pick_text() {
+        assert!(pin_ocr_text_mode(true, false, false, None));
+        assert!(pin_ocr_text_mode(
+            true,
+            false,
+            true,
+            Some(Tool::Select)
+        ));
+        assert!(pin_ocr_text_mode(true, false, true, None));
+        assert!(
+            !pin_ocr_text_mode(true, false, true, Some(Tool::Rect)),
+            "drawing tools must still draw"
+        );
+        assert!(!pin_ocr_text_mode(true, true, false, None));
+        assert!(!pin_ocr_text_mode(false, false, true, Some(Tool::Select)));
     }
 
     #[test]

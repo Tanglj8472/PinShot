@@ -214,7 +214,7 @@ impl Toolbar {
         let slider_min = 1;
         let mut slider_max = 30;
         let custom_value = style.map(|s| s.color).unwrap_or(Rgba::RED);
-        if active.is_some() {
+        if active.is_some() && active != Some(Tool::Select) {
             // Measure a hugging row, then place it under (or above) the bar.
             let ph = 32.0;
             let mut py = bar.bottom() + 2.0;
@@ -570,6 +570,16 @@ mod tests {
         assert!(ann.style(Tool::Line).arrow);
         toggle_tool(&mut ann, &mut arrow, TbAction::Arrow);
         assert_eq!(ann.tool, None);
+    }
+
+    #[test]
+    fn select_tool_has_no_draw_panel() {
+        let sel = Rect::new(0.0, 0.0, 240.0, 120.0);
+        let over = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let tb = Toolbar::layout_pin(sel, over, Some(Tool::Select), false, None);
+        assert!(tb.panel.is_none(), "Select must not open a rect style panel");
+        let rect = Toolbar::layout_pin(sel, over, Some(Tool::Rect), false, None);
+        assert!(rect.panel.is_some());
     }
 
     #[test]
