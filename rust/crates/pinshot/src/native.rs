@@ -255,6 +255,13 @@ pub fn compositor_active() -> bool {
     }
 }
 
+pub fn kill_process(code: u32) -> ! {
+    #[cfg(windows)]
+    crate::win32::kill_process(code);
+    #[cfg(not(windows))]
+    std::process::exit(code as i32)
+}
+
 pub fn platform_name() -> &'static str {
     #[cfg(windows)]
     {

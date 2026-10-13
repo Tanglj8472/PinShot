@@ -459,12 +459,22 @@ impl App {
         crate::logutil::log("quit");
         self.persist_session();
         crate::logutil::log("quit persist done");
+        // Skip Drop of HWNDs: DestroyWindow from the tray/winit callback
+        // deadlocks. `process::exit` is still ExitProcess and hits the same
+        // deadlock in tray-icon DLL detach. Forget then TerminateProcess.
+        std::mem::forget(self.tray.take());
+        std::mem::forget(self.hotkeys.take());
+        std::mem::forget(self.overlay.take());
+        std::mem::forget(std::mem::take(&mut self.pins));
+        std::mem::forget(self.pump_win.take());
+        std::mem::forget(self.fallback.take());
+        std::mem::forget(self.prefs.take());
+        std::mem::forget(self.pin_menu.take());
+        std::mem::forget(self.countdown.take());
+        crate::logutil::log("quit exiting");
         crate::logutil::detach_console();
         let _ = event_loop;
-        // Do not Drop tray / hotkey / overlay HWNDs here: DestroyWindow from
-        // inside the winit callback deadlocks, cargo run never returns, and
-        // the terminal looks frozen. ExitProcess tears them down.
-        std::process::exit(0);
+        native::kill_process(0);
     }
 
     fn ensure_pump_window(&mut self, event_loop: &ActiveEventLoop) {

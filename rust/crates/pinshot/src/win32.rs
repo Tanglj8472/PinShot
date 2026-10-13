@@ -47,6 +47,19 @@ pub fn init_dpi() {
     }
 }
 
+/// `ExitProcess` (Rust `process::exit`) still runs DLL detach. tray-icon /
+/// winit then `DestroyWindow` on the GUI thread that is inside the tray
+/// callback — `cargo run` never returns. `TerminateProcess` skips detach.
+pub fn kill_process(code: u32) -> ! {
+    unsafe {
+        let _ = windows::Win32::System::Threading::TerminateProcess(
+            windows::Win32::System::Threading::GetCurrentProcess(),
+            code,
+        );
+    }
+    std::process::exit(code as i32)
+}
+
 pub fn hide_sync(hwnd: HWND) {
     unsafe {
         let _ = ShowWindow(hwnd, SW_HIDE);
