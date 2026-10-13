@@ -406,7 +406,7 @@ fn grab_printwindow() -> Result<ScreenFrame, String> {
     }
 }
 
-/// Immediate D3D context is not free-threaded — keep the session on the UI thread.
+// Immediate D3D context is not free-threaded — keep the session on the UI thread.
 thread_local! {
     static DXGI: RefCell<Option<DxgiDup>> = const { RefCell::new(None) };
 }
@@ -494,7 +494,7 @@ impl DxgiDup {
         let mut frames = Vec::new();
         let mut lost = None;
         for out in &mut self.outputs {
-            match acquire_one(&out.device, &out.ctx, &out.dup, &out.desc, &mut out.last) {
+            match unsafe { acquire_one(&out.device, &out.ctx, &out.dup, &out.desc, &mut out.last) } {
                 Ok(frame) if !frame.image.is_visually_blank() => frames.push(frame),
                 Ok(_) => eprintln!("[pinshot] DXGI output discarded (black first frames)"),
                 Err(e) if e.starts_with("lost:") => {
