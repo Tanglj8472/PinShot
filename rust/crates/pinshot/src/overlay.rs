@@ -230,6 +230,12 @@ impl Overlay {
             surface,
             ime_preedit: false,
         };
+        #[cfg(windows)]
+        if let Some((sx, sy)) = native::cursor_screen() {
+            let (ox, oy) = s.capture.virtual_origin;
+            s.cursor = Point::new((sx - ox) as f32, (sy - oy) as f32);
+            s.hover = hover_rect(s.cursor, &s.windows, &[], s.bounds());
+        }
         s.window.set_visible(true);
         native::focus_window(&s.window);
         s.load_elements();
@@ -272,6 +278,33 @@ impl Overlay {
         crate::logutil::ms("overlay first redraw", t_draw);
         crate::logutil::ms("overlay start", t0);
         Ok(s)
+    }
+
+    /// Map a throwaway fullscreen HWND off-screen so DWM allocates the
+    ///  virtual-desktop redirect surface before the first F1.
+    pub fn warmup_present(event_loop: &ActiveEventLoop) {
+        #[cfg(not(windows))]
+        let _ = event_loop;
+        #[cfg(windows)]
+        {
+            let Ok((vx, vy, vw, vh)) = crate::capture::virtual_desktop() else {
+                return;
+            };
+            let t0 = Instant::now();
+            let attrs = Window::default_attributes()
+                .with_title("PinShot Warmup")
+                .with_decorations(false)
+                .with_resizable(false)
+                .with_visible(true)
+                .with_position(PhysicalPosition::new(vx - vw, vy - vh))
+                .with_inner_size(PhysicalSize::new(vw as u32, vh as u32));
+            if let Ok(window) = event_loop.create_window(attrs) {
+                native::apply_overlay_style(&window);
+                crate::draw::warmup_gdi_present(hwnd_of(&window), vw as u32, vh as u32);
+                window.set_visible(false);
+            }
+            crate::logutil::ms("overlay present warmup", t0);
+        }
     }
 
     fn show_toast(&mut self, text: String) {
@@ -455,13 +488,15 @@ impl Overlay {
         }
         self.hit_px = Some(key);
         let hover = if let Some(hit) = element_at_point(key.0, key.1, self.exclude_hwnd()) {
-            crate::logutil::log(&format!(
-                "detect element for: {} depth={} {}ms ({})",
-                hit.exe,
-                hit.depth,
-                hit.elapsed_ms,
-                element_source()
-            ));
+            if hit.elapsed_ms >= 16 {
+                crate::logutil::log(&format!(
+                    "detect element for: {} depth={} {}ms ({})",
+                    hit.exe,
+                    hit.depth,
+                    hit.elapsed_ms,
+                    element_source()
+                ));
+            }
             overlay_from_screen(hit.rect, origin)
         } else {
             hover_rect(pt, &self.windows, self.elements.as_slice(), self.bounds())

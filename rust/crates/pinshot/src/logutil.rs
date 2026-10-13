@@ -41,6 +41,7 @@ fn install_panic_hook() {
     std::panic::set_hook(Box::new(move |info| {
         let bt = std::backtrace::Backtrace::force_capture();
         log(&format!("PANIC: {info}\n{bt}"));
+        flush();
         prev(info);
     }));
 }
@@ -57,6 +58,13 @@ pub fn log(msg: &str) {
     if let Ok(mut g) = FILE.lock() {
         if let Some(f) = g.as_mut() {
             let _ = writeln!(f, "{line}");
+        }
+    }
+}
+
+fn flush() {
+    if let Ok(mut g) = FILE.lock() {
+        if let Some(f) = g.as_mut() {
             let _ = f.flush();
         }
     }

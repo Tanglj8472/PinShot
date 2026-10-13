@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use pinshot_core::config::{self, data_dir, Config};
 use pinshot_core::geom::Point;
-use pinshot_core::history::{HistoryEntry, HistoryFile, SnipHistory};
+use pinshot_core::history::{HistoryEntry, HistoryFile, HistoryMetaEntry, SnipHistory};
 use pinshot_core::hotkey::Command;
 use pinshot_core::i18n::{set_lang, tr};
 use pinshot_core::raster::Raster;
@@ -395,13 +395,7 @@ impl App {
         self.overlay = None;
         crate::native::release_stray_grabs();
         if persist {
-            let t0 = Instant::now();
             self.persist_history();
-            crate::logutil::log(&format!(
-                "persist history {} entries in {}ms",
-                self.history.entries.len(),
-                t0.elapsed().as_millis()
-            ));
         } else {
             crate::logutil::log("skip history persist (cancel/resnip)");
         }
@@ -678,31 +672,16 @@ impl App {
     }
 
     fn persist_history(&self) {
-        let dir = HistoryFile::dir(&data_dir());
-        let _ = std::fs::create_dir_all(&dir);
-        if let Ok(rd) = std::fs::read_dir(&dir) {
-            for e in rd.flatten() {
-                let _ = std::fs::remove_file(e.path());
-            }
-        }
-        let mut names = Vec::new();
-        let mut kept = SnipHistory::new();
-        for e in &self.history.entries {
-            let name = format!("hist-{:03}.png", names.len());
-            let png = encode_png(&e.image);
-            if png.is_empty() {
-                continue;
-            }
-            if std::fs::write(dir.join(&name), png).is_err() {
-                continue;
-            }
-            names.push(name);
-            kept.entries.push(e.clone());
-        }
-        let file = kept.to_file(&names);
-        if let Ok(text) = file.to_toml() {
-            let _ = std::fs::write(HistoryFile::path(&data_dir()), text);
-        }
+        let entries = self.history.entries.clone();
+        std::thread::spawn(move || {
+            let t0 = Instant::now();
+            persist_history_files(&entries);
+            crate::logutil::log(&format!(
+                "persist history {} entries in {}ms",
+                entries.len(),
+                t0.elapsed().as_millis()
+            ));
+        });
     }
 
     fn restore_history(&mut self) {
@@ -950,14 +929,58 @@ impl App {
     }
 }
 
+fn persist_history_files(entries: &[HistoryEntry]) {
+    let dir = HistoryFile::dir(&data_dir());
+    let _ = std::fs::create_dir_all(&dir);
+    if let Ok(rd) = std::fs::read_dir(&dir) {
+        for e in rd.flatten() {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+    let mut metas = Vec::new();
+    for e in entries {
+        let name = format!("hist-{:03}.png", metas.len());
+        let png = encode_png(&e.image);
+        if png.is_empty() {
+            continue;
+        }
+        if std::fs::write(dir.join(&name), png).is_err() {
+            continue;
+        }
+        metas.push(HistoryMetaEntry {
+            file: name,
+            x: e.rect.x,
+            y: e.rect.y,
+            w: e.rect.w,
+            h: e.rect.h,
+        });
+    }
+    let file = HistoryFile { entries: metas };
+    if let Ok(text) = file.to_toml() {
+        let _ = std::fs::write(HistoryFile::path(&data_dir()), text);
+    }
+}
+
 fn encode_png(img: &Raster) -> Vec<u8> {
-    let rgba = image::RgbaImage::from_raw(img.width, img.height, img.pixels.clone());
-    let Some(rgba) = rgba else {
-        return Vec::new();
-    };
+    use image::codecs::png::{CompressionType, FilterType, PngEncoder};
+    use image::{ExtendedColorType, ImageEncoder};
     let mut buf = Vec::new();
-    let dynimg = image::DynamicImage::ImageRgba8(rgba);
-    let _ = dynimg.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png);
+    let encoder = PngEncoder::new_with_quality(
+        &mut buf,
+        CompressionType::Fast,
+        FilterType::NoFilter,
+    );
+    if encoder
+        .write_image(
+            &img.pixels,
+            img.width,
+            img.height,
+            ExtendedColorType::Rgba8,
+        )
+        .is_err()
+    {
+        return Vec::new();
+    }
     buf
 }
 
@@ -985,7 +1008,10 @@ impl ApplicationHandler<AppEvent> for App {
             self.restore_history();
             crate::ocr_run::prefetch_models();
             #[cfg(windows)]
-            crate::capture::Capture::prefetch();
+            {
+                crate::capture::Capture::prefetch();
+                Overlay::warmup_present(event_loop);
+            }
         }
         if self.start_prefs {
             self.start_prefs = false;

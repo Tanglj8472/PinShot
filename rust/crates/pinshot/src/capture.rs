@@ -204,6 +204,10 @@ fn compose(frames: Vec<ScreenFrame>, backend: &str) -> Capture {
     }
 }
 
+pub fn virtual_desktop() -> Result<(i32, i32, i32, i32), String> {
+    virtual_metrics()
+}
+
 fn virtual_metrics() -> Result<(i32, i32, i32, i32), String> {
     unsafe {
         let vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
