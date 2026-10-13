@@ -104,22 +104,6 @@ fn line_path(a: (f32, f32), b: (f32, f32)) -> Option<Path> {
     pb.finish()
 }
 
-fn rounded_rect_path(x: f32, y: f32, w: f32, h: f32, r: f32) -> Option<Path> {
-    let r = r.min(w * 0.5).min(h * 0.5);
-    let mut pb = PathBuilder::new();
-    pb.move_to(x + r, y);
-    pb.line_to(x + w - r, y);
-    pb.quad_to(x + w, y, x + w, y + r);
-    pb.line_to(x + w, y + h - r);
-    pb.quad_to(x + w, y + h, x + w - r, y + h);
-    pb.line_to(x + r, y + h);
-    pb.quad_to(x, y + h, x, y + h - r);
-    pb.line_to(x, y + r);
-    pb.quad_to(x, y, x + r, y);
-    pb.close();
-    pb.finish()
-}
-
 /// 4-pointed sparkle (Snipping Tool "Text actions" accent).
 fn fill_sparkle(pixmap: &mut Pixmap, cx: f32, cy: f32, r: f32, color: Rgba, t: Transform) {
     let mut pb = PathBuilder::new();
@@ -207,9 +191,15 @@ pub fn draw_icon(pixmap: &mut Pixmap, kind: IconKind, cell: Rect, color: Option<
             }
         }
         IconKind::RoundRect => {
-            // Combined rect/ellipse entry: filled rounded rect (Snipaste).
-            if let Some(path) = rounded_rect_path(3.2, 4.6, 13.6, 10.8, 4.4) {
-                pixmap.fill_path(&path, &p, FillRule::Winding, t, None);
+            // Combined rect/ellipse entry: rectangle with a circle overlapping
+            // its bottom-left (Snipaste).
+            if let Some(r) = tiny_skia::Rect::from_xywh(6.2, 3.0, 11.2, 9.0) {
+                pixmap.stroke_path(&PathBuilder::from_rect(r), &p, &st, t, None);
+            }
+            if let Some(r) = tiny_skia::Rect::from_xywh(2.4, 7.4, 10.4, 10.4) {
+                if let Some(path) = PathBuilder::from_oval(r) {
+                    pixmap.stroke_path(&path, &p, &st, t, None);
+                }
             }
         }
         IconKind::Line => {
@@ -647,24 +637,28 @@ mod tests {
     }
 
     #[test]
-    fn round_rect_group_icon_is_filled_squircle() {
+    fn shape_group_icon_is_rect_over_circle() {
         let cell = Rect::new(2.0, 2.0, 20.0, 20.0);
-        let mut pm = Pixmap::new(24, 24).unwrap();
-        draw_icon(&mut pm, IconKind::RoundRect, cell, None);
-        let center = pm.pixel(12, 12).unwrap();
+        let ink = |pm: &Pixmap, x: u32, y: u32| pm.pixel(x, y).unwrap().alpha() > 40;
+        let mut grouped = Pixmap::new(24, 24).unwrap();
+        let mut rect = Pixmap::new(24, 24).unwrap();
+        let mut ellipse = Pixmap::new(24, 24).unwrap();
+        draw_icon(&mut grouped, IconKind::RoundRect, cell, None);
+        draw_icon(&mut rect, IconKind::Rect, cell, None);
+        draw_icon(&mut ellipse, IconKind::Ellipse, cell, None);
+        assert_ne!(grouped.data(), rect.data());
+        assert_ne!(grouped.data(), ellipse.data());
+        // Cell is origin (2,2). Rect sits top-right; circle sits bottom-left.
+        assert!(ink(&grouped, 18, 6), "rectangle stroke at top-right");
+        assert!(ink(&grouped, 7, 18), "circle stroke at bottom-left");
         assert!(
-            center.alpha() > 40,
-            "combined shape entry is a filled rounded rect"
-        );
-        let corner = pm.pixel(3, 3).unwrap();
-        assert!(
-            corner.alpha() < 20,
-            "rounded corners must not fill the cell corners"
+            !ink(&grouped, 3, 4),
+            "top-left of the cell stays empty"
         );
         if let Ok(dir) = std::env::var("PINSHOT_DUMP_ICONS") {
             let dir = std::path::PathBuf::from(dir);
             let _ = std::fs::create_dir_all(&dir);
-            dump_icon_preview(&dir.join("roundrect.png"), IconKind::RoundRect);
+            dump_icon_preview(&dir.join("shape-group.png"), IconKind::RoundRect);
         }
     }
 
