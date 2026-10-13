@@ -264,15 +264,22 @@ pub fn draw_icon(pixmap: &mut Pixmap, kind: IconKind, cell: Rect, color: Option<
             }
         }
         IconKind::Line => {
-            // Snipaste-style: diagonal stroke with a small filled head.
-            let a = (3.8, 16.2);
-            let b = (16.4, 3.6);
-            let (head, half_w) = (5.4, 2.35);
-            let shaft_end = arrow_geom(a, b, head, half_w).map(|g| g.2).unwrap_or(b);
-            if let Some(path) = line_path(a, shaft_end) {
+            // Snipaste 折线: peak, dip, then a small filled head.
+            let a = (2.4, 15.8);
+            let b = (8.0, 10.0);
+            let c = (11.4, 13.4);
+            let tip = (17.6, 3.6);
+            let (head, half_w) = (4.4, 2.0);
+            let shaft_end = arrow_geom(c, tip, head, half_w).map(|g| g.2).unwrap_or(tip);
+            let mut pb = PathBuilder::new();
+            pb.move_to(a.0, a.1);
+            pb.line_to(b.0, b.1);
+            pb.line_to(c.0, c.1);
+            pb.line_to(shaft_end.0, shaft_end.1);
+            if let Some(path) = pb.finish() {
                 pixmap.stroke_path(&path, &p, &st, t, None);
             }
-            arrow_head_ex(pixmap, a, b, head, half_w, color, t, false);
+            arrow_head_ex(pixmap, c, tip, head, half_w, color, t, false);
         }
         IconKind::Arrow => {
             fill_sharp_icon(pixmap, (3.5, 16.5), (16.5, 3.5), color, t);
@@ -294,43 +301,101 @@ pub fn draw_icon(pixmap: &mut Pixmap, kind: IconKind, cell: Rect, color: Option<
             arrow_head_ex(pixmap, (4.0, 16.0), (16.0, 4.0), 6.4, 3.3, color, t, true);
         }
         IconKind::Pen => {
-            // Pencil pointing up-right: tip, wood, shaft, ferrule.
-            let mut body = PathBuilder::new();
-            body.move_to(16.7, 3.3);
-            body.line_to(14.15, 3.85);
-            body.line_to(6.15, 11.85);
-            body.line_to(5.15, 13.55);
-            body.line_to(6.85, 15.25);
-            body.line_to(8.55, 14.25);
-            body.line_to(16.15, 6.25);
-            body.close();
-            if let Some(path) = body.finish() {
+            // Pencil: two parallel sides, filled triangular tip, filled eraser.
+            let tip = (17.2f32, 2.3f32);
+            let back = (2.7f32, 17.8f32);
+            let dx = back.0 - tip.0;
+            let dy = back.1 - tip.1;
+            let len = (dx * dx + dy * dy).sqrt();
+            let ux = dx / len;
+            let uy = dy / len;
+            let vx = -uy;
+            let vy = ux;
+            let hw = 1.55;
+            let lead = 3.5;
+            let erase = 2.4;
+            let wood = (tip.0 + ux * lead, tip.1 + uy * lead);
+            let neck = (tip.0 + ux * (len - erase), tip.1 + uy * (len - erase));
+            let wa = (wood.0 + vx * hw, wood.1 + vy * hw);
+            let wb = (wood.0 - vx * hw, wood.1 - vy * hw);
+            let na = (neck.0 + vx * hw, neck.1 + vy * hw);
+            let nb = (neck.0 - vx * hw, neck.1 - vy * hw);
+            let ba = (back.0 + vx * hw, back.1 + vy * hw);
+            let bb = (back.0 - vx * hw, back.1 - vy * hw);
+            if let Some(path) = line_path(wa, na) {
                 pixmap.stroke_path(&path, &p, &st, t, None);
             }
-            if let Some(path) = line_path((6.35, 12.55), (7.85, 14.05)) {
+            if let Some(path) = line_path(wb, nb) {
                 pixmap.stroke_path(&path, &p, &st, t, None);
             }
-            if let Some(path) = line_path((16.7, 3.3), (14.9, 5.1)) {
-                pixmap.stroke_path(&path, &p, &stroke(1.15), t, None);
+            let mut wood_p = PathBuilder::new();
+            wood_p.move_to(tip.0, tip.1);
+            wood_p.line_to(wa.0, wa.1);
+            wood_p.line_to(wb.0, wb.1);
+            wood_p.close();
+            if let Some(path) = wood_p.finish() {
+                pixmap.fill_path(&path, &p, FillRule::Winding, t, None);
+            }
+            let mut eraser = PathBuilder::new();
+            eraser.move_to(na.0, na.1);
+            eraser.line_to(ba.0, ba.1);
+            eraser.line_to(bb.0, bb.1);
+            eraser.line_to(nb.0, nb.1);
+            eraser.close();
+            if let Some(path) = eraser.finish() {
+                pixmap.fill_path(&path, &p, FillRule::Winding, t, None);
             }
         }
         IconKind::Marker => {
-            // Highlighter: thick barrel + chisel nib, pointing up-right.
-            let mut body = PathBuilder::new();
-            body.move_to(4.1, 12.4);
-            body.line_to(11.6, 4.9);
-            body.line_to(13.55, 4.55);
-            body.line_to(16.85, 6.15);
-            body.line_to(15.55, 8.35);
-            body.line_to(13.7, 7.85);
-            body.line_to(6.15, 15.4);
-            body.line_to(3.55, 14.55);
-            body.close();
-            if let Some(path) = body.finish() {
+            // Highlighter: wider hollow tube, open chisel, solid back cap.
+            let face = (16.9f32, 5.2f32);
+            let back = (3.1f32, 16.6f32);
+            let dx = face.0 - back.0;
+            let dy = face.1 - back.1;
+            let len = (dx * dx + dy * dy).sqrt();
+            let ux = dx / len;
+            let uy = dy / len;
+            let vx = -uy;
+            let vy = ux;
+            let hw = 2.55;
+            let nib_hw = 1.85;
+            let chisel = 3.3;
+            let cap = 2.6;
+            let neck = (face.0 - ux * chisel, face.1 - uy * chisel);
+            let cap_c = (back.0 + ux * cap, back.1 + uy * cap);
+            let fa = (face.0 + vx * nib_hw, face.1 + vy * nib_hw);
+            let fb = (face.0 - vx * nib_hw, face.1 - vy * nib_hw);
+            let na = (neck.0 + vx * hw, neck.1 + vy * hw);
+            let nb = (neck.0 - vx * hw, neck.1 - vy * hw);
+            let ca = (cap_c.0 + vx * hw, cap_c.1 + vy * hw);
+            let cb = (cap_c.0 - vx * hw, cap_c.1 - vy * hw);
+            let ba = (back.0 + vx * hw * 0.72, back.1 + vy * hw * 0.72);
+            let bb = (back.0 - vx * hw * 0.72, back.1 - vy * hw * 0.72);
+            if let Some(path) = line_path(na, ca) {
                 pixmap.stroke_path(&path, &p, &st, t, None);
             }
-            if let Some(path) = line_path((11.6, 4.9), (13.7, 7.85)) {
+            if let Some(path) = line_path(nb, cb) {
                 pixmap.stroke_path(&path, &p, &st, t, None);
+            }
+            let mut nib = PathBuilder::new();
+            nib.move_to(na.0, na.1);
+            nib.line_to(fa.0, fa.1);
+            nib.line_to(fb.0, fb.1);
+            nib.line_to(nb.0, nb.1);
+            if let Some(path) = nib.finish() {
+                pixmap.stroke_path(&path, &p, &st, t, None);
+            }
+            if let Some(path) = line_path(na, nb) {
+                pixmap.stroke_path(&path, &p, &st, t, None);
+            }
+            let mut cap_p = PathBuilder::new();
+            cap_p.move_to(ca.0, ca.1);
+            cap_p.line_to(ba.0, ba.1);
+            cap_p.line_to(bb.0, bb.1);
+            cap_p.line_to(cb.0, cb.1);
+            cap_p.close();
+            if let Some(path) = cap_p.finish() {
+                pixmap.fill_path(&path, &p, FillRule::Winding, t, None);
             }
         }
         IconKind::Mosaic => {
@@ -757,8 +822,12 @@ mod tests {
             "Line and Arrow must be distinct icons"
         );
         let ink = |pm: &Pixmap, x: u32, y: u32| pm.pixel(x, y).unwrap().alpha() > 40;
-        assert!(ink(&line, 17, 6), "line icon keeps a small arrow at the tip");
-        assert!(ink(&line, 6, 17), "line icon still has the diagonal shaft");
+        assert!(ink(&line, 18, 6), "line icon keeps a small arrow at the tip");
+        assert!(ink(&line, 5, 17), "polyline starts at the bottom-left");
+        assert!(
+            ink(&line, 10, 12),
+            "polyline has a corner, not a straight diagonal"
+        );
         let mut thick = Pixmap::new(24, 24).unwrap();
         let mut hollow = Pixmap::new(24, 24).unwrap();
         draw_icon(&mut thick, IconKind::ArrowThick, cell, None);
@@ -780,10 +849,18 @@ mod tests {
         draw_icon(&mut pen, IconKind::Pen, cell, None);
         draw_icon(&mut marker, IconKind::Marker, cell, None);
         assert_ne!(pen.data(), marker.data());
-        assert!(ink(&pen, 18, 5), "pencil tip points up-right");
-        assert!(ink(&pen, 8, 16), "pencil eraser sits bottom-left");
-        assert!(ink(&marker, 18, 8), "highlighter nib points up-right");
-        assert!(ink(&marker, 6, 16), "highlighter barrel sits bottom-left");
+        assert!(ink(&pen, 18, 5), "pencil tip is a filled triangle");
+        assert!(ink(&pen, 5, 19), "pencil eraser is filled");
+        assert!(
+            !ink(&pen, 11, 12),
+            "pencil barrel stays hollow between the sides"
+        );
+        assert!(ink(&marker, 18, 8), "highlighter has an open chisel");
+        assert!(ink(&marker, 6, 19), "highlighter back cap is solid");
+        assert!(
+            !ink(&marker, 11, 14),
+            "highlighter barrel stays a hollow tube"
+        );
         if let Ok(dir) = std::env::var("PINSHOT_DUMP_ICONS") {
             let dir = std::path::PathBuf::from(dir);
             let _ = std::fs::create_dir_all(&dir);
