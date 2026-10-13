@@ -2,9 +2,15 @@
 //!
 //! Must run *before* the overlay is created. All-black frames are rejected so a
 //! timed-out DXGI first frame cannot hide a working GDI fallback.
+//!
+//! Snipaste stays fast because it keeps a live `DuplicateOutput` session. Creating
+//! a D3D device + duplicator on every F1, then waiting 350ms×8 for the first
+//! frame, was the bulk of PinShot's "Rust is slower than C++" delay.
 
+use std::cell::RefCell;
 use std::ffi::c_void;
 use std::path::PathBuf;
+use std::time::Instant;
 
 use pinshot_core::geom::Rect;
 use pinshot_core::raster::Raster;
@@ -22,7 +28,8 @@ use windows::Win32::Graphics::Dxgi::Common::{
 };
 use windows::Win32::Graphics::Dxgi::{
     CreateDXGIFactory1, IDXGIAdapter, IDXGIFactory1, IDXGIOutput1, IDXGIOutputDuplication,
-    IDXGIResource, DXGI_ERROR_WAIT_TIMEOUT, DXGI_OUTDUPL_FRAME_INFO, DXGI_OUTPUT_DESC,
+    IDXGIResource, DXGI_ERROR_ACCESS_DENIED, DXGI_ERROR_ACCESS_LOST, DXGI_ERROR_INVALID_CALL,
+    DXGI_ERROR_WAIT_TIMEOUT, DXGI_OUTDUPL_FRAME_INFO, DXGI_OUTPUT_DESC,
 };
 use windows::Win32::Graphics::Gdi::{
     BitBlt, CreateCompatibleDC, CreateDCW, CreateDIBSection, DeleteDC, DeleteObject,
@@ -60,17 +67,42 @@ impl Capture {
     /// per-monitor CreateDC → PrintWindow. `--dump-capture` / `PINSHOT_DUMP_CAPTURE`
     /// writes the composed buffer to `%TEMP%\pinshot-capture.png`.
     pub fn grab(dump: bool) -> Result<Self, String> {
+        let t0 = Instant::now();
         unsafe {
             let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
         }
-        grab_with_fallback(dump)
+        let cap = grab_with_fallback(dump);
+        crate::logutil::ms("capture grab", t0);
+        cap
+    }
+
+    /// Warm the DXGI duplicator on the UI thread so the first F1 is not a
+    /// D3D11CreateDevice + DuplicateOutput stall.
+    pub fn prefetch() {
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        }
+        let t0 = Instant::now();
+        match grab_dxgi() {
+            Ok(frames) => crate::logutil::log(&format!(
+                "dxgi prefetch outputs={} {}×{}",
+                frames.len(),
+                frames.first().map(|f| f.image.width).unwrap_or(0),
+                frames.first().map(|f| f.image.height).unwrap_or(0)
+            )),
+            Err(e) => crate::logutil::log(&format!("dxgi prefetch: {e}")),
+        }
+        crate::logutil::ms("dxgi prefetch", t0);
     }
 }
 
 fn grab_with_fallback(dump: bool) -> Result<Capture, String> {
     let mut tried: Vec<String> = Vec::new();
 
-    match grab_dxgi() {
+    let t_dxgi = Instant::now();
+    let dxgi = grab_dxgi();
+    crate::logutil::ms("capture dxgi", t_dxgi);
+    match dxgi {
         Ok(frames) if !frames.is_empty() && !all_blank(&frames) => {
             return finish_ok(compose(frames, "dxgi"), dump, &tried);
         }
@@ -110,9 +142,10 @@ fn finish_ok(cap: Capture, dump: bool, tried: &[String]) -> Result<Capture, Stri
     if !tried.is_empty() {
         eprintln!("[pinshot] capture fallback after: {}", tried.join(" | "));
     }
-    let px = cap
-        .composed
-        .get(cap.composed.width as i32 / 2, cap.composed.height as i32 / 2);
+    let px = cap.composed.get(
+        cap.composed.width as i32 / 2,
+        cap.composed.height as i32 / 2,
+    );
     eprintln!(
         "[pinshot] capture {} {}×{} blank={} sample={:?}",
         cap.backend,
@@ -189,13 +222,7 @@ fn blit_rop() -> ROP_CODE {
 }
 
 /// Create a top-down 32-bit DIB and BitBlt into it; read pixels with alpha forced on.
-unsafe fn dib_bitblt(
-    src: HDC,
-    src_x: i32,
-    src_y: i32,
-    w: i32,
-    h: i32,
-) -> Result<Raster, String> {
+unsafe fn dib_bitblt(src: HDC, src_x: i32, src_y: i32, w: i32, h: i32) -> Result<Raster, String> {
     if w <= 0 || h <= 0 {
         return Err("empty blit".into());
     }
@@ -271,10 +298,7 @@ struct Mon {
 unsafe extern "system" fn enum_mon(hmon: HMONITOR, _hdc: HDC, lprc: *mut RECT, lp: LPARAM) -> BOOL {
     let list = &mut *(lp.0 as *mut Vec<Mon>);
     if !lprc.is_null() {
-        list.push(Mon {
-            hmon,
-            rect: *lprc,
-        });
+        list.push(Mon { hmon, rect: *lprc });
     }
     BOOL(1)
 }
@@ -282,7 +306,12 @@ unsafe extern "system" fn enum_mon(hmon: HMONITOR, _hdc: HDC, lprc: *mut RECT, l
 fn grab_gdi_monitors() -> Result<Vec<ScreenFrame>, String> {
     let mut mons: Vec<Mon> = Vec::new();
     unsafe {
-        let _ = EnumDisplayMonitors(HDC::default(), None, Some(enum_mon), LPARAM(&mut mons as *mut _ as isize));
+        let _ = EnumDisplayMonitors(
+            HDC::default(),
+            None,
+            Some(enum_mon),
+            LPARAM(&mut mons as *mut _ as isize),
+        );
     }
     if mons.is_empty() {
         return Err("EnumDisplayMonitors returned none".into());
@@ -292,7 +321,10 @@ fn grab_gdi_monitors() -> Result<Vec<ScreenFrame>, String> {
         unsafe {
             let mut info = MONITORINFOEXW::default();
             info.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
-            let _ = GetMonitorInfoW(mon.hmon, &mut info as *mut MONITORINFOEXW as *mut MONITORINFO);
+            let _ = GetMonitorInfoW(
+                mon.hmon,
+                &mut info as *mut MONITORINFOEXW as *mut MONITORINFO,
+            );
             let hdc = CreateDCW(
                 w!("DISPLAY"),
                 PCWSTR(info.szDevice.as_ptr()),
@@ -374,65 +406,149 @@ fn grab_printwindow() -> Result<ScreenFrame, String> {
     }
 }
 
-fn grab_dxgi() -> Result<Vec<ScreenFrame>, String> {
-    unsafe {
-        let factory: IDXGIFactory1 = CreateDXGIFactory1().map_err(|e| e.to_string())?;
-        let mut frames = Vec::new();
-        let mut adapter_idx = 0u32;
-        while let Ok(adapter1) = factory.EnumAdapters1(adapter_idx) {
-            adapter_idx += 1;
-            let adapter: IDXGIAdapter = match adapter1.cast() {
-                Ok(a) => a,
-                Err(_) => continue,
-            };
-            let mut device: Option<ID3D11Device> = None;
-            let mut ctx: Option<ID3D11DeviceContext> = None;
-            if D3D11CreateDevice(
-                &adapter,
-                D3D_DRIVER_TYPE_UNKNOWN,
-                HMODULE::default(),
-                D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-                None,
-                D3D11_SDK_VERSION,
-                Some(&mut device),
-                None,
-                Some(&mut ctx),
-            )
-            .is_err()
-            {
-                continue;
-            }
-            let Some(device) = device else { continue };
-            let Some(ctx) = ctx else { continue };
-            let mut output_idx = 0u32;
-            while let Ok(output) = adapter1.EnumOutputs(output_idx) {
-                output_idx += 1;
-                let output1: IDXGIOutput1 = match output.cast() {
-                    Ok(o) => o,
+/// Immediate D3D context is not free-threaded — keep the session on the UI thread.
+thread_local! {
+    static DXGI: RefCell<Option<DxgiDup>> = const { RefCell::new(None) };
+}
+
+struct DxgiOutput {
+    device: ID3D11Device,
+    ctx: ID3D11DeviceContext,
+    dup: IDXGIOutputDuplication,
+    desc: DXGI_OUTPUT_DESC,
+    last: Option<ScreenFrame>,
+}
+
+struct DxgiDup {
+    outputs: Vec<DxgiOutput>,
+}
+
+impl DxgiDup {
+    fn open() -> Result<Self, String> {
+        unsafe {
+            let factory: IDXGIFactory1 = CreateDXGIFactory1().map_err(|e| e.to_string())?;
+            let mut outputs = Vec::new();
+            let mut adapter_idx = 0u32;
+            while let Ok(adapter1) = factory.EnumAdapters1(adapter_idx) {
+                adapter_idx += 1;
+                let adapter: IDXGIAdapter = match adapter1.cast() {
+                    Ok(a) => a,
                     Err(_) => continue,
                 };
-                let desc = match output.GetDesc() {
-                    Ok(d) => d,
-                    Err(_) => continue,
-                };
-                let dup: IDXGIOutputDuplication = match output1.DuplicateOutput(&device) {
-                    Ok(d) => d,
-                    Err(_) => continue,
-                };
-                match acquire_one(&device, &ctx, &dup, &desc) {
-                    Ok(frame) if !frame.image.is_visually_blank() => frames.push(frame),
-                    Ok(_) => eprintln!("[pinshot] DXGI output discarded (black first frames)"),
-                    Err(e) => eprintln!("[pinshot] DXGI output: {e}"),
+                let mut device: Option<ID3D11Device> = None;
+                let mut ctx: Option<ID3D11DeviceContext> = None;
+                if D3D11CreateDevice(
+                    &adapter,
+                    D3D_DRIVER_TYPE_UNKNOWN,
+                    HMODULE::default(),
+                    D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                    None,
+                    D3D11_SDK_VERSION,
+                    Some(&mut device),
+                    None,
+                    Some(&mut ctx),
+                )
+                .is_err()
+                {
+                    continue;
+                }
+                let Some(device) = device else { continue };
+                let Some(ctx) = ctx else { continue };
+                let mut output_idx = 0u32;
+                while let Ok(output) = adapter1.EnumOutputs(output_idx) {
+                    output_idx += 1;
+                    let output1: IDXGIOutput1 = match output.cast() {
+                        Ok(o) => o,
+                        Err(_) => continue,
+                    };
+                    let desc = match output.GetDesc() {
+                        Ok(d) => d,
+                        Err(_) => continue,
+                    };
+                    let dup: IDXGIOutputDuplication = match output1.DuplicateOutput(&device) {
+                        Ok(d) => d,
+                        Err(e) => {
+                            crate::logutil::log(&format!("DuplicateOutput: {e}"));
+                            continue;
+                        }
+                    };
+                    outputs.push(DxgiOutput {
+                        device: device.clone(),
+                        ctx: ctx.clone(),
+                        dup,
+                        desc,
+                        last: None,
+                    });
                 }
             }
+            let _ = D3D_FEATURE_LEVEL::default();
+            if outputs.is_empty() {
+                Err("DXGI produced no outputs".into())
+            } else {
+                Ok(Self { outputs })
+            }
         }
-        let _ = D3D_FEATURE_LEVEL::default();
+    }
+
+    fn grab_frames(&mut self) -> Result<Vec<ScreenFrame>, String> {
+        let mut frames = Vec::new();
+        let mut lost = None;
+        for out in &mut self.outputs {
+            match acquire_one(&out.device, &out.ctx, &out.dup, &out.desc, &mut out.last) {
+                Ok(frame) if !frame.image.is_visually_blank() => frames.push(frame),
+                Ok(_) => eprintln!("[pinshot] DXGI output discarded (black first frames)"),
+                Err(e) if e.starts_with("lost:") => {
+                    lost = Some(e);
+                    break;
+                }
+                Err(e) => eprintln!("[pinshot] DXGI output: {e}"),
+            }
+        }
+        if let Some(e) = lost {
+            return Err(e);
+        }
         if frames.is_empty() {
             Err("DXGI produced no usable frames".into())
         } else {
             Ok(frames)
         }
     }
+}
+
+fn grab_dxgi() -> Result<Vec<ScreenFrame>, String> {
+    DXGI.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let mut last_err = String::from("dxgi");
+        for attempt in 0..2 {
+            if slot.is_none() {
+                let t_open = Instant::now();
+                match DxgiDup::open() {
+                    Ok(dup) => {
+                        crate::logutil::ms("dxgi open", t_open);
+                        crate::logutil::log(&format!("dxgi outputs={}", dup.outputs.len()));
+                        *slot = Some(dup);
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            let t_acq = Instant::now();
+            match slot.as_mut().unwrap().grab_frames() {
+                Ok(frames) => {
+                    crate::logutil::ms("dxgi acquire", t_acq);
+                    return Ok(frames);
+                }
+                Err(e) => {
+                    crate::logutil::log(&format!("dxgi reset after {e}"));
+                    last_err = e;
+                    *slot = None;
+                    if attempt == 0 {
+                        continue;
+                    }
+                }
+            }
+        }
+        Err(last_err)
+    })
 }
 
 fn is_bgra_family(fmt: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT) -> bool {
@@ -446,22 +562,34 @@ fn is_rgba(fmt: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT) -> bool {
     fmt == DXGI_FORMAT_R8G8B8A8_UNORM || fmt == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB
 }
 
+fn dxgi_lost(e: &windows::core::Error) -> bool {
+    let c = e.code();
+    c == DXGI_ERROR_ACCESS_LOST || c == DXGI_ERROR_ACCESS_DENIED || c == DXGI_ERROR_INVALID_CALL
+}
+
 unsafe fn acquire_one(
     device: &ID3D11Device,
     ctx: &ID3D11DeviceContext,
     dup: &IDXGIOutputDuplication,
     desc: &DXGI_OUTPUT_DESC,
+    last: &mut Option<ScreenFrame>,
 ) -> Result<ScreenFrame, String> {
     let mut last_err = String::from("no frame");
-    for attempt in 0..8 {
+    for attempt in 0..4 {
         let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
         let mut resource: Option<IDXGIResource> = None;
-        match dup.AcquireNextFrame(350, &mut info, &mut resource) {
+        match dup.AcquireNextFrame(50, &mut info, &mut resource) {
             Ok(()) => {}
             Err(e) if e.code() == DXGI_ERROR_WAIT_TIMEOUT => {
                 last_err = format!("timeout attempt {attempt}");
+                crate::logutil::log(&format!("dxgi {last_err}"));
+                if let Some(prev) = last.clone() {
+                    crate::logutil::log("dxgi reuse last frame");
+                    return Ok(prev);
+                }
                 continue;
             }
+            Err(e) if dxgi_lost(&e) => return Err(format!("lost: {e}")),
             Err(e) => return Err(e.to_string()),
         }
         let Some(resource) = resource else {
@@ -470,8 +598,12 @@ unsafe fn acquire_one(
             continue;
         };
         // First acquire after DuplicateOutput is often an empty/black placeholder.
-        if info.AccumulatedFrames == 0 && attempt < 4 {
+        if info.AccumulatedFrames == 0 {
             let _ = dup.ReleaseFrame();
+            if let Some(prev) = last.clone() {
+                crate::logutil::log("dxgi zero AccumulatedFrames reuse last");
+                return Ok(prev);
+            }
             last_err = "zero AccumulatedFrames".into();
             continue;
         }
@@ -488,7 +620,10 @@ unsafe fn acquire_one(
         td.CPUAccessFlags = D3D11_CPU_ACCESS_READ.0 as u32;
         td.MiscFlags = 0;
         let mut staging: Option<ID3D11Texture2D> = None;
-        if device.CreateTexture2D(&td, None, Some(&mut staging)).is_err() {
+        if device
+            .CreateTexture2D(&td, None, Some(&mut staging))
+            .is_err()
+        {
             let _ = dup.ReleaseFrame();
             return Err("CreateTexture2D staging failed".into());
         }
@@ -516,12 +651,12 @@ unsafe fn acquire_one(
         ctx.Unmap(&staging, 0);
         let _ = dup.ReleaseFrame();
         image.force_opaque();
-        if image.is_visually_blank() && attempt < 7 {
+        if image.is_visually_blank() && attempt < 3 {
             last_err = format!("black frame attempt {attempt}");
             continue;
         }
         let desk = desc.DesktopCoordinates;
-        return Ok(ScreenFrame {
+        let frame = ScreenFrame {
             image,
             physical: Rect::from_i32(
                 desk.left,
@@ -531,7 +666,13 @@ unsafe fn acquire_one(
             ),
             scale: 1.0,
             name: format!("dxgi-{}", attempt),
-        });
+        };
+        *last = Some(frame.clone());
+        return Ok(frame);
+    }
+    if let Some(prev) = last.clone() {
+        crate::logutil::log("dxgi reuse last after retries");
+        return Ok(prev);
     }
     Err(last_err)
 }

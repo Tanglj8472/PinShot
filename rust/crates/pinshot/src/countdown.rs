@@ -31,6 +31,7 @@ impl CountdownWin {
             .with_window_level(WindowLevel::AlwaysOnTop);
         let window = Rc::new(event_loop.create_window(attrs).map_err(|e| e.to_string())?);
         native::apply_pin_style(&window);
+        native::exclude_from_capture(&window);
         native::raise_on_top(&window);
         let context = Context::new(window.clone()).map_err(|e| format!("{e:?}"))?;
         let surface = Surface::new(&context, window.clone()).map_err(|e| format!("{e:?}"))?;

@@ -19,10 +19,11 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetCursorPos, GetWindowLongPtrW, IsWindow,
-    PostMessageW, RegisterClassW, SetLayeredWindowAttributes, SetWindowLongPtrW, SetWindowPos,
-    ShowWindow, GWL_EXSTYLE, HWND_TOPMOST, LWA_ALPHA, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOREDRAW,
-    SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE, WM_DESTROY, WM_HOTKEY, WNDCLASSW,
-    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+    PostMessageW, RegisterClassW, SetLayeredWindowAttributes, SetWindowDisplayAffinity,
+    SetWindowLongPtrW, SetWindowPos, ShowWindow, GWL_EXSTYLE, HWND_TOPMOST, LWA_ALPHA,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOREDRAW, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE,
+    WINDOW_DISPLAY_AFFINITY, WM_DESTROY, WM_HOTKEY, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 use winit::event_loop::EventLoopProxy;
 use winit::window::Window;
@@ -70,6 +71,20 @@ pub fn apply_overlay_style(hwnd: HWND) {
             0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
         );
+        exclude_from_capture(hwnd);
+    }
+}
+
+/// DXGI / Windows Graphics Capture skip this HWND (Win10 2004+). Pins stay
+/// capturable; overlay / fallback / countdown must not stall F1 waiting to hide.
+pub fn exclude_from_capture(hwnd: HWND) {
+    if hwnd.is_invalid() {
+        return;
+    }
+    // Win10 2004+ WDA_EXCLUDEFROMCAPTURE (0x11). windows 0.58 may not export the alias.
+    const EXCLUDE: WINDOW_DISPLAY_AFFINITY = WINDOW_DISPLAY_AFFINITY(0x0000_0011);
+    unsafe {
+        let _ = SetWindowDisplayAffinity(hwnd, EXCLUDE);
     }
 }
 

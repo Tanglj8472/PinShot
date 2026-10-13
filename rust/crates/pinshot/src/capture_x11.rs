@@ -23,15 +23,20 @@ pub struct Capture {
 
 impl Capture {
     pub fn grab(dump: bool) -> Result<Self, String> {
+        let t0 = std::time::Instant::now();
         let hold = crate::x11util::InputHold::grab();
         let result = Self::finish_grab(grab_inner(), dump);
         drop(hold);
+        crate::logutil::ms("capture grab", t0);
         result
     }
 
     /// Capture while the caller already holds `InputHold` (Python `_snip_now`).
     pub fn grab_while_held(dump: bool) -> Result<Self, String> {
-        Self::finish_grab(grab_inner(), dump)
+        let t0 = std::time::Instant::now();
+        let result = Self::finish_grab(grab_inner(), dump);
+        crate::logutil::ms("capture grab", t0);
+        result
     }
 
     fn finish_grab(result: Result<Self, String>, dump: bool) -> Result<Self, String> {
@@ -40,7 +45,12 @@ impl Capture {
             let path = std::env::temp_dir().join("pinshot-capture.png");
             if let Some(pm) = cap.composed.to_skia() {
                 let _ = pm.save_png(&path);
-                crate::logutil::log(&format!("dumped capture {}x{} → {}", cap.composed.width, cap.composed.height, path.display()));
+                crate::logutil::log(&format!(
+                    "dumped capture {}x{} → {}",
+                    cap.composed.width,
+                    cap.composed.height,
+                    path.display()
+                ));
             }
         }
         crate::logutil::log(&format!(
@@ -119,15 +129,13 @@ fn grab_shm(
     {
         return Err("no MIT-SHM".into());
     }
-    let _ = conn.shm_query_version().map_err(|e| e.to_string())?.reply().map_err(|e| e.to_string())?;
+    let _ = conn
+        .shm_query_version()
+        .map_err(|e| e.to_string())?
+        .reply()
+        .map_err(|e| e.to_string())?;
     let bytes = (w as usize) * (h as usize) * 4;
-    let shmid = unsafe {
-        libc::shmget(
-            libc::IPC_PRIVATE,
-            bytes,
-            libc::IPC_CREAT | 0o600,
-        )
-    };
+    let shmid = unsafe { libc::shmget(libc::IPC_PRIVATE, bytes, libc::IPC_CREAT | 0o600) };
     if shmid < 0 {
         return Err("shmget failed".into());
     }
@@ -170,14 +178,19 @@ fn decode_zpixmap(w: u32, h: u32, depth: u8, data: &[u8]) -> Result<Raster, Stri
     }
     let bpp = if depth <= 16 {
         2
-    } else if depth <= 24 && data.len() >= (w * h * 3) as usize && data.len() < (w * h * 4) as usize {
+    } else if depth <= 24 && data.len() >= (w * h * 3) as usize && data.len() < (w * h * 4) as usize
+    {
         3
     } else {
         4
     };
     let stride = (w as usize) * bpp;
     if data.len() < stride * h as usize {
-        return Err(format!("short GetImage {} < {}", data.len(), stride * h as usize));
+        return Err(format!(
+            "short GetImage {} < {}",
+            data.len(),
+            stride * h as usize
+        ));
     }
     if bpp == 4 {
         return Ok(Raster::from_bgra_opaque(w, h, data, stride));

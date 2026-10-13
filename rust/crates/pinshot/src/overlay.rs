@@ -126,6 +126,7 @@ impl Overlay {
         proxy: winit::event_loop::EventLoopProxy<crate::event::AppEvent>,
         #[cfg(unix)] mut pre_hold: Option<crate::x11util::InputHold>,
     ) -> Result<Self, String> {
+        let t0 = Instant::now();
         let (vx, vy) = capture.virtual_origin;
         let w = capture.composed.width;
         let h = capture.composed.height;
@@ -143,6 +144,7 @@ impl Overlay {
             attrs.with_override_redirect(true)
         };
         let window = Rc::new(event_loop.create_window(attrs).map_err(|e| e.to_string())?);
+        crate::logutil::ms("overlay create_window", t0);
         native::apply_overlay_style(&window);
         window.set_cursor(CursorIcon::Crosshair);
         // IME only while a text editor is open; a standing IME grab lets Tab
@@ -153,8 +155,12 @@ impl Overlay {
             let ctx = softbuffer::Context::new(window.clone()).map_err(|e| format!("{e:?}"))?;
             Some(softbuffer::Surface::new(&ctx, window.clone()).map_err(|e| format!("{e:?}"))?)
         };
+        let t_front = Instant::now();
         let front = OverlayFront::new(&capture.composed, 110)?;
+        crate::logutil::ms("overlay front", t_front);
+        let t_enum = Instant::now();
         let windows = translated_windows(capture.virtual_origin);
+        crate::logutil::ms("overlay enum windows", t_enum);
         crate::logutil::log(&format!("detect windows={}", windows.len()));
         let elements_rx = {
             #[cfg(windows)]
@@ -261,7 +267,10 @@ impl Overlay {
         {
             let _ = proxy;
         }
+        let t_draw = Instant::now();
         s.redraw();
+        crate::logutil::ms("overlay first redraw", t_draw);
+        crate::logutil::ms("overlay start", t0);
         Ok(s)
     }
 

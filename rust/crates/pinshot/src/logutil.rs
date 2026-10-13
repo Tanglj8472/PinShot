@@ -5,6 +5,7 @@ use pinshot_core::config::data_dir;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::sync::Mutex;
+use std::time::Instant;
 
 static FILE: Mutex<Option<std::fs::File>> = Mutex::new(None);
 static DEBUG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -15,7 +16,9 @@ pub fn debug_enabled() -> bool {
 
 pub fn init(args: &[String]) {
     let debug = args.iter().any(|a| a == "--debug")
-        || std::env::var("PINSHOT_DEBUG").map(|v| v != "0" && !v.is_empty()).unwrap_or(false);
+        || std::env::var("PINSHOT_DEBUG")
+            .map(|v| v != "0" && !v.is_empty())
+            .unwrap_or(false);
     DEBUG.store(debug, std::sync::atomic::Ordering::Relaxed);
     if debug {
         attach_console();
@@ -40,6 +43,10 @@ fn install_panic_hook() {
         log(&format!("PANIC: {info}\n{bt}"));
         prev(info);
     }));
+}
+
+pub fn ms(label: &str, started: Instant) {
+    log(&format!("{label} {}ms", started.elapsed().as_millis()));
 }
 
 pub fn log(msg: &str) {

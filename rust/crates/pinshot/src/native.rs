@@ -44,6 +44,13 @@ pub fn apply_overlay_style(window: &Window) {
     crate::x11util::apply_overlay_style(window);
 }
 
+pub fn exclude_from_capture(window: &Window) {
+    #[cfg(windows)]
+    crate::win32::exclude_from_capture(hwnd_of(window));
+    #[cfg(not(windows))]
+    let _ = window;
+}
+
 pub fn apply_pin_style(window: &Window) {
     #[cfg(windows)]
     crate::win32::apply_pin_style(hwnd_of(window));

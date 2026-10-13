@@ -8,6 +8,9 @@ pub struct Raster {
     pub width: u32,
     pub height: u32,
     pub pixels: Vec<u8>,
+    /// Capture buffers force a=255. Skipping the to_skia alpha scan saves a
+    /// full-desktop pass on F1.
+    opaque: bool,
 }
 
 impl Raster {
@@ -16,6 +19,7 @@ impl Raster {
             width,
             height,
             pixels: vec![0; width as usize * height as usize * 4],
+            opaque: false,
         }
     }
 
@@ -27,6 +31,7 @@ impl Raster {
             width,
             height,
             pixels,
+            opaque: false,
         })
     }
 
@@ -40,7 +45,13 @@ impl Raster {
         Self::from_bgra_ex(width, height, bgra, stride, true)
     }
 
-    fn from_bgra_ex(width: u32, height: u32, bgra: &[u8], stride: usize, force_opaque: bool) -> Self {
+    fn from_bgra_ex(
+        width: u32,
+        height: u32,
+        bgra: &[u8],
+        stride: usize,
+        force_opaque: bool,
+    ) -> Self {
         let mut out = Self::new(width, height);
         if stride == 0 {
             return out;
@@ -64,6 +75,7 @@ impl Raster {
                 out.pixels[dst + 3] = if force_opaque || a == 0 { 255 } else { a };
             }
         }
+        out.opaque = force_opaque;
         out
     }
 
@@ -71,6 +83,7 @@ impl Raster {
         for px in self.pixels.chunks_exact_mut(4) {
             px[3] = 255;
         }
+        self.opaque = true;
     }
 
     /// Sample a 16×16 grid (same idea as Python `_is_blank`): true if every sample is near-black.
@@ -131,6 +144,9 @@ impl Raster {
         self.pixels[i + 1] = c.g;
         self.pixels[i + 2] = c.b;
         self.pixels[i + 3] = c.a;
+        if c.a != 255 {
+            self.opaque = false;
+        }
     }
 
     pub fn bounds(&self) -> Rect {
@@ -149,6 +165,7 @@ impl Raster {
                 }
             }
         }
+        out.opaque = self.opaque;
         out
     }
 
@@ -249,7 +266,9 @@ impl Raster {
         let x_scale = self.width as f32 / nw as f32;
         let y_scale = self.height as f32 / nh as f32;
         let lerp = |a: u8, b: u8, t: f32| -> u8 {
-            (a as f32 + (b as f32 - a as f32) * t).round().clamp(0.0, 255.0) as u8
+            (a as f32 + (b as f32 - a as f32) * t)
+                .round()
+                .clamp(0.0, 255.0) as u8
         };
         let sample = |fx: f32, fy: f32| -> Rgba {
             let x0 = fx.floor() as i32;
@@ -296,7 +315,9 @@ impl Raster {
             (self.height.saturating_sub(1) as f32) / (nh - 1) as f32
         };
         let lerp = |a: u8, b: u8, t: f32| -> u8 {
-            (a as f32 + (b as f32 - a as f32) * t).round().clamp(0.0, 255.0) as u8
+            (a as f32 + (b as f32 - a as f32) * t)
+                .round()
+                .clamp(0.0, 255.0) as u8
         };
         for y in 0..nh {
             let fy = y as f32 * y_ratio;
@@ -336,6 +357,16 @@ impl Raster {
 
     pub fn to_skia(&self) -> Option<tiny_skia::Pixmap> {
         let mut pm = tiny_skia::Pixmap::new(self.width, self.height)?;
+        let dst = pm.data_mut();
+        if dst.len() != self.pixels.len() {
+            return None;
+        }
+        // Capture buffers are opaque. Premul with a=255 is a memcpy; the
+        // per-pixel loop was a big slice of F1 latency on 1080p/4K.
+        if self.opaque || self.pixels.chunks_exact(4).all(|p| p[3] == 255) {
+            dst.copy_from_slice(&self.pixels);
+            return Some(pm);
+        }
         for (dst, src) in pm.pixels_mut().iter_mut().zip(self.pixels.chunks_exact(4)) {
             // GDI 32-bit DIBs leave alpha 0 while RGB is valid — treat that as opaque.
             let a = if src[3] == 0 && (src[0] | src[1] | src[2]) != 0 {
@@ -390,7 +421,8 @@ impl Raster {
     pub fn grayscale(&self) -> Self {
         let mut out = self.clone();
         for px in out.pixels.chunks_exact_mut(4) {
-            let y = (0.299 * px[0] as f32 + 0.587 * px[1] as f32 + 0.114 * px[2] as f32).round() as u8;
+            let y =
+                (0.299 * px[0] as f32 + 0.587 * px[1] as f32 + 0.114 * px[2] as f32).round() as u8;
             px[0] = y;
             px[1] = y;
             px[2] = y;
@@ -483,6 +515,18 @@ mod tests {
         let pm = r.to_skia().unwrap();
         let c = pm.pixel(0, 0).unwrap().demultiply();
         assert_eq!((c.red(), c.green(), c.blue(), c.alpha()), (30, 20, 10, 255));
+    }
+
+    #[test]
+    fn to_skia_opaque_matches_source_rgb() {
+        let mut r = Raster::new(2, 1);
+        r.set(0, 0, Rgba::rgb(10, 20, 30));
+        r.set(1, 0, Rgba::rgb(40, 50, 60));
+        let pm = r.to_skia().unwrap();
+        let a = pm.pixel(0, 0).unwrap().demultiply();
+        let b = pm.pixel(1, 0).unwrap().demultiply();
+        assert_eq!((a.red(), a.green(), a.blue()), (10, 20, 30));
+        assert_eq!((b.red(), b.green(), b.blue()), (40, 50, 60));
     }
 
     #[test]

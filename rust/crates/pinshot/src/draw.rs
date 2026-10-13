@@ -499,14 +499,37 @@ impl Drop for GdiBits {
     }
 }
 
+fn dim_pixmap(src: &Pixmap, dim: u8) -> Option<Pixmap> {
+    let mut frame = Pixmap::new(src.width(), src.height())?;
+    let k = 255u16.saturating_sub(dim as u16);
+    let s = src.data();
+    let d = frame.data_mut();
+    if d.len() != s.len() {
+        return None;
+    }
+    for (dst, src) in d.chunks_exact_mut(4).zip(s.chunks_exact(4)) {
+        dst[0] = ((src[0] as u16 * k) / 255) as u8;
+        dst[1] = ((src[1] as u16 * k) / 255) as u8;
+        dst[2] = ((src[2] as u16 * k) / 255) as u8;
+        dst[3] = src[3];
+    }
+    Some(frame)
+}
+
 impl OverlayFront {
     pub fn new(shot: &Raster, dim: u8) -> Result<Self, String> {
+        let t0 = std::time::Instant::now();
         let shot_pm = shot.to_skia().ok_or("capture pixmap")?;
-        let mut frame = shot_pm.clone();
-        let bounds = Rect::new(0.0, 0.0, frame.width() as f32, frame.height() as f32);
-        fill_rect(&mut frame, bounds, Rgba::rgba(0, 0, 0, dim));
+        crate::logutil::ms("overlay to_skia", t0);
+        let t_dim = std::time::Instant::now();
+        let frame = dim_pixmap(&shot_pm, dim).ok_or("dim pixmap")?;
+        crate::logutil::ms("overlay dim", t_dim);
+        #[cfg(windows)]
+        let t_gdi = std::time::Instant::now();
         #[cfg(windows)]
         let gdi = GdiBits::new(frame.width(), frame.height())?;
+        #[cfg(windows)]
+        crate::logutil::ms("overlay gdi dib", t_gdi);
         Ok(Self {
             shot: shot_pm,
             frame,
@@ -542,14 +565,8 @@ impl OverlayFront {
             return Ok(());
         }
         self.shot = shot_pm;
-        self.frame = self.shot.clone();
-        let bounds = Rect::new(
-            0.0,
-            0.0,
-            self.frame.width() as f32,
-            self.frame.height() as f32,
-        );
-        fill_rect(&mut self.frame, bounds, Rgba::rgba(0, 0, 0, self.dim));
+        self.frame = dim_pixmap(&self.shot, self.dim).ok_or("dim pixmap")?;
+        let bounds = self.bounds();
         self.last_hole = Rect::EMPTY;
         self.last_chrome.clear();
         self.last_size_label = Rect::EMPTY;

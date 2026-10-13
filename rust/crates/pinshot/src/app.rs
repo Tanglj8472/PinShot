@@ -250,11 +250,10 @@ impl App {
     }
 
     fn hide_wait_ms(&self) -> u64 {
-        if self.wait_after_overlay || self.restore_fallback {
-            150
-        } else {
-            0
-        }
+        // Overlay / fallback are WDA_EXCLUDEFROMCAPTURE; DXGI reuses the last
+        // duplicated frame on timeout. The old 150ms DWM nap was a floor on F1.
+        let _ = (self.wait_after_overlay, self.restore_fallback);
+        0
     }
 
     fn prepare_capture_hide(&mut self) {
@@ -288,6 +287,7 @@ impl App {
         }
         self.wait_after_overlay = false;
         crate::logutil::log("begin_snip capture");
+        let t0 = Instant::now();
         let translate = self.translate_next;
         self.translate_next = false;
         #[cfg(unix)]
@@ -326,6 +326,7 @@ impl App {
                 eprintln!("PinShot capture: {e}");
             }
         }
+        crate::logutil::ms("begin_snip total", t0);
     }
 
     fn pin_clipboard(&mut self, event_loop: &ActiveEventLoop) {
@@ -983,6 +984,8 @@ impl ApplicationHandler<AppEvent> for App {
             self.restore_session(event_loop);
             self.restore_history();
             crate::ocr_run::prefetch_models();
+            #[cfg(windows)]
+            crate::capture::Capture::prefetch();
         }
         if self.start_prefs {
             self.start_prefs = false;

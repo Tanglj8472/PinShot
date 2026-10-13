@@ -39,6 +39,7 @@ impl FallbackWin {
             .with_min_inner_size(LogicalSize::new(220.0, 180.0))
             .with_resizable(true);
         let window = Rc::new(event_loop.create_window(attrs).map_err(|e| e.to_string())?);
+        crate::native::exclude_from_capture(&window);
         if let Some((_, _, rgba)) = Some(app_icon_rgba(32)) {
             let _ = rgba;
         }
