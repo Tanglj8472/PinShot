@@ -35,6 +35,20 @@ impl Rgba {
         b: 255,
         a: 255,
     };
+    /// Overlay hover / selection ring. DodgerBlue 1px vanishes on the dimmed
+    /// desktop; Snipaste-style cyan stays readable.
+    pub const SNIP_RING: Self = Self {
+        r: 0,
+        g: 210,
+        b: 255,
+        a: 255,
+    };
+    pub const SNIP_RING_EDGE: Self = Self {
+        r: 0,
+        g: 40,
+        b: 80,
+        a: 255,
+    };
     pub const SELECTION: Self = Self::BLUE;
     pub const RED: Self = Self {
         r: 255,

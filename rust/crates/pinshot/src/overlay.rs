@@ -273,8 +273,14 @@ impl Overlay {
         if let Some((sx, sy)) = native::cursor_screen() {
             let (ox, oy) = s.capture.virtual_origin;
             s.cursor = Point::new((sx - ox) as f32, (sy - oy) as f32);
-            s.hover = hover_rect(s.cursor, &s.windows, &[], s.bounds());
         }
+        // Hit-test now, not on the first CursorMoved: F1 with a still mouse
+        // must still draw the window / control ring.
+        s.update_hover();
+        crate::logutil::log(&format!(
+            "overlay hover {:.0}x{:.0} at {:.0},{:.0}",
+            s.hover.w, s.hover.h, s.cursor.x, s.cursor.y
+        ));
         s.load_elements();
         if s.translate_on_select {
             s.show_toast(tr("Select text, then release"));

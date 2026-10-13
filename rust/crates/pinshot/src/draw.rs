@@ -293,6 +293,11 @@ pub fn stroke_rect(pm: &mut Pixmap, r: Rect, c: Rgba, width: f32) {
     }
 }
 
+fn paint_snip_ring(pm: &mut Pixmap, r: Rect) {
+    stroke_rect(pm, r, Rgba::SNIP_RING_EDGE, 4.0);
+    stroke_rect(pm, r, Rgba::SNIP_RING, 2.0);
+}
+
 fn clip_rect(r: Rect, bounds: Rect) -> Rect {
     r.intersect(bounds)
 }
@@ -697,7 +702,7 @@ impl OverlayFront {
             .union(size_label)
             .inflated(8.0)
             .intersect(bounds);
-        let hole_pad = hole.inflated(8.0).union(size_label).intersect(bounds);
+        let hole_pad = hole.inflated(10.0).union(size_label).intersect(bounds);
 
         let mut present: Vec<Rect> = Vec::new();
         // GDI already holds the dimmed desktop from `new()`; first paint only
@@ -765,12 +770,7 @@ impl OverlayFront {
             chrome.push(sh.bounds().inflated(pad).intersect(bounds));
         }
         if !hole.is_empty() {
-            stroke_rect(
-                &mut self.frame,
-                hole.adjusted(0.0, 0.0, -1.0, -1.0),
-                Rgba::BLUE,
-                1.0,
-            );
+            paint_snip_ring(&mut self.frame, hole.adjusted(0.0, 0.0, -1.0, -1.0));
             if sel.has_sel() && annot.tool.is_none() && annot.selected.is_none() {
                 for (_, c) in handle_points(hole) {
                     let hr = Rect::new(
@@ -779,7 +779,7 @@ impl OverlayFront {
                         HANDLE_SIZE,
                         HANDLE_SIZE,
                     );
-                    fill_rect(&mut self.frame, hr, Rgba::BLUE);
+                    fill_rect(&mut self.frame, hr, Rgba::SNIP_RING);
                     stroke_rect(&mut self.frame, hr, Rgba::WHITE, 1.0);
                 }
             }
@@ -2018,6 +2018,21 @@ mod tests {
                 px.blue()
             );
         }
+    }
+
+    #[test]
+    fn snip_ring_is_bright_cyan_not_thin_dodgerblue() {
+        let mut pm = Pixmap::new(80, 60).unwrap();
+        pm.fill(tiny_skia::Color::from_rgba8(40, 40, 40, 255));
+        paint_snip_ring(&mut pm, Rect::new(10.0, 8.0, 50.0, 36.0));
+        let p = pm.pixel(10, 20).expect("edge").demultiply();
+        assert!(
+            p.green() > 140 && p.blue() > 180 && (p.green() as i16) > (p.red() as i16) + 80,
+            "ring should be cyan, got {},{},{}",
+            p.red(),
+            p.green(),
+            p.blue()
+        );
     }
 
     #[test]
