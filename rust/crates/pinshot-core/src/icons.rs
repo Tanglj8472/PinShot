@@ -155,6 +155,43 @@ fn arrow_geom(
     Some((left, right, base))
 }
 
+fn fill_sharp_icon(
+    pixmap: &mut Pixmap,
+    a: (f32, f32),
+    b: (f32, f32),
+    color: Rgba,
+    t: Transform,
+) {
+    let dx = b.0 - a.0;
+    let dy = b.1 - a.1;
+    let len = (dx * dx + dy * dy).sqrt();
+    if len < 0.5 {
+        return;
+    }
+    let ux = dx / len;
+    let uy = dy / len;
+    let vx = -uy;
+    let vy = ux;
+    let tail_hw = 1.85;
+    let head_len = (len * 0.20).max(3.4);
+    let barb_hw = 2.05;
+    let neck_hw = 0.55;
+    let nx = b.0 - ux * head_len;
+    let ny = b.1 - uy * head_len;
+    let mut pb = PathBuilder::new();
+    pb.move_to(a.0 + vx * tail_hw, a.1 + vy * tail_hw);
+    pb.line_to(nx + vx * neck_hw, ny + vy * neck_hw);
+    pb.line_to(nx + vx * barb_hw, ny + vy * barb_hw);
+    pb.line_to(b.0, b.1);
+    pb.line_to(nx - vx * barb_hw, ny - vy * barb_hw);
+    pb.line_to(nx - vx * neck_hw, ny - vy * neck_hw);
+    pb.line_to(a.0 - vx * tail_hw, a.1 - vy * tail_hw);
+    pb.close();
+    if let Some(path) = pb.finish() {
+        pixmap.fill_path(&path, &paint(color), FillRule::Winding, t, None);
+    }
+}
+
 fn arrow_head_ex(
     pixmap: &mut Pixmap,
     a: (f32, f32),
@@ -232,14 +269,7 @@ pub fn draw_icon(pixmap: &mut Pixmap, kind: IconKind, cell: Rect, color: Option<
             }
         }
         IconKind::Arrow => {
-            let a = (4.0, 16.0);
-            let b = (16.0, 4.0);
-            let (head, half_w) = (5.2, 2.2);
-            let shaft_end = arrow_geom(a, b, head, half_w).map(|g| g.2).unwrap_or(b);
-            if let Some(path) = line_path(a, shaft_end) {
-                pixmap.stroke_path(&path, &p, &st, t, None);
-            }
-            arrow_head_ex(pixmap, a, b, head, half_w, color, t, false);
+            fill_sharp_icon(pixmap, (3.5, 16.5), (16.5, 3.5), color, t);
         }
         IconKind::ArrowThick => {
             let a = (4.0, 16.0);

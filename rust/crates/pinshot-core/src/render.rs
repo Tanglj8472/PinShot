@@ -223,18 +223,28 @@ fn draw_shape_t(pm: &mut Pixmap, sh: &Shape, t: Transform) {
         }
         Tool::Line => {
             let kind = sh.style.arrow_kind();
-            let pts = shaft_pts(&sh.pts, sh.style.width, kind);
-            if let Some(path) = polyline(&pts) {
-                let mut st = stroke_for(sh);
-                // Filled heads: Butt at the perpendicular base so the shaft
-                // does not round past the triangle (standard GDI construction).
-                if matches!(kind, ArrowKind::Thin | ArrowKind::Thick) {
-                    st.line_cap = LineCap::Butt;
+            if kind == ArrowKind::Thin && sh.pts.len() > 1 {
+                // Sharp dart: the whole last segment is a filled taper, not a
+                // constant-width stroke with a stubby triangle.
+                if sh.pts.len() > 2 {
+                    if let Some(path) = polyline(&sh.pts[..sh.pts.len() - 1]) {
+                        pm.stroke_path(&path, &paint(sh.style.color), &stroke_for(sh), t, None);
+                    }
                 }
-                pm.stroke_path(&path, &paint(sh.style.color), &st, t, None);
-            }
-            if kind.is_arrow() && sh.pts.len() > 1 {
-                draw_arrow_head(pm, sh, kind, t);
+                let n = sh.pts.len();
+                fill_sharp_arrow(pm, sh.pts[n - 2], sh.pts[n - 1], sh.style.width, t, sh.style.color);
+            } else {
+                let pts = shaft_pts(&sh.pts, sh.style.width, kind);
+                if let Some(path) = polyline(&pts) {
+                    let mut st = stroke_for(sh);
+                    if kind == ArrowKind::Thick {
+                        st.line_cap = LineCap::Butt;
+                    }
+                    pm.stroke_path(&path, &paint(sh.style.color), &st, t, None);
+                }
+                if kind.is_arrow() && sh.pts.len() > 1 {
+                    draw_arrow_head(pm, sh, kind, t);
+                }
             }
         }
         Tool::Pen | Tool::Marker => {
@@ -336,15 +346,13 @@ fn draw_shape_t(pm: &mut Pixmap, sh: &Shape, t: Transform) {
 ///
 /// Textbook construction (GDI / unit dir + perp): tip at B, base corners
 /// `B - length·U ± half_width·V` with `U = normalize(B−A)`, `V = (−Uy, Ux)`.
-/// Filled: isosceles triangle, shaft only to the base. Hollow: open V, shaft to tip.
+/// Thick: stubby filled triangle, shaft only to the base.
+/// Hollow: open V, shaft to the tip.
+/// Thin is a tapering dart — see [`fill_sharp_arrow`].
 fn arrow_metrics(width: i32, kind: ArrowKind) -> Option<(f32, f32)> {
     let w = width.max(1) as f32;
     match kind {
-        ArrowKind::None => None,
-        ArrowKind::Thin => {
-            let len = (w * 3.1 + 7.0).max(11.0);
-            Some((len, len * 0.42))
-        }
+        ArrowKind::None | ArrowKind::Thin => None,
         ArrowKind::Thick => {
             let len = (w * 4.4 + 10.0).max(16.0);
             Some((len, len * 0.50))
@@ -353,6 +361,41 @@ fn arrow_metrics(width: i32, kind: ArrowKind) -> Option<(f32, f32)> {
             let len = (w * 3.8 + 9.0).max(14.0);
             Some((len, len * 0.52))
         }
+    }
+}
+
+/// Snipaste-style sharp arrow: one filled dart whose body tapers from the
+/// tail to a thin neck, then a small acute triangular head.
+fn fill_sharp_arrow(pm: &mut Pixmap, a: Point, b: Point, width: i32, t: Transform, color: Rgba) {
+    let dx = b.x - a.x;
+    let dy = b.y - a.y;
+    let len = (dx * dx + dy * dy).sqrt();
+    if len < 0.5 {
+        return;
+    }
+    let ux = dx / len;
+    let uy = dy / len;
+    let vx = -uy;
+    let vy = ux;
+    let w = width.max(1) as f32;
+    // Wide spear base that stays a visible wedge (does not collapse to a hairline).
+    let tail_hw = (w * 1.9).max(2.4);
+    let neck_hw = (w * 0.5).max(0.8);
+    let head_cap = (len * 0.16).max(8.0f32.min(len * 0.45));
+    let head_len = (w * 3.2 + 7.0).min(head_cap).min(len * 0.45);
+    let barb_hw = (tail_hw * 0.72).max(w * 1.55);
+    let neck = Point::new(b.x - ux * head_len, b.y - uy * head_len);
+    let mut pb = PathBuilder::new();
+    pb.move_to(a.x + vx * tail_hw, a.y + vy * tail_hw);
+    pb.line_to(neck.x + vx * neck_hw, neck.y + vy * neck_hw);
+    pb.line_to(neck.x + vx * barb_hw, neck.y + vy * barb_hw);
+    pb.line_to(b.x, b.y);
+    pb.line_to(neck.x - vx * barb_hw, neck.y - vy * barb_hw);
+    pb.line_to(neck.x - vx * neck_hw, neck.y - vy * neck_hw);
+    pb.line_to(a.x - vx * tail_hw, a.y - vy * tail_hw);
+    pb.close();
+    if let Some(path) = pb.finish() {
+        pm.fill_path(&path, &paint(color), FillRule::Winding, t, None);
     }
 }
 
@@ -569,25 +612,39 @@ mod tests {
     }
 
     #[test]
-    fn thin_arrow_fills_the_triangle() {
+    fn thin_arrow_fills_the_tapered_body() {
         let mut base = Raster::new(80, 40);
         base.fill(Rgba::WHITE);
         let out = compose(&base, &[line_shape(crate::annotation::ArrowKind::Thin)]);
-        // Centroid of the perp-base triangle (tip at 50,20; length ~16).
-        let core = count_red(&out, 36..42, 18..23);
-        assert!(core > 8, "filled triangle core pixels={core}");
+        let core = count_red(&out, 20..32, 18..23);
+        assert!(core > 8, "tapered body pixels={core}");
+    }
+
+    #[test]
+    fn thin_arrow_is_a_sharp_tapered_dart() {
+        let mut base = Raster::new(80, 40);
+        base.fill(Rgba::WHITE);
+        let out = compose(&base, &[line_shape(crate::annotation::ArrowKind::Thin)]);
+        // Body tapers: mid-shaft far off-axis stays empty (not a stubby wedge).
+        let flare = count_red(&out, 22..30, 10..14);
+        assert!(flare < 4, "thin dart must not flare mid-shaft, pixels={flare}");
+        // Small sharp head at the tip (50, 20), not a wide triangle.
+        let tip = count_red(&out, 44..52, 18..23);
+        assert!(tip > 4, "sharp tip pixels={tip}");
+        let fat_head = count_red(&out, 40..50, 8..13);
+        assert!(fat_head < 6, "thin head must stay acute, pixels={fat_head}");
     }
 
     #[test]
     fn filled_arrow_base_is_perpendicular_to_shaft() {
         let mut base = Raster::new(80, 40);
         base.fill(Rgba::WHITE);
-        let out = compose(&base, &[line_shape(crate::annotation::ArrowKind::Thin)]);
-        // Horizontal shaft to (50, 20); barbs sit on a vertical line behind the tip.
-        let barb = count_red(&out, 33..36, 14..17) + count_red(&out, 33..36, 23..26);
+        let out = compose(&base, &[line_shape(crate::annotation::ArrowKind::Thick)]);
+        // Horizontal shaft to (50, 20); thick barbs sit on a vertical line behind the tip.
+        let barb = count_red(&out, 24..30, 8..13) + count_red(&out, 24..30, 27..32);
         assert!(barb > 4, "perpendicular barbs should paint, pixels={barb}");
         // Behind the base the head must not flare (angle-spread chevrons did).
-        let behind = count_red(&out, 20..28, 12..16);
+        let behind = count_red(&out, 10..18, 8..13);
         assert!(behind < 3, "no chevron flare behind the base, pixels={behind}");
         if let Ok(dir) = std::env::var("PINSHOT_DUMP_ARROWS") {
             let mut canvas = Raster::new(280, 200);
@@ -617,7 +674,7 @@ mod tests {
             let preview = compose(&canvas, &shapes);
             if let Some(pm) = preview.to_skia() {
                 if let Ok(png) = pm.encode_png() {
-                    let path = std::path::PathBuf::from(dir).join("line_arrow_geometry.png");
+                    let path = std::path::PathBuf::from(dir).join("line_arrow_styles.png");
                     let _ = std::fs::create_dir_all(path.parent().unwrap_or(std::path::Path::new(".")));
                     let _ = std::fs::write(path, png);
                 }
