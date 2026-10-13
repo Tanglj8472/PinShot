@@ -619,10 +619,7 @@ impl OverlayFront {
             .union(size_label)
             .inflated(8.0)
             .intersect(bounds);
-        let hole_pad = hole
-            .inflated(8.0)
-            .union(size_label)
-            .intersect(bounds);
+        let hole_pad = hole.inflated(8.0).union(size_label).intersect(bounds);
 
         let mut present: Vec<Rect> = Vec::new();
         if !self.primed {
@@ -1030,13 +1027,6 @@ pub fn paint_toolbar(pm: &mut Pixmap, tb: &Toolbar, cursor: Option<Point>) -> Re
         }
         let ink = if b.checked { Rgba::WHITE } else { CHROME_ICON };
         draw_icon(pm, b.icon, b.rect.adjusted(2.0, 2.0, -2.0, -2.0), Some(ink));
-        if b.checked {
-            fill_rect(
-                pm,
-                Rect::new(b.rect.right() - 7.0, b.rect.y + 3.0, 4.0, 4.0),
-                Rgba::rgb(220, 40, 40),
-            );
-        }
     }
     let mut dirty = tb.bar;
     if let Some(pr) = tb.panel {
@@ -1185,13 +1175,6 @@ fn paint_extra(pm: &mut Pixmap, extra: &TbExtra, cursor: Option<Point>) {
                     12,
                     ink,
                     extra.checked,
-                );
-            }
-            if extra.checked {
-                fill_rect(
-                    pm,
-                    Rect::new(extra.rect.right() - 6.0, extra.rect.y + 2.0, 4.0, 4.0),
-                    Rgba::rgb(220, 40, 40),
                 );
             }
         }
@@ -1904,6 +1887,17 @@ mod tests {
             bar_px.green(),
             bar_px.blue()
         );
+        let corner = pm
+            .pixel((btn.rect.right() - 4.0) as u32, (btn.rect.y + 4.0) as u32)
+            .expect("corner")
+            .demultiply();
+        assert!(
+            (corner.blue() as i16) >= (corner.red() as i16),
+            "selected tool must not keep a red corner mark, got {},{},{}",
+            corner.red(),
+            corner.green(),
+            corner.blue()
+        );
         let chip = tb.extras.iter().find(|e| e.checked);
         if let Some(chip) = chip {
             let cpx = pm
@@ -1939,6 +1933,21 @@ mod tests {
                     None,
                 );
                 let _ = out.save_png(format!("{dir}/toolbar_text.png"));
+            }
+            let rst = Style::for_tool(Tool::Rect);
+            let rtb = Toolbar::layout(sel, over, Some(Tool::Rect), false, Some(&rst));
+            let crop = rtb.bar.union(rtb.panel.unwrap_or(rtb.bar)).inflated(12.0);
+            if let Some(out) = crop_rect(
+                &{
+                    let mut full = Pixmap::new(1920, 1200).unwrap();
+                    full.fill(tiny_skia::Color::from_rgba8(60, 64, 72, 255));
+                    paint_toolbar(&mut full, &rtb, None);
+                    full
+                },
+                crop,
+                [60, 64, 72],
+            ) {
+                let _ = out.save_png(format!("{dir}/toolbar_rect.png"));
             }
         }
     }
