@@ -224,8 +224,7 @@ fn draw_shape_t(pm: &mut Pixmap, sh: &Shape, t: Transform) {
         Tool::Line => {
             let kind = sh.style.arrow_kind();
             if kind == ArrowKind::Thin && sh.pts.len() > 1 {
-                // Sharp dart: the whole last segment is a filled taper, not a
-                // constant-width stroke with a stubby triangle.
+                // Sharp: tapered filled shaft + acute triangle, not a kite.
                 if sh.pts.len() > 2 {
                     if let Some(path) = polyline(&sh.pts[..sh.pts.len() - 1]) {
                         pm.stroke_path(&path, &paint(sh.style.color), &stroke_for(sh), t, None);
@@ -346,26 +345,27 @@ fn draw_shape_t(pm: &mut Pixmap, sh: &Shape, t: Transform) {
 ///
 /// Textbook construction (GDI / unit dir + perp): tip at B, base corners
 /// `B - length·U ± half_width·V` with `U = normalize(B−A)`, `V = (−Uy, Ux)`.
-/// Thick: stubby filled triangle, shaft only to the base.
+/// Thick: filled triangle on a constant shaft, base perpendicular to the shaft.
 /// Hollow: open V, shaft to the tip.
-/// Thin is a filled wedge, thin at the tail and thick at the head.
+/// Thin: needle shaft (thin→slightly thicker) + a distinct acute triangle.
 fn arrow_metrics(width: i32, kind: ArrowKind) -> Option<(f32, f32)> {
     let w = width.max(1) as f32;
     match kind {
         ArrowKind::None | ArrowKind::Thin => None,
         ArrowKind::Thick => {
-            let len = (w * 4.4 + 10.0).max(16.0);
-            Some((len, len * 0.50))
+            let len = (w * 2.8 + 7.0).max(11.0);
+            Some((len, w * 1.35 + 2.4))
         }
         ArrowKind::Hollow => {
-            let len = (w * 3.8 + 9.0).max(14.0);
-            Some((len, len * 0.52))
+            let len = (w * 3.0 + 7.0).max(11.0);
+            Some((len, w * 1.25 + 2.2))
         }
     }
 }
 
-/// Sharp arrow: filled wedge that is thin at the start and thick at the
-/// shoulders, then a point at the tip (由细到粗).
+/// Sharp arrow: a thin trapezoid shaft plus a separate acute head.
+/// Head size follows stroke width, not total length — a long arrow must
+/// stay a line with a tip, not a kite/wedge spanning the whole segment.
 fn fill_sharp_arrow(pm: &mut Pixmap, a: Point, b: Point, width: i32, t: Transform, color: Rgba) {
     let dx = b.x - a.x;
     let dy = b.y - a.y;
@@ -378,15 +378,18 @@ fn fill_sharp_arrow(pm: &mut Pixmap, a: Point, b: Point, width: i32, t: Transfor
     let vx = -uy;
     let vy = ux;
     let w = width.max(1) as f32;
-    let tail_hw = (w * 0.38).max(0.6);
-    let shoulder_hw = (w * 2.05).max(2.8);
-    let head_len = (w * 2.8 + 6.0).min(len * 0.38).max(len * 0.16);
+    let tail_hw = (w * 0.32).max(0.55);
+    let neck_hw = (w * 0.62).max(tail_hw + 0.35);
+    let barb_hw = (w * 1.15 + 2.4).max(neck_hw * 2.15);
+    let head_len = (w * 3.6 + 7.0).min(len * 0.34).max(7.0f32.min(len * 0.55));
     let neck = Point::new(b.x - ux * head_len, b.y - uy * head_len);
     let mut pb = PathBuilder::new();
     pb.move_to(a.x + vx * tail_hw, a.y + vy * tail_hw);
-    pb.line_to(neck.x + vx * shoulder_hw, neck.y + vy * shoulder_hw);
+    pb.line_to(neck.x + vx * neck_hw, neck.y + vy * neck_hw);
+    pb.line_to(neck.x + vx * barb_hw, neck.y + vy * barb_hw);
     pb.line_to(b.x, b.y);
-    pb.line_to(neck.x - vx * shoulder_hw, neck.y - vy * shoulder_hw);
+    pb.line_to(neck.x - vx * barb_hw, neck.y - vy * barb_hw);
+    pb.line_to(neck.x - vx * neck_hw, neck.y - vy * neck_hw);
     pb.line_to(a.x - vx * tail_hw, a.y - vy * tail_hw);
     pb.close();
     if let Some(path) = pb.finish() {
@@ -620,12 +623,15 @@ mod tests {
         let mut base = Raster::new(80, 40);
         base.fill(Rgba::WHITE);
         let out = compose(&base, &[line_shape(crate::annotation::ArrowKind::Thin)]);
-        let tail = count_red(&out, 10..18, 12..16);
-        let head = count_red(&out, 32..44, 12..16);
+        let tail_off = count_red(&out, 10..20, 12..16);
+        let shaft = count_red(&out, 16..28, 18..23);
+        let barbs = count_red(&out, 34..40, 13..18) + count_red(&out, 34..40, 22..27);
+        assert!(shaft > 8, "needle shaft pixels={shaft}");
         assert!(
-            head > tail + 4,
-            "arrow should widen toward the tip, tail={tail} head={head}"
+            tail_off < 3,
+            "tail must stay a thin shaft, not a wedge, off-axis={tail_off}"
         );
+        assert!(barbs > 4, "distinct head barbs pixels={barbs}");
         let tip = count_red(&out, 44..52, 16..25);
         assert!(tip > 4, "sharp tip pixels={tip}");
     }
@@ -636,7 +642,7 @@ mod tests {
         base.fill(Rgba::WHITE);
         let out = compose(&base, &[line_shape(crate::annotation::ArrowKind::Thick)]);
         // Horizontal shaft to (50, 20); thick barbs sit on a vertical line behind the tip.
-        let barb = count_red(&out, 24..30, 8..13) + count_red(&out, 24..30, 27..32);
+        let barb = count_red(&out, 33..38, 11..16) + count_red(&out, 33..38, 24..29);
         assert!(barb > 4, "perpendicular barbs should paint, pixels={barb}");
         // Behind the base the head must not flare (angle-spread chevrons did).
         let behind = count_red(&out, 10..18, 8..13);

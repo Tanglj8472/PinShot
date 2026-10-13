@@ -173,9 +173,9 @@ fn fill_sharp_icon(
     let vx = -uy;
     let vy = ux;
     let tail_hw = 0.55;
-    let head_len = (len * 0.22).max(3.4);
-    let barb_hw = 2.35;
-    let neck_hw = 1.55;
+    let head_len = (len * 0.30).max(4.4);
+    let barb_hw = 2.05;
+    let neck_hw = 0.85;
     let nx = b.0 - ux * head_len;
     let ny = b.1 - uy * head_len;
     let mut pb = PathBuilder::new();
@@ -274,7 +274,7 @@ pub fn draw_icon(pixmap: &mut Pixmap, kind: IconKind, cell: Rect, color: Option<
         IconKind::ArrowThick => {
             let a = (4.0, 16.0);
             let b = (16.2, 3.8);
-            let (head, half_w) = (7.2, 3.6);
+            let (head, half_w) = (6.2, 2.7);
             let shaft_end = arrow_geom(a, b, head, half_w).map(|g| g.2).unwrap_or(b);
             if let Some(path) = line_path(a, shaft_end) {
                 pixmap.stroke_path(&path, &p, &st, t, None);
