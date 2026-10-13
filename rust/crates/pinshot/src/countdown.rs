@@ -23,12 +23,14 @@ pub struct CountdownWin {
 
 impl CountdownWin {
     pub fn create(event_loop: &ActiveEventLoop, left: u32) -> Result<Self, String> {
-        let attrs = Window::default_attributes()
-            .with_title("PinShot")
-            .with_decorations(false)
-            .with_resizable(false)
-            .with_inner_size(LogicalSize::new(140.0, 140.0))
-            .with_window_level(WindowLevel::AlwaysOnTop);
+        let attrs = native::as_tool_window(
+            Window::default_attributes()
+                .with_title("PinShot")
+                .with_decorations(false)
+                .with_resizable(false)
+                .with_inner_size(LogicalSize::new(140.0, 140.0))
+                .with_window_level(WindowLevel::AlwaysOnTop),
+        );
         let window = Rc::new(event_loop.create_window(attrs).map_err(|e| e.to_string())?);
         native::apply_pin_style(&window);
         native::exclude_from_capture(&window);

@@ -134,18 +134,20 @@ impl PinWin {
         // Creating at bare image size cropped the shadow pixmap to its top-left
         // — a dark band along the top and left edges.
         let m = if can_shadow { PIN_SHADOW_M as i32 } else { 0 };
-        let attrs = Window::default_attributes()
-            .with_title("PinShot Pin")
-            .with_decorations(false)
-            .with_resizable(false)
-            .with_visible(true)
-            .with_transparent(can_shadow)
-            .with_position(PhysicalPosition::new(pos.0 - m, pos.1 - m))
-            .with_inner_size(PhysicalSize::new(
-                (w as i32 + 2 * m) as u32,
-                (h as i32 + 2 * m) as u32,
-            ))
-            .with_window_level(winit::window::WindowLevel::AlwaysOnTop);
+        let attrs = native::as_tool_window(
+            Window::default_attributes()
+                .with_title("PinShot Pin")
+                .with_decorations(false)
+                .with_resizable(false)
+                .with_visible(true)
+                .with_transparent(can_shadow)
+                .with_position(PhysicalPosition::new(pos.0 - m, pos.1 - m))
+                .with_inner_size(PhysicalSize::new(
+                    (w as i32 + 2 * m) as u32,
+                    (h as i32 + 2 * m) as u32,
+                ))
+                .with_window_level(winit::window::WindowLevel::AlwaysOnTop),
+        );
         let window = Rc::new(event_loop.create_window(attrs).map_err(|e| e.to_string())?);
         native::apply_pin_style(&window);
         window.set_ime_allowed(true);

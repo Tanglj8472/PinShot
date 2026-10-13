@@ -134,14 +134,16 @@ impl PinMenuWin {
         if let Some((cx, cy)) = menu_action_center(&state, &PinMenuAction::RenameGroup) {
             crate::logutil::log(&format!("pin menu rename-group at {cx:.0},{cy:.0}"));
         }
-        let attrs = Window::default_attributes()
-            .with_title("PinShot")
-            .with_decorations(false)
-            .with_resizable(false)
-            .with_visible(true)
-            .with_position(PhysicalPosition::new(pos.0, pos.1))
-            .with_inner_size(PhysicalSize::new(w, h))
-            .with_window_level(winit::window::WindowLevel::AlwaysOnTop);
+        let attrs = crate::native::as_tool_window(
+            Window::default_attributes()
+                .with_title("PinShot")
+                .with_decorations(false)
+                .with_resizable(false)
+                .with_visible(true)
+                .with_position(PhysicalPosition::new(pos.0, pos.1))
+                .with_inner_size(PhysicalSize::new(w, h))
+                .with_window_level(winit::window::WindowLevel::AlwaysOnTop),
+        );
         let window = Rc::new(event_loop.create_window(attrs).map_err(|e| e.to_string())?);
         crate::native::raise_on_top(&window);
         crate::native::focus_window(&window);

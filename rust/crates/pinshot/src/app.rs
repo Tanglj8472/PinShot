@@ -477,11 +477,13 @@ impl App {
                 self.pump_win = Some(Rc::new(w));
                 return;
             }
-            let attrs = Window::default_attributes()
-                .with_title("PinShot")
-                .with_decorations(false)
-                .with_visible(false)
-                .with_inner_size(winit::dpi::LogicalSize::new(1.0, 1.0));
+            let attrs = native::as_tool_window(
+                Window::default_attributes()
+                    .with_title("PinShot")
+                    .with_decorations(false)
+                    .with_visible(false)
+                    .with_inner_size(winit::dpi::LogicalSize::new(1.0, 1.0)),
+            );
             if let Ok(w) = event_loop.create_window(attrs) {
                 w.set_visible(false);
                 self.pump_win = Some(Rc::new(w));

@@ -21,9 +21,10 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetCursorPos, GetWindowLongPtrW, IsWindow,
     PostMessageW, RegisterClassW, SetLayeredWindowAttributes, SetWindowDisplayAffinity,
     SetWindowLongPtrW, SetWindowPos, ShowWindow, GWL_EXSTYLE, HWND_TOPMOST, LWA_ALPHA,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOREDRAW, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE,
-    WINDOW_DISPLAY_AFFINITY, WM_DESTROY, WM_HOTKEY, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOREDRAW, SWP_NOSIZE, SWP_NOZORDER,
+    SWP_SHOWWINDOW, SW_HIDE, WINDOW_DISPLAY_AFFINITY, WM_DESTROY, WM_HOTKEY, WNDCLASSW,
+    WS_EX_APPWINDOW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    WS_EX_TRANSPARENT, WS_POPUP,
 };
 use winit::event_loop::EventLoopProxy;
 use winit::window::Window;
@@ -57,11 +58,13 @@ pub fn hide_sync(hwnd: HWND) {
 pub fn apply_overlay_style(hwnd: HWND) {
     unsafe {
         let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        // winit sets WS_EX_APPWINDOW by default; that forces a taskbar button
+        // even after OR-ing TOOLWINDOW. Snipaste is TOOLWINDOW from create.
         SetWindowLongPtrW(
             hwnd,
             GWL_EXSTYLE,
             (ex | WS_EX_TOPMOST.0 as isize | WS_EX_TOOLWINDOW.0 as isize)
-                & !(WS_EX_NOACTIVATE.0 as isize),
+                & !(WS_EX_NOACTIVATE.0 as isize | WS_EX_APPWINDOW.0 as isize),
         );
         let _ = SetWindowPos(
             hwnd,
@@ -70,7 +73,7 @@ pub fn apply_overlay_style(hwnd: HWND) {
             0,
             0,
             0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED,
         );
         exclude_from_capture(hwnd);
     }
@@ -95,7 +98,8 @@ pub fn apply_pin_style(hwnd: HWND) {
         SetWindowLongPtrW(
             hwnd,
             GWL_EXSTYLE,
-            ex | WS_EX_TOPMOST.0 as isize | WS_EX_TOOLWINDOW.0 as isize | WS_EX_LAYERED.0 as isize,
+            (ex | WS_EX_TOPMOST.0 as isize | WS_EX_TOOLWINDOW.0 as isize | WS_EX_LAYERED.0 as isize)
+                & !(WS_EX_APPWINDOW.0 as isize),
         );
         let _ = SetWindowPos(
             hwnd,
@@ -104,7 +108,7 @@ pub fn apply_pin_style(hwnd: HWND) {
             0,
             0,
             0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW | SWP_FRAMECHANGED,
         );
         let _ = SetLayeredWindowAttributes(
             hwnd,

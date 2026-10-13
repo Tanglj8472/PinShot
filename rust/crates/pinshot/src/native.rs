@@ -1,7 +1,7 @@
 //! Thin platform facade. Windows keeps the existing Win32 helpers; Linux uses X11.
 
 use winit::event_loop::EventLoopProxy;
-use winit::window::Window;
+use winit::window::{Window, WindowAttributes};
 
 use crate::event::AppEvent;
 use pinshot_core::Config;
@@ -37,9 +37,27 @@ pub fn init_process() {
     }
 }
 
+/// Pins / overlay / countdown: hide from the Windows taskbar (Snipaste-style).
+/// winit otherwise sets `WS_EX_APPWINDOW` and explorer draws a caption icon.
+pub fn as_tool_window(attrs: WindowAttributes) -> WindowAttributes {
+    #[cfg(windows)]
+    {
+        use winit::platform::windows::WindowAttributesExtWindows;
+        attrs.with_skip_taskbar(true)
+    }
+    #[cfg(not(windows))]
+    {
+        attrs
+    }
+}
+
 pub fn apply_overlay_style(window: &Window) {
     #[cfg(windows)]
-    crate::win32::apply_overlay_style(hwnd_of(window));
+    {
+        crate::win32::apply_overlay_style(hwnd_of(window));
+        use winit::platform::windows::WindowExtWindows;
+        window.set_skip_taskbar(true);
+    }
     #[cfg(unix)]
     crate::x11util::apply_overlay_style(window);
 }
@@ -53,7 +71,11 @@ pub fn exclude_from_capture(window: &Window) {
 
 pub fn apply_pin_style(window: &Window) {
     #[cfg(windows)]
-    crate::win32::apply_pin_style(hwnd_of(window));
+    {
+        crate::win32::apply_pin_style(hwnd_of(window));
+        use winit::platform::windows::WindowExtWindows;
+        window.set_skip_taskbar(true);
+    }
     #[cfg(unix)]
     crate::x11util::apply_pin_style(window);
 }

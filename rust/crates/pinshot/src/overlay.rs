@@ -148,14 +148,16 @@ fn overlay_window(
         ));
     }
     let t0 = Instant::now();
-    let attrs = Window::default_attributes()
-        .with_title("PinShot Snip")
-        .with_decorations(false)
-        .with_resizable(false)
-        .with_visible(false)
-        .with_position(PhysicalPosition::new(vx, vy))
-        .with_inner_size(PhysicalSize::new(w, h))
-        .with_window_level(winit::window::WindowLevel::AlwaysOnTop);
+    let attrs = native::as_tool_window(
+        Window::default_attributes()
+            .with_title("PinShot Snip")
+            .with_decorations(false)
+            .with_resizable(false)
+            .with_visible(false)
+            .with_position(PhysicalPosition::new(vx, vy))
+            .with_inner_size(PhysicalSize::new(w, h))
+            .with_window_level(winit::window::WindowLevel::AlwaysOnTop),
+    );
     #[cfg(all(unix, not(target_os = "macos")))]
     let attrs = {
         use winit::platform::x11::WindowAttributesExtX11;
@@ -335,13 +337,15 @@ impl Overlay {
                 return None;
             };
             let t0 = Instant::now();
-            let attrs = Window::default_attributes()
-                .with_title("PinShot")
-                .with_decorations(false)
-                .with_resizable(false)
-                .with_visible(true)
-                .with_position(PhysicalPosition::new(vx - vw, vy - vh))
-                .with_inner_size(PhysicalSize::new(vw as u32, vh as u32));
+            let attrs = native::as_tool_window(
+                Window::default_attributes()
+                    .with_title("PinShot")
+                    .with_decorations(false)
+                    .with_resizable(false)
+                    .with_visible(true)
+                    .with_position(PhysicalPosition::new(vx - vw, vy - vh))
+                    .with_inner_size(PhysicalSize::new(vw as u32, vh as u32)),
+            );
             let window = event_loop.create_window(attrs).ok()?;
             native::apply_overlay_style(&window);
             crate::draw::warmup_gdi_present(hwnd_of(&window), vw as u32, vh as u32);
