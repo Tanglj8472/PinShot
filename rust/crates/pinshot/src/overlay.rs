@@ -135,6 +135,7 @@ fn overlay_window(
         if overlay_hwnd_fits(sz.width, sz.height, w, h) {
             crate::logutil::log("overlay reuse hwnd");
             window.set_visible(false);
+            // Hide can let the tray restack above this already-TOPMOST HWND.
             if !native::configure_window_geom(&window, vx, vy, w, h) {
                 native::move_window(&window, vx, vy);
                 let _ = window.request_inner_size(PhysicalSize::new(w, h));
@@ -332,15 +333,17 @@ impl Overlay {
         crate::logutil::ms("overlay first redraw", t_draw);
         #[cfg(windows)]
         native::cloak_window(&s.window, false);
-        s.cover_desktop();
         #[cfg(not(unix))]
         native::focus_window(&s.window);
+        // After focus the taskbar may jump above an already-TOPMOST overlay.
+        s.cover_desktop();
         // Recycled HWND often skips CursorMoved until the mouse actually
         // moves. Nudge 1px (and back) so hover paints on a still cursor.
         s.synth_pointer_hover();
         if s.dirty {
             s.redraw();
         }
+        s.cover_desktop();
         crate::logutil::ms("overlay start", t0);
         Ok(s)
     }
