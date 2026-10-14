@@ -367,7 +367,7 @@ impl Handle {
     }
 }
 
-pub const HANDLE_SIZE: f32 = 6.0;
+pub const HANDLE_SIZE: f32 = 8.0;
 
 /// Overlay selection handle slop. Matches Python `_hit_handle` (`HANDLE+2` = 8).
 pub const HANDLE_HIT: f32 = 8.0;

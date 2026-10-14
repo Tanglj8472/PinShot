@@ -13,7 +13,7 @@ use pinshot_core::annotation::{Annotator, ArrowKind, Tool};
 use pinshot_core::color::Rgba;
 use pinshot_core::colorpicker::{color_picker_layout, ColorPicker, PickerAction};
 use pinshot_core::cursor::cursor_for;
-use pinshot_core::geom::{Point, Rect, HANDLE_SIZE};
+use pinshot_core::geom::{Point, Rect};
 use pinshot_core::groups;
 use pinshot_core::i18n::tr;
 use pinshot_core::ocr::{hit_token, nearest_token, selected_text, tokens_in_rect, OcrPage};
@@ -1781,14 +1781,11 @@ impl PinWin {
                     stroke_rect(&mut pm, sr, Rgba::BLUE, 1.0);
                 }
                 for (_, c) in self.annot.selected_handle_points() {
-                    let hr = Rect::new(
-                        m + c.x * self.scale - HANDLE_SIZE / 2.0,
-                        m + c.y * self.scale - HANDLE_SIZE / 2.0,
-                        HANDLE_SIZE,
-                        HANDLE_SIZE,
+                    crate::draw::paint_handle_dot(
+                        &mut pm,
+                        Point::new(m + c.x * self.scale, m + c.y * self.scale),
+                        Rgba::SNIP_RING,
                     );
-                    fill_rect(&mut pm, hr, Rgba::BLUE);
-                    stroke_rect(&mut pm, hr, Rgba::WHITE, 1.0);
                 }
             }
         }

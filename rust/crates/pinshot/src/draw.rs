@@ -295,6 +295,14 @@ pub fn stroke_rect(pm: &mut Pixmap, r: Rect, c: Rgba, width: f32) {
     }
 }
 
+/// Figma-style nub: white disc, colored rim, eight around the box.
+pub fn paint_handle_dot(pm: &mut Pixmap, c: Point, stroke: Rgba) {
+    let s = HANDLE_SIZE;
+    let r = Rect::new(c.x - s * 0.5, c.y - s * 0.5, s, s);
+    fill_rounded_rect(pm, r, s * 0.5, Rgba::WHITE);
+    stroke_rounded_rect(pm, r, s * 0.5, stroke, 1.25);
+}
+
 fn paint_snip_ring(pm: &mut Pixmap, r: Rect, ring: Rgba, edge: Rgba) {
     // Keep the stroke *inside* the hole. A centered 4px AA stroke hangs ~3px
     // onto the dim mask; the next dirty restore then SrcOvers that navy fringe
@@ -782,14 +790,7 @@ impl OverlayFront {
             );
             if sel.has_sel() && annot.tool.is_none() && annot.selected.is_none() {
                 for (_, c) in handle_points(hole) {
-                    let hr = Rect::new(
-                        c.x - HANDLE_SIZE / 2.0,
-                        c.y - HANDLE_SIZE / 2.0,
-                        HANDLE_SIZE,
-                        HANDLE_SIZE,
-                    );
-                    fill_rect(&mut self.frame, hr, Rgba::SNIP_RING);
-                    stroke_rect(&mut self.frame, hr, Rgba::WHITE, 1.0);
+                    paint_handle_dot(&mut self.frame, c, Rgba::SNIP_RING);
                 }
             }
             chrome.push(paint_size_label(&mut self.frame, hole, &size_text, fw, fh));
@@ -810,15 +811,13 @@ impl OverlayFront {
                     chrome.push(hb.inflated(HANDLE_SIZE));
                 }
                 for (_, c) in handles {
-                    let hr = Rect::new(
+                    paint_handle_dot(&mut self.frame, c, Rgba::SNIP_RING);
+                    chrome.push(Rect::new(
                         c.x - HANDLE_SIZE / 2.0,
                         c.y - HANDLE_SIZE / 2.0,
                         HANDLE_SIZE,
                         HANDLE_SIZE,
-                    );
-                    fill_rect(&mut self.frame, hr, Rgba::BLUE);
-                    stroke_rect(&mut self.frame, hr, Rgba::WHITE, 1.0);
-                    chrome.push(hr.inflated(2.0));
+                    ).inflated(2.0));
                 }
             }
         }
@@ -2293,6 +2292,31 @@ mod tests {
             p.red(),
             p.green(),
             p.blue()
+        );
+    }
+
+    #[test]
+    fn selection_handles_are_eight_discs() {
+        let hole = Rect::new(20.0, 16.0, 80.0, 48.0);
+        assert_eq!(handle_points(hole).len(), 8);
+        let mut pm = Pixmap::new(40, 40).unwrap();
+        pm.fill(tiny_skia::Color::from_rgba8(80, 80, 80, 255));
+        paint_handle_dot(&mut pm, Point::new(20.0, 20.0), Rgba::SNIP_RING);
+        let mid = pm.pixel(20, 20).expect("mid").demultiply();
+        assert!(
+            mid.red() > 200 && mid.green() > 200,
+            "handle center should be white, got {},{},{}",
+            mid.red(),
+            mid.green(),
+            mid.blue()
+        );
+        let corner = pm.pixel(16, 16).expect("corner").demultiply();
+        assert!(
+            corner.red() < 120 && (corner.red() as i16 - corner.green() as i16).abs() < 20,
+            "square corner must stay the gray backdrop (circle, not box), got {},{},{}",
+            corner.red(),
+            corner.green(),
+            corner.blue()
         );
     }
 
