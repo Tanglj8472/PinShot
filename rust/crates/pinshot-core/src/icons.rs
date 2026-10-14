@@ -17,6 +17,9 @@ pub enum IconKind {
     Ellipse,
     RoundRect,
     Line,
+    /// Grouped line/arrow toolbar entry (polyline + small head). Independent of
+    /// the straight-line / arrow presets in the dropdown.
+    LineGroup,
     Arrow,
     ArrowThick,
     ArrowHollow,
@@ -51,6 +54,7 @@ impl IconKind {
             "ellipse" => Self::Ellipse,
             "shape" | "roundrect" => Self::RoundRect,
             "line" => Self::Line,
+            "linegroup" | "polyline" | "line_arrow" => Self::LineGroup,
             "arrow" => Self::Arrow,
             "arrow_thick" | "thickarrow" => Self::ArrowThick,
             "arrow_hollow" | "hollowarrow" => Self::ArrowHollow,
@@ -172,10 +176,10 @@ fn fill_sharp_icon(
     let uy = dy / len;
     let vx = -uy;
     let vy = ux;
-    let tail_hw = 0.55;
-    let head_len = (len * 0.30).max(4.4);
-    let barb_hw = 2.05;
-    let neck_hw = 0.85;
+    let tail_hw = 0.28;
+    let head_len = (len * 0.38).max(5.2);
+    let barb_hw = 2.15;
+    let neck_hw = 0.52;
     let nx = b.0 - ux * head_len;
     let ny = b.1 - uy * head_len;
     let mut pb = PathBuilder::new();
@@ -268,6 +272,24 @@ pub fn draw_icon(pixmap: &mut Pixmap, kind: IconKind, cell: Rect, color: Option<
             if let Some(path) = line_path((3.5, 16.5), (16.5, 3.5)) {
                 pixmap.stroke_path(&path, &p, &st, t, None);
             }
+        }
+        IconKind::LineGroup => {
+            // Entry glyph only: Snipaste 折线 + small filled head.
+            let a = (2.4, 15.8);
+            let b = (8.0, 10.0);
+            let c = (11.4, 13.4);
+            let tip = (17.6, 3.6);
+            let (head, half_w) = (4.4, 2.0);
+            let shaft_end = arrow_geom(c, tip, head, half_w).map(|g| g.2).unwrap_or(tip);
+            let mut pb = PathBuilder::new();
+            pb.move_to(a.0, a.1);
+            pb.line_to(b.0, b.1);
+            pb.line_to(c.0, c.1);
+            pb.line_to(shaft_end.0, shaft_end.1);
+            if let Some(path) = pb.finish() {
+                pixmap.stroke_path(&path, &p, &st, t, None);
+            }
+            arrow_head_ex(pixmap, c, tip, head, half_w, color, t, false);
         }
         IconKind::Arrow => {
             fill_sharp_icon(pixmap, (3.5, 16.5), (16.5, 3.5), color, t);
@@ -697,6 +719,7 @@ mod tests {
             IconKind::Ellipse,
             IconKind::RoundRect,
             IconKind::Line,
+            IconKind::LineGroup,
             IconKind::Arrow,
             IconKind::ArrowThick,
             IconKind::ArrowHollow,
@@ -819,6 +842,18 @@ mod tests {
         assert!(
             !ink(&line, 19, 3),
             "straight line has no arrow head at the tip"
+        );
+        let mut grouped = Pixmap::new(24, 24).unwrap();
+        draw_icon(&mut grouped, IconKind::LineGroup, cell, None);
+        assert_ne!(
+            line.data(),
+            grouped.data(),
+            "toolbar entry is the polyline glyph, not the straight line"
+        );
+        assert!(ink(&grouped, 18, 6), "entry keeps a small arrow at the tip");
+        assert!(
+            ink(&grouped, 10, 12),
+            "entry polyline has a corner"
         );
         let mut thick = Pixmap::new(24, 24).unwrap();
         let mut hollow = Pixmap::new(24, 24).unwrap();

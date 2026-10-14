@@ -210,19 +210,14 @@ impl Toolbar {
         sel: Rect,
         overlay: Rect,
         active: Option<Tool>,
-        arrow: ArrowKind,
+        _arrow: ArrowKind,
         for_pin: bool,
         style: Option<&Style>,
     ) -> Self {
         let shape_icon = IconKind::RoundRect;
-        let line_icon = icon_for_arrow(if active == Some(Tool::Line) {
-            style.map(|s| s.arrow_kind()).unwrap_or(arrow)
-        } else {
-            arrow
-        });
         let tools = [
             (shape_icon, TbAction::Shape, "Rectangle / Ellipse"),
-            (line_icon, TbAction::LineStroke, "Line / Arrow"),
+            (IconKind::LineGroup, TbAction::LineStroke, "Line / Arrow"),
             (IconKind::Pen, TbAction::Tool(Tool::Pen), "Pencil"),
             (IconKind::Marker, TbAction::Tool(Tool::Marker), "Marker"),
             (
@@ -1143,6 +1138,15 @@ mod tests {
             .iter()
             .any(|b| b.action == TbAction::Shape && b.icon == IconKind::RoundRect));
         assert!(tb.buttons.iter().any(|b| b.action == TbAction::LineStroke));
+        assert!(tb
+            .buttons
+            .iter()
+            .any(|b| b.action == TbAction::LineStroke && b.icon == IconKind::LineGroup));
+        let lined = Toolbar::layout(sel, over, Some(Tool::Line), ArrowKind::Thin, None);
+        assert!(lined
+            .buttons
+            .iter()
+            .any(|b| b.action == TbAction::LineStroke && b.icon == IconKind::LineGroup));
         assert!(
             tb.buttons
                 .iter()

@@ -378,10 +378,11 @@ fn fill_sharp_arrow(pm: &mut Pixmap, a: Point, b: Point, width: i32, t: Transfor
     let vx = -uy;
     let vy = ux;
     let w = width.max(1) as f32;
-    let tail_hw = (w * 0.32).max(0.55);
-    let neck_hw = (w * 0.62).max(tail_hw + 0.35);
-    let barb_hw = (w * 1.15 + 2.4).max(neck_hw * 2.15);
-    let head_len = (w * 3.6 + 7.0).min(len * 0.34).max(7.0f32.min(len * 0.55));
+    // Needle: hairline tail, barely thicker neck, long acute triangle.
+    let tail_hw = 0.38_f32.max(w * 0.12);
+    let neck_hw = (w * 0.40).max(tail_hw + 0.18);
+    let barb_hw = (w * 1.45 + 3.2).max(neck_hw * 3.4);
+    let head_len = (w * 5.4 + 10.0).min(len * 0.42).max(8.0f32.min(len * 0.62));
     let neck = Point::new(b.x - ux * head_len, b.y - uy * head_len);
     let mut pb = PathBuilder::new();
     pb.move_to(a.x + vx * tail_hw, a.y + vy * tail_hw);
@@ -583,15 +584,15 @@ mod tests {
         base.fill(Rgba::WHITE);
         let thin = count_red(
             &compose(&base, &[line_shape(crate::annotation::ArrowKind::Thin)]),
-            30..62,
-            4..36,
+            16..28,
+            12..28,
         );
         let thick = count_red(
             &compose(&base, &[line_shape(crate::annotation::ArrowKind::Thick)]),
-            30..62,
-            4..36,
+            16..28,
+            12..28,
         );
-        assert!(thick > thin, "thick={thick} thin={thin}");
+        assert!(thick > thin, "thick shaft={thick} thin shaft={thin}");
     }
 
     #[test]
