@@ -2305,6 +2305,11 @@ mod tests {
             uncovered > 180,
             "moving the hole over the stroke must undim the ink, got {uncovered}"
         );
+        let left_behind = max_red_on_row(front.pixmap(), 70, 64, 76);
+        assert!(
+            left_behind > dim_bg + 8 && (left_behind as i16) < (uncovered as i16) - 40,
+            "ink must stay on the freeze when the hole moves, left={left_behind} bg={dim_bg} uncovered={uncovered}"
+        );
     }
 
     fn skip_chrome(p: Point, hole: Rect, mag: Magnifier, size: Rect) -> bool {

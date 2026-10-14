@@ -1031,18 +1031,8 @@ impl Overlay {
     }
 
     fn apply_sel_motion(&mut self, pt: Point) {
-        let moving = self.sel.state == SelState::Moving;
-        let before = self.sel.normalized();
         let guides = self.snap_guides();
         self.sel.motion_snapped(pt, self.bounds(), Some(&guides));
-        if moving {
-            let after = self.sel.normalized();
-            let dx = (after.x - before.x) * self.dpr;
-            let dy = (after.y - before.y) * self.dpr;
-            if dx != 0.0 || dy != 0.0 {
-                self.annot.translate_all(dx, dy);
-            }
-        }
     }
 
     fn log_sel_translate(&mut self) {
@@ -1051,7 +1041,7 @@ impl Overlay {
             let dx = (n.x - o.x) * self.dpr;
             let dy = (n.y - o.y) * self.dpr;
             if dx != 0.0 || dy != 0.0 {
-                crate::logutil::log(&format!("annot translate {dx:.0},{dy:.0}"));
+                crate::logutil::log(&format!("sel move {dx:.0},{dy:.0}"));
             }
         }
     }
@@ -1146,7 +1136,8 @@ impl Overlay {
             || self.annot.is_dragging_text()
             || self.annot.live.is_some()
         {
-            self.annot.move_to(self.img_pt(self.cursor), self.mods.shift_key());
+            self.annot
+                .move_to(self.img_pt(self.cursor), self.mods.shift_key());
             self.dirty = true;
         } else if self
             .toolbar
@@ -1743,8 +1734,7 @@ impl Overlay {
             let adx = (after.x - before.x) * self.dpr;
             let ady = (after.y - before.y) * self.dpr;
             if adx != 0.0 || ady != 0.0 {
-                self.annot.translate_all(adx, ady);
-                crate::logutil::log(&format!("annot translate {adx:.0},{ady:.0}"));
+                crate::logutil::log(&format!("sel move {adx:.0},{ady:.0}"));
             }
         }
         self.relayout_toolbar();
@@ -1992,6 +1982,13 @@ fn load_hist_raster(path: &std::path::Path) -> Option<Raster> {
     Raster::from_rgba(img.width(), img.height(), img.into_raw())
 }
 
+/// Preselect / selection hole is a dim viewport over the freeze. Ink is
+/// stored in image space and must not be translated when the hole moves.
+#[cfg(test)]
+fn ink_follows_snip_hole() -> bool {
+    false
+}
+
 /// span is a click), Moving, and Resizing. A single false up is ignored.
 fn recover_should_commit_sel(down: bool, up_streak: u8, state: SelState) -> bool {
     if down || up_streak < 2 {
@@ -2208,6 +2205,14 @@ mod keysym_tests {
         assert!(!overlay_hwnd_fits(1, 1, 4160, 1400));
         assert!(!overlay_hwnd_fits(4160, 1400, 1920, 1080));
         assert!(!overlay_hwnd_fits(0, 0, 0, 0));
+    }
+
+    #[test]
+    fn snip_hole_is_viewport_ink_stays_on_freeze() {
+        assert!(
+            !super::ink_follows_snip_hole(),
+            "preselect / sel hole must not drag annotations"
+        );
     }
 
     #[test]

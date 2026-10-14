@@ -550,8 +550,8 @@ impl Annotator {
         self.undo.undo_len()
     }
 
-    /// Shift every shape (and undo history) in image space so annotations
-    /// stay inside a moving selection hole.
+    /// Shift every shape (and undo history) in freeze / image space.
+    /// The overlay hole is a dim viewport and does not call this on move.
     pub fn translate_all(&mut self, dx: f32, dy: f32) {
         if dx == 0.0 && dy == 0.0 {
             return;
