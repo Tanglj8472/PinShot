@@ -415,8 +415,11 @@ impl App {
         crate::logutil::log("overlay closed");
         crate::native::release_stray_grabs();
         self.retire_pump_window();
-        if !resnip {
-            crate::ocr_run::release_engine();
+        let ocr_pending = matches!(res, OverlayResult::Ocr(_, _, _));
+        // Do not drop the ONNX engine or trim the working set before OCR.
+        // EmptyWorkingSet + tearing down WebGPU/DML sessions is why detect
+        // came back with no boxes after the memory pass.
+        if !resnip && !ocr_pending {
             #[cfg(windows)]
             crate::capture::Capture::release_idle();
         }
@@ -485,6 +488,7 @@ impl App {
         }
         self.prefs = None;
         self.persist_session();
+        crate::ocr_run::release_engine();
         crate::logutil::log("quit persist done");
         // Schedule the kill *before* hiding the tray: NIM_DELETE is a
         // SendMessage to the tray HWND and can stall this thread.
@@ -1195,9 +1199,8 @@ impl ApplicationHandler<AppEvent> for App {
                 if let Some(text) = follow {
                     self.spawn_translate(pin, text);
                 }
-                crate::ocr_run::release_engine();
                 #[cfg(windows)]
-                crate::win32::trim_working_set();
+                crate::capture::Capture::release_idle();
             }
             AppEvent::TranslateDone { pin, result } => {
                 if let Some(p) = self.pins.iter_mut().find(|p| p.window_id() == pin) {
