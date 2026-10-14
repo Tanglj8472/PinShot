@@ -1,5 +1,7 @@
 # PinShot Rust
 
+**说明：** 完整中文文档见 [README.zh-CN.md](README.zh-CN.md)（GitHub 在中文界面下会优先展示该文件）。
+
 使用 Rust 实现的桌面截图、标注与贴图工具。此分支只维护 Rust 版本；旧 Python/Qt 实现保留在 Git 历史中。
 
 ## 下载与安装
@@ -31,7 +33,7 @@ cargo run --release --bin pinshot --features ocr -- --debug
 cargo test --workspace --features ocr
 ```
 
-Windows 不需要 OCR 时可去掉 `--features ocr`。Linux 当前支持 X11，依赖与命令见 [Rust 开发说明](rust/README.md)。
+Windows 不需要 OCR 时可去掉 `--features ocr`。Linux 当前支持 X11，依赖与命令见 [Rust 开发说明](rust/README.zh-CN.md)。
 
 ## 打包 Windows 安装程序
 

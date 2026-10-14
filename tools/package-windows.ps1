@@ -63,7 +63,11 @@ foreach ($dll in @('msvcp140.dll', 'msvcp140_1.dll', 'vcruntime140.dll', 'vcrunt
     if (-not (Test-Path -LiteralPath (Join-Path $payload $dll))) { throw "Missing CRT: $dll" }
 }
 Copy-Item -LiteralPath (Join-Path $repo 'assets\pinshot.ico') -Destination $payload
-Copy-Item -LiteralPath (Join-Path $repo 'README.md') -Destination $payload
+$readmeZh = Join-Path $repo 'README.zh-CN.md'
+$readmeDefault = Join-Path $repo 'README.md'
+$readmeSrc = if (Test-Path -LiteralPath $readmeZh) { $readmeZh } else { $readmeDefault }
+Copy-Item -LiteralPath $readmeSrc -Destination (Join-Path $payload 'README.md')
+Copy-Item -LiteralPath $readmeSrc -Destination (Join-Path $payload '使用说明.txt')
 Copy-Item -LiteralPath (Join-Path $repo 'docs\third-party.md') -Destination $payload
 
 # Include available upstream license files; no model or system font redistribution.

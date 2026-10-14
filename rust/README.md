@@ -1,6 +1,6 @@
 # Rust 开发说明
 
-功能及下载入口见 [项目 README](../README.md)。工作区含 `pinshot-core`（逻辑与软件渲染）和 `pinshot`（桌面应用）。
+功能及下载入口见 [项目 README（中文）](../README.zh-CN.md)。工作区含 `pinshot-core`（逻辑与软件渲染）和 `pinshot`（桌面应用）。
 
 ## Windows
 
