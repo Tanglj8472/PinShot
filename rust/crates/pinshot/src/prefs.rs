@@ -180,6 +180,8 @@ pub fn run_preferences() {
                 group_edit: String::new(),
                 status: String::new(),
                 test_rx: None,
+                ocr_dl_rx: None,
+                ocr_dl_frac: 0.0,
             }))
         }),
     ) {
@@ -256,6 +258,11 @@ fn reveal_dir(path: &Path) {
     }
 }
 
+enum OcrDlUpdate {
+    Progress(f32),
+    Done(Result<(), String>),
+}
+
 struct PrefsApp {
     draft: Config,
     tab: usize,
@@ -263,6 +270,8 @@ struct PrefsApp {
     group_edit: String,
     status: String,
     test_rx: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
+    ocr_dl_rx: Option<std::sync::mpsc::Receiver<OcrDlUpdate>>,
+    ocr_dl_frac: f32,
 }
 
 impl PrefsApp {
@@ -372,6 +381,31 @@ impl eframe::App for PrefsApp {
                 }
             }
         }
+        if let Some(rx) = &self.ocr_dl_rx {
+            loop {
+                match rx.try_recv() {
+                    Ok(OcrDlUpdate::Progress(f)) => self.ocr_dl_frac = f.clamp(0.0, 1.0),
+                    Ok(OcrDlUpdate::Done(Ok(()))) => {
+                        self.ocr_dl_rx = None;
+                        self.ocr_dl_frac = 1.0;
+                        self.status = tr("OCR models downloaded.");
+                    }
+                    Ok(OcrDlUpdate::Done(Err(e))) => {
+                        self.ocr_dl_rx = None;
+                        self.ocr_dl_frac = 0.0;
+                        self.status = format!("{} {e}", tr("OCR download failed:"));
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        self.ocr_dl_rx = None;
+                        break;
+                    }
+                }
+            }
+            if self.ocr_dl_rx.is_some() {
+                ctx.request_repaint_after(std::time::Duration::from_millis(50));
+            }
+        }
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(tr("PinShot Preferences")));
         apply_theme(ctx, &self.draft.theme);
         egui::TopBottomPanel::bottom("btns")
@@ -469,21 +503,35 @@ impl PrefsApp {
                 "server" => tr("Server (more accurate)"),
                 _ => tr("Mobile (faster)"),
             };
-            egui::ComboBox::from_id_salt("ocr_model")
-                .icon(combo_chevron)
-                .selected_text(ocr)
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(
-                        &mut self.draft.ocr_model,
-                        "mobile".into(),
-                        tr("Mobile (faster)"),
-                    );
-                    ui.selectable_value(
-                        &mut self.draft.ocr_model,
-                        "server".into(),
-                        tr("Server (more accurate)"),
-                    );
-                });
+            let downloading = self.ocr_dl_rx.is_some();
+            ui.add_enabled_ui(!downloading, |ui| {
+                egui::ComboBox::from_id_salt("ocr_model")
+                    .width(148.0)
+                    .icon(combo_chevron)
+                    .selected_text(ocr)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut self.draft.ocr_model,
+                            "mobile".into(),
+                            tr("Mobile (faster)"),
+                        );
+                        ui.selectable_value(
+                            &mut self.draft.ocr_model,
+                            "server".into(),
+                            tr("Server (more accurate)"),
+                        );
+                    });
+            });
+            ui.add_space(4.0);
+            let ready = crate::ocr_run::models_ready_for_tier(&self.draft.ocr_model);
+            if ocr_model_download_button(
+                ui,
+                ready,
+                downloading,
+                self.ocr_dl_frac,
+            ) {
+                self.start_ocr_model_download();
+            }
         });
         ui.weak(tr(
             "Server is the default (more accurate). Mobile is faster on CPU; GPU helps either model.",
@@ -830,6 +878,25 @@ impl PrefsApp {
         ));
     }
 
+    fn start_ocr_model_download(&mut self) {
+        if self.ocr_dl_rx.is_some() {
+            return;
+        }
+        if crate::ocr_run::models_ready_for_tier(&self.draft.ocr_model) {
+            return;
+        }
+        let tier = self.draft.ocr_model.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.ocr_dl_rx = Some(rx);
+        self.ocr_dl_frac = 0.0;
+        std::thread::spawn(move || {
+            let result = crate::ocr_run::download_models_for_tier(&tier, |f| {
+                let _ = tx.send(OcrDlUpdate::Progress(f));
+            });
+            let _ = tx.send(OcrDlUpdate::Done(result));
+        });
+    }
+
     fn start_translate_test(&mut self) {
         let settings = self.draft.translate.clone();
         let ui_lang = self.draft.language.clone();
@@ -849,6 +916,58 @@ impl PrefsApp {
 
 /// Always a down chevron when closed. egui's default uses AboveOrBelow and
 /// paints ▲ on short pages (Interface) because the popup opens upward.
+const OCR_DL_BTN_W: f32 = 72.0;
+
+/// Progress fills the button left → right while downloading; solid green when ready.
+fn ocr_model_download_button(
+    ui: &mut Ui,
+    ready: bool,
+    downloading: bool,
+    fraction: f32,
+) -> bool {
+    let label = if ready && !downloading {
+        tr("Downloaded")
+    } else {
+        tr("Download")
+    };
+    let size = egui::vec2(OCR_DL_BTN_W, ROW_H);
+    let sense = if ready || downloading {
+        egui::Sense::hover()
+    } else {
+        egui::Sense::click()
+    };
+    let (rect, response) = ui.allocate_exact_size(size, sense);
+    let visuals = ui.style().visuals.widgets.inactive;
+    let rounding = egui::Rounding::same(3.0);
+    let stroke = visuals.bg_stroke;
+    ui.painter().rect_filled(rect, rounding, visuals.bg_fill);
+    let accent = ui.style().visuals.selection.bg_fill;
+    let done_fill = Color32::from_rgb(76, 160, 92);
+    if ready && !downloading {
+        ui.painter().rect_filled(rect, rounding, done_fill);
+    } else if downloading {
+        let w = rect.width() * fraction.clamp(0.0, 1.0);
+        if w > 0.5 {
+            let fill = egui::Rect::from_min_max(rect.min, egui::pos2(rect.min.x + w, rect.max.y));
+            ui.painter().rect_filled(fill, rounding, accent);
+        }
+    }
+    ui.painter().rect_stroke(rect, rounding, stroke, egui::StrokeKind::Inside);
+    let text_color = if ready && !downloading {
+        Color32::WHITE
+    } else {
+        visuals.fg_stroke.color
+    };
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        label,
+        egui::FontId::proportional(12.0),
+        text_color,
+    );
+    response.clicked()
+}
+
 fn combo_chevron(
     ui: &Ui,
     rect: egui::Rect,
@@ -985,6 +1104,8 @@ mod tests {
             group_edit: String::new(),
             status: String::new(),
             test_rx: None,
+            ocr_dl_rx: None,
+            ocr_dl_frac: 0.0,
         };
         app.restore_tab();
         let d = Config::default();
@@ -1011,6 +1132,8 @@ mod tests {
             group_edit: String::new(),
             status: String::new(),
             test_rx: None,
+            ocr_dl_rx: None,
+            ocr_dl_frac: 0.0,
         };
         app.restore_tab();
         assert_eq!(app.draft.translate.provider, "openai");

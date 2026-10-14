@@ -50,6 +50,69 @@ pub fn prefetch_models() {
     });
 }
 
+/// Whether det/rec/cls for the given settings tier exist under the data dir.
+pub fn models_ready_for_tier(tier: &str) -> bool {
+    let dir = model_dir(&pinshot_core::config::data_dir());
+    ModelPaths::for_kind(&dir, OcrModelKind::parse(tier)).ready()
+}
+
+/// Download ONNX assets for one tier. `on_progress` receives an overall fraction in `[0, 1]`.
+pub fn download_models_for_tier(
+    tier: &str,
+    mut on_progress: impl FnMut(f32) + Send,
+) -> Result<(), String> {
+    download_models_for_kind(OcrModelKind::parse(tier), &mut on_progress).map(|_| ())
+}
+
+fn download_models_for_kind(
+    kind: OcrModelKind,
+    on_progress: &mut dyn FnMut(f32),
+) -> Result<ModelPaths, String> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    let _g = LOCK.lock().map_err(|e| e.to_string())?;
+    let dir = model_dir(&pinshot_core::config::data_dir());
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let server = ModelPaths::for_kind(&dir, OcrModelKind::Server);
+    let mobile = ModelPaths::for_kind(&dir, OcrModelKind::Mobile);
+    for src in extra_model_dirs(&dir) {
+        copy_if_present(&src, &server);
+        copy_if_present(&src, &mobile);
+    }
+    let paths = ModelPaths::for_kind(&dir, kind);
+    if paths.ready() {
+        on_progress(1.0);
+        return Ok(paths);
+    }
+    let steps = paths.downloads().len().max(1);
+    let mut done = 0usize;
+    for (urls, dest) in paths.downloads() {
+        if dest.is_file() {
+            done += 1;
+            on_progress(done as f32 / steps as f32);
+            continue;
+        }
+        let name = dest
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        download_first(
+            &urls,
+            &dest,
+            &name,
+            &mut |file_frac| {
+                on_progress((done as f32 + file_frac.clamp(0.0, 1.0)) / steps as f32);
+            },
+        )?;
+        done += 1;
+        on_progress(done as f32 / steps as f32);
+    }
+    if !paths.ready() {
+        return Err("OCR models missing (det/rec/cls)".into());
+    }
+    Ok(paths)
+}
+
 pub fn ensure_models() -> Result<ModelPaths, String> {
     ensure_models_with_progress(&mut |_| {})
 }
@@ -132,7 +195,14 @@ fn ensure_models_with_progress(progress: &mut dyn FnMut(&str)) -> Result<ModelPa
             .unwrap_or_default()
             .to_string_lossy()
             .into_owned();
-        download_first(&urls, &dest, &name, progress)?;
+        let mut last_pct = 999u32;
+        download_first(&urls, &dest, &name, &mut |file_frac| {
+            let pct = (file_frac.clamp(0.0, 1.0) * 100.0) as u32;
+            if pct != last_pct {
+                last_pct = pct;
+                progress(&format!("Downloading {pct}%"));
+            }
+        })?;
     }
     if !preferred.ready() {
         return Err("OCR models missing (det/rec/cls)".into());
@@ -185,7 +255,7 @@ fn download_first(
     urls: &[&str],
     dest: &Path,
     name: &str,
-    progress: &mut dyn FnMut(&str),
+    progress: &mut dyn FnMut(f32),
 ) -> Result<(), String> {
     let mut last = "no urls".to_string();
     for url in urls {
@@ -204,7 +274,7 @@ fn download(
     url: &str,
     dest: &Path,
     name: &str,
-    progress: &mut dyn FnMut(&str),
+    progress: &mut dyn FnMut(f32),
 ) -> Result<(), String> {
     crate::logutil::log(&format!("ocr download {name}"));
     let resp = ureq::get(url)
@@ -221,23 +291,24 @@ fn download(
         bytes.reserve(t as usize);
     }
     let mut buf = [0u8; 64 * 1024];
-    let mut last_pct = 999u32;
+    let mut last_frac = f32::NEG_INFINITY;
     loop {
         let n = reader.read(&mut buf).map_err(|e| e.to_string())?;
         if n == 0 {
             break;
         }
         bytes.extend_from_slice(&buf[..n]);
-        if let Some(t) = total {
-            let pct = ((bytes.len() as u64).min(t) * 100 / t) as u32;
-            if pct != last_pct {
-                last_pct = pct;
-                progress(&format!("Downloading {pct}%"));
-            }
+        let frac = if let Some(t) = total {
+            (bytes.len() as f32 / t as f32).clamp(0.0, 1.0)
         } else {
-            progress(&format!("Downloading {}…", name));
+            0.0
+        };
+        if (frac - last_frac).abs() > 0.002 || last_frac.is_sign_negative() {
+            last_frac = frac;
+            progress(frac);
         }
     }
+    progress(1.0);
     if bytes.len() < 64 {
         return Err(format!("download too small: {name}"));
     }
