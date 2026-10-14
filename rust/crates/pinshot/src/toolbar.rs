@@ -170,6 +170,8 @@ pub struct Toolbar {
     pub slider_min: i32,
     pub slider_max: i32,
     pub menu: Option<TbMenu>,
+    /// Vertical rules between extra-panel groups (fill, shape, colour…).
+    pub seps: Vec<Rect>,
 }
 
 #[derive(Clone, Debug)]
@@ -304,6 +306,7 @@ impl Toolbar {
         let mut panel = None;
         let mut swatches = Vec::new();
         let mut extras = Vec::new();
+        let mut seps: Vec<Rect> = Vec::new();
         let width_minus = Rect::EMPTY;
         let width_plus = Rect::EMPTY;
         let mut width_label = Rect::EMPTY;
@@ -339,6 +342,7 @@ impl Toolbar {
                 let ww = if numeric_width { 28.0 } else { 26.0 };
                 width_label = Rect::new(chip_x, chip_y, ww, 24.0);
                 chip_x += ww + 4.0;
+                push_sep(&mut seps, &mut chip_x, chip_y);
             }
             if let Some(st) = style {
                 match active {
@@ -359,6 +363,7 @@ impl Toolbar {
                             TbAction::Fill(false),
                             !st.filled,
                         );
+                        push_sep(&mut seps, &mut chip_x, chip_y);
                         push_icon(
                             &mut extras,
                             &mut chip_x,
@@ -405,6 +410,7 @@ impl Toolbar {
                             TbAction::SetEffect(Effect::Blur),
                             st.effect == Effect::Blur,
                         );
+                        push_sep(&mut seps, &mut chip_x, chip_y);
                         push_icon(
                             &mut extras,
                             &mut chip_x,
@@ -421,6 +427,7 @@ impl Toolbar {
                             TbAction::SetMode(DrawMode::Rect),
                             st.mode == DrawMode::Rect,
                         );
+                        push_sep(&mut seps, &mut chip_x, chip_y);
                         slider = Rect::new(chip_x, chip_y + 6.0, 72.0, 12.0);
                         slider_max = 30;
                         chip_x += 80.0;
@@ -517,6 +524,9 @@ impl Toolbar {
             }
             let show_palette = !matches!(active, Some(Tool::Mosaic | Tool::Eraser | Tool::Select));
             if show_palette {
+                if !extras.is_empty() || !width_label.is_empty() {
+                    push_sep(&mut seps, &mut chip_x, chip_y);
+                }
                 custom_color = Rect::new(chip_x, chip_y, 22.0, 24.0);
                 chip_x += 26.0;
                 let pal_x = chip_x;
@@ -548,6 +558,9 @@ impl Toolbar {
             for extra in &mut extras {
                 extra.rect.x += dx;
             }
+            for sep in &mut seps {
+                sep.x += dx;
+            }
             for (sr, _, _) in &mut swatches {
                 sr.x += dx;
             }
@@ -570,6 +583,7 @@ impl Toolbar {
             slider_min,
             slider_max,
             menu: None,
+            seps,
         }
     }
 
@@ -624,6 +638,7 @@ impl Toolbar {
             slider_min: 1,
             slider_max: 30,
             menu: None,
+            seps: Vec::new(),
         }
     }
 
@@ -773,6 +788,12 @@ fn push_chip(
         kind: ExtraKind::Chip,
     });
     *x += w + 2.0;
+}
+
+fn push_sep(seps: &mut Vec<Rect>, x: &mut f32, y: f32) {
+    let sx = (*x + (SEP - 1.0) * 0.5).round();
+    seps.push(Rect::new(sx, y + 4.0, 1.0, 16.0));
+    *x += SEP;
 }
 
 fn push_icon(
@@ -979,6 +1000,32 @@ mod tests {
         assert!(
             pw < 420.0,
             "Snipaste sub-panel hugs the chips, not a 500px strip, w={pw}"
+        );
+        assert_eq!(
+            tb.seps.len(),
+            3,
+            "width | fill/stroke | rect/ellipse | colour"
+        );
+        let fill_r = fill.unwrap().rect;
+        let outline_r = outline.unwrap().rect;
+        let rect_r = tb
+            .extras
+            .iter()
+            .find(|e| e.action == TbAction::Tool(Tool::Rect))
+            .unwrap()
+            .rect;
+        let xs: Vec<f32> = tb.seps.iter().map(|s| s.x).collect();
+        assert!(
+            xs[0] > tb.width_label.right() && xs[0] < fill_r.x,
+            "first rule sits after the width chip"
+        );
+        assert!(
+            xs[1] > outline_r.right() && xs[1] < rect_r.x,
+            "second rule splits fill/stroke from rect/ellipse"
+        );
+        assert!(
+            xs[2] > ell.rect.right() && xs[2] < tb.custom_color.x,
+            "third rule sits before the colour well"
         );
     }
 

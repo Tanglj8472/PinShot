@@ -1169,6 +1169,9 @@ pub fn paint_toolbar(pm: &mut Pixmap, tb: &Toolbar, cursor: Option<Point>) -> Re
         for extra in &tb.extras {
             paint_extra(pm, extra, cursor);
         }
+        for sep in &tb.seps {
+            fill_rect(pm, *sep, CHROME_SEP);
+        }
         if let Some(menu) = &tb.menu {
             paint_chrome_surface(pm, menu.rect, 5.0);
             for b in &menu.items {
