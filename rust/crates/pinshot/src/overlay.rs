@@ -71,6 +71,7 @@ pub struct Overlay {
     elements_rx: Option<std::sync::mpsc::Receiver<Vec<Rect>>>,
     hit_px: Option<(i32, i32)>,
     hit_rect: Option<Rect>,
+    hit_at: Option<Instant>,
     annot: Annotator,
     toolbar: Option<Toolbar>,
     hex: bool,
@@ -236,6 +237,7 @@ impl Overlay {
             elements_rx,
             hit_px: None,
             hit_rect: None,
+            hit_at: None,
             annot: Annotator::new(),
             toolbar: None,
             hex: false,
@@ -536,15 +538,14 @@ impl Overlay {
                 return r;
             }
         }
+        if let (Some(at), Some(r)) = (self.hit_at, self.hit_rect) {
+            if at.elapsed() < std::time::Duration::from_millis(10) {
+                return r;
+            }
+        }
         self.hit_px = Some(key);
+        self.hit_at = Some(Instant::now());
         let hover = if let Some(hit) = element_at_point(key.0, key.1, self.exclude_hwnd()) {
-            crate::logutil::log(&format!(
-                "detect element for: {} depth={} {}ms ({})",
-                hit.exe,
-                hit.depth,
-                hit.elapsed_ms,
-                element_source()
-            ));
             overlay_from_screen(hit.rect, origin)
         } else {
             hover_rect(pt, &self.windows, self.elements.as_slice(), self.bounds())

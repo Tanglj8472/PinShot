@@ -694,14 +694,37 @@ impl OverlayFront {
             size_label_dirty(hole, &size_text, fw, fh).intersect(bounds)
         };
         let hole_pad = hole.inflated(10.0).union(size_label).intersect(bounds);
+        let mag_layout = if mag_on {
+            let (color, phys) = pinshot_core::sample_color(shot, cursor, dpr);
+            Some(layout_magnifier(cursor, bounds, color, phys))
+        } else {
+            None
+        };
+        let mag_dirty = mag_layout
+            .map(|m| m.grid.union(m.info).inflated(8.0))
+            .unwrap_or(Rect::EMPTY);
 
-        // Rebuild from the pre-dimmed freeze every frame. Dirty-rect restore
-        // plus GDI BitBlt of only the loupe leaves a staircase of black panels
-        // on the unselected mask (and on RDP / ToDesk, which often drop the
-        // "restore to dim" blit as too similar). Textbook overlay paint:
-        // full dimmed base, then punch the hole.
-        // https://gist.github.com/AugusDogus/74416b933b407a0a0a9f64d38853cca6
-        self.restore(bounds);
+        // Incremental restore: only the previous hole/chrome/loupe plus the
+        // new ones. A full-desktop memcpy + GDI write on every mouse pixel
+        // is what made the magnifier hitch. First frame still copies all.
+        let mut restore_r = if !self.primed {
+            bounds
+        } else {
+            let mut d = self
+                .last_hole
+                .inflated(12.0)
+                .union(self.last_size_label)
+                .union(hole_pad)
+                .union(mag_dirty);
+            for c in &self.last_chrome {
+                d = d.union(*c);
+            }
+            d.intersect(bounds)
+        };
+        if restore_r.area() > bounds.area() * 0.55 {
+            restore_r = bounds;
+        }
+        self.restore(restore_r);
 
         // Hole interior: undimmed capture + vector annotations (no full compose).
         if !hole.is_empty() {
@@ -772,9 +795,7 @@ impl OverlayFront {
             }
         }
 
-        if mag_on {
-            let (color, phys) = pinshot_core::sample_color(shot, cursor, dpr);
-            let mag = layout_magnifier(cursor, bounds, color, phys);
+        if let Some(mag) = mag_layout {
             chrome.push(paint_magnifier(
                 &mut self.frame,
                 shot,
@@ -848,11 +869,20 @@ impl OverlayFront {
         self.last_chrome = chrome;
         self.last_size_label = size_label;
 
-        // Always present the whole DIB. Partial BitBlt of the loupe is what
-        // stamped the staircase of extra-dark panels onto the freeze.
+        // Write only the dirty tiles into the persistent DIB, then BitBlt
+        // the whole DIB. Partial BitBlt of the loupe alone is what stained
+        // the freeze; a full blit of an incrementally-updated DIB does not.
         #[cfg(windows)]
         {
-            self.gdi.write_rect(&self.frame, bounds);
+            let mut present = restore_r;
+            for c in &chrome {
+                present = present.union(*c);
+            }
+            present = present.intersect(bounds);
+            if present.area() > bounds.area() * 0.55 {
+                present = bounds;
+            }
+            self.gdi.write_rect(&self.frame, present);
             self.gdi.blit_rect(hwnd, bounds);
         }
         self.primed = true;
