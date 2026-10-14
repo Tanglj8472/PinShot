@@ -411,6 +411,10 @@ impl App {
         drop(ov);
         crate::logutil::log("overlay closed");
         crate::native::release_stray_grabs();
+        if !resnip {
+            #[cfg(windows)]
+            crate::capture::Capture::release_idle();
+        }
         if persist {
             let t0 = Instant::now();
             self.persist_history();
@@ -1044,9 +1048,9 @@ impl ApplicationHandler<AppEvent> for App {
             self.session_restored = true;
             self.restore_session(event_loop);
             self.restore_history();
-            crate::ocr_run::prefetch_models();
-            #[cfg(windows)]
-            crate::capture::Capture::prefetch();
+            // Do not prefetch OCR / DXGI here: PP-OCRv5 + a standing
+            // DuplicateOutput session is why the idle tray process sat at
+            // ~200MB. Models load on first OCR; DXGI opens on first F1.
         }
         self.ensure_pump_window(event_loop);
         if self.start_prefs {

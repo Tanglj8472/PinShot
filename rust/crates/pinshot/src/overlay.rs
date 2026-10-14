@@ -85,6 +85,8 @@ pub struct Overlay {
     dpr: f32,
     result: Option<OverlayResult>,
     dirty: bool,
+    #[cfg(windows)]
+    need_stack: bool,
     pub history: SnipHistory,
     live_shot: Option<Raster>,
     translate_on_select: bool,
@@ -251,6 +253,8 @@ impl Overlay {
             dpr: 1.0,
             result: None,
             dirty: true,
+            #[cfg(windows)]
+            need_stack: true,
             history,
             live_shot: None,
             translate_on_select,
@@ -342,6 +346,9 @@ impl Overlay {
         ));
         #[cfg(not(unix))]
         native::focus_window(&s.window);
+        // Capture already includes the taskbar. Cloak the live explorer
+        // chrome so it cannot restack above this HWND and steal clicks.
+        native::cloak_shell_trays(true);
         // After focus the taskbar may jump above an already-TOPMOST overlay.
         s.cover_desktop();
         // Recycled HWND often skips CursorMoved until the mouse actually
@@ -805,6 +812,7 @@ impl Overlay {
     pub fn hide_for_capture(&self) {
         #[cfg(windows)]
         native::cloak_window(&self.window, true);
+        native::cloak_shell_trays(false);
         self.window.set_visible(false);
         crate::native::unmap_sync(&self.window);
     }
@@ -1815,9 +1823,14 @@ impl Overlay {
         #[cfg(windows)]
         native::cloak_window(&self.window, false);
         self.window.set_visible(true);
-        // Do not cover_desktop() on every mouse move: HWND_NOTOPMOST +
-        // SWP_FRAMECHANGED invalidates the client, and the next dirty BitBlt
-        // of the loupe is what left the staircase stain on the freeze.
+        // First uncloak only: restack above the (now cloaked) tray. Doing
+        // this on every mouse move invalidates the client and stains the
+        // freeze under the loupe.
+        #[cfg(windows)]
+        if self.need_stack {
+            self.cover_desktop();
+            self.need_stack = false;
+        }
         self.dirty = false;
     }
 
@@ -2039,6 +2052,12 @@ fn keysym_to_winit(keysym: u32) -> Option<(Key, Option<String>)> {
     }
     let s = ch.to_string();
     Some((Key::Character(s.clone().into()), Some(s)))
+}
+
+impl Drop for Overlay {
+    fn drop(&mut self) {
+        native::cloak_shell_trays(false);
+    }
 }
 
 #[cfg(test)]

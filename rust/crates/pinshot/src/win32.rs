@@ -3,9 +3,10 @@
 use pinshot_core::hotkey::{parse_hotkey, Command, Hotkey, MOD_NOREPEAT};
 use pinshot_core::Config;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+use std::cell::RefCell;
 use std::sync::Mutex;
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Foundation::{BOOL, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Graphics::Dwm::{
     DwmGetWindowAttribute, DwmSetWindowAttribute, DWMWA_CLOAK, DWMWA_CLOAKED,
     DWMWA_EXTENDED_FRAME_BOUNDS,
@@ -20,7 +21,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, EnumWindows, GetCursorPos,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, EnumWindows, GetClassNameW, GetCursorPos,
     GetSystemMetrics, GetWindowLongPtrW, GetWindowTextW, GetWindowThreadProcessId, IsWindow,
     PostMessageW, RegisterClassW, SetCursorPos, SetLayeredWindowAttributes,
     SetWindowDisplayAffinity, SetWindowLongPtrW, SetWindowPos, ShowWindow, GWL_EXSTYLE, GWL_STYLE,
@@ -174,6 +175,70 @@ pub fn cover_shell(hwnd: HWND, x: i32, y: i32, w: u32, h: u32) {
             SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_SHOWWINDOW,
         );
         let _ = SetWindowPos(hwnd, HWND_TOPMOST, x, y, w as i32, h as i32, SWP_NOACTIVATE);
+    }
+}
+
+fn is_shell_tray_class(class: &str) -> bool {
+    matches!(
+        class,
+        "Shell_TrayWnd"
+            | "Shell_SecondaryTrayWnd"
+            | "NotifyIconOverflowWindow"
+            | "TopLevelWindowForOverflowXamlIsland"
+    )
+}
+
+fn hwnd_class_name(hwnd: HWND) -> String {
+    unsafe {
+        let mut buf = [0u16; 256];
+        let n = GetClassNameW(hwnd, &mut buf);
+        if n <= 0 {
+            return String::new();
+        }
+        String::from_utf16_lossy(&buf[..n as usize])
+    }
+}
+
+thread_local! {
+    static CLOAKED_TRAYS: RefCell<Vec<isize>> = const { RefCell::new(Vec::new()) };
+}
+
+unsafe extern "system" fn enum_cloak_trays(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    let cloak = lparam.0 != 0;
+    if is_shell_tray_class(&hwnd_class_name(hwnd)) {
+        cloak_window(hwnd, cloak);
+        if cloak {
+            CLOAKED_TRAYS.with(|slot| slot.borrow_mut().push(hwnd.0 as isize));
+        }
+    }
+    BOOL(1)
+}
+
+/// Hide the live taskbar while the freeze overlay is up. Explorer's tray is
+/// also TOPMOST; after focus it jumps above the overlay, eats clicks, and
+/// the hover ring stays on the maximized app underneath.
+pub fn cloak_shell_trays(cloak: bool) {
+    if cloak {
+        CLOAKED_TRAYS.with(|slot| slot.borrow_mut().clear());
+        unsafe {
+            let _ = EnumWindows(Some(enum_cloak_trays), LPARAM(1));
+        }
+        crate::logutil::log(&format!(
+            "cloak trays n={}",
+            CLOAKED_TRAYS.with(|slot| slot.borrow().len())
+        ));
+    } else {
+        CLOAKED_TRAYS.with(|slot| {
+            for raw in slot.borrow_mut().drain(..) {
+                let hwnd = HWND(raw as *mut _);
+                if unsafe { IsWindow(hwnd).as_bool() } {
+                    cloak_window(hwnd, false);
+                }
+            }
+        });
+        unsafe {
+            let _ = EnumWindows(Some(enum_cloak_trays), LPARAM(0));
+        }
     }
 }
 

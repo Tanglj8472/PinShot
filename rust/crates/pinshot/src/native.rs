@@ -77,6 +77,14 @@ pub fn cloak_window(window: &Window, cloak: bool) {
     let _ = (window, cloak);
 }
 
+/// Cloak explorer's live taskbar so it cannot sit above the freeze overlay.
+pub fn cloak_shell_trays(cloak: bool) {
+    #[cfg(windows)]
+    crate::win32::cloak_shell_trays(cloak);
+    #[cfg(not(windows))]
+    let _ = cloak;
+}
+
 pub fn show_noactivate(window: &Window) {
     #[cfg(windows)]
     crate::win32::show_noactivate(hwnd_of(window));

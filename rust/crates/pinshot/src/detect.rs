@@ -85,6 +85,7 @@ fn is_tray_class(class: &str) -> bool {
             | "Shell_SecondaryTrayWnd"
             | "NotifyIconOverflowWindow"
             | "TrayNotifyWnd"
+            | "TopLevelWindowForOverflowXamlIsland"
     )
 }
 
@@ -729,6 +730,20 @@ pub fn element_at_point(sx: i32, sy: i32, exclude: Option<isize>) -> Option<Poin
     let t0 = Instant::now();
     let self_pid = unsafe { GetCurrentProcessId() };
     let skip = exclude_hwnd(exclude);
+    // Taskbar / notify geometry first. Maximized apps (VS, Chrome) extend
+    // under the Win11 taskbar, so UIA / WindowFromPoint return devenv even
+    // when the cursor is on the clock. Tray HWND can also sit above the
+    // overlay and steal the click; the rect is still the right hover.
+    if let Some((rect, depth)) = tray_hit_at(sx, sy) {
+        LAST_SOURCE.store(2, std::sync::atomic::Ordering::Relaxed);
+        log_detect_change("tray", depth, 2, t0.elapsed().as_millis());
+        return Some(PointHit {
+            rect,
+            exe: "tray".into(),
+            depth,
+            elapsed_ms: t0.elapsed().as_millis(),
+        });
+    }
     // Hit-through for z-order and UIA: a recycled overlay HWND stays in the
     // stack even when hidden, and otherwise absorbs ElementFromPoint.
     with_hit_through(skip, || element_at_point_inner(sx, sy, skip, self_pid, t0))
@@ -828,6 +843,7 @@ mod tests {
         assert!(is_tray_class("Shell_TrayWnd"));
         assert!(is_tray_class("TrayNotifyWnd"));
         assert!(is_tray_class("NotifyIconOverflowWindow"));
+        assert!(is_tray_class("TopLevelWindowForOverflowXamlIsland"));
         assert!(!is_tray_class("Chrome_WidgetWin_1"));
     }
 

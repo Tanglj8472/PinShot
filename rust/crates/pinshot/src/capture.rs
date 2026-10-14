@@ -94,6 +94,18 @@ impl Capture {
         }
         crate::logutil::ms("dxgi prefetch", t0);
     }
+
+    /// Drop the standing DXGI session after the overlay closes. Each output
+    /// keeps a full-desktop RGBA `last` frame plus D3D staging textures;
+    /// leaving that alive is ~200MB in Task Manager while the tray is idle.
+    pub fn release_idle() {
+        DXGI.with(|slot| {
+            if slot.borrow().is_some() {
+                *slot.borrow_mut() = None;
+                crate::logutil::log("dxgi released");
+            }
+        });
+    }
 }
 
 fn grab_with_fallback(dump: bool) -> Result<Capture, String> {

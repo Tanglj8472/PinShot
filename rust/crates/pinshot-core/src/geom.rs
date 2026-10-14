@@ -503,25 +503,30 @@ pub fn hover_rect(cursor: Point, windows: &[Rect], elements: &[Rect], full: Rect
         .map(|r| r.intersect(full))
         .filter(|r| !r.is_empty() && r.contains(cursor))
         .collect();
-    // A full-desktop WorkerW/Progman contains the taskbar pixels too.
-    // Prefer a real app, then the shell strip, and only then the backdrop —
-    // otherwise leaving the tray menu and coming back selects the desktop.
-    let app = under
-        .iter()
-        .copied()
-        .find(|r| !is_shell_strip(*r, full) && !is_desktop_backdrop(*r, full));
-    if let Some(r) = app {
-        return r;
+    // Win11 maximized HWNDs include the taskbar band. Once the cursor is in
+    // any shell strip, pick the smallest non-backdrop (notify chip < bar <
+    // the app that extends under the bar).
+    if under.iter().any(|r| is_shell_strip(*r, full)) {
+        if let Some(r) = under
+            .iter()
+            .copied()
+            .filter(|r| !is_desktop_backdrop(*r, full))
+            .min_by(|a, b| {
+                a.area()
+                    .partial_cmp(&b.area())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+        {
+            return r;
+        }
     }
+    // A full-desktop WorkerW/Progman contains the taskbar pixels too.
+    // Prefer a real app, then the backdrop — otherwise leaving the tray
+    // menu and coming back selects the desktop.
     under
         .iter()
         .copied()
-        .filter(|r| is_shell_strip(*r, full))
-        .min_by(|a, b| {
-            a.area()
-                .partial_cmp(&b.area())
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
+        .find(|r| !is_shell_strip(*r, full) && !is_desktop_backdrop(*r, full))
         .or_else(|| under.first().copied())
         .unwrap_or(full)
 }
@@ -737,6 +742,27 @@ mod tests {
         assert!(is_desktop_backdrop(desktop, full));
         assert!(is_shell_strip(taskbar, full));
         assert!(!is_desktop_backdrop(Rect::new(0.0, 0.0, 1920.0, 1063.0), full));
+    }
+
+    #[test]
+    fn hover_prefers_taskbar_over_maximized_app_frame() {
+        let full = Rect::new(0.0, 0.0, 4160.0, 1400.0);
+        let devenv = Rect::new(0.0, 0.0, 4160.0, 1400.0);
+        let taskbar = Rect::new(0.0, 1352.0, 4160.0, 48.0);
+        let tray = Rect::new(3920.0, 1320.0, 240.0, 80.0);
+        let windows = [devenv, taskbar, tray];
+        assert_eq!(
+            hover_rect(Point::new(2000.0, 1370.0), &windows, &[], full),
+            taskbar
+        );
+        assert_eq!(
+            hover_rect(Point::new(4000.0, 1360.0), &windows, &[], full),
+            tray
+        );
+        assert_eq!(
+            hover_rect(Point::new(800.0, 400.0), &windows, &[], full),
+            devenv
+        );
     }
 
     #[test]
