@@ -720,14 +720,9 @@ impl Overlay {
         }
         let img = self.capture.composed.crop(self.sel.normalized());
         self.remember();
-        let (vx, vy) = self.capture.virtual_origin;
-        let r = self.sel.normalized();
+        let pos = native::pin_pos_near_cursor(img.width, img.height);
         self.release_grab();
-        self.result = Some(OverlayResult::Ocr(
-            img,
-            translate,
-            (vx + r.x as i32, vy + r.y as i32),
-        ));
+        self.result = Some(OverlayResult::Ocr(img, translate, pos));
         self.window.set_visible(false);
     }
 

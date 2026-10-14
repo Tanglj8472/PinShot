@@ -632,6 +632,30 @@ fn ungrab_swallow_keys(c: &x11rb::rust_connection::RustConnection, root: u32) {
     }
 }
 
+/// Root-relative cursor for placing F5 / clipboard pins.
+pub fn root_cursor() -> Option<(i32, i32)> {
+    let (c, screen) = conn().ok()?;
+    let root = c.setup().roots.get(screen).map(|s| s.root)?;
+    let p = pointer_state(root)?;
+    Some((p.root_x, p.root_y))
+}
+
+pub fn root_desktop() -> (i32, i32, i32, i32) {
+    conn()
+        .ok()
+        .and_then(|(c, screen)| {
+            c.setup().roots.get(screen).map(|s| {
+                (
+                    0,
+                    0,
+                    i32::from(s.width_in_pixels),
+                    i32::from(s.height_in_pixels),
+                )
+            })
+        })
+        .unwrap_or((0, 0, 1920, 1080))
+}
+
 /// Root + window-relative pointer and Button1.
 #[derive(Clone, Copy, Debug)]
 pub struct PointerState {

@@ -377,8 +377,7 @@ impl App {
         group: Option<String>,
         persist: bool,
     ) {
-        let n = self.pins.len() as i32;
-        let pos = pos.unwrap_or((40 + n * 24, 40 + n * 24));
+        let pos = pos.unwrap_or_else(|| native::pin_pos_near_cursor(img.width, img.height));
         match PinWin::create(event_loop, img, pos) {
             Ok(mut p) => {
                 if let Some(g) = group {

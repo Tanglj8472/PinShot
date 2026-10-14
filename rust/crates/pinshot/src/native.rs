@@ -115,10 +115,27 @@ pub fn cursor_screen() -> Option<(i32, i32)> {
     {
         crate::win32::cursor_pos()
     }
-    #[cfg(not(windows))]
+    #[cfg(unix)]
     {
-        None
+        crate::x11util::root_cursor()
     }
+}
+
+pub fn virtual_desktop() -> (i32, i32, i32, i32) {
+    #[cfg(windows)]
+    {
+        crate::win32::virtual_desktop()
+    }
+    #[cfg(unix)]
+    {
+        crate::x11util::root_desktop()
+    }
+}
+
+/// Offset a new pin from the pointer so F5 / clipboard cards sit next to it.
+pub fn pin_pos_near_cursor(w: u32, h: u32) -> (i32, i32) {
+    let cursor = cursor_screen().unwrap_or((40, 40));
+    pinshot_core::geom::place_near_cursor(cursor, (w, h), virtual_desktop())
 }
 
 /// Fake a 1px mouse move and restore so overlay hover runs without the user moving.

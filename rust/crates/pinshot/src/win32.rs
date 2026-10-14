@@ -27,7 +27,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetSystemMetrics, GetWindowLongPtrW, GetWindowTextW, GetWindowThreadProcessId, IsWindow,
     PostMessageW, RegisterClassW, SetCursorPos, SetLayeredWindowAttributes,
     SetWindowDisplayAffinity, SetWindowLongPtrW, SetWindowPos, ShowWindow, GWL_EXSTYLE, GWL_STYLE,
-    HWND_NOTOPMOST, HWND_TOPMOST, LWA_ALPHA, SM_REMOTESESSION, SWP_FRAMECHANGED, SWP_NOACTIVATE,
+    HWND_NOTOPMOST, HWND_TOPMOST, LWA_ALPHA, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
+    SM_REMOTESESSION, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SWP_FRAMECHANGED, SWP_NOACTIVATE,
     SWP_NOMOVE, SWP_NOREDRAW, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE,
     WINDOW_DISPLAY_AFFINITY, WM_DESTROY, WM_HOTKEY, WNDCLASSW, WS_EX_APPWINDOW, WS_EX_LAYERED,
     WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_MAXIMIZE,
@@ -278,6 +279,20 @@ pub fn include_in_capture(hwnd: HWND) {
 
 pub fn is_remote_session() -> bool {
     unsafe { GetSystemMetrics(SM_REMOTESESSION) != 0 }
+}
+
+pub fn virtual_desktop() -> (i32, i32, i32, i32) {
+    unsafe {
+        let vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+        let vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+        let vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+        let vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+        if vw <= 0 || vh <= 0 {
+            (0, 0, 1920, 1080)
+        } else {
+            (vx, vy, vw, vh)
+        }
+    }
 }
 
 /// Snipaste-style: Preferences is a tool window, not a taskbar app.

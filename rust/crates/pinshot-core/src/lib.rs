@@ -37,7 +37,8 @@ pub use config::{config_dir, config_path, data_dir, Config, ConfigError, Transla
 pub use confirm::{confirm_abort_layout, ConfirmAbortHit, ConfirmAbortLayout};
 pub use cursor::{cursor_for, CursorHint, CursorKind};
 pub use geom::{
-    hover_rect, overlay_from_screen, phys_to_logical, screen_from_overlay, Handle, Point, Rect,
+    hover_rect, overlay_from_screen, phys_to_logical, place_near_cursor, screen_from_overlay,
+    Handle, Point, Rect,
 };
 pub use groups::{label as group_label, DEFAULT_GROUP};
 pub use history::{HistoryEntry, HistoryFile, HistoryMetaEntry, HistoryView, SnipHistory};

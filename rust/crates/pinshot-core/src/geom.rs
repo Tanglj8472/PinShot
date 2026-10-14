@@ -571,6 +571,30 @@ pub fn phys_to_logical(
     )
 }
 
+/// Place a `w×h` window next to `cursor`, flipping when it would leave `desk`.
+/// `desk` is `(x, y, w, h)` of the virtual desktop.
+pub fn place_near_cursor(
+    cursor: (i32, i32),
+    size: (u32, u32),
+    desk: (i32, i32, i32, i32),
+) -> (i32, i32) {
+    let (cx, cy) = cursor;
+    let (w, h) = (size.0 as i32, size.1 as i32);
+    let (dx, dy, dw, dh) = desk;
+    let gap = 16;
+    let mut x = cx + gap;
+    let mut y = cy + gap;
+    if w > 0 && x + w > dx + dw {
+        x = cx - gap - w;
+    }
+    if h > 0 && y + h > dy + dh {
+        y = cy - gap - h;
+    }
+    let max_x = (dx + dw - w).max(dx);
+    let max_y = (dy + dh - h).max(dy);
+    (x.clamp(dx, max_x), y.clamp(dy, max_y))
+}
+
 /// Distance from point to a finite segment.
 pub fn dist_to_segment(p: Point, a: Point, b: Point) -> f32 {
     let dx = b.x - a.x;
@@ -817,6 +841,20 @@ mod tests {
         let parts = a.subtract(b);
         assert_eq!(parts[0], a);
         assert!(parts[1].is_empty() && parts[2].is_empty() && parts[3].is_empty());
+    }
+
+    #[test]
+    fn place_near_cursor_flips_at_bottom_right() {
+        let at = place_near_cursor((1800, 1000), (280, 120), (0, 0, 1920, 1080));
+        assert!(at.0 + 280 <= 1920, "x={at:?}");
+        assert!(at.1 + 120 <= 1080, "y={at:?}");
+        assert!(at.0 < 1800, "should flip left of the cursor");
+    }
+
+    #[test]
+    fn place_near_cursor_follows_the_pointer() {
+        let at = place_near_cursor((200, 150), (280, 120), (0, 0, 1920, 1080));
+        assert_eq!(at, (216, 166));
     }
 
     #[test]
