@@ -735,7 +735,7 @@ impl OverlayFront {
             None
         };
         let mag_dirty = mag_layout
-            .map(|m| m.grid.union(m.info).inflated(8.0))
+            .map(|m| m.grid.union(m.info).inflated(14.0))
             .unwrap_or(Rect::EMPTY);
 
         // Incremental restore. If the hover/sel hole did not change, do
@@ -917,13 +917,10 @@ impl OverlayFront {
                 present = bounds;
             }
             self.gdi.write_rect(&self.frame, present);
-            // After the first full present, only blit the dirty tile. A
-            // 4160×1400 SRCCOPY on every mouse pixel is the hitch.
-            if self.primed {
-                self.gdi.blit_rect(hwnd, present);
-            } else {
-                self.gdi.blit_rect(hwnd, bounds);
-            }
+            // Always blit the whole DIB. Partial BitBlt of the loupe is what
+            // left the staircase shadow on the freeze; the hitch was the
+            // CPU hole memcpy, not this SRCCOPY.
+            self.gdi.blit_rect(hwnd, bounds);
         }
         self.last_hole = hole;
         self.last_chrome = chrome;
@@ -1112,7 +1109,7 @@ fn paint_magnifier(
         p.blend_mode = BlendMode::Source;
         pm.draw_pixmap(ix, iy, panel.as_ref(), &p, Transform::identity(), None);
     }
-    align_dirty(mag.grid.union(mag.info).inflated(2.0))
+    align_dirty(mag.grid.union(mag.info).inflated(8.0))
 }
 
 fn blit_centered(pm: &mut Pixmap, text: &str, boxr: Rect, y: f32, px: i32, color: Rgba) {
