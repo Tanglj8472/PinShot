@@ -436,6 +436,9 @@ fn blit_raster_copy(pm: &mut Pixmap, img: &Raster, x: i32, y: i32) {
 /// Persistent overlay compositor: cached capture + dirty GDI present.
 pub struct OverlayFront {
     shot: Pixmap,
+    /// Frozen dim. Restores copy this — re-dimming from `shot` on each
+    /// dirty tile is why moving the mouse washed the rest of the freeze.
+    dimmed: Pixmap,
     frame: Pixmap,
     #[cfg(windows)]
     gdi: GdiBits,
@@ -587,42 +590,15 @@ fn dim_pixmap(src: &Pixmap, dim: u8) -> Option<Pixmap> {
     Some(frame)
 }
 
-fn dim_rect(pm: &mut Pixmap, r: Rect, dim: u8) {
-    let bounds = Rect::new(0.0, 0.0, pm.width() as f32, pm.height() as f32);
-    let r = clip_rect(r, bounds);
-    if r.is_empty() {
-        return;
-    }
-    let x0 = r.x.floor().max(0.0) as u32;
-    let y0 = r.y.floor().max(0.0) as u32;
-    let x1 = r.right().ceil().min(pm.width() as f32) as u32;
-    let y1 = r.bottom().ceil().min(pm.height() as f32) as u32;
-    if x0 >= x1 || y0 >= y1 {
-        return;
-    }
-    let k = 255u16.saturating_sub(dim as u16);
-    let w = pm.width() as usize;
-    let d = pm.data_mut();
-    for y in y0..y1 {
-        let row = (y as usize * w + x0 as usize) * 4;
-        let cols = (x1 - x0) as usize;
-        for i in 0..cols {
-            let o = row + i * 4;
-            d[o] = ((d[o] as u16 * k) / 255) as u8;
-            d[o + 1] = ((d[o + 1] as u16 * k) / 255) as u8;
-            d[o + 2] = ((d[o + 2] as u16 * k) / 255) as u8;
-        }
-    }
-}
-
 impl OverlayFront {
     pub fn new(shot: &Raster, dim: u8) -> Result<Self, String> {
         let t0 = std::time::Instant::now();
         let shot_pm = shot.to_skia().ok_or("capture pixmap")?;
         crate::logutil::ms("overlay to_skia", t0);
         let t_dim = std::time::Instant::now();
-        let frame = dim_pixmap(&shot_pm, dim).ok_or("dim pixmap")?;
+        let dimmed = dim_pixmap(&shot_pm, dim).ok_or("dim pixmap")?;
         crate::logutil::ms("overlay dim", t_dim);
+        let frame = dimmed.clone();
         #[cfg(windows)]
         let t_gdi = std::time::Instant::now();
         #[cfg(windows)]
@@ -631,6 +607,7 @@ impl OverlayFront {
         crate::logutil::ms("overlay gdi dib", t_gdi);
         Ok(Self {
             shot: shot_pm,
+            dimmed,
             frame,
             #[cfg(windows)]
             gdi,
@@ -665,7 +642,8 @@ impl OverlayFront {
             return Ok(());
         }
         self.shot = shot_pm;
-        self.frame = dim_pixmap(&self.shot, self.dim).ok_or("dim pixmap")?;
+        self.dimmed = dim_pixmap(&self.shot, self.dim).ok_or("dim pixmap")?;
+        self.frame = self.dimmed.clone();
         self.last_hole = Rect::EMPTY;
         self.last_chrome.clear();
         self.last_size_label = Rect::EMPTY;
@@ -685,8 +663,7 @@ impl OverlayFront {
         if r.is_empty() {
             return;
         }
-        copy_rect(&mut self.frame, &self.shot, r);
-        dim_rect(&mut self.frame, r, self.dim);
+        copy_rect(&mut self.frame, &self.dimmed, r);
     }
 
     pub fn paint(
@@ -2165,6 +2142,47 @@ mod tests {
             }
         }
         assert_eq!(stained, 0);
+    }
+
+    /// Re-dimming dirty tiles from `shot` rounded differently than the first
+    /// full-frame dim, so moving the mouse washed the freeze. Far pixels must
+    /// stay bit-identical to the never-moved overlay.
+    #[test]
+    fn moving_mouse_keeps_far_pixels_at_first_dim() {
+        let w = 640u32;
+        let h = 400u32;
+        let shot = gray_shot(w, h, 210);
+        let clean = OverlayFront::new(&shot, 160).expect("clean");
+        let mut front = OverlayFront::new(&shot, 160).expect("front");
+        let idle = Selection::new();
+        let still = clean.pixmap().pixel(20, 380).expect("still");
+        for i in 0..12 {
+            let x = 80.0 + i as f32 * 28.0;
+            let y = 60.0 + i as f32 * 12.0;
+            front.paint(
+                dummy_hwnd(),
+                &idle,
+                Rect::new(x - 40.0, y - 30.0, 140.0, 90.0),
+                Point::new(x, y),
+                1.0,
+                false,
+                true,
+                &Annotator::new(),
+                None,
+                None,
+                false,
+                &shot,
+                None,
+                None,
+            );
+        }
+        let after = front.pixmap().pixel(20, 380).expect("after");
+        assert_eq!(
+            after, still,
+            "mouse move washed the freeze dim: still {:?} after {:?}",
+            still.demultiply(),
+            after.demultiply()
+        );
     }
 
     #[test]
