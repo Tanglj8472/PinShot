@@ -17,6 +17,7 @@ AppPublisherURL=https://github.com/Tanglj8472/pinshot
 DefaultDirName={localappdata}\Programs\PinShot
 DefaultGroupName=PinShot
 PrivilegesRequired=lowest
+MinVersion=10.0
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir={#DistDir}

@@ -1,6 +1,8 @@
 param(
     [string]$Iscc,
-    [switch]$SkipTests
+    [switch]$SkipTests,
+    [switch]$SkipBuild,
+    [string]$ReleaseDir
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -15,6 +17,10 @@ if (-not $Iscc) {
     else { $Iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe' }
 }
 if (-not (Test-Path -LiteralPath $Iscc)) { throw 'Install Inno Setup 6 or pass -Iscc <path>' }
+$hostInfo = & rustc -vV
+if ($LASTEXITCODE -ne 0 -or "$hostInfo" -notmatch 'host: x86_64-pc-windows-msvc') {
+    throw 'Packaging requires the x86_64-pc-windows-msvc toolchain'
+}
 Push-Location $workspace
 try {
     if (-not $SkipTests) {
@@ -23,8 +29,10 @@ try {
         & cargo test --locked --workspace --features ocr
         if ($LASTEXITCODE -ne 0) { throw 'OCR tests failed' }
     }
-    & cargo build --locked --release --bin pinshot --features ocr
-    if ($LASTEXITCODE -ne 0) { throw 'Release build failed' }
+    if (-not $SkipBuild) {
+        & cargo build --locked --release --bin pinshot --features ocr
+        if ($LASTEXITCODE -ne 0) { throw 'Release build failed' }
+    }
 } finally { Pop-Location }
 
 $dist = Join-Path $repo 'dist'
@@ -32,11 +40,27 @@ $stageRoot = Join-Path $dist ('stage-' + [guid]::NewGuid().ToString('N'))
 $name = "PinShot-$version-windows-x64"
 $payload = Join-Path $stageRoot $name
 New-Item -ItemType Directory -Path $payload -Force | Out-Null
-$release = Join-Path $workspace 'target\release'
+$release = if ($ReleaseDir) { $ReleaseDir } else { Join-Path $workspace 'target\release' }
 Copy-Item -LiteralPath (Join-Path $release 'pinshot.exe') -Destination $payload
 Get-ChildItem -LiteralPath $release -Filter '*.dll' -File | Copy-Item -Destination $payload
 foreach ($dll in @('webgpu_dawn.dll', 'dxcompiler.dll', 'dxil.dll')) {
     if (-not (Test-Path -LiteralPath (Join-Path $payload $dll))) { throw "Missing OCR runtime: $dll" }
+}
+# App-local redistributable CRT: users do not need Visual Studio installed.
+$vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+if (-not (Test-Path -LiteralPath $vswhere)) { throw 'Visual Studio Installer/vswhere is required' }
+$vsRoot = & $vswhere -latest -products '*' -property installationPath
+if ($LASTEXITCODE -ne 0 -or -not $vsRoot) { throw 'Visual Studio installation not found' }
+$redistRoot = Join-Path $vsRoot 'VC\Redist\MSVC'
+$crt = Get-ChildItem -LiteralPath $redistRoot -Directory | Where-Object { $_.Name -match '^\d+\.\d+\.\d+$' } |
+    Sort-Object { [version]$_.Name } -Descending | ForEach-Object {
+        $x64 = Join-Path $_.FullName 'x64'
+        if (Test-Path -LiteralPath $x64) { Get-ChildItem -LiteralPath $x64 -Directory -Filter 'Microsoft.VC*.CRT' }
+    } | Select-Object -First 1
+if (-not $crt) { throw 'MSVC x64 redistributable CRT not found' }
+Get-ChildItem -LiteralPath $crt.FullName -File -Filter '*.dll' | Copy-Item -Destination $payload
+foreach ($dll in @('msvcp140.dll', 'msvcp140_1.dll', 'vcruntime140.dll', 'vcruntime140_1.dll')) {
+    if (-not (Test-Path -LiteralPath (Join-Path $payload $dll))) { throw "Missing CRT: $dll" }
 }
 Copy-Item -LiteralPath (Join-Path $repo 'assets\pinshot.ico') -Destination $payload
 Copy-Item -LiteralPath (Join-Path $repo 'README.md') -Destination $payload
