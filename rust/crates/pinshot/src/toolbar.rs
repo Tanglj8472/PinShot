@@ -217,7 +217,7 @@ impl Toolbar {
         sel: Rect,
         overlay: Rect,
         active: Option<Tool>,
-        arrow: ArrowKind,
+        _arrow: ArrowKind,
         for_pin: bool,
         style: Option<&Style>,
     ) -> Self {
@@ -394,16 +394,11 @@ impl Toolbar {
                             Some(icon),
                             TbAction::ToggleLineMenu,
                         );
-                        let last = if arrow.is_arrow() {
-                            arrow
-                        } else {
-                            ArrowKind::Thin
-                        };
                         push_icon(
                             &mut extras,
                             &mut chip_x,
                             chip_y,
-                            icon_for_arrow(last),
+                            IconKind::LineArrowFlip,
                             TbAction::ToggleLineArrow,
                             st.has_arrow(),
                         );
@@ -1070,7 +1065,7 @@ mod tests {
             .iter()
             .find(|e| e.action == TbAction::ToggleLineArrow)
             .expect("line/arrow flip chip");
-        assert_eq!(flip.icon, Some(IconKind::Arrow));
+        assert_eq!(flip.icon, Some(IconKind::LineArrowFlip));
         assert!(!flip.checked);
         assert_eq!(tb.hit(flip.rect.center()), Some(TbAction::ToggleLineArrow));
         let hollow_st = {
@@ -1090,7 +1085,7 @@ mod tests {
             .iter()
             .find(|e| e.action == TbAction::ToggleLineArrow)
             .unwrap();
-        assert_eq!(flip_h.icon, Some(IconKind::ArrowHollow));
+        assert_eq!(flip_h.icon, Some(IconKind::LineArrowFlip));
         assert!(flip_h.checked);
         let mut open = tb.clone();
         open.attach_line_menu(over, &st);

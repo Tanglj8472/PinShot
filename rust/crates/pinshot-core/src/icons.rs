@@ -20,6 +20,8 @@ pub enum IconKind {
     /// Grouped line/arrow toolbar entry (polyline + small head). Independent of
     /// the straight-line / arrow presets in the dropdown.
     LineGroup,
+    /// Toggle chip: short line beside a small arrow.
+    LineArrowFlip,
     Arrow,
     ArrowThick,
     ArrowHollow,
@@ -55,6 +57,7 @@ impl IconKind {
             "shape" | "roundrect" => Self::RoundRect,
             "line" => Self::Line,
             "linegroup" | "polyline" | "line_arrow" => Self::LineGroup,
+            "linearrowflip" | "line_arrow_flip" => Self::LineArrowFlip,
             "arrow" => Self::Arrow,
             "arrow_thick" | "thickarrow" => Self::ArrowThick,
             "arrow_hollow" | "hollowarrow" => Self::ArrowHollow,
@@ -290,6 +293,13 @@ pub fn draw_icon(pixmap: &mut Pixmap, kind: IconKind, cell: Rect, color: Option<
                 pixmap.stroke_path(&path, &p, &st, t, None);
             }
             arrow_head_ex(pixmap, c, tip, head, half_w, color, t, false);
+        }
+        IconKind::LineArrowFlip => {
+            // Line | arrow, same baseline — the flip chip.
+            if let Some(path) = line_path((1.4, 10.0), (7.6, 10.0)) {
+                pixmap.stroke_path(&path, &p, &st, t, None);
+            }
+            fill_sharp_icon(pixmap, (9.2, 10.0), (18.6, 10.0), color, t);
         }
         IconKind::Arrow => {
             fill_sharp_icon(pixmap, (3.5, 16.5), (16.5, 3.5), color, t);
@@ -720,6 +730,7 @@ mod tests {
             IconKind::RoundRect,
             IconKind::Line,
             IconKind::LineGroup,
+            IconKind::LineArrowFlip,
             IconKind::Arrow,
             IconKind::ArrowThick,
             IconKind::ArrowHollow,
@@ -855,6 +866,11 @@ mod tests {
             ink(&grouped, 10, 12),
             "entry polyline has a corner"
         );
+        let mut flip = Pixmap::new(24, 24).unwrap();
+        draw_icon(&mut flip, IconKind::LineArrowFlip, cell, None);
+        assert!(ink(&flip, 5, 12), "flip chip has a line on the left");
+        assert!(ink(&flip, 19, 12), "flip chip has an arrow on the right");
+        assert_ne!(flip.data(), grouped.data());
         let mut thick = Pixmap::new(24, 24).unwrap();
         let mut hollow = Pixmap::new(24, 24).unwrap();
         draw_icon(&mut thick, IconKind::ArrowThick, cell, None);
