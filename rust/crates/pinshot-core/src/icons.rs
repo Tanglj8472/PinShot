@@ -264,22 +264,10 @@ pub fn draw_icon(pixmap: &mut Pixmap, kind: IconKind, cell: Rect, color: Option<
             }
         }
         IconKind::Line => {
-            // Snipaste 折线: peak, dip, then a small filled head.
-            let a = (2.4, 15.8);
-            let b = (8.0, 10.0);
-            let c = (11.4, 13.4);
-            let tip = (17.6, 3.6);
-            let (head, half_w) = (4.4, 2.0);
-            let shaft_end = arrow_geom(c, tip, head, half_w).map(|g| g.2).unwrap_or(tip);
-            let mut pb = PathBuilder::new();
-            pb.move_to(a.0, a.1);
-            pb.line_to(b.0, b.1);
-            pb.line_to(c.0, c.1);
-            pb.line_to(shaft_end.0, shaft_end.1);
-            if let Some(path) = pb.finish() {
+            // Straight shaft, no head — first item in the arrow menu.
+            if let Some(path) = line_path((3.5, 16.5), (16.5, 3.5)) {
                 pixmap.stroke_path(&path, &p, &st, t, None);
             }
-            arrow_head_ex(pixmap, c, tip, head, half_w, color, t, false);
         }
         IconKind::Arrow => {
             fill_sharp_icon(pixmap, (3.5, 16.5), (16.5, 3.5), color, t);
@@ -822,11 +810,15 @@ mod tests {
             "Line and Arrow must be distinct icons"
         );
         let ink = |pm: &Pixmap, x: u32, y: u32| pm.pixel(x, y).unwrap().alpha() > 40;
-        assert!(ink(&line, 18, 6), "line icon keeps a small arrow at the tip");
-        assert!(ink(&line, 5, 17), "polyline starts at the bottom-left");
+        assert!(ink(&line, 5, 17), "line starts at the bottom-left");
+        assert!(ink(&line, 18, 6), "line ends at the top-right");
         assert!(
-            ink(&line, 10, 12),
-            "polyline has a corner, not a straight diagonal"
+            !ink(&line, 9, 8),
+            "straight line has no polyline kink above the shaft"
+        );
+        assert!(
+            !ink(&line, 19, 3),
+            "straight line has no arrow head at the tip"
         );
         let mut thick = Pixmap::new(24, 24).unwrap();
         let mut hollow = Pixmap::new(24, 24).unwrap();

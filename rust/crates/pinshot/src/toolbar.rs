@@ -657,7 +657,7 @@ impl Toolbar {
             (ArrowKind::Thick, IconKind::ArrowThick, "Thick arrow"),
             (ArrowKind::Hollow, IconKind::ArrowHollow, "Hollow arrow"),
         ];
-        let iw = combo.rect.w.max(72.0);
+        let iw = combo.rect.w;
         let ih = 24.0;
         let h = presets.len() as f32 * ih + 6.0;
         let mut mx = combo.rect.x;
@@ -1045,6 +1045,11 @@ mod tests {
         let mut open = tb.clone();
         open.attach_line_menu(over, &st);
         let menu = open.menu.as_ref().expect("line preset menu");
+        assert_eq!(
+            menu.rect.w, combo.rect.w,
+            "open menu must match the closed combo width"
+        );
+        assert_eq!(menu.items[0].icon, IconKind::Line);
         assert_eq!(menu.items.len(), 4);
         assert_eq!(
             menu.items.iter().map(|b| b.action).collect::<Vec<_>>(),
