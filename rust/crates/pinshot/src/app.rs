@@ -100,6 +100,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         pump_win: None,
         update_inflight: false,
         update_poll_at: None,
+        pending_installer: None,
     };
     event_loop.run_app(&mut app).map_err(|e| e.to_string())
 }
@@ -146,6 +147,7 @@ struct App {
     pump_win: Option<Rc<Window>>,
     update_inflight: bool,
     update_poll_at: Option<Instant>,
+    pending_installer: Option<std::path::PathBuf>,
 }
 
 impl App {
@@ -232,10 +234,6 @@ impl App {
             }
             Ok(crate::update_run::UpdateOutcome::UpdateAvailable { version }) => {
                 crate::logutil::log(&format!("update available {version} (manual install on this OS)"));
-            }
-            Ok(crate::update_run::UpdateOutcome::Installing { version }) => {
-                crate::logutil::log(&format!("update installing {version}, exiting"));
-                std::process::exit(0);
             }
             Err(e) => crate::logutil::log(&format!("update check: {e}")),
         }
@@ -528,6 +526,9 @@ impl App {
 
     fn request_quit(&mut self, event_loop: &ActiveEventLoop) {
         crate::logutil::log("quit");
+        if let Some(path) = self.pending_installer.take() {
+            crate::update_run::defer_install_after_quit(path);
+        }
         prefs::close_settings();
         if let Some(w) = self.prefs.as_mut() {
             w.close();
@@ -1196,7 +1197,18 @@ impl ApplicationHandler<AppEvent> for App {
                 }
             }
             AppEvent::OpenPrefs => self.open_prefs_win(event_loop),
-            AppEvent::UpdateCheckDone(r) => self.finish_update_check(r),
+            AppEvent::UpdateCheckDone(r) => match &r {
+                Ok(crate::update_run::UpdateOutcome::ReadyToInstall {
+                    setup_path,
+                    version,
+                }) => {
+                    crate::logutil::log(&format!("update ready {version}"));
+                    self.finish_update_check(Ok(crate::update_run::UpdateOutcome::UpToDate));
+                    self.pending_installer = Some(setup_path.clone());
+                    self.request_quit(event_loop);
+                }
+                _ => self.finish_update_check(r),
+            },
             AppEvent::X11Key {
                 keysym,
                 mods,

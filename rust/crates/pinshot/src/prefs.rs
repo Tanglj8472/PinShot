@@ -430,10 +430,12 @@ impl eframe::App for PrefsApp {
                     self.update_check_rx = None;
                     self.draft.update.last_check_unix = pinshot_core::update::now_unix();
                     let _ = config::save(&self.draft);
-                    let installing = matches!(
-                        &r,
-                        Ok(crate::update_run::UpdateOutcome::Installing { .. })
-                    );
+                    let install = match &r {
+                        Ok(crate::update_run::UpdateOutcome::ReadyToInstall { setup_path, .. }) => {
+                            Some(setup_path.clone())
+                        }
+                        _ => None,
+                    };
                     self.status = match r {
                         Ok(crate::update_run::UpdateOutcome::UpToDate) => {
                             tr("You are on the latest version.")
@@ -441,12 +443,15 @@ impl eframe::App for PrefsApp {
                         Ok(crate::update_run::UpdateOutcome::UpdateAvailable { version }) => {
                             format!("{} {version}", tr("Update available:"))
                         }
-                        Ok(crate::update_run::UpdateOutcome::Installing { version }) => {
+                        Ok(crate::update_run::UpdateOutcome::ReadyToInstall { version, .. }) => {
                             format!("{} {version}", tr("Installing update…"))
                         }
                         Err(e) => format!("{} {e}", tr("Update check failed:")),
                     };
-                    if installing {
+                    if let Some(path) = install {
+                        #[cfg(windows)]
+                        let _ = crate::ipc::send("quit");
+                        crate::update_run::defer_install_after_quit(path);
                         std::process::exit(0);
                     }
                 }

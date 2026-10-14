@@ -11,14 +11,18 @@ use serde::Deserialize;
 
 const REPO: &str = "Tanglj8472/pinshot";
 const USER_AGENT: &str = concat!("PinShot/", env!("CARGO_PKG_VERSION"));
+const PROCESS_NAME: &str = "pinshot.exe";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum UpdateOutcome {
     UpToDate,
     /// Newer release exists; auto-install is not available on this OS.
     UpdateAvailable { version: String },
-    /// Installer launched; the app should exit.
-    Installing { version: String },
+    /// Downloaded installer; caller must quit all instances then run it.
+    ReadyToInstall {
+        version: String,
+        setup_path: PathBuf,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -44,9 +48,9 @@ pub fn check_and_apply(auto: bool) -> Result<UpdateOutcome, String> {
     #[cfg(windows)]
     {
         let path = download_setup(&release)?;
-        launch_installer(&path)?;
-        return Ok(UpdateOutcome::Installing {
+        return Ok(UpdateOutcome::ReadyToInstall {
             version: release.version,
+            setup_path: path,
         });
     }
     #[cfg(not(windows))]
@@ -56,6 +60,51 @@ pub fn check_and_apply(auto: bool) -> Result<UpdateOutcome, String> {
             version: format!("{}.{}.{}", remote.0, remote.1, remote.2),
         })
     }
+}
+
+/// Tray/settings: spawn a helper that waits for PinShot to exit, then runs setup.
+#[cfg(windows)]
+pub fn defer_install_after_quit(setup: PathBuf) {
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let mut cmd = std::process::Command::new(exe);
+    cmd.args(["--install-after-quit", &setup.to_string_lossy()]);
+    use std::os::windows::process::CommandExt;
+    use windows::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS};
+    let _ = cmd
+        .creation_flags(CREATE_NEW_PROCESS_GROUP.0 | DETACHED_PROCESS.0)
+        .spawn();
+}
+
+#[cfg(not(windows))]
+pub fn defer_install_after_quit(_setup: PathBuf) {}
+
+/// Inno Setup / manual upgrade: ask the running app to quit and wait for file unlock.
+#[cfg(windows)]
+pub fn quit_for_install() {
+    crate::logutil::ensure_stdio();
+    let _ = crate::ipc::send("quit");
+    wait_for_other_pinshot_exit(20);
+    terminate_other_pinshot();
+    std::thread::sleep(std::time::Duration::from_millis(400));
+}
+
+#[cfg(not(windows))]
+pub fn quit_for_install() {}
+
+#[cfg(windows)]
+pub fn run_install_after_quit(setup: &Path) -> Result<(), String> {
+    crate::logutil::ensure_stdio();
+    let _ = crate::ipc::send("quit");
+    wait_for_other_pinshot_exit(45);
+    terminate_other_pinshot();
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    if !pinshot_pids(current_pid()).is_empty() {
+        return Err("PinShot is still running; close it and retry".into());
+    }
+    launch_installer(setup)?;
+    std::process::exit(0);
 }
 
 struct ReleaseInfo {
@@ -137,7 +186,6 @@ fn launch_installer(path: &Path) -> Result<(), String> {
         .args([
             "/VERYSILENT",
             "/SUPPRESSMSGBOXES",
-            "/NORESTART",
             "/CLOSEAPPLICATIONS",
             "/RESTARTAPPLICATIONS",
         ])
@@ -146,7 +194,84 @@ fn launch_installer(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(not(windows))]
-fn launch_installer(_path: &Path) -> Result<(), String> {
-    Err("auto-install is Windows-only".into())
+#[cfg(windows)]
+fn current_pid() -> u32 {
+    unsafe { windows::Win32::System::Threading::GetCurrentProcessId() }
+}
+
+#[cfg(windows)]
+fn pinshot_pids(exclude: u32) -> Vec<u32> {
+    use std::mem::size_of;
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+    };
+
+    let mut out = Vec::new();
+    unsafe {
+        let snap = match CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) {
+            Ok(h) => h,
+            Err(_) => return out,
+        };
+        let mut entry = PROCESSENTRY32W {
+            dwSize: size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        };
+        if Process32FirstW(snap, &mut entry).is_ok() {
+            loop {
+                let name = String::from_utf16_lossy(
+                    &entry
+                        .szExeFile
+                        .iter()
+                        .take_while(|&&c| c != 0)
+                        .copied()
+                        .collect::<Vec<_>>(),
+                );
+                if name.eq_ignore_ascii_case(PROCESS_NAME) && entry.th32ProcessID != exclude {
+                    out.push(entry.th32ProcessID);
+                }
+                if Process32NextW(snap, &mut entry).is_err() {
+                    break;
+                }
+            }
+        }
+        let _ = CloseHandle(snap);
+    }
+    out
+}
+
+#[cfg(windows)]
+fn wait_for_other_pinshot_exit(max_secs: u32) {
+    let me = current_pid();
+    for i in 0..max_secs.saturating_mul(2) {
+        if pinshot_pids(me).is_empty() {
+            return;
+        }
+        if i == max_secs.saturating_mul(2) / 2 {
+            terminate_other_pinshot();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+}
+
+#[cfg(windows)]
+fn terminate_other_pinshot() {
+    let me = current_pid();
+    for pid in pinshot_pids(me) {
+        terminate_pid(pid);
+    }
+}
+
+#[cfg(windows)]
+fn terminate_pid(pid: u32) {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+
+    unsafe {
+        let Ok(handle) = OpenProcess(PROCESS_TERMINATE, false, pid) else {
+            return;
+        };
+        let _ = TerminateProcess(handle, 1);
+        let _ = CloseHandle(handle);
+    }
 }

@@ -9,6 +9,20 @@ fn main() {
         pinshot::run_preferences();
         return;
     }
+    if args.iter().any(|a| a == "--quit-for-install") {
+        pinshot::update_run::quit_for_install();
+        return;
+    }
+    if let Some(i) = args.iter().position(|a| a == "--install-after-quit") {
+        if let Some(path) = args.get(i + 1) {
+            pinshot::logutil_ensure();
+            if let Err(e) = pinshot::update_run::run_install_after_quit(std::path::Path::new(path)) {
+                eprintln!("PinShot install-after-quit: {e}");
+                std::process::exit(1);
+            }
+            return;
+        }
+    }
     if args.iter().any(|a| a == "--version" || a == "-V") {
         pinshot::logutil_ensure();
         println!(
@@ -21,7 +35,7 @@ fn main() {
     if args.iter().any(|a| a == "--help" || a == "-h") {
         pinshot::logutil_ensure();
         println!(
-            "PinShot {} ({})\n  --snip  --pin-clipboard  --prefs  --translate  --debug  --version",
+            "PinShot {} ({})\n  --snip  --pin-clipboard  --prefs  --translate  --debug  --version\n  --quit-for-install  --install-after-quit <setup.exe>",
             pinshot_core::VERSION,
             pinshot::platform_tag()
         );

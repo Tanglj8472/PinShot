@@ -7,7 +7,7 @@ mod event;
 mod clipboard;
 mod draw;
 mod ocr_run;
-mod update_run;
+pub mod update_run;
 mod overlay;
 mod translate_run;
 mod pin;

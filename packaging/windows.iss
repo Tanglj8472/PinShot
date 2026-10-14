@@ -42,3 +42,17 @@ Name: "{autodesktop}\PinShot"; Filename: "{app}\pinshot.exe"; IconFilename: "{ap
 
 [Run]
 Filename: "{app}\pinshot.exe"; Description: "Launch PinShot"; Flags: nowait postinstall skipifsilent
+
+[Code]
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ResultCode: Integer;
+  ExePath: String;
+begin
+  Result := '';
+  ExePath := ExpandConstant('{app}\pinshot.exe');
+  if FileExists(ExePath) then
+    Exec(ExePath, '--quit-for-install', ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode)
+  else
+    Exec('taskkill.exe', '/IM pinshot.exe /F /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
