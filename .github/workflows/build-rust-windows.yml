@@ -6,6 +6,8 @@ on:
   pull_request:
     paths:
       - "rust/**"
+      - "tools/package-windows.ps1"
+      - "packaging/**"
       - ".github/workflows/build-rust-windows.yml"
       - ".github/workflows/build-rust-linux.yml"
   workflow_dispatch:
@@ -20,7 +22,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: cargo test
-        run: cargo test --workspace
+        run: cargo test --locked --workspace
+      - name: cargo test with OCR
+        run: cargo test --locked --workspace --features ocr
       - name: cargo build --release (no OCR)
         run: cargo build --release --bin pinshot
       - name: version smoke
@@ -47,4 +51,18 @@ jobs:
         with:
           name: pinshot-ocr.exe
           path: rust/target/release/pinshot-ocr.exe
+          if-no-files-found: error
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --yes --no-progress
+      - name: Package installer and portable ZIP
+        shell: pwsh
+        run: ../tools/package-windows.ps1 -SkipTests
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pinshot-windows-x64-packages
+          path: |
+            dist/*-setup.exe
+            dist/*.zip
+            dist/SHA256SUMS.txt
           if-no-files-found: error

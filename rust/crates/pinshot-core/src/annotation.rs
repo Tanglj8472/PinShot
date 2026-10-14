@@ -1981,7 +1981,8 @@ mod tests {
         let mut a = Annotator::new();
         a.set_tool(Some(Tool::Number));
         a.press(Point::new(10.0, 10.0), false);
-        a.press(Point::new(30.0, 10.0), false);
+        // Place outside the first marker's hit region; clicking it selects it.
+        a.press(Point::new(100.0, 10.0), false);
         assert_eq!(a.shapes.len(), 2);
         assert_eq!(a.shapes[0].number, 1);
         assert_eq!(a.shapes[1].number, 2);

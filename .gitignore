@@ -14,3 +14,9 @@ local-validation/
 assets/pinshot.png
 assets/ocr-models/
 rust/target/
+.vs/
+**/.vs/
+/SnipClone/
+/.plain-snap/
+/.video-frames/
+/.release-tools/

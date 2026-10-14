@@ -2927,7 +2927,7 @@ mod tests {
         let outline = tb
             .extras
             .iter()
-            .find(|e| e.label == "A" || e.label.contains('描') || e.label == "Outline")
+            .find(|e| e.icon == Some(IconKind::TextOutline))
             .expect("outline chip");
         let font = tb
             .extras
@@ -2937,7 +2937,7 @@ mod tests {
         let bold = tb
             .extras
             .iter()
-            .find(|e| e.label == "B")
+            .find(|e| e.icon == Some(IconKind::Bold))
             .expect("bold chip");
         let bins_outline = luma_bins(&pm, outline.rect.inflated(-2.0));
         let bins_font = luma_bins(&pm, font.rect.inflated(-2.0));
