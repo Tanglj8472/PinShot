@@ -503,12 +503,36 @@ pub fn hover_rect(cursor: Point, windows: &[Rect], elements: &[Rect], full: Rect
         .map(|r| r.intersect(full))
         .filter(|r| !r.is_empty() && r.contains(cursor))
         .collect();
+    // A full-desktop WorkerW/Progman contains the taskbar pixels too.
+    // Prefer a real app, then the shell strip, and only then the backdrop —
+    // otherwise leaving the tray menu and coming back selects the desktop.
+    let app = under
+        .iter()
+        .copied()
+        .find(|r| !is_shell_strip(*r, full) && !is_desktop_backdrop(*r, full));
+    if let Some(r) = app {
+        return r;
+    }
     under
         .iter()
         .copied()
-        .find(|r| !is_shell_strip(*r, full))
+        .filter(|r| is_shell_strip(*r, full))
+        .min_by(|a, b| {
+            a.area()
+                .partial_cmp(&b.area())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
         .or_else(|| under.first().copied())
         .unwrap_or(full)
+}
+
+/// True desktop / wallpaper host: both axes nearly the virtual desktop.
+/// Maximized apps sit above the taskbar and fail this (~85–92% tall).
+pub fn is_desktop_backdrop(r: Rect, full: Rect) -> bool {
+    if r.is_empty() || full.is_empty() {
+        return false;
+    }
+    r.w >= full.w * 0.95 && r.h >= full.h * 0.95
 }
 
 /// Map a physical-pixel rect onto a monitor's logical geometry (Python `phys_to_logical`).
@@ -699,6 +723,20 @@ mod tests {
         assert_eq!(over_dock, dock);
         assert!(is_shell_strip(dock, full));
         assert!(!is_shell_strip(chrome, full));
+    }
+
+    #[test]
+    fn hover_keeps_tray_over_fullscreen_desktop() {
+        let full = Rect::new(0.0, 0.0, 4160.0, 1400.0);
+        let desktop = full;
+        let tray = Rect::new(3920.0, 1320.0, 240.0, 80.0);
+        let taskbar = Rect::new(0.0, 1352.0, 4160.0, 48.0);
+        let windows = [desktop, taskbar, tray];
+        let hit = hover_rect(Point::new(4000.0, 1360.0), &windows, &[], full);
+        assert_eq!(hit, tray);
+        assert!(is_desktop_backdrop(desktop, full));
+        assert!(is_shell_strip(taskbar, full));
+        assert!(!is_desktop_backdrop(Rect::new(0.0, 0.0, 1920.0, 1063.0), full));
     }
 
     #[test]

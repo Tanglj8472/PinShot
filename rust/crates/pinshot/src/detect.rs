@@ -18,11 +18,11 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::UI::Accessibility::{AccessibleObjectFromPoint, IAccessible};
 use windows::Win32::UI::WindowsAndMessaging::{
-    ChildWindowFromPointEx, EnumChildWindows, EnumWindows, GetAncestor, GetTopWindow, GetWindow,
-    GetWindowLongW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
-    IsIconic, IsWindowVisible, RealChildWindowFromPoint, SendMessageTimeoutW, WindowFromPoint,
-    CWP_SKIPINVISIBLE, CWP_SKIPTRANSPARENT, GA_ROOT, GWL_EXSTYLE, GW_HWNDNEXT, OBJID_CLIENT,
-    SMTO_ABORTIFHUNG, WM_GETOBJECT, WS_EX_TOOLWINDOW,
+    ChildWindowFromPointEx, EnumChildWindows, EnumWindows, GetAncestor, GetClassNameW,
+    GetTopWindow, GetWindow, GetWindowLongW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
+    GetWindowThreadProcessId, IsIconic, IsWindowVisible, RealChildWindowFromPoint,
+    SendMessageTimeoutW, WindowFromPoint, CWP_SKIPINVISIBLE, CWP_SKIPTRANSPARENT, GA_ROOT,
+    GWL_EXSTYLE, GW_HWNDNEXT, OBJID_CLIENT, SMTO_ABORTIFHUNG, WM_GETOBJECT, WS_EX_TOOLWINDOW,
 };
 
 use crate::win32::{is_cloaked, window_frame, with_hit_through};
@@ -52,7 +52,10 @@ unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
         }
         let ex = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
         let title = window_title(hwnd);
-        if (ex & WS_EX_TOOLWINDOW.0 != 0) && title.is_empty() {
+        let class = window_class(hwnd);
+        // Taskbar / notify flyouts are TOOLWINDOW with no title. Dropping
+        // them is why a tray snip selected the menu once, then never again.
+        if (ex & WS_EX_TOOLWINDOW.0 != 0) && title.is_empty() && !is_tray_class(&class) {
             return BOOL(1);
         }
         if let Some((x, y, w, h)) = window_frame(hwnd) {
@@ -62,6 +65,117 @@ unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
         }
     }
     BOOL(1)
+}
+
+fn window_class(hwnd: HWND) -> String {
+    unsafe {
+        let mut buf = [0u16; 256];
+        let n = GetClassNameW(hwnd, &mut buf);
+        if n <= 0 {
+            return String::new();
+        }
+        String::from_utf16_lossy(&buf[..n as usize])
+    }
+}
+
+fn is_tray_class(class: &str) -> bool {
+    matches!(
+        class,
+        "Shell_TrayWnd"
+            | "Shell_SecondaryTrayWnd"
+            | "NotifyIconOverflowWindow"
+            | "TrayNotifyWnd"
+    )
+}
+
+struct TrayEnum {
+    hwnds: Vec<HWND>,
+}
+
+unsafe extern "system" fn enum_tray_tops(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    let st = &mut *(lparam.0 as *mut TrayEnum);
+    unsafe {
+        if IsWindowVisible(hwnd).as_bool() && is_tray_class(&window_class(hwnd)) {
+            st.hwnds.push(hwnd);
+        }
+    }
+    BOOL(1)
+}
+
+unsafe extern "system" fn enum_tray_kids(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    let out = &mut *(lparam.0 as *mut Vec<HWND>);
+    unsafe {
+        if IsWindowVisible(hwnd).as_bool() {
+            out.push(hwnd);
+        }
+    }
+    BOOL(1)
+}
+
+fn tray_top_hwnds() -> Vec<HWND> {
+    let mut st = TrayEnum { hwnds: Vec::new() };
+    unsafe {
+        let _ = EnumWindows(Some(enum_tray_tops), LPARAM(&mut st as *mut _ as isize));
+    }
+    st.hwnds
+}
+
+fn append_tray_rects(out: &mut Vec<(Rect, String)>) {
+    for hwnd in tray_top_hwnds() {
+        if let Some(r) = hwnd_rect(hwnd) {
+            out.push((r, window_class(hwnd)));
+        }
+        let mut kids = Vec::new();
+        unsafe {
+            let _ = EnumChildWindows(
+                hwnd,
+                Some(enum_tray_kids),
+                LPARAM(&mut kids as *mut _ as isize),
+            );
+        }
+        for kid in kids {
+            if let Some(r) = hwnd_rect(kid) {
+                if r.w >= 8.0 && r.h >= 8.0 {
+                    out.push((r, window_class(kid)));
+                }
+            }
+        }
+    }
+}
+
+/// Smallest visible tray / notify rect under the cursor. Independent of
+/// overlay z-order — the first snip-from-tray hit is the popup menu; after
+/// it closes, WindowFromPoint often returns the desktop instead.
+fn tray_hit_at(sx: i32, sy: i32) -> Option<(Rect, u32)> {
+    let mut best: Option<(Rect, u32)> = None;
+    for top in tray_top_hwnds() {
+        if let Some(r) = hwnd_rect(top) {
+            if rect_contains_i32(r, sx, sy) {
+                if better_hit(best.map(|(br, bd)| (br, bd)), r, 1) {
+                    best = Some((r, 1));
+                }
+            }
+        }
+        let mut kids = Vec::new();
+        unsafe {
+            let _ = EnumChildWindows(
+                top,
+                Some(enum_tray_kids),
+                LPARAM(&mut kids as *mut _ as isize),
+            );
+        }
+        for kid in kids {
+            if let Some(r) = hwnd_rect(kid) {
+                if rect_contains_i32(r, sx, sy) && r.w >= 8.0 && r.h >= 8.0 {
+                    let depth = 2u32;
+                    if better_hit(best.map(|(br, bd)| (br, bd)), r, depth) {
+                        best = Some((r, depth));
+                    }
+                }
+            }
+        }
+    }
+    best
 }
 
 fn window_title(hwnd: HWND) -> String {
@@ -87,6 +201,7 @@ pub fn window_rects() -> Vec<(Rect, String)> {
     unsafe {
         let _ = EnumWindows(Some(enum_proc), LPARAM(&mut state as *mut _ as isize));
     }
+    append_tray_rects(&mut state.rects);
     state.rects
 }
 
@@ -667,6 +782,9 @@ fn element_at_point_inner(
     if let Some(r) = hwnd_rect(child).or_else(|| hwnd_rect(top)) {
         cands.push((r, hwnd_depth, 2u8));
     }
+    if let Some((r, d)) = tray_hit_at(sx, sy) {
+        cands.push((r, d, 2u8));
+    }
     let (rect, depth, src) = pick_hit(&cands)?;
     LAST_SOURCE.store(src, std::sync::atomic::Ordering::Relaxed);
     log_detect_change(&exe, depth, src, t0.elapsed().as_millis());
@@ -704,6 +822,14 @@ fn log_detect_change(exe: &str, depth: u32, src: u8, ms: u128) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tray_class_names() {
+        assert!(is_tray_class("Shell_TrayWnd"));
+        assert!(is_tray_class("TrayNotifyWnd"));
+        assert!(is_tray_class("NotifyIconOverflowWindow"));
+        assert!(!is_tray_class("Chrome_WidgetWin_1"));
+    }
 
     #[test]
     fn exe_stem_keeps_filename() {
