@@ -1,9 +1,10 @@
 //! tiny-skia overlay / pin / toolbar painter.
 //!
 //! Overlay frames are composited incrementally: the 6k-class virtual desktop is
-//! *not* rebuilt on every mouse move. Previous hole/chrome tiles are copied
-//! back from the pre-dimmed freeze (never SrcOver extra dim), then the hole
-//! ring + chrome are painted and BitBlt'd as separate dirty rects.
+//! *not* rebuilt on every mouse move. Empty-annot tiles restore from the
+//! pre-dimmed freeze. Ink is painted on the undimmed capture first, then the
+//! dim is applied *outside* the hole (Snipaste: strokes in the shadow sit
+//! under the dim). Chrome (ring / loupe / toolbar) is last and stays bright.
 
 #[cfg(windows)]
 use std::ffi::c_void;
@@ -593,19 +594,114 @@ impl Drop for GdiBits {
 
 fn dim_pixmap(src: &Pixmap, dim: u8) -> Option<Pixmap> {
     let mut frame = Pixmap::new(src.width(), src.height())?;
-    let k = 255u16.saturating_sub(dim as u16);
-    let s = src.data();
-    let d = frame.data_mut();
-    if d.len() != s.len() {
-        return None;
-    }
-    for (dst, src) in d.chunks_exact_mut(4).zip(s.chunks_exact(4)) {
-        dst[0] = ((src[0] as u16 * k) / 255) as u8;
-        dst[1] = ((src[1] as u16 * k) / 255) as u8;
-        dst[2] = ((src[2] as u16 * k) / 255) as u8;
-        dst[3] = src[3];
-    }
+    dim_rect(
+        &mut frame,
+        src,
+        Rect::new(0.0, 0.0, src.width() as f32, src.height() as f32),
+        dim,
+    );
     Some(frame)
+}
+
+/// Darken `r` of `src` into `dst` with the same multiply as [`dim_pixmap`].
+/// Call only on undimmed pixels (shot + ink). Never on already-dimmed tiles.
+fn dim_rect(dst: &mut Pixmap, src: &Pixmap, r: Rect, dim: u8) {
+    let bounds = Rect::new(0.0, 0.0, dst.width() as f32, dst.height() as f32).intersect(Rect::new(
+        0.0,
+        0.0,
+        src.width() as f32,
+        src.height() as f32,
+    ));
+    let r = clip_rect(align_dirty(r), bounds);
+    if r.is_empty() {
+        return;
+    }
+    let k = 255u16.saturating_sub(dim as u16);
+    let x0 = r.x as u32;
+    let y0 = r.y as u32;
+    let x1 = r.right() as u32;
+    let y1 = r.bottom() as u32;
+    let sw = src.width() as usize;
+    let dw = dst.width() as usize;
+    let s = src.data();
+    let d = dst.data_mut();
+    for y in y0..y1 {
+        let srow = (y as usize * sw + x0 as usize) * 4;
+        let drow = (y as usize * dw + x0 as usize) * 4;
+        let cols = (x1 - x0) as usize;
+        for i in 0..cols {
+            let si = srow + i * 4;
+            let di = drow + i * 4;
+            d[di] = ((s[si] as u16 * k) / 255) as u8;
+            d[di + 1] = ((s[si + 1] as u16 * k) / 255) as u8;
+            d[di + 2] = ((s[si + 2] as u16 * k) / 255) as u8;
+            d[di + 3] = s[si + 3];
+        }
+    }
+}
+
+fn dim_rect_in_place(pm: &mut Pixmap, r: Rect, dim: u8) {
+    let bounds = Rect::new(0.0, 0.0, pm.width() as f32, pm.height() as f32);
+    let r = clip_rect(align_dirty(r), bounds);
+    if r.is_empty() {
+        return;
+    }
+    let k = 255u16.saturating_sub(dim as u16);
+    let x0 = r.x as u32;
+    let y0 = r.y as u32;
+    let x1 = r.right() as u32;
+    let y1 = r.bottom() as u32;
+    let w = pm.width() as usize;
+    let d = pm.data_mut();
+    for y in y0..y1 {
+        let row = (y as usize * w + x0 as usize) * 4;
+        let cols = (x1 - x0) as usize;
+        for i in 0..cols {
+            let di = row + i * 4;
+            d[di] = ((d[di] as u16 * k) / 255) as u8;
+            d[di + 1] = ((d[di + 1] as u16 * k) / 255) as u8;
+            d[di + 2] = ((d[di + 2] as u16 * k) / 255) as u8;
+        }
+    }
+}
+
+/// Four-quad dim: pixels in `dirty` except `hole` are darkened in place.
+/// `pm` must still be undimmed (shot + ink) inside `dirty`.
+fn dim_outside_hole(pm: &mut Pixmap, dirty: Rect, hole: Rect, dim: u8) {
+    let bounds = Rect::new(0.0, 0.0, pm.width() as f32, pm.height() as f32);
+    let dirty = clip_rect(align_dirty(dirty), bounds);
+    if dirty.is_empty() {
+        return;
+    }
+    let hole = clip_rect(align_dirty(hole), bounds);
+    let cover = hole.intersect(dirty);
+    if cover.is_empty() {
+        dim_rect_in_place(pm, dirty, dim);
+        return;
+    }
+    let top_h = cover.y - dirty.y;
+    if top_h > 0.0 {
+        dim_rect_in_place(pm, Rect::new(dirty.x, dirty.y, dirty.w, top_h), dim);
+    }
+    let bot_y = cover.bottom();
+    if bot_y < dirty.bottom() {
+        dim_rect_in_place(
+            pm,
+            Rect::new(dirty.x, bot_y, dirty.w, dirty.bottom() - bot_y),
+            dim,
+        );
+    }
+    let mid_h = cover.h;
+    if mid_h > 0.0 {
+        let left_w = cover.x - dirty.x;
+        if left_w > 0.0 {
+            dim_rect_in_place(pm, Rect::new(dirty.x, cover.y, left_w, mid_h), dim);
+        }
+        let right_w = dirty.right() - cover.right();
+        if right_w > 0.0 {
+            dim_rect_in_place(pm, Rect::new(cover.right(), cover.y, right_w, mid_h), dim);
+        }
+    }
 }
 
 impl OverlayFront {
@@ -746,18 +842,29 @@ impl OverlayFront {
             }
             d = d.union(self.last_size_label).union(size_label);
             if hole_changed {
-                d = d
-                    .union(self.last_hole.inflated(12.0))
-                    .union(hole_pad);
+                d = d.union(self.last_hole.inflated(12.0)).union(hole_pad);
             }
             d.intersect(bounds)
         };
         if restore_r.area() > bounds.area() * 0.55 {
             restore_r = bounds;
         }
-        self.restore(restore_r);
+        let shapes = annot.visible_shapes();
+        let mut annot_dirty = Rect::EMPTY;
+        for sh in &shapes {
+            let pad = sh.style.width.max(8) as f32 + 8.0;
+            annot_dirty = annot_dirty.union(sh.bounds().inflated(pad));
+        }
+        annot_dirty = annot_dirty.intersect(bounds);
+        if !annot_dirty.is_empty() {
+            restore_r = restore_r.union(annot_dirty).intersect(bounds);
+            if restore_r.area() > bounds.area() * 0.55 {
+                restore_r = bounds;
+            }
+        }
 
-        // Hole interior: undimmed capture + vector annotations (no full compose).
+        // Hole interior: undimmed capture. Ink is painted on the freeze first,
+        // then the dim covers everything except the hole (Snipaste).
         let hole_refresh = if hole.is_empty() {
             Rect::EMPTY
         } else if hole_changed {
@@ -765,22 +872,29 @@ impl OverlayFront {
         } else {
             hole.intersect(restore_r)
         };
-        if !hole_refresh.is_empty() {
-            copy_rect(&mut self.frame, &self.shot, hole_refresh);
-            let shapes = annot.visible_shapes();
-            if !shapes.is_empty() {
-                let needs_fx = shapes
-                    .iter()
-                    .any(|s| matches!(s.kind, Tool::Mosaic | Tool::Eraser));
-                if needs_fx {
-                    let composed = compose(shot, &shapes);
-                    if let Some(src) = composed.to_skia() {
-                        copy_rect(&mut self.frame, &src, hole);
-                    }
-                } else {
-                    paint_shapes(&mut self.frame, &shapes);
-                }
+        if shapes.is_empty() {
+            self.restore(restore_r);
+            if !hole_refresh.is_empty() {
+                copy_rect(&mut self.frame, &self.shot, hole_refresh);
             }
+        } else {
+            copy_rect(&mut self.frame, &self.shot, restore_r);
+            if hole_changed && !hole.is_empty() {
+                copy_rect(&mut self.frame, &self.shot, hole);
+            }
+            let needs_fx = shapes
+                .iter()
+                .any(|s| matches!(s.kind, Tool::Mosaic | Tool::Eraser));
+            if needs_fx {
+                let composed = compose(shot, &shapes);
+                if let Some(src) = composed.to_skia() {
+                    let ink = restore_r.union(hole).intersect(bounds);
+                    copy_rect(&mut self.frame, &src, ink);
+                }
+            } else {
+                paint_shapes(&mut self.frame, &shapes);
+            }
+            dim_outside_hole(&mut self.frame, restore_r, hole, self.dim);
         }
 
         let mut chrome: Vec<Rect> = Vec::new();
@@ -804,12 +918,15 @@ impl OverlayFront {
                 }
                 for (_, c) in handles {
                     paint_handle_dot(&mut self.frame, c, Rgba::SNIP_RING);
-                    chrome.push(Rect::new(
-                        c.x - HANDLE_SIZE / 2.0,
-                        c.y - HANDLE_SIZE / 2.0,
-                        HANDLE_SIZE,
-                        HANDLE_SIZE,
-                    ).inflated(2.0));
+                    chrome.push(
+                        Rect::new(
+                            c.x - HANDLE_SIZE / 2.0,
+                            c.y - HANDLE_SIZE / 2.0,
+                            HANDLE_SIZE,
+                            HANDLE_SIZE,
+                        )
+                        .inflated(2.0),
+                    );
                 }
             }
         }
@@ -1064,7 +1181,14 @@ fn paint_magnifier(
     let iw = mag.info.w.round().max(1.0) as u32;
     let ih = mag.info.h.round().max(1.0) as u32;
     if let Some(mut panel) = Pixmap::new(iw, ih) {
-        fill_px(&mut panel, 0, 0, iw as i32, ih as i32, Rgba::rgb(22, 22, 22));
+        fill_px(
+            &mut panel,
+            0,
+            0,
+            iw as i32,
+            ih as i32,
+            Rgba::rgb(22, 22, 22),
+        );
         let local = Rect::new(0.0, 0.0, iw as f32, ih as f32);
         let hint = MAG_HINT_PX;
         let coord = format!("({}, {})", mag.phys.x as i32, mag.phys.y as i32);
@@ -2096,6 +2220,93 @@ mod tests {
         );
     }
 
+    fn max_red_on_row(pm: &Pixmap, x: u32, y0: u32, y1: u32) -> u8 {
+        let mut m = 0u8;
+        for y in y0..y1 {
+            if let Some(p) = pm.pixel(x, y) {
+                m = m.max(p.demultiply().red());
+            }
+        }
+        m
+    }
+
+    #[test]
+    fn annot_outside_hole_sits_under_the_dim() {
+        use pinshot_core::annotation::{Shape, Style, Tool};
+        let w = 640u32;
+        let h = 400u32;
+        let shot = gray_shot(w, h, 210);
+        let mut front = OverlayFront::new(&shot, 160).expect("front");
+        let bounds = Rect::new(0.0, 0.0, w as f32, h as f32);
+        let mut sel = Selection::new();
+        let hole = Rect::new(20.0, 20.0, 120.0, 100.0);
+        sel.set_rect(hole, bounds);
+        let mut annot = Annotator::new();
+        annot.tool = Some(Tool::Line);
+        let mut st = Style::for_tool(Tool::Line);
+        st.color = Rgba::rgb(255, 0, 0);
+        st.width = 8;
+        annot.shapes.push(Shape::new(
+            Tool::Line,
+            vec![Point::new(40.0, 70.0), Point::new(400.0, 70.0)],
+            st,
+        ));
+        let paint = |front: &mut OverlayFront, sel: &Selection, annot: &Annotator| {
+            front.paint(
+                dummy_hwnd(),
+                sel,
+                Rect::EMPTY,
+                Point::new(80.0, 70.0),
+                1.0,
+                false,
+                false,
+                annot,
+                None,
+                None,
+                false,
+                &shot,
+                None,
+                None,
+            );
+        };
+        paint(&mut front, &sel, &annot);
+        if let Ok(dir) = std::env::var("PINSHOT_DUMP_UI") {
+            let _ = std::fs::create_dir_all(&dir);
+            let _ = front
+                .pixmap()
+                .save_png(format!("{dir}/annot_under_dim.png"));
+        }
+        let inside = max_red_on_row(front.pixmap(), 70, 64, 76);
+        let outside = max_red_on_row(front.pixmap(), 280, 64, 76);
+        let dim_bg = front
+            .pixmap()
+            .pixel(280, 200)
+            .expect("bg")
+            .demultiply()
+            .red();
+        assert!(
+            inside > 180,
+            "ink inside the hole must stay undimmed, got {inside}"
+        );
+        assert!(
+            outside > dim_bg + 8,
+            "ink outside the hole must still be visible under the dim, outside={outside} bg={dim_bg}"
+        );
+        assert!(
+            (outside as i16) < (inside as i16) - 40,
+            "ink outside the hole must sit under the shadow, inside={inside} outside={outside}"
+        );
+
+        let cover = Rect::new(240.0, 40.0, 200.0, 80.0);
+        sel.set_rect(cover, bounds);
+        paint(&mut front, &sel, &annot);
+        let uncovered = max_red_on_row(front.pixmap(), 280, 64, 76);
+        assert!(
+            uncovered > 180,
+            "moving the hole over the stroke must undim the ink, got {uncovered}"
+        );
+    }
+
     fn skip_chrome(p: Point, hole: Rect, mag: Magnifier, size: Rect) -> bool {
         hole.inflated(10.0).contains(p)
             || mag.grid.union(mag.info).inflated(4.0).contains(p)
@@ -2137,12 +2348,7 @@ mod tests {
         let c1 = Point::new(500.0, 250.0);
         let h1 = Rect::new(400.0, 200.0, 160.0, 100.0);
         paint(&mut front, h1, c1);
-        let mag = layout_magnifier(
-            c1,
-            bounds,
-            Rgba::rgb(40, 40, 40),
-            Point::new(500.0, 250.0),
-        );
+        let mag = layout_magnifier(c1, bounds, Rgba::rgb(40, 40, 40), Point::new(500.0, 250.0));
         let size = size_label_dirty(h1, &h1.size_label(), w, h);
         let mut stained = 0u32;
         for y in 0..h {
@@ -2208,7 +2414,8 @@ mod tests {
         }
         let after = front.pixmap().pixel(20, 380).expect("after");
         assert_eq!(
-            after, still,
+            after,
+            still,
             "mouse move washed the freeze dim: still {:?} after {:?}",
             still.demultiply(),
             after.demultiply()
@@ -2363,7 +2570,12 @@ mod tests {
             None,
             None,
         );
-        let mag = layout_magnifier(cursor, Rect::new(0.0, 0.0, w as f32, h as f32), Rgba::BLACK, cursor);
+        let mag = layout_magnifier(
+            cursor,
+            Rect::new(0.0, 0.0, w as f32, h as f32),
+            Rgba::BLACK,
+            cursor,
+        );
         let x = (hover.x + 3.0) as u32;
         let y = (hover.y + 3.0) as u32;
         let on_mag = mag
