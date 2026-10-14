@@ -235,6 +235,7 @@ impl App {
             Ok(crate::update_run::UpdateOutcome::UpdateAvailable { version }) => {
                 crate::logutil::log(&format!("update available {version} (manual install on this OS)"));
             }
+            Ok(crate::update_run::UpdateOutcome::ReadyToInstall { .. }) => {}
             Err(e) => crate::logutil::log(&format!("update check: {e}")),
         }
     }

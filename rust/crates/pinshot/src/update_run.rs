@@ -120,9 +120,11 @@ fn fetch_latest_windows_release() -> Result<ReleaseInfo, String> {
         .timeout(std::time::Duration::from_secs(60))
         .call()
         .map_err(|e| format!("GitHub releases: {e}"))?;
-    let releases: Vec<GhRelease> = resp
-        .into_json()
-        .map_err(|e| format!("parse releases: {e}"))?;
+    let body = resp
+        .into_string()
+        .map_err(|e| format!("read releases: {e}"))?;
+    let releases: Vec<GhRelease> =
+        serde_json::from_str(&body).map_err(|e| format!("parse releases: {e}"))?;
     for rel in releases {
         if !rel.tag_name.ends_with(WINDOWS_RELEASE_SUFFIX) {
             continue;

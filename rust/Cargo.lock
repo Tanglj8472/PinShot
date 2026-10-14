@@ -2951,6 +2951,7 @@ dependencies = [
  "paddle-ocr-rs",
  "pinshot-core",
  "raw-window-handle",
+ "serde",
  "serde_json",
  "softbuffer",
  "thiserror 2.0.21",
