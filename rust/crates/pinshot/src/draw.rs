@@ -774,16 +774,11 @@ impl OverlayFront {
             chrome.push(sh.bounds().inflated(pad).intersect(bounds));
         }
         if !hole.is_empty() {
-            let (ring, edge) = if sel.has_sel() {
-                (Rgba::SNIP_RING, Rgba::SNIP_RING_EDGE)
-            } else {
-                (Rgba::HOVER_RING, Rgba::HOVER_RING_EDGE)
-            };
             paint_snip_ring(
                 &mut self.frame,
                 hole.adjusted(0.0, 0.0, -1.0, -1.0),
-                ring,
-                edge,
+                Rgba::SNIP_RING,
+                Rgba::SNIP_RING_EDGE,
             );
             if sel.has_sel() && annot.tool.is_none() && annot.selected.is_none() {
                 for (_, c) in handle_points(hole) {
@@ -2281,7 +2276,7 @@ mod tests {
     }
 
     #[test]
-    fn snip_ring_is_bright_cyan_not_thin_dodgerblue() {
+    fn snip_ring_is_light_green() {
         let mut pm = Pixmap::new(80, 60).unwrap();
         pm.fill(tiny_skia::Color::from_rgba8(40, 40, 40, 255));
         paint_snip_ring(
@@ -2293,28 +2288,8 @@ mod tests {
         // Ring is inset so AA cannot stain the dim mask outside the hole.
         let p = pm.pixel(13, 20).expect("edge").demultiply();
         assert!(
-            p.green() > 140 && p.blue() > 180 && (p.green() as i16) > (p.red() as i16) + 80,
-            "ring should be cyan, got {},{},{}",
-            p.red(),
-            p.green(),
-            p.blue()
-        );
-    }
-
-    #[test]
-    fn hover_ring_is_light_green() {
-        let mut pm = Pixmap::new(80, 60).unwrap();
-        pm.fill(tiny_skia::Color::from_rgba8(40, 40, 40, 255));
-        paint_snip_ring(
-            &mut pm,
-            Rect::new(10.0, 8.0, 50.0, 36.0),
-            Rgba::HOVER_RING,
-            Rgba::HOVER_RING_EDGE,
-        );
-        let p = pm.pixel(13, 20).expect("edge").demultiply();
-        assert!(
             p.green() > 160 && (p.green() as i16) > (p.blue() as i16) + 40 && p.red() < 180,
-            "hover ring should be light green, got {},{},{}",
+            "ring should be light green, got {},{},{}",
             p.red(),
             p.green(),
             p.blue()
