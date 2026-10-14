@@ -381,30 +381,38 @@ impl eframe::App for PrefsApp {
                 }
             }
         }
-        if let Some(rx) = &self.ocr_dl_rx {
+        let mut ocr_finished = None;
+        if let Some(rx) = self.ocr_dl_rx.as_ref() {
             loop {
                 match rx.try_recv() {
                     Ok(OcrDlUpdate::Progress(f)) => self.ocr_dl_frac = f.clamp(0.0, 1.0),
-                    Ok(OcrDlUpdate::Done(Ok(()))) => {
-                        self.ocr_dl_rx = None;
-                        self.ocr_dl_frac = 1.0;
-                        self.status = tr("OCR models downloaded.");
-                    }
-                    Ok(OcrDlUpdate::Done(Err(e))) => {
-                        self.ocr_dl_rx = None;
-                        self.ocr_dl_frac = 0.0;
-                        self.status = format!("{} {e}", tr("OCR download failed:"));
+                    Ok(OcrDlUpdate::Done(r)) => {
+                        ocr_finished = Some(r);
+                        break;
                     }
                     Err(std::sync::mpsc::TryRecvError::Empty) => break,
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                        self.ocr_dl_rx = None;
+                        ocr_finished = Some(Err("download stopped".into()));
                         break;
                     }
                 }
             }
-            if self.ocr_dl_rx.is_some() {
-                ctx.request_repaint_after(std::time::Duration::from_millis(50));
+        }
+        if let Some(r) = ocr_finished {
+            self.ocr_dl_rx = None;
+            match r {
+                Ok(()) => {
+                    self.ocr_dl_frac = 1.0;
+                    self.status = tr("OCR models downloaded.");
+                }
+                Err(e) => {
+                    self.ocr_dl_frac = 0.0;
+                    self.status = format!("{} {e}", tr("OCR download failed:"));
+                }
             }
+        }
+        if self.ocr_dl_rx.is_some() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(tr("PinShot Preferences")));
         apply_theme(ctx, &self.draft.theme);
@@ -938,7 +946,7 @@ fn ocr_model_download_button(
     };
     let (rect, response) = ui.allocate_exact_size(size, sense);
     let visuals = ui.style().visuals.widgets.inactive;
-    let rounding = egui::Rounding::same(3.0);
+    let rounding = egui::CornerRadius::same(3);
     let stroke = visuals.bg_stroke;
     ui.painter().rect_filled(rect, rounding, visuals.bg_fill);
     let accent = ui.style().visuals.selection.bg_fill;
