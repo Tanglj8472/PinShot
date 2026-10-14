@@ -32,7 +32,7 @@ pub struct Config {
     pub closed_pins_max: u32,
     pub theme: String,
     pub dim_alpha: u8,
-    /// `mobile` (default, faster) or `server` (~170 MB, more accurate).
+    /// `server` (default, ~170 MB, more accurate) or `mobile` (faster on CPU).
     #[serde(default)]
     pub ocr_model: String,
     /// F5 translator (pot / STranslate / openai-translator style).
@@ -56,7 +56,7 @@ impl Default for Config {
             hotkey_restore: "Ctrl+Shift+Z".into(),
             hotkey_selection_translate: "F5".into(),
             hotkey_capture_translate: "F6".into(),
-            run_at_login: false,
+            run_at_login: true,
             groups: vec![
                 "Default".into(),
                 "Group 1".into(),
@@ -70,7 +70,7 @@ impl Default for Config {
             closed_pins_max: 10,
             theme: "system".into(),
             dim_alpha: 160,
-            ocr_model: "mobile".into(),
+            ocr_model: "server".into(),
             translate: TranslateSettings::default(),
         }
     }
@@ -319,6 +319,8 @@ mod tests {
         assert_eq!(c.hotkey_clickthrough, "F4");
         assert_eq!(c.schema_version, 2);
         assert_eq!(c.dim_alpha, 160);
+        assert!(c.run_at_login);
+        assert_eq!(c.ocr_model, "server");
     }
 
     #[test]

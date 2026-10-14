@@ -461,7 +461,7 @@ impl PrefsApp {
                 });
         });
         ui.checkbox(&mut self.draft.run_at_login, tr("Run at login"))
-            .on_hover_text(tr("Start PinShot when you log in"));
+            .on_hover_text(tr("Start PinShot at login (on by default)"));
         ui.checkbox(&mut self.draft.start_minimized, tr("Start minimized"));
         ui.horizontal(|ui| {
             ui.label(tr("OCR model:"));
@@ -486,7 +486,7 @@ impl PrefsApp {
                 });
         });
         ui.weak(tr(
-            "Mobile is the default (fast). Server is more accurate but slower; GPU is used when available.",
+            "Server is the default (more accurate). Mobile is faster on CPU; GPU helps either model.",
         ));
         ui.add_space(4.0);
         ui.label(RichText::new(tr("Configuration")).strong());
@@ -844,11 +844,6 @@ impl PrefsApp {
 
     fn ui_about(&mut self, ui: &mut Ui) {
         ui.label(RichText::new(format!("PinShot {VERSION}")).strong());
-        ui.label(crate::native::platform_name());
-        ui.add_space(2.0);
-        ui.label(tr(
-            "Settings layout follows Snipaste Preferences. Features stay PinShot's.",
-        ));
     }
 }
 

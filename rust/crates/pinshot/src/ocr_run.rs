@@ -60,7 +60,7 @@ fn preferred_kind() -> OcrModelKind {
     }
     pinshot_core::config::load()
         .map(|c| OcrModelKind::parse(&c.ocr_model))
-        .unwrap_or(OcrModelKind::Mobile)
+        .unwrap_or(OcrModelKind::Server)
 }
 
 fn extra_model_dirs(data_models: &Path) -> Vec<std::path::PathBuf> {

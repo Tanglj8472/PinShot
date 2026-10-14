@@ -6,8 +6,8 @@ use crate::geom::{Point, Rect};
 
 pub const MODEL_DIR_NAME: &str = "ocr-models";
 
-/// RapidOCR PP-OCRv5 ONNX (ModelScope v3.9.2). Mobile (~20 MB) is the
-/// default for interactive pins; server (~170 MB) is more accurate but slow.
+/// RapidOCR PP-OCRv5 ONNX (ModelScope v3.9.2). Server (~170 MB) is the
+/// default; mobile (~20 MB) is faster on CPU.
 pub const MOBILE_DET_FILE: &str = "ch_PP-OCRv5_mobile_det.onnx";
 pub const MOBILE_REC_FILE: &str = "ch_PP-OCRv5_mobile_rec.onnx";
 pub const SERVER_DET_FILE: &str = "ch_PP-OCRv5_server_det.onnx";

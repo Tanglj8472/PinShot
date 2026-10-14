@@ -1075,6 +1075,11 @@ impl ApplicationHandler<AppEvent> for App {
         std::thread::spawn(crate::detect::warm_element_backend);
         if !self.session_restored {
             self.session_restored = true;
+            if self.cfg.run_at_login != autostart::is_enabled() {
+                if let Err(e) = autostart::set_enabled(self.cfg.run_at_login) {
+                    eprintln!("PinShot autostart: {e}");
+                }
+            }
             self.restore_session(event_loop);
             // History PNGs stay on disk until the next F1. Loading them here
             // is how a fresh tray process sat at ~200MB with no overlay.
