@@ -18,8 +18,9 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::UI::Accessibility::{AccessibleObjectFromPoint, IAccessible};
 use windows::Win32::UI::WindowsAndMessaging::{
-    ChildWindowFromPointEx, EnumChildWindows, EnumWindows, GetAncestor, GetTopWindow, GetWindow,
-    GetWindowLongW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
+    ChildWindowFromPointEx, EnumChildWindows, EnumWindows, GetAncestor, GetParent, GetTopWindow,
+    GetWindow, GetWindowLongW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
+    GetWindowThreadProcessId,
     IsIconic, IsWindowVisible, RealChildWindowFromPoint, SendMessageTimeoutW, WindowFromPoint,
     CWP_SKIPINVISIBLE, CWP_SKIPTRANSPARENT, GA_ROOT, GWL_EXSTYLE, GW_HWNDNEXT, OBJID_CLIENT,
     SMTO_ABORTIFHUNG, WM_GETOBJECT, WS_EX_TOOLWINDOW,
@@ -372,6 +373,43 @@ fn rect_contains_i32(r: Rect, x: i32, y: i32) -> bool {
     r.contains(Point::from_i32(x, y))
 }
 
+fn hwnd_parent_depth(child: HWND, top: HWND) -> u32 {
+    let mut depth = 0u32;
+    let mut cur = child;
+    unsafe {
+        while hwnd_nonzero(cur) && cur != top && depth < 24 {
+            cur = GetParent(cur);
+            depth += 1;
+        }
+    }
+    depth
+}
+
+struct PointKids {
+    sx: i32,
+    sy: i32,
+    best: Option<(isize, i64)>,
+}
+
+unsafe extern "system" fn enum_point_kids(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    let st = &mut *(lparam.0 as *mut PointKids);
+    unsafe {
+        if !IsWindowVisible(hwnd).as_bool() {
+            return BOOL(1);
+        }
+        if let Some(r) = hwnd_rect(hwnd) {
+            if rect_contains_i32(r, st.sx, st.sy) {
+                let area = (r.area() as i64).max(0);
+                let take = st.best.map(|(_, a)| area < a).unwrap_or(true);
+                if take {
+                    st.best = Some((hwnd.0 as isize, area));
+                }
+            }
+        }
+    }
+    BOOL(1)
+}
+
 fn deepest_child_hwnd(top: HWND, sx: i32, sy: i32) -> (HWND, u32) {
     let mut cur = top;
     let mut depth = 0u32;
@@ -396,6 +434,30 @@ fn deepest_child_hwnd(top: HWND, sx: i32, sy: i32) -> (HWND, u32) {
             depth += 1;
             if depth > 24 {
                 break;
+            }
+        }
+    }
+    // EnumChildWindows already walks every descendant. WPF hosts still
+    // stop at one HWND; Win32 trees can be deeper than FromPoint reports.
+    let mut kids = PointKids {
+        sx,
+        sy,
+        best: None,
+    };
+    unsafe {
+        let _ = EnumChildWindows(top, Some(enum_point_kids), LPARAM(&mut kids as *mut _ as isize));
+    }
+    if let Some((raw, _)) = kids.best {
+        let hwnd = HWND(raw as *mut _);
+        let d = hwnd_parent_depth(hwnd, top).max(1);
+        if d > depth {
+            return (hwnd, d);
+        }
+        if d == depth {
+            let enum_area = hwnd_rect(hwnd).map(|r| r.area()).unwrap_or(f32::MAX);
+            let drill_area = hwnd_rect(cur).map(|r| r.area()).unwrap_or(f32::MAX);
+            if enum_area < drill_area {
+                return (hwnd, d);
             }
         }
     }
@@ -480,7 +542,11 @@ fn wake_accessibility(hwnd: HWND) {
     });
 }
 
-/// Smallest child that contains the point, then recurse — not a full-tree dump.
+/// Drill into the first smaller child that contains the point.
+///
+/// Visual Studio's control tree has hundreds of siblings at the first
+/// level. Scanning all of them in 25ms never leaves depth 0/1. Recursing
+/// as soon as one containing child is found actually reaches buttons.
 fn go_deeper(
     walker: &uiautomation::UITreeWalker,
     el: &uiautomation::UIElement,
@@ -498,20 +564,15 @@ fn go_deeper(
     if !rect_contains_i32(rect, sx, sy) {
         return None;
     }
-    let mut best_child: Option<(uiautomation::UIElement, Rect)> = None;
     if let Ok(mut child) = walker.get_first_child(el) {
         loop {
             if Instant::now() > deadline {
                 break;
             }
             if let Some(cr) = element_rect(&child) {
-                if rect_contains_i32(cr, sx, sy) {
-                    let take = best_child
-                        .as_ref()
-                        .map(|(_, br)| cr.area() < br.area())
-                        .unwrap_or(true);
-                    if take {
-                        best_child = Some((child.clone(), cr));
+                if rect_contains_i32(cr, sx, sy) && cr.area() + 1.0 < rect.area() {
+                    if let Some(deeper) = go_deeper(walker, &child, sx, sy, depth + 1, deadline) {
+                        return Some(deeper);
                     }
                 }
             }
@@ -521,12 +582,33 @@ fn go_deeper(
             }
         }
     }
-    if let Some((child, _)) = best_child {
-        if let Some(deeper) = go_deeper(walker, &child, sx, sy, depth + 1, deadline) {
-            return Some(deeper);
+    Some((rect, depth))
+}
+
+fn walk_from(
+    uia: &uiautomation::UIAutomation,
+    start: &uiautomation::UIElement,
+    sx: i32,
+    sy: i32,
+    deadline: Instant,
+) -> Option<(Rect, u32)> {
+    let control = uia.get_control_view_walker().ok()?;
+    let hit = go_deeper(&control, start, sx, sy, 0, deadline);
+    let shallow = hit.as_ref().map(|(_, d)| *d < 2).unwrap_or(true);
+    if shallow {
+        if let Ok(raw) = uia.get_raw_view_walker() {
+            if let Some(raw_hit) = go_deeper(&raw, start, sx, sy, 0, deadline) {
+                let take = match &hit {
+                    None => true,
+                    Some((r, d)) => better_hit(Some((*r, *d)), raw_hit.0, raw_hit.1),
+                };
+                if take {
+                    return Some(raw_hit);
+                }
+            }
         }
     }
-    Some((rect, depth))
+    hit
 }
 
 fn uia_from_point(
@@ -538,7 +620,6 @@ fn uia_from_point(
     deadline: Instant,
 ) -> Option<(Rect, u32)> {
     let uia = uia_instance()?;
-    let walker = uia.get_control_view_walker().ok()?;
     let start = uia
         .element_from_point(uiautomation::types::Point::new(sx, sy))
         .ok()
@@ -546,7 +627,14 @@ fn uia_from_point(
         .or_else(|| uia.element_from_handle(uia_handle(top)).ok());
     let start = start.filter(|el| !is_our_uia(el, skip, self_pid))?;
     crate::logutil::log("detect go deeper");
-    go_deeper(&walker, &start, sx, sy, 0, deadline)
+    walk_from(&uia, &start, sx, sy, deadline)
+}
+
+/// Drop automation hits that are basically the top-level window. Those
+/// lose to the single WPF child HWND (depth=1, "child windows").
+fn is_shallow_window_hit(hit: Rect, top: Rect) -> bool {
+    let ta = top.area().max(1.0);
+    hit.area() >= ta * 0.82
 }
 
 fn msaa_from_point(sx: i32, sy: i32) -> Option<(Rect, u32)> {
@@ -611,9 +699,20 @@ fn element_at_point_inner(
     wake_accessibility(top);
     wake_accessibility(child);
 
-    let deadline = Instant::now() + Duration::from_millis(25);
-    let uia_hit = uia_from_point(sx, sy, top, skip, self_pid, deadline);
-    let msaa_hit = msaa_from_point(sx, sy);
+    let top_rect = hwnd_rect(top);
+    // VS / WPF: one HWND child, then a huge UIA tree. 25ms was only enough
+    // to walk the first sibling row, so depth stayed at 1 (that HWND).
+    let deadline = Instant::now() + Duration::from_millis(80);
+    let uia_hit = uia_from_point(sx, sy, top, skip, self_pid, deadline).filter(|(r, _)| {
+        top_rect
+            .map(|top| !is_shallow_window_hit(*r, top))
+            .unwrap_or(true)
+    });
+    let msaa_hit = msaa_from_point(sx, sy).filter(|(r, _)| {
+        top_rect
+            .map(|top| !is_shallow_window_hit(*r, top))
+            .unwrap_or(true)
+    });
 
     let mut cands = Vec::new();
     if let Some((r, d)) = uia_hit {
@@ -627,6 +726,18 @@ fn element_at_point_inner(
     }
     let (rect, depth, src) = pick_hit(&cands)?;
     LAST_SOURCE.store(src, std::sync::atomic::Ordering::Relaxed);
+    crate::logutil::log(&format!(
+        "detect backends uia={} msaa={} hwnd_depth={} pick={} ({})",
+        uia_hit
+            .map(|(r, d)| format!("depth={d} {}x{}", r.w as i32, r.h as i32))
+            .unwrap_or_else(|| "none".into()),
+        msaa_hit
+            .map(|(_, d)| format!("depth={d}"))
+            .unwrap_or_else(|| "none".into()),
+        hwnd_depth,
+        depth,
+        element_source()
+    ));
     Some(PointHit {
         rect,
         exe,
@@ -680,5 +791,14 @@ mod tests {
             (picked.0.w as i32, picked.0.h as i32, picked.2),
             (80, 24, 1)
         );
+    }
+
+    #[test]
+    fn shallow_window_hit_rejects_almost_full_frame() {
+        let top = Rect::from_i32(0, 0, 1920, 1080);
+        let wpf_host = Rect::from_i32(0, 0, 1920, 1040);
+        let button = Rect::from_i32(40, 80, 96, 28);
+        assert!(is_shallow_window_hit(wpf_host, top));
+        assert!(!is_shallow_window_hit(button, top));
     }
 }
