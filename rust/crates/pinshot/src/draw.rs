@@ -295,18 +295,18 @@ pub fn stroke_rect(pm: &mut Pixmap, r: Rect, c: Rgba, width: f32) {
     }
 }
 
-fn paint_snip_ring(pm: &mut Pixmap, r: Rect) {
+fn paint_snip_ring(pm: &mut Pixmap, r: Rect, ring: Rgba, edge: Rgba) {
     // Keep the stroke *inside* the hole. A centered 4px AA stroke hangs ~3px
     // onto the dim mask; the next dirty restore then SrcOvers that navy fringe
     // into an extra-dark footprint of the last window (classic leftover trail).
     if r.w < 8.0 || r.h < 8.0 {
-        stroke_rect(pm, r, Rgba::SNIP_RING_EDGE, 2.0);
-        stroke_rect(pm, r, Rgba::SNIP_RING, 1.0);
+        stroke_rect(pm, r, edge, 2.0);
+        stroke_rect(pm, r, ring, 1.0);
         return;
     }
     let inner = r.adjusted(3.0, 3.0, -3.0, -3.0);
-    stroke_rect(pm, inner, Rgba::SNIP_RING_EDGE, 4.0);
-    stroke_rect(pm, inner, Rgba::SNIP_RING, 2.0);
+    stroke_rect(pm, inner, edge, 4.0);
+    stroke_rect(pm, inner, ring, 2.0);
 }
 
 fn clip_rect(r: Rect, bounds: Rect) -> Rect {
@@ -774,7 +774,17 @@ impl OverlayFront {
             chrome.push(sh.bounds().inflated(pad).intersect(bounds));
         }
         if !hole.is_empty() {
-            paint_snip_ring(&mut self.frame, hole.adjusted(0.0, 0.0, -1.0, -1.0));
+            let (ring, edge) = if sel.has_sel() {
+                (Rgba::SNIP_RING, Rgba::SNIP_RING_EDGE)
+            } else {
+                (Rgba::HOVER_RING, Rgba::HOVER_RING_EDGE)
+            };
+            paint_snip_ring(
+                &mut self.frame,
+                hole.adjusted(0.0, 0.0, -1.0, -1.0),
+                ring,
+                edge,
+            );
             if sel.has_sel() && annot.tool.is_none() && annot.selected.is_none() {
                 for (_, c) in handle_points(hole) {
                     let hr = Rect::new(
@@ -2274,12 +2284,37 @@ mod tests {
     fn snip_ring_is_bright_cyan_not_thin_dodgerblue() {
         let mut pm = Pixmap::new(80, 60).unwrap();
         pm.fill(tiny_skia::Color::from_rgba8(40, 40, 40, 255));
-        paint_snip_ring(&mut pm, Rect::new(10.0, 8.0, 50.0, 36.0));
+        paint_snip_ring(
+            &mut pm,
+            Rect::new(10.0, 8.0, 50.0, 36.0),
+            Rgba::SNIP_RING,
+            Rgba::SNIP_RING_EDGE,
+        );
         // Ring is inset so AA cannot stain the dim mask outside the hole.
         let p = pm.pixel(13, 20).expect("edge").demultiply();
         assert!(
             p.green() > 140 && p.blue() > 180 && (p.green() as i16) > (p.red() as i16) + 80,
             "ring should be cyan, got {},{},{}",
+            p.red(),
+            p.green(),
+            p.blue()
+        );
+    }
+
+    #[test]
+    fn hover_ring_is_light_green() {
+        let mut pm = Pixmap::new(80, 60).unwrap();
+        pm.fill(tiny_skia::Color::from_rgba8(40, 40, 40, 255));
+        paint_snip_ring(
+            &mut pm,
+            Rect::new(10.0, 8.0, 50.0, 36.0),
+            Rgba::HOVER_RING,
+            Rgba::HOVER_RING_EDGE,
+        );
+        let p = pm.pixel(13, 20).expect("edge").demultiply();
+        assert!(
+            p.green() > 160 && (p.green() as i16) > (p.blue() as i16) + 40 && p.red() < 180,
+            "hover ring should be light green, got {},{},{}",
             p.red(),
             p.green(),
             p.blue()
