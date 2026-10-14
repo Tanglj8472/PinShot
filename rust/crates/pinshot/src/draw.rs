@@ -304,17 +304,35 @@ pub fn paint_handle_dot(pm: &mut Pixmap, c: Point, stroke: Rgba) {
 }
 
 fn paint_snip_ring(pm: &mut Pixmap, r: Rect, ring: Rgba, edge: Rgba) {
-    // Keep the stroke *inside* the hole. A centered 4px AA stroke hangs ~3px
-    // onto the dim mask; the next dirty restore then SrcOvers that navy fringe
-    // into an extra-dark footprint of the last window (classic leftover trail).
-    if r.w < 8.0 || r.h < 8.0 {
-        stroke_rect(pm, r, edge, 2.0);
-        stroke_rect(pm, r, ring, 1.0);
+    // Opaque pixel borders stay *inside* the hole. AA `stroke_rect` hung onto
+    // the dim mask (stain) and sat under the loupe (the ring vanished).
+    if r.is_empty() {
         return;
     }
-    let inner = r.adjusted(3.0, 3.0, -3.0, -3.0);
-    stroke_rect(pm, inner, edge, 4.0);
-    stroke_rect(pm, inner, ring, 2.0);
+    let x = r.x.floor() as i32;
+    let y = r.y.floor() as i32;
+    let w = (r.right().ceil() as i32 - x).max(1);
+    let h = (r.bottom().ceil() as i32 - y).max(1);
+    if w < 8 || h < 8 {
+        fill_px_border(pm, x, y, w, h, 1, edge);
+        fill_px_border(pm, x, y, w, h, 1, ring);
+        return;
+    }
+    fill_px_border(pm, x + 1, y + 1, w - 2, h - 2, 1, edge);
+    fill_px_border(pm, x + 2, y + 2, w - 4, h - 4, 2, ring);
+}
+
+/// Four thin dirty tiles for the hole ring. Unioning the hole AABB with the
+/// loupe would recopy a 1700×900 window on every mouse pixel.
+fn ring_strips(hole: Rect) -> [Rect; 4] {
+    let r = hole.adjusted(0.0, 0.0, -1.0, -1.0);
+    let t = 6.0;
+    [
+        Rect::new(r.x, r.y, r.w, t),
+        Rect::new(r.x, r.bottom() - t, r.w, t),
+        Rect::new(r.x, r.y, t, r.h),
+        Rect::new(r.right() - t, r.y, t, r.h),
+    ]
 }
 
 fn clip_rect(r: Rect, bounds: Rect) -> Rect {
@@ -770,20 +788,6 @@ impl OverlayFront {
             let pad = sh.style.width.max(8) as f32 + 8.0;
             chrome.push(sh.bounds().inflated(pad).intersect(bounds));
         }
-        if !hole.is_empty() {
-            paint_snip_ring(
-                &mut self.frame,
-                hole.adjusted(0.0, 0.0, -1.0, -1.0),
-                Rgba::SNIP_RING,
-                Rgba::SNIP_RING_EDGE,
-            );
-            if sel.has_sel() && annot.tool.is_none() && annot.selected.is_none() {
-                for (_, c) in handle_points(hole) {
-                    paint_handle_dot(&mut self.frame, c, Rgba::SNIP_RING);
-                }
-            }
-            chrome.push(paint_size_label(&mut self.frame, hole, &size_text, fw, fh));
-        }
 
         // Python / Snipaste: handles only for `selected`. Text commit leaves
         // width_target but must not keep a blue box and 8 nubs.
@@ -819,6 +823,23 @@ impl OverlayFront {
                 hex,
                 mag,
             ));
+        }
+
+        // Ring after the loupe so the preselect / sel border is never buried
+        // under the 180px grid. Four thin strips keep GDI off the hole memcpy.
+        if !hole.is_empty() {
+            paint_snip_ring(
+                &mut self.frame,
+                hole.adjusted(0.0, 0.0, -1.0, -1.0),
+                Rgba::SNIP_RING,
+                Rgba::SNIP_RING_EDGE,
+            );
+            if sel.has_sel() && annot.tool.is_none() && annot.selected.is_none() {
+                for (_, c) in handle_points(hole) {
+                    paint_handle_dot(&mut self.frame, c, Rgba::SNIP_RING);
+                }
+            }
+            chrome.push(paint_size_label(&mut self.frame, hole, &size_text, fw, fh));
         }
 
         if let Some(tb) = toolbar {
@@ -885,15 +906,21 @@ impl OverlayFront {
         // the freeze; a full blit of an incrementally-updated DIB does not.
         #[cfg(windows)]
         {
-            let mut present = restore_r;
-            for c in &chrome {
-                present = present.union(*c);
+            // Tile writes. Unioning loupe + size chip + ring strips becomes
+            // the hole AABB and recopies a maximized window on every move.
+            if !self.primed || restore_r.area() > bounds.area() * 0.55 {
+                self.gdi.write_rect(&self.frame, bounds);
+            } else {
+                self.gdi.write_rect(&self.frame, restore_r);
+                for c in &chrome {
+                    self.gdi.write_rect(&self.frame, *c);
+                }
+                if !hole.is_empty() {
+                    for strip in ring_strips(hole) {
+                        self.gdi.write_rect(&self.frame, strip.intersect(bounds));
+                    }
+                }
             }
-            present = present.intersect(bounds);
-            if present.area() > bounds.area() * 0.55 {
-                present = bounds;
-            }
-            self.gdi.write_rect(&self.frame, present);
             // Always blit the whole DIB. Partial BitBlt of the loupe is what
             // left the staircase shadow on the freeze; the hitch was the
             // CPU hole memcpy, not this SRCCOPY.
@@ -2305,6 +2332,56 @@ mod tests {
                 px.blue()
             );
         }
+    }
+
+    #[test]
+    fn snip_ring_stays_above_the_loupe() {
+        let w = 640u32;
+        let h = 400u32;
+        let shot = gray_shot(w, h, 210);
+        let mut front = OverlayFront::new(&shot, 160).expect("front");
+        let idle = Selection::new();
+        // Default loupe is cursor+22. This lands its top-left on the ring.
+        let hover = Rect::new(80.0, 40.0, 220.0, 140.0);
+        let cursor = Point::new(61.0, 21.0);
+        front.paint(
+            dummy_hwnd(),
+            &idle,
+            hover,
+            cursor,
+            1.0,
+            false,
+            true,
+            &Annotator::new(),
+            None,
+            None,
+            false,
+            &shot,
+            None,
+            None,
+        );
+        let mag = layout_magnifier(cursor, Rect::new(0.0, 0.0, w as f32, h as f32), Rgba::BLACK, cursor);
+        let x = (hover.x + 3.0) as u32;
+        let y = (hover.y + 3.0) as u32;
+        let on_mag = mag
+            .grid
+            .union(mag.info)
+            .contains(Point::new(x as f32 + 0.5, y as f32 + 0.5));
+        assert!(on_mag, "test must place the loupe on the ring");
+        assert!(
+            ring_strips(hover)
+                .iter()
+                .any(|s| s.contains(Point::new(x as f32 + 0.5, y as f32 + 0.5))),
+            "sample must sit on a ring dirty strip"
+        );
+        let p = front.pixmap().pixel(x, y).expect("px").demultiply();
+        assert!(
+            p.green() > 160 && (p.green() as i16) > (p.blue() as i16) + 40,
+            "loupe must not bury the hover ring, got {},{},{}",
+            p.red(),
+            p.green(),
+            p.blue()
+        );
     }
 
     #[test]
