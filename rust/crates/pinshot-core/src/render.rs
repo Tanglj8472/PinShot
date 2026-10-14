@@ -231,7 +231,14 @@ fn draw_shape_t(pm: &mut Pixmap, sh: &Shape, t: Transform) {
                     }
                 }
                 let n = sh.pts.len();
-                fill_sharp_arrow(pm, sh.pts[n - 2], sh.pts[n - 1], sh.style.width, t, sh.style.color);
+                fill_sharp_arrow(
+                    pm,
+                    sh.pts[n - 2],
+                    sh.pts[n - 1],
+                    sh.style.width,
+                    t,
+                    sh.style.color,
+                );
             } else {
                 let pts = shaft_pts(&sh.pts, sh.style.width, kind);
                 if let Some(path) = polyline(&pts) {
@@ -378,18 +385,21 @@ fn fill_sharp_arrow(pm: &mut Pixmap, a: Point, b: Point, width: i32, t: Transfor
     let vx = -uy;
     let vy = ux;
     let w = width.max(1) as f32;
-    // Needle: hairline tail, barely thicker neck, long acute triangle.
-    let tail_hw = 0.38_f32.max(w * 0.12);
-    let neck_hw = (w * 0.40).max(tail_hw + 0.18);
-    let barb_hw = (w * 1.45 + 3.2).max(neck_hw * 3.4);
-    let head_len = (w * 5.4 + 10.0).min(len * 0.42).max(8.0f32.min(len * 0.62));
+    // Snipaste thin: hairline tail, slim neck, long acute head (not a fat
+    // perpendicular triangle glued onto a thick shaft).
+    let tail_hw = 0.42_f32.max(w * 0.14);
+    let neck_hw = (w * 0.42).max(tail_hw + 0.18);
+    let barb_hw = (w * 1.0 + 2.1).max(neck_hw * 2.15);
+    let head_len = (w * 6.4 + 12.0).min(len * 0.48).max(9.0f32.min(len * 0.66));
+    let sweep = (head_len * 0.12).min(3.2);
     let neck = Point::new(b.x - ux * head_len, b.y - uy * head_len);
+    let barb = Point::new(neck.x - ux * sweep, neck.y - uy * sweep);
     let mut pb = PathBuilder::new();
     pb.move_to(a.x + vx * tail_hw, a.y + vy * tail_hw);
     pb.line_to(neck.x + vx * neck_hw, neck.y + vy * neck_hw);
-    pb.line_to(neck.x + vx * barb_hw, neck.y + vy * barb_hw);
+    pb.line_to(barb.x + vx * barb_hw, barb.y + vy * barb_hw);
     pb.line_to(b.x, b.y);
-    pb.line_to(neck.x - vx * barb_hw, neck.y - vy * barb_hw);
+    pb.line_to(barb.x - vx * barb_hw, barb.y - vy * barb_hw);
     pb.line_to(neck.x - vx * neck_hw, neck.y - vy * neck_hw);
     pb.line_to(a.x - vx * tail_hw, a.y - vy * tail_hw);
     pb.close();
@@ -557,6 +567,20 @@ mod tests {
         found
     }
 
+    fn count_reddish(out: &Raster, xs: std::ops::Range<i32>, ys: std::ops::Range<i32>) -> u32 {
+        let mut found = 0u32;
+        for y in ys {
+            for x in xs.clone() {
+                if let Some(c) = out.get(x, y) {
+                    if c.r > 180 && c.g < 90 && c.b < 90 {
+                        found += 1;
+                    }
+                }
+            }
+        }
+        found
+    }
+
     fn line_shape(kind: crate::annotation::ArrowKind) -> Shape {
         let mut st = Style::for_tool(Tool::Line);
         st.set_arrow_kind(kind);
@@ -574,8 +598,8 @@ mod tests {
         let mut base = Raster::new(80, 40);
         base.fill(Rgba::WHITE);
         let out = compose(&base, &[line_shape(crate::annotation::ArrowKind::Thin)]);
-        let found = count_red(&out, 38..62, 10..30);
-        assert!(found > 20, "arrowhead pixels={found}");
+        let found = count_reddish(&out, 38..62, 10..30);
+        assert!(found > 16, "arrowhead pixels={found}");
     }
 
     #[test]
@@ -615,7 +639,7 @@ mod tests {
         let mut base = Raster::new(80, 40);
         base.fill(Rgba::WHITE);
         let out = compose(&base, &[line_shape(crate::annotation::ArrowKind::Thin)]);
-        let core = count_red(&out, 20..32, 18..23);
+        let core = count_reddish(&out, 20..32, 18..23);
         assert!(core > 8, "tapered body pixels={core}");
     }
 
@@ -624,16 +648,16 @@ mod tests {
         let mut base = Raster::new(80, 40);
         base.fill(Rgba::WHITE);
         let out = compose(&base, &[line_shape(crate::annotation::ArrowKind::Thin)]);
-        let tail_off = count_red(&out, 10..20, 12..16);
-        let shaft = count_red(&out, 16..28, 18..23);
-        let barbs = count_red(&out, 34..40, 13..18) + count_red(&out, 34..40, 22..27);
+        let tail_off = count_reddish(&out, 10..20, 12..16);
+        let shaft = count_reddish(&out, 16..28, 18..23);
+        let barbs = count_reddish(&out, 26..34, 13..17) + count_reddish(&out, 26..34, 23..27);
         assert!(shaft > 8, "needle shaft pixels={shaft}");
         assert!(
             tail_off < 3,
             "tail must stay a thin shaft, not a wedge, off-axis={tail_off}"
         );
         assert!(barbs > 4, "distinct head barbs pixels={barbs}");
-        let tip = count_red(&out, 44..52, 16..25);
+        let tip = count_reddish(&out, 44..52, 16..25);
         assert!(tip > 4, "sharp tip pixels={tip}");
     }
 
@@ -647,10 +671,13 @@ mod tests {
         assert!(barb > 4, "perpendicular barbs should paint, pixels={barb}");
         // Behind the base the head must not flare (angle-spread chevrons did).
         let behind = count_red(&out, 10..18, 8..13);
-        assert!(behind < 3, "no chevron flare behind the base, pixels={behind}");
+        assert!(
+            behind < 3,
+            "no chevron flare behind the base, pixels={behind}"
+        );
         if let Ok(dir) = std::env::var("PINSHOT_DUMP_ARROWS") {
             let mut canvas = Raster::new(280, 200);
-            canvas.fill(Rgba::WHITE);
+            canvas.fill(Rgba::rgb(48, 48, 48));
             let kinds = [
                 crate::annotation::ArrowKind::None,
                 crate::annotation::ArrowKind::Thin,
@@ -676,8 +703,29 @@ mod tests {
             let preview = compose(&canvas, &shapes);
             if let Some(pm) = preview.to_skia() {
                 if let Ok(png) = pm.encode_png() {
-                    let path = std::path::PathBuf::from(dir).join("line_arrow_styles.png");
-                    let _ = std::fs::create_dir_all(path.parent().unwrap_or(std::path::Path::new(".")));
+                    let path = std::path::PathBuf::from(dir.clone()).join("line_arrow_styles.png");
+                    let _ =
+                        std::fs::create_dir_all(path.parent().unwrap_or(std::path::Path::new(".")));
+                    let _ = std::fs::write(path, png);
+                }
+            }
+            let mut shot = Raster::new(360, 160);
+            shot.fill(Rgba::rgb(48, 48, 48));
+            let mut st = Style::for_tool(Tool::Line);
+            st.set_arrow_kind(crate::annotation::ArrowKind::Thin);
+            st.color = Rgba::RED;
+            st.width = 3;
+            let preview = compose(
+                &shot,
+                &[Shape::new(
+                    Tool::Line,
+                    vec![Point::new(36.0, 80.0), Point::new(280.0, 80.0)],
+                    st,
+                )],
+            );
+            if let Some(pm) = preview.to_skia() {
+                if let Ok(png) = pm.encode_png() {
+                    let path = std::path::PathBuf::from(&dir).join("thin_arrow_snipaste.png");
                     let _ = std::fs::write(path, png);
                 }
             }
