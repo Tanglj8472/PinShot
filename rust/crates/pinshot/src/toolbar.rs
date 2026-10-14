@@ -10,7 +10,7 @@ use pinshot_core::icons::IconKind;
 /// Clicking an active drawing tool (or grouped Shape / Line entry) deselects it.
 pub fn toggle_tool(
     annot: &mut Annotator,
-    arrow_kind: &mut ArrowKind,
+    _arrow_kind: &mut ArrowKind,
     ellipse_on: &mut bool,
     action: TbAction,
 ) {
@@ -33,15 +33,11 @@ pub fn toggle_tool(
                 annot.set_tool(None);
             } else {
                 annot.set_tool(Some(Tool::Line));
-                annot.set_style_default(Tool::Line, |s| s.set_arrow_kind(*arrow_kind));
             }
         }
         TbAction::Tool(tool) => {
             let same = annot.tool == Some(tool);
             annot.set_tool(if same { None } else { Some(tool) });
-            if tool == Tool::Line && !same {
-                annot.set_style_default(tool, |s| s.set_arrow_kind(*arrow_kind));
-            }
         }
         _ => {}
     }
@@ -53,8 +49,23 @@ pub fn set_shape_kind(annot: &mut Annotator, ellipse_on: &mut bool, ellipse: boo
 }
 
 pub fn set_line_preset(annot: &mut Annotator, arrow_kind: &mut ArrowKind, kind: ArrowKind) {
-    *arrow_kind = kind;
+    if kind.is_arrow() {
+        *arrow_kind = kind;
+    }
     annot.convert_line_arrow(kind);
+}
+
+/// Quick chip beside the line menu: line ↔ last dropdown arrow.
+pub fn toggle_line_arrow(annot: &mut Annotator, arrow_kind: &mut ArrowKind) {
+    if !arrow_kind.is_arrow() {
+        *arrow_kind = ArrowKind::Thin;
+    }
+    let next = if annot.current_line_arrow().is_arrow() {
+        ArrowKind::None
+    } else {
+        *arrow_kind
+    };
+    annot.convert_line_arrow(next);
 }
 
 /// Tab while annotating: rectangle ↔ ellipse, or line ↔ arrow (Snipaste).
@@ -73,13 +84,7 @@ pub fn toggle_grouped_variant(
             true
         }
         Some(Tool::Line) => {
-            let current = annot.current_line_arrow();
-            let next = if current == ArrowKind::None {
-                ArrowKind::Thin
-            } else {
-                ArrowKind::None
-            };
-            set_line_preset(annot, arrow_kind, next);
+            toggle_line_arrow(annot, arrow_kind);
             true
         }
         _ => false,
@@ -115,6 +120,8 @@ pub enum TbAction {
     Fill(bool),
     LineStyle(LineStyleKind),
     ToggleLineMenu,
+    /// Flip the current stroke between a plain line and the last dropdown arrow.
+    ToggleLineArrow,
     LinePreset(ArrowKind),
     SetMode(DrawMode),
     SetEffect(Effect),
@@ -210,7 +217,7 @@ impl Toolbar {
         sel: Rect,
         overlay: Rect,
         active: Option<Tool>,
-        _arrow: ArrowKind,
+        arrow: ArrowKind,
         for_pin: bool,
         style: Option<&Style>,
     ) -> Self {
@@ -386,6 +393,19 @@ impl Toolbar {
                             String::new(),
                             Some(icon),
                             TbAction::ToggleLineMenu,
+                        );
+                        let last = if arrow.is_arrow() {
+                            arrow
+                        } else {
+                            ArrowKind::Thin
+                        };
+                        push_icon(
+                            &mut extras,
+                            &mut chip_x,
+                            chip_y,
+                            icon_for_arrow(last),
+                            TbAction::ToggleLineArrow,
+                            st.has_arrow(),
                         );
                     }
                     Some(Tool::Mosaic) => {
@@ -875,7 +895,15 @@ mod tests {
         assert_eq!(ann.selected, Some(0));
         assert!(toggle_grouped_variant(&mut ann, &mut arrow, &mut ellipse));
         assert_eq!(ann.shapes[0].style.arrow_kind(), ArrowKind::None);
-        assert_eq!(arrow, ArrowKind::None);
+        assert_eq!(arrow, ArrowKind::Thin);
+        toggle_line_arrow(&mut ann, &mut arrow);
+        assert_eq!(ann.shapes[0].style.arrow_kind(), ArrowKind::Thin);
+        set_line_preset(&mut ann, &mut arrow, ArrowKind::Hollow);
+        toggle_line_arrow(&mut ann, &mut arrow);
+        assert_eq!(ann.shapes[0].style.arrow_kind(), ArrowKind::None);
+        toggle_line_arrow(&mut ann, &mut arrow);
+        assert_eq!(ann.shapes[0].style.arrow_kind(), ArrowKind::Hollow);
+        assert_eq!(arrow, ArrowKind::Hollow);
     }
 
     #[test]
@@ -1037,6 +1065,33 @@ mod tests {
             .expect("line-style combo");
         assert_eq!(combo.action, TbAction::ToggleLineMenu);
         assert_eq!(tb.hit(combo.rect.center()), Some(TbAction::ToggleLineMenu));
+        let flip = tb
+            .extras
+            .iter()
+            .find(|e| e.action == TbAction::ToggleLineArrow)
+            .expect("line/arrow flip chip");
+        assert_eq!(flip.icon, Some(IconKind::Arrow));
+        assert!(!flip.checked);
+        assert_eq!(tb.hit(flip.rect.center()), Some(TbAction::ToggleLineArrow));
+        let hollow_st = {
+            let mut s = st.clone();
+            s.set_arrow_kind(ArrowKind::Hollow);
+            s
+        };
+        let tb_h = Toolbar::layout(
+            sel,
+            over,
+            Some(Tool::Line),
+            ArrowKind::Hollow,
+            Some(&hollow_st),
+        );
+        let flip_h = tb_h
+            .extras
+            .iter()
+            .find(|e| e.action == TbAction::ToggleLineArrow)
+            .unwrap();
+        assert_eq!(flip_h.icon, Some(IconKind::ArrowHollow));
+        assert!(flip_h.checked);
         let mut open = tb.clone();
         open.attach_line_menu(over, &st);
         let menu = open.menu.as_ref().expect("line preset menu");

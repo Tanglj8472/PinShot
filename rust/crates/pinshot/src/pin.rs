@@ -177,7 +177,7 @@ impl PinWin {
             group: groups::DEFAULT.into(),
             annotating: false,
             toolbar: None,
-            arrow_kind: ArrowKind::None,
+            arrow_kind: ArrowKind::Thin,
             ellipse_on: false,
             line_menu_open: false,
             toast: None,
@@ -831,6 +831,9 @@ impl PinWin {
             TbAction::LinePreset(kind) => {
                 crate::toolbar::set_line_preset(&mut self.annot, &mut self.arrow_kind, kind);
                 self.line_menu_open = false;
+            }
+            TbAction::ToggleLineArrow => {
+                crate::toolbar::toggle_line_arrow(&mut self.annot, &mut self.arrow_kind);
             }
             TbAction::Undo => {
                 let _ = self.annot.undo();
