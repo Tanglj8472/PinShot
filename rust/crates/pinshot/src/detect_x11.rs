@@ -448,6 +448,10 @@ pub fn element_at_point(_sx: i32, _sy: i32, _exclude: Option<isize>) -> Option<P
     None
 }
 
+pub fn window_at_point(sx: i32, sy: i32, exclude: Option<isize>) -> Option<PointHit> {
+    element_at_point(sx, sy, exclude)
+}
+
 /// Same safety rule as Python: Atspi.init() can abort, so probe in a subprocess.
 pub fn atspi_available() -> bool {
     static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();

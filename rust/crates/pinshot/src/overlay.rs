@@ -28,7 +28,7 @@ use winit::window::{CursorIcon, Window, WindowId};
 use crate::capture::Capture;
 #[cfg(not(windows))]
 use crate::detect::translated_elements;
-use crate::detect::{element_at_point, element_source, translated_windows};
+use crate::detect::{element_at_point, element_source, translated_windows, window_at_point};
 #[cfg(not(windows))]
 use crate::draw::present;
 use crate::draw::OverlayFront;
@@ -72,6 +72,8 @@ pub struct Overlay {
     hit_px: Option<(i32, i32)>,
     hit_rect: Option<Rect>,
     hit_at: Option<Instant>,
+    moved_at: Instant,
+    hover_deep: bool,
     annot: Annotator,
     toolbar: Option<Toolbar>,
     hex: bool,
@@ -240,6 +242,8 @@ impl Overlay {
             hit_px: None,
             hit_rect: None,
             hit_at: None,
+            moved_at: Instant::now(),
+            hover_deep: false,
             annot: Annotator::new(),
             toolbar: None,
             hex: false,
@@ -546,13 +550,20 @@ impl Overlay {
             }
         }
         if let (Some(at), Some(r)) = (self.hit_at, self.hit_rect) {
-            if at.elapsed() < std::time::Duration::from_millis(10) {
+            if at.elapsed() < std::time::Duration::from_millis(8) {
                 return r;
             }
         }
         self.hit_px = Some(key);
         self.hit_at = Some(Instant::now());
-        let hover = if let Some(hit) = element_at_point(key.0, key.1, self.exclude_hwnd()) {
+        let deep = self.moved_at.elapsed() >= std::time::Duration::from_millis(48);
+        let hit = if deep {
+            self.hover_deep = true;
+            element_at_point(key.0, key.1, self.exclude_hwnd())
+        } else {
+            window_at_point(key.0, key.1, self.exclude_hwnd())
+        };
+        let hover = if let Some(hit) = hit {
             overlay_from_screen(hit.rect, origin)
         } else {
             hover_rect(pt, &self.windows, self.elements.as_slice(), self.bounds())
@@ -1127,6 +1138,10 @@ impl Overlay {
         }
         let same_px =
             next.x.round() == self.cursor.x.round() && next.y.round() == self.cursor.y.round();
+        if !same_px {
+            self.moved_at = Instant::now();
+            self.hover_deep = false;
+        }
         self.cursor = next;
         if self.annot.is_brush_live()
             || self.annot.is_selecting()
@@ -1872,6 +1887,18 @@ impl Overlay {
             // Keep tooltips live even when winit skipped CursorMoved (XGrab).
             self.dirty = true;
         }
+        if !self.hover_deep
+            && self.sel.state == SelState::Idle
+            && !self.sel.has_sel()
+            && self.moved_at.elapsed() >= std::time::Duration::from_millis(48)
+        {
+            let prev = self.hover;
+            self.hit_px = None;
+            self.update_hover();
+            if self.hover != prev {
+                self.dirty = true;
+            }
+        }
         if self.dirty {
             self.window.request_redraw();
         }
@@ -1913,12 +1940,17 @@ impl Overlay {
     }
 
     pub fn next_wake(&self) -> Option<Instant> {
-        let ms = 8;
-        let poll = Instant::now() + Duration::from_millis(ms);
-        match self.toast_until {
-            Some(t) => Some(if t < poll { t } else { poll }),
-            None => Some(poll),
+        let mut wake = self.toast_until;
+        if !self.hover_deep && self.sel.state == SelState::Idle && !self.sel.has_sel() {
+            let refine = self.moved_at + Duration::from_millis(48);
+            wake = Some(wake.map(|w| w.min(refine)).unwrap_or(refine));
         }
+        #[cfg(unix)]
+        {
+            let poll = Instant::now() + Duration::from_millis(8);
+            wake = Some(wake.map(|w| w.min(poll)).unwrap_or(poll));
+        }
+        wake
     }
 }
 

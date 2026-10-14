@@ -144,36 +144,52 @@ fn append_tray_rects(out: &mut Vec<(Rect, String)>) {
     }
 }
 
+fn tray_rects() -> Vec<(Rect, u32)> {
+    thread_local! {
+        static CACHE: std::cell::RefCell<(Option<Instant>, Vec<(Rect, u32)>)> =
+            const { std::cell::RefCell::new((None, Vec::new())) };
+    }
+    CACHE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if let Some(at) = slot.0 {
+            if at.elapsed() < Duration::from_millis(300) {
+                return slot.1.clone();
+            }
+        }
+        let mut out = Vec::new();
+        for top in tray_top_hwnds() {
+            if let Some(r) = hwnd_rect(top) {
+                out.push((r, 1));
+            }
+            let mut kids = Vec::new();
+            unsafe {
+                let _ = EnumChildWindows(
+                    top,
+                    Some(enum_tray_kids),
+                    LPARAM(&mut kids as *mut _ as isize),
+                );
+            }
+            for kid in kids {
+                if let Some(r) = hwnd_rect(kid) {
+                    if r.w >= 8.0 && r.h >= 8.0 {
+                        out.push((r, 2));
+                    }
+                }
+            }
+        }
+        *slot = (Some(Instant::now()), out.clone());
+        out
+    })
+}
+
 /// Smallest visible tray / notify rect under the cursor. Independent of
 /// overlay z-order — the first snip-from-tray hit is the popup menu; after
 /// it closes, WindowFromPoint often returns the desktop instead.
 fn tray_hit_at(sx: i32, sy: i32) -> Option<(Rect, u32)> {
     let mut best: Option<(Rect, u32)> = None;
-    for top in tray_top_hwnds() {
-        if let Some(r) = hwnd_rect(top) {
-            if rect_contains_i32(r, sx, sy) {
-                if better_hit(best.map(|(br, bd)| (br, bd)), r, 1) {
-                    best = Some((r, 1));
-                }
-            }
-        }
-        let mut kids = Vec::new();
-        unsafe {
-            let _ = EnumChildWindows(
-                top,
-                Some(enum_tray_kids),
-                LPARAM(&mut kids as *mut _ as isize),
-            );
-        }
-        for kid in kids {
-            if let Some(r) = hwnd_rect(kid) {
-                if rect_contains_i32(r, sx, sy) && r.w >= 8.0 && r.h >= 8.0 {
-                    let depth = 2u32;
-                    if better_hit(best.map(|(br, bd)| (br, bd)), r, depth) {
-                        best = Some((r, depth));
-                    }
-                }
-            }
+    for (r, depth) in tray_rects() {
+        if rect_contains_i32(r, sx, sy) && better_hit(best.map(|(br, bd)| (br, bd)), r, depth) {
+            best = Some((r, depth));
         }
     }
     best
@@ -749,6 +765,42 @@ pub fn element_at_point(sx: i32, sy: i32, exclude: Option<isize>) -> Option<Poin
     with_hit_through(skip, || element_at_point_inner(sx, sy, skip, self_pid, t0))
 }
 
+/// HWND-only hover for mouse motion. No UIA / MSAA — those stall WPF hosts
+/// for 20–120ms and make the loupe hitch.
+pub fn window_at_point(sx: i32, sy: i32, exclude: Option<isize>) -> Option<PointHit> {
+    let t0 = Instant::now();
+    let self_pid = unsafe { GetCurrentProcessId() };
+    let skip = exclude_hwnd(exclude);
+    if let Some((rect, depth)) = tray_hit_at(sx, sy) {
+        LAST_SOURCE.store(2, std::sync::atomic::Ordering::Relaxed);
+        log_detect_change("tray", depth, 2, t0.elapsed().as_millis());
+        return Some(PointHit {
+            rect,
+            exe: "tray".into(),
+            depth,
+            elapsed_ms: t0.elapsed().as_millis(),
+        });
+    }
+    with_hit_through(skip, || {
+        let top = top_window_at(sx, sy, skip, self_pid)?;
+        let mut pid = 0u32;
+        unsafe {
+            GetWindowThreadProcessId(top, Some(&mut pid));
+        }
+        let exe = process_exe(pid);
+        let (child, hwnd_depth) = deepest_child_hwnd(top, sx, sy);
+        let rect = hwnd_rect(child).or_else(|| hwnd_rect(top))?;
+        LAST_SOURCE.store(2, std::sync::atomic::Ordering::Relaxed);
+        log_detect_change(&exe, hwnd_depth, 2, t0.elapsed().as_millis());
+        Some(PointHit {
+            rect,
+            exe,
+            depth: hwnd_depth,
+            elapsed_ms: t0.elapsed().as_millis(),
+        })
+    })
+}
+
 fn element_at_point_inner(
     sx: i32,
     sy: i32,
@@ -768,31 +820,18 @@ fn element_at_point_inner(
     wake_accessibility(child);
 
     let top_rect = hwnd_rect(top);
-    // Live hover must stay off the UI thread's 16ms budget. ElementFromPoint
-    // is already the leaf; a short drill is enough. The 80ms + full-tree
-    // EnumChildWindows walk made the magnifier hitch on every mouse pixel.
-    let deadline = Instant::now() + Duration::from_millis(12);
+    // Live hover must stay off the UI thread's 16ms budget. MSAA
+    // AccessibleObjectFromPoint was 100ms+ on WPF/NovaFlow and is skipped.
+    let deadline = Instant::now() + Duration::from_millis(8);
     let uia_hit = uia_from_point(sx, sy, top, skip, self_pid, deadline).filter(|(r, _)| {
         top_rect
             .map(|top| !is_shallow_window_hit(*r, top))
             .unwrap_or(true)
     });
-    let msaa_hit = if uia_hit.as_ref().is_some_and(|(_, d)| *d >= 2) {
-        None
-    } else {
-        msaa_from_point(sx, sy).filter(|(r, _)| {
-            top_rect
-                .map(|top| !is_shallow_window_hit(*r, top))
-                .unwrap_or(true)
-        })
-    };
 
     let mut cands = Vec::new();
     if let Some((r, d)) = uia_hit {
         cands.push((r, d, 1u8));
-    }
-    if let Some((r, d)) = msaa_hit {
-        cands.push((r, d, 3u8));
     }
     if let Some(r) = hwnd_rect(child).or_else(|| hwnd_rect(top)) {
         cands.push((r, hwnd_depth, 2u8));

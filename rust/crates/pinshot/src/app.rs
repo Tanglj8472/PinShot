@@ -1440,9 +1440,16 @@ impl ApplicationHandler<AppEvent> for App {
         }
         self.finish_overlay(event_loop);
         if self.overlay.is_some() {
-            // Poll while the overlay is up so the InputHold connection can
-            // drain ButtonPress/Motion from the overlay pointer grab.
+            // X11: drain the overlay pointer grab. Windows: Wait — Poll
+            // spun about_to_wait and made the loupe hitch.
+            #[cfg(unix)]
             event_loop.set_control_flow(ControlFlow::Poll);
+            #[cfg(not(unix))]
+            if let Some(ov) = &self.overlay {
+                if let Some(t) = ov.next_wake() {
+                    event_loop.set_control_flow(ControlFlow::WaitUntil(t));
+                }
+            }
         } else {
             let mut wake = self.snip_at;
             for p in &self.pins {

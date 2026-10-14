@@ -443,6 +443,7 @@ pub struct OverlayFront {
     last_hole: Rect,
     last_chrome: Vec<Rect>,
     last_size_label: Rect,
+    last_mag: Rect,
     primed: bool,
 }
 
@@ -637,6 +638,7 @@ impl OverlayFront {
             last_hole: Rect::EMPTY,
             last_chrome: Vec::new(),
             last_size_label: Rect::EMPTY,
+            last_mag: Rect::EMPTY,
             primed: false,
         })
     }
@@ -667,6 +669,7 @@ impl OverlayFront {
         self.last_hole = Rect::EMPTY;
         self.last_chrome.clear();
         self.last_size_label = Rect::EMPTY;
+        self.last_mag = Rect::EMPTY;
         self.primed = false;
         #[cfg(windows)]
         {
@@ -735,20 +738,22 @@ impl OverlayFront {
             .map(|m| m.grid.union(m.info).inflated(8.0))
             .unwrap_or(Rect::EMPTY);
 
-        // Incremental restore: only the previous hole/chrome/loupe plus the
-        // new ones. A full-desktop memcpy + GDI write on every mouse pixel
-        // is what made the magnifier hitch. First frame still copies all.
+        // Incremental restore. If the hover/sel hole did not change, do
+        // *not* recopy a 1700×900 window on every mouse pixel — only the
+        // loupe and chrome. First frame still copies all.
+        let hole_changed = !self.primed || self.last_hole != hole;
         let mut restore_r = if !self.primed {
             bounds
         } else {
-            let mut d = self
-                .last_hole
-                .inflated(12.0)
-                .union(self.last_size_label)
-                .union(hole_pad)
-                .union(mag_dirty);
+            let mut d = self.last_mag.union(mag_dirty);
             for c in &self.last_chrome {
                 d = d.union(*c);
+            }
+            d = d.union(self.last_size_label).union(size_label);
+            if hole_changed {
+                d = d
+                    .union(self.last_hole.inflated(12.0))
+                    .union(hole_pad);
             }
             d.intersect(bounds)
         };
@@ -758,8 +763,15 @@ impl OverlayFront {
         self.restore(restore_r);
 
         // Hole interior: undimmed capture + vector annotations (no full compose).
-        if !hole.is_empty() {
-            copy_rect(&mut self.frame, &self.shot, hole);
+        let hole_refresh = if hole.is_empty() {
+            Rect::EMPTY
+        } else if hole_changed {
+            hole
+        } else {
+            hole.intersect(restore_r)
+        };
+        if !hole_refresh.is_empty() {
+            copy_rect(&mut self.frame, &self.shot, hole_refresh);
             let shapes = annot.visible_shapes();
             if !shapes.is_empty() {
                 let needs_fx = shapes
@@ -794,7 +806,6 @@ impl OverlayFront {
                 }
             }
             chrome.push(paint_size_label(&mut self.frame, hole, &size_text, fw, fh));
-            chrome.push(hole_pad);
         }
 
         // Python / Snipaste: handles only for `selected`. Text commit leaves
@@ -906,11 +917,18 @@ impl OverlayFront {
                 present = bounds;
             }
             self.gdi.write_rect(&self.frame, present);
-            self.gdi.blit_rect(hwnd, bounds);
+            // After the first full present, only blit the dirty tile. A
+            // 4160×1400 SRCCOPY on every mouse pixel is the hitch.
+            if self.primed {
+                self.gdi.blit_rect(hwnd, present);
+            } else {
+                self.gdi.blit_rect(hwnd, bounds);
+            }
         }
         self.last_hole = hole;
         self.last_chrome = chrome;
         self.last_size_label = size_label;
+        self.last_mag = mag_dirty;
         self.primed = true;
         let _ = FillRule::Winding;
         let _ = hwnd;
