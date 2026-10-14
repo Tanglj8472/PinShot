@@ -24,6 +24,7 @@ pub mod selection;
 pub mod session;
 pub mod snap;
 pub mod translate;
+pub mod update;
 pub mod wheel;
 
 pub use annotation::{
@@ -55,6 +56,7 @@ pub use raster::Raster;
 pub use selection::{DetectMode, Nudge, PressKind, SelState, Selection};
 pub use session::{ClosedPin, ClosedStack, PinSnapshot, SessionFile};
 pub use snap::{SnapGuides, SNAP_PX};
+pub use update::{UpdateSettings, WINDOWS_RELEASE_SUFFIX};
 pub use wheel::WheelGate;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

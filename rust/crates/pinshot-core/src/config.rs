@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -38,6 +38,8 @@ pub struct Config {
     /// F5 translator (pot / STranslate / openai-translator style).
     #[serde(default)]
     pub translate: TranslateSettings,
+    #[serde(default)]
+    pub update: crate::update::UpdateSettings,
 }
 
 impl Default for Config {
@@ -72,6 +74,7 @@ impl Default for Config {
             dim_alpha: 160,
             ocr_model: "server".into(),
             translate: TranslateSettings::default(),
+            update: crate::update::UpdateSettings::default(),
         }
     }
 }
@@ -189,6 +192,7 @@ impl Config {
         self.translate.api_key = self.translate.api_key.trim().to_string();
         self.translate.model = self.translate.model.trim().to_string();
         self.translate.target = self.translate.target.trim().to_string();
+        self.update = self.update.clone().normalized();
         self
     }
 
@@ -317,10 +321,11 @@ mod tests {
         assert_eq!(c.hotkey_snip, "F1");
         assert_eq!(c.hotkey_pin, "F3");
         assert_eq!(c.hotkey_clickthrough, "F4");
-        assert_eq!(c.schema_version, 2);
+        assert_eq!(c.schema_version, 3);
         assert_eq!(c.dim_alpha, 160);
         assert!(c.run_at_login);
         assert_eq!(c.ocr_model, "server");
+        assert!(c.update.check_on_startup);
     }
 
     #[test]
@@ -383,7 +388,7 @@ mod tests {
     fn v1_light_mask_becomes_snipaste_dim() {
         let c = Config::from_toml("schema_version = 1\ndim_alpha = 110\n").unwrap();
         assert_eq!(c.dim_alpha, 160);
-        assert_eq!(c.schema_version, 2);
+        assert_eq!(c.schema_version, 3);
     }
 
     #[test]

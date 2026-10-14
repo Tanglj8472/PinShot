@@ -46,6 +46,7 @@ const TABS: &[&str] = &[
     "Output",
     "Control",
     "Translate",
+    "Update",
     "About",
 ];
 
@@ -182,6 +183,7 @@ pub fn run_preferences() {
                 test_rx: None,
                 ocr_dl_rx: None,
                 ocr_dl_frac: 0.0,
+                update_check_rx: None,
             }))
         }),
     ) {
@@ -263,6 +265,10 @@ enum OcrDlUpdate {
     Done(Result<(), String>),
 }
 
+enum UpdateCheckMsg {
+    Done(Result<crate::update_run::UpdateOutcome, String>),
+}
+
 struct PrefsApp {
     draft: Config,
     tab: usize,
@@ -272,6 +278,7 @@ struct PrefsApp {
     test_rx: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
     ocr_dl_rx: Option<std::sync::mpsc::Receiver<OcrDlUpdate>>,
     ocr_dl_frac: f32,
+    update_check_rx: Option<std::sync::mpsc::Receiver<UpdateCheckMsg>>,
 }
 
 impl PrefsApp {
@@ -352,6 +359,9 @@ impl PrefsApp {
             6 => {
                 self.draft.translate = d.translate;
             }
+            7 => {
+                self.draft.update = d.update;
+            }
             _ => {}
         }
         i18n::set_lang(self.draft.lang());
@@ -413,6 +423,40 @@ impl eframe::App for PrefsApp {
         }
         if self.ocr_dl_rx.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
+        }
+        if let Some(rx) = self.update_check_rx.as_ref() {
+            match rx.try_recv() {
+                Ok(UpdateCheckMsg::Done(r)) => {
+                    self.update_check_rx = None;
+                    self.draft.update.last_check_unix = pinshot_core::update::now_unix();
+                    let _ = config::save(&self.draft);
+                    let installing = matches!(
+                        &r,
+                        Ok(crate::update_run::UpdateOutcome::Installing { .. })
+                    );
+                    self.status = match r {
+                        Ok(crate::update_run::UpdateOutcome::UpToDate) => {
+                            tr("You are on the latest version.")
+                        }
+                        Ok(crate::update_run::UpdateOutcome::UpdateAvailable { version }) => {
+                            format!("{} {version}", tr("Update available:"))
+                        }
+                        Ok(crate::update_run::UpdateOutcome::Installing { version }) => {
+                            format!("{} {version}", tr("Installing update…"))
+                        }
+                        Err(e) => format!("{} {e}", tr("Update check failed:")),
+                    };
+                    if installing {
+                        std::process::exit(0);
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    ctx.request_repaint_after(std::time::Duration::from_millis(80));
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.update_check_rx = None;
+                }
+            }
         }
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(tr("PinShot Preferences")));
         apply_theme(ctx, &self.draft.theme);
@@ -476,6 +520,7 @@ impl eframe::App for PrefsApp {
                     4 => self.ui_output(ui),
                     5 => self.ui_control(ui),
                     6 => self.ui_translate(ui),
+                    7 => self.ui_update(ui),
                     _ => self.ui_about(ui),
                 };
             });
@@ -917,6 +962,58 @@ impl PrefsApp {
         });
     }
 
+    fn ui_update(&mut self, ui: &mut Ui) {
+        ui.label(RichText::new(format!("PinShot {VERSION}")).strong());
+        ui.add_space(4.0);
+        ui.checkbox(
+            &mut self.draft.update.check_on_startup,
+            tr("Check for updates on startup"),
+        );
+        ui.weak(tr(
+            "When enabled, PinShot checks daily after the time below while it is running. On Windows, a newer release installs silently and restarts.",
+        ));
+        ui.horizontal(|ui| {
+            ui.label(tr("Check time:"));
+            let (h, m) =
+                pinshot_core::update::parse_check_time(&self.draft.update.check_time).unwrap_or((9, 0));
+            let mut hour = h as i32;
+            let mut minute = m as i32;
+            ui.add(egui::DragValue::new(&mut hour).range(0..=23));
+            ui.label(":");
+            ui.add(egui::DragValue::new(&mut minute).range(0..=59));
+            self.draft.update.check_time =
+                pinshot_core::update::normalize_check_time(&format!("{hour}:{minute:02}"));
+        });
+        let last = pinshot_core::update::format_last_check_unix(self.draft.update.last_check_unix)
+            .unwrap_or_else(|| tr("Never"));
+        ui.label(format!("{} {last}", tr("Last check:")));
+        #[cfg(not(windows))]
+        ui.weak(tr("Auto-install is available on Windows only."));
+        ui.add_space(4.0);
+        let checking = self.update_check_rx.is_some();
+        ui.add_enabled_ui(!checking, |ui| {
+            if ui.button(tr("Check now")).clicked() {
+                self.start_update_check();
+            }
+        });
+        if checking {
+            ui.label(tr("Checking for updates…"));
+        }
+    }
+
+    fn start_update_check(&mut self) {
+        if self.update_check_rx.is_some() {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.update_check_rx = Some(rx);
+        self.status = tr("Checking for updates…");
+        std::thread::spawn(move || {
+            let r = crate::update_run::check_and_apply(false);
+            let _ = tx.send(UpdateCheckMsg::Done(r));
+        });
+    }
+
     fn ui_about(&mut self, ui: &mut Ui) {
         ui.label(RichText::new(format!("PinShot {VERSION}")).strong());
     }
@@ -1079,8 +1176,9 @@ mod tests {
         assert_eq!(size.y, PREFS_H);
         assert!(PREFS_H >= 280.0, "must fit the Control tab");
         assert!(PREFS_W <= 560.0);
-        assert_eq!(TABS.len(), 8);
+        assert_eq!(TABS.len(), 9);
         assert_eq!(TABS[6], "Translate");
+        assert_eq!(TABS[7], "Update");
         assert_eq!(PREFS_MIN_H, PREFS_MAX_H);
     }
 
@@ -1114,6 +1212,7 @@ mod tests {
             test_rx: None,
             ocr_dl_rx: None,
             ocr_dl_frac: 0.0,
+            update_check_rx: None,
         };
         app.restore_tab();
         let d = Config::default();
@@ -1142,6 +1241,7 @@ mod tests {
             test_rx: None,
             ocr_dl_rx: None,
             ocr_dl_frac: 0.0,
+            update_check_rx: None,
         };
         app.restore_tab();
         assert_eq!(app.draft.translate.provider, "openai");

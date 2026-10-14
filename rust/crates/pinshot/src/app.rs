@@ -98,6 +98,8 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         #[cfg(unix)]
         input_hold: None,
         pump_win: None,
+        update_inflight: false,
+        update_poll_at: None,
     };
     event_loop.run_app(&mut app).map_err(|e| e.to_string())
 }
@@ -142,6 +144,8 @@ struct App {
     /// Hidden winit HWND so the event loop still pumps after the overlay drops.
     /// Reused as the snip overlay so the first F1 is not a cold DWM surface.
     pump_win: Option<Rc<Window>>,
+    update_inflight: bool,
+    update_poll_at: Option<Instant>,
 }
 
 impl App {
@@ -191,6 +195,49 @@ impl App {
                 }
                 Err(e) => crate::logutil::log(&format!("fallback window: {e}")),
             }
+        }
+    }
+
+    fn maybe_run_scheduled_update(&mut self) {
+        if self.update_inflight {
+            return;
+        }
+        if !pinshot_core::update::due_for_check_now(&self.cfg.update) {
+            return;
+        }
+        self.start_update_check();
+    }
+
+    fn start_update_check(&mut self) {
+        if self.update_inflight {
+            return;
+        }
+        self.update_inflight = true;
+        let proxy = self.proxy.clone();
+        std::thread::spawn(move || {
+            let r = crate::update_run::check_and_apply(true);
+            let _ = proxy.send_event(AppEvent::UpdateCheckDone(r));
+        });
+    }
+
+    fn finish_update_check(&mut self, result: Result<crate::update_run::UpdateOutcome, String>) {
+        self.update_inflight = false;
+        self.cfg.update.last_check_unix = pinshot_core::update::now_unix();
+        if let Err(e) = pinshot_core::config::save(&self.cfg) {
+            crate::logutil::log(&format!("save after update check: {e}"));
+        }
+        match result {
+            Ok(crate::update_run::UpdateOutcome::UpToDate) => {
+                crate::logutil::log("update: up to date");
+            }
+            Ok(crate::update_run::UpdateOutcome::UpdateAvailable { version }) => {
+                crate::logutil::log(&format!("update available {version} (manual install on this OS)"));
+            }
+            Ok(crate::update_run::UpdateOutcome::Installing { version }) => {
+                crate::logutil::log(&format!("update installing {version}, exiting"));
+                std::process::exit(0);
+            }
+            Err(e) => crate::logutil::log(&format!("update check: {e}")),
         }
     }
 
@@ -1083,6 +1130,7 @@ impl ApplicationHandler<AppEvent> for App {
             self.restore_session(event_loop);
             // History PNGs stay on disk until the next F1. Loading them here
             // is how a fresh tray process sat at ~200MB with no overlay.
+            self.maybe_run_scheduled_update();
         }
         self.ensure_pump_window(event_loop);
         if self.start_prefs {
@@ -1148,6 +1196,7 @@ impl ApplicationHandler<AppEvent> for App {
                 }
             }
             AppEvent::OpenPrefs => self.open_prefs_win(event_loop),
+            AppEvent::UpdateCheckDone(r) => self.finish_update_check(r),
             AppEvent::X11Key {
                 keysym,
                 mods,
@@ -1401,6 +1450,14 @@ impl ApplicationHandler<AppEvent> for App {
             return;
         }
         event_loop.set_control_flow(ControlFlow::Wait);
+        let poll = self
+            .update_poll_at
+            .map(|t| t.elapsed() >= Duration::from_secs(60))
+            .unwrap_or(true);
+        if poll {
+            self.update_poll_at = Some(Instant::now());
+            self.maybe_run_scheduled_update();
+        }
         if self.hotkeys.is_none() {
             if let Ok(h) = native::install_hotkeys(self.proxy.clone(), &self.cfg) {
                 self.hotkeys = Some(h);

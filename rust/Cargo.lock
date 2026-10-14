@@ -2967,6 +2967,7 @@ dependencies = [
 name = "pinshot-core"
 version = "0.2.3"
 dependencies = [
+ "chrono",
  "fontdue",
  "serde",
  "serde_json",

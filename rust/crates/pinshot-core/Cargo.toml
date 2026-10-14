@@ -13,4 +13,5 @@ toml = { workspace = true }
 thiserror = { workspace = true }
 tiny-skia = { workspace = true }
 fontdue = "0.9"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 ttf-parser = "0.25"

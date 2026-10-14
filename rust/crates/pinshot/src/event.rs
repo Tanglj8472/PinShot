@@ -1,3 +1,4 @@
+use crate::update_run::UpdateOutcome;
 use pinshot_core::config::Config;
 use pinshot_core::ocr::OcrPage;
 use pinshot_core::Command;
@@ -26,6 +27,7 @@ pub enum AppEvent {
     #[cfg_attr(not(windows), allow(dead_code))]
     SelectionText(Result<String, String>),
     OpenPrefs,
+    UpdateCheckDone(Result<UpdateOutcome, String>),
     X11Key {
         keysym: u32,
         mods: u16,
