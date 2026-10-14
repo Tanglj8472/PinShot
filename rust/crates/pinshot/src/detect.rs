@@ -378,7 +378,10 @@ fn hwnd_parent_depth(child: HWND, top: HWND) -> u32 {
     let mut cur = child;
     unsafe {
         while hwnd_nonzero(cur) && cur != top && depth < 24 {
-            cur = GetParent(cur);
+            cur = match GetParent(cur) {
+                Ok(next) if hwnd_nonzero(next) => next,
+                _ => break,
+            };
             depth += 1;
         }
     }
