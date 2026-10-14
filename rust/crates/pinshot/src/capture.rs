@@ -105,6 +105,7 @@ impl Capture {
                 crate::logutil::log("dxgi released");
             }
         });
+        crate::win32::trim_working_set();
     }
 }
 
@@ -208,8 +209,9 @@ fn compose(frames: Vec<ScreenFrame>, backend: &str) -> Capture {
         }
     }
     composed.force_opaque();
+    let _ = frames;
     Capture {
-        frames,
+        frames: Vec::new(),
         virtual_origin: (vx, vy),
         composed,
         backend: backend.into(),
@@ -547,6 +549,9 @@ fn grab_dxgi() -> Result<Vec<ScreenFrame>, String> {
             match slot.as_mut().unwrap().grab_frames() {
                 Ok(frames) => {
                     crate::logutil::ms("dxgi acquire", t_acq);
+                    for out in &mut slot.as_mut().unwrap().outputs {
+                        out.last = None;
+                    }
                     return Ok(frames);
                 }
                 Err(e) => {

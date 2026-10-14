@@ -10,6 +10,29 @@ use std::path::{Path, PathBuf};
 pub struct HistoryEntry {
     pub rect: Rect,
     pub image: Raster,
+    /// On-disk PNG so the full-desktop raster can be dropped while idle.
+    pub disk: Option<PathBuf>,
+}
+
+impl HistoryEntry {
+    pub fn new(rect: Rect, image: Raster) -> Self {
+        Self {
+            rect,
+            image,
+            disk: None,
+        }
+    }
+
+    pub fn resident(&self) -> bool {
+        self.image.width >= 8 && self.image.height >= 8
+    }
+
+    pub fn evict_pixels(&mut self) {
+        if self.image.width == 0 && self.image.height == 0 {
+            return;
+        }
+        self.image = Raster::new(0, 0);
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -37,6 +60,12 @@ impl SnipHistory {
             self.entries.drain(0..extra);
         }
         self.idx = self.entries.len();
+    }
+
+    pub fn evict_pixels(&mut self) {
+        for e in &mut self.entries {
+            e.evict_pixels();
+        }
     }
 
     pub fn last(&self) -> Option<&HistoryEntry> {
@@ -131,10 +160,7 @@ mod tests {
     use super::*;
 
     fn entry(x: f32) -> HistoryEntry {
-        HistoryEntry {
-            rect: Rect::new(x, 0.0, 10.0, 10.0),
-            image: Raster::new(4, 4),
-        }
+        HistoryEntry::new(Rect::new(x, 0.0, 10.0, 10.0), Raster::new(4, 4))
     }
 
     #[test]
@@ -182,5 +208,15 @@ mod tests {
         let back = HistoryFile::from_toml(&f.to_toml().unwrap()).unwrap();
         assert_eq!(back.entries[0].rect(), Rect::new(10.0, 20.0, 100.0, 80.0));
         assert_eq!(HistoryFile::path(Path::new("/tmp/ps")).file_name().unwrap(), "history.toml");
+    }
+
+    #[test]
+    fn evict_pixels_drops_resident_rasters() {
+        let mut h = SnipHistory::new();
+        h.push(entry(1.0), 10);
+        assert!(h.entries[0].image.width > 0);
+        h.evict_pixels();
+        assert_eq!(h.entries[0].image.width, 0);
+        assert_eq!(h.entries[0].rect.x, 1.0);
     }
 }

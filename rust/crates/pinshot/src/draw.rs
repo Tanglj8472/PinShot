@@ -428,9 +428,6 @@ fn blit_raster_copy(pm: &mut Pixmap, img: &Raster, x: i32, y: i32) {
 /// Persistent overlay compositor: cached capture + dirty GDI present.
 pub struct OverlayFront {
     shot: Pixmap,
-    /// Pre-dimmed desktop. Restores copy this instead of alpha-blending
-    /// black onto `shot`, so magnifier dirty rects cannot stack extra dim.
-    dimmed: Pixmap,
     frame: Pixmap,
     #[cfg(windows)]
     gdi: GdiBits,
@@ -581,15 +578,42 @@ fn dim_pixmap(src: &Pixmap, dim: u8) -> Option<Pixmap> {
     Some(frame)
 }
 
+fn dim_rect(pm: &mut Pixmap, r: Rect, dim: u8) {
+    let bounds = Rect::new(0.0, 0.0, pm.width() as f32, pm.height() as f32);
+    let r = clip_rect(r, bounds);
+    if r.is_empty() {
+        return;
+    }
+    let x0 = r.x.floor().max(0.0) as u32;
+    let y0 = r.y.floor().max(0.0) as u32;
+    let x1 = r.right().ceil().min(pm.width() as f32) as u32;
+    let y1 = r.bottom().ceil().min(pm.height() as f32) as u32;
+    if x0 >= x1 || y0 >= y1 {
+        return;
+    }
+    let k = 255u16.saturating_sub(dim as u16);
+    let w = pm.width() as usize;
+    let d = pm.data_mut();
+    for y in y0..y1 {
+        let row = (y as usize * w + x0 as usize) * 4;
+        let cols = (x1 - x0) as usize;
+        for i in 0..cols {
+            let o = row + i * 4;
+            d[o] = ((d[o] as u16 * k) / 255) as u8;
+            d[o + 1] = ((d[o + 1] as u16 * k) / 255) as u8;
+            d[o + 2] = ((d[o + 2] as u16 * k) / 255) as u8;
+        }
+    }
+}
+
 impl OverlayFront {
     pub fn new(shot: &Raster, dim: u8) -> Result<Self, String> {
         let t0 = std::time::Instant::now();
         let shot_pm = shot.to_skia().ok_or("capture pixmap")?;
         crate::logutil::ms("overlay to_skia", t0);
         let t_dim = std::time::Instant::now();
-        let dimmed = dim_pixmap(&shot_pm, dim).ok_or("dim pixmap")?;
+        let frame = dim_pixmap(&shot_pm, dim).ok_or("dim pixmap")?;
         crate::logutil::ms("overlay dim", t_dim);
-        let frame = dimmed.clone();
         #[cfg(windows)]
         let t_gdi = std::time::Instant::now();
         #[cfg(windows)]
@@ -598,7 +622,6 @@ impl OverlayFront {
         crate::logutil::ms("overlay gdi dib", t_gdi);
         Ok(Self {
             shot: shot_pm,
-            dimmed,
             frame,
             #[cfg(windows)]
             gdi,
@@ -632,15 +655,14 @@ impl OverlayFront {
             return Ok(());
         }
         self.shot = shot_pm;
-        self.dimmed = dim_pixmap(&self.shot, self.dim).ok_or("dim pixmap")?;
-        self.frame = self.dimmed.clone();
-        let bounds = self.bounds();
+        self.frame = dim_pixmap(&self.shot, self.dim).ok_or("dim pixmap")?;
         self.last_hole = Rect::EMPTY;
         self.last_chrome.clear();
         self.last_size_label = Rect::EMPTY;
         self.primed = false;
         #[cfg(windows)]
         {
+            let bounds = self.bounds();
             self.gdi.write_rect(&self.frame, bounds);
             self.gdi.blit_rect(hwnd, bounds);
         }
@@ -652,7 +674,8 @@ impl OverlayFront {
         if r.is_empty() {
             return;
         }
-        copy_rect(&mut self.frame, &self.dimmed, r);
+        copy_rect(&mut self.frame, &self.shot, r);
+        dim_rect(&mut self.frame, r, self.dim);
     }
 
     pub fn paint(

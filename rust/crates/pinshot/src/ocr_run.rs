@@ -26,6 +26,17 @@ pub fn recognize_with_progress(
     infer(image, &paths)
 }
 
+pub fn release_engine() {
+    #[cfg(any(feature = "ocr", unix))]
+    if let Some(cell) = ENGINE.get() {
+        if let Ok(mut guard) = cell.lock() {
+            if guard.take().is_some() {
+                crate::logutil::log("ocr engine dropped");
+            }
+        }
+    }
+}
+
 pub fn prefetch_models() {
     std::thread::spawn(|| {
         match ensure_models_with_progress(&mut |msg| {
@@ -490,6 +501,11 @@ fn ocr_ep_label() -> &'static str {
 static OCR_USED_GPU: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[cfg(any(feature = "ocr", unix))]
+static ENGINE: std::sync::OnceLock<
+    std::sync::Mutex<Option<(String, paddle_ocr_rs::ocr_lite::OcrLite)>>,
+> = std::sync::OnceLock::new();
+
+#[cfg(any(feature = "ocr", unix))]
 fn session_gpu(
     builder: ort::session::builder::SessionBuilder,
 ) -> Result<ort::session::builder::SessionBuilder, ort::Error> {
@@ -521,10 +537,7 @@ fn with_engine<F>(paths: &ModelPaths, f: F) -> Result<OcrPage, String>
 where
     F: FnOnce(&mut paddle_ocr_rs::ocr_lite::OcrLite) -> Result<OcrPage, String>,
 {
-    use std::sync::{Mutex, OnceLock};
-    static ENGINE: OnceLock<Mutex<Option<(String, paddle_ocr_rs::ocr_lite::OcrLite)>>> =
-        OnceLock::new();
-    let cell = ENGINE.get_or_init(|| Mutex::new(None));
+    let cell = ENGINE.get_or_init(|| std::sync::Mutex::new(None));
     let mut guard = cell.lock().map_err(|e| e.to_string())?;
     let gpu = want_ocr_gpu();
     let key = format!(

@@ -19,7 +19,9 @@ use windows::Win32::UI::HiDpi::{
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS, VK_CONTROL,
 };
-use windows::Win32::System::Threading::GetCurrentProcessId;
+use windows::Win32::System::Threading::{
+    GetCurrentProcess, GetCurrentProcessId, SetProcessWorkingSetSize,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, EnumWindows, GetClassNameW, GetCursorPos,
     GetSystemMetrics, GetWindowLongPtrW, GetWindowTextW, GetWindowThreadProcessId, IsWindow,
@@ -212,6 +214,14 @@ unsafe extern "system" fn enum_cloak_trays(hwnd: HWND, lparam: LPARAM) -> BOOL {
         }
     }
     BOOL(1)
+}
+
+/// Ask Windows to give unused pages back. The CRT heap stays reserved after
+/// Drop; Task Manager working-set is what the user sees.
+pub fn trim_working_set() {
+    unsafe {
+        let _ = SetProcessWorkingSetSize(GetCurrentProcess(), usize::MAX, usize::MAX);
+    }
 }
 
 /// Hide the live taskbar while the freeze overlay is up. Explorer's tray is

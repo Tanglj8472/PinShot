@@ -664,10 +664,7 @@ impl Overlay {
 
     fn remember(&mut self) {
         self.history.push(
-            HistoryEntry {
-                rect: self.sel.normalized(),
-                image: self.capture.composed.clone(),
-            },
+            HistoryEntry::new(self.sel.normalized(), self.capture.composed.clone()),
             self.history_max,
         );
     }
@@ -730,16 +727,25 @@ impl Overlay {
         if self.live_shot.is_none() {
             self.live_shot = Some(self.capture.composed.clone());
         }
-        match self.history.step(dir) {
-            HistoryView::Live => {
+        let replay = match self.history.step(dir) {
+            HistoryView::Live => None,
+            HistoryView::Replay(e) => {
+                let img = if e.resident() {
+                    Some(e.image.clone())
+                } else {
+                    e.disk.as_deref().and_then(load_hist_raster)
+                };
+                img.map(|image| (e.rect, image))
+            }
+        };
+        match replay {
+            None => {
                 if let Some(live) = self.live_shot.clone() {
                     self.apply_replay(&live, None);
                 }
                 self.show_toast(tr("Snip history"));
             }
-            HistoryView::Replay(e) => {
-                let img = e.image.clone();
-                let rect = e.rect;
+            Some((rect, img)) => {
                 self.apply_replay(&img, Some(rect));
                 self.show_toast(tr("Snip history"));
             }
@@ -1951,6 +1957,11 @@ fn xbutton(detail: u8) -> Option<MouseButton> {
 }
 
 /// Two consecutive QueryPointer ups commit Creating (window-adopt if the
+fn load_hist_raster(path: &std::path::Path) -> Option<Raster> {
+    let img = image::open(path).ok()?.to_rgba8();
+    Raster::from_rgba(img.width(), img.height(), img.into_raw())
+}
+
 /// span is a click), Moving, and Resizing. A single false up is ignored.
 fn recover_should_commit_sel(down: bool, up_streak: u8, state: SelState) -> bool {
     if down || up_streak < 2 {

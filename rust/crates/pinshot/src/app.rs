@@ -295,6 +295,9 @@ impl App {
         }
         self.wait_after_overlay = false;
         crate::logutil::log("begin_snip capture");
+        if self.history.entries.is_empty() {
+            self.restore_history();
+        }
         let t0 = Instant::now();
         let translate = self.translate_next;
         self.translate_next = false;
@@ -411,7 +414,9 @@ impl App {
         drop(ov);
         crate::logutil::log("overlay closed");
         crate::native::release_stray_grabs();
+        self.retire_pump_window();
         if !resnip {
+            crate::ocr_run::release_engine();
             #[cfg(windows)]
             crate::capture::Capture::release_idle();
         }
@@ -426,6 +431,9 @@ impl App {
         } else {
             crate::logutil::log("skip history persist (cancel/resnip)");
         }
+        // Full-desktop history frames stay on disk. Keeping 10 of them in
+        // the tray process is why Task Manager never dropped after a snip.
+        self.history.evict_pixels();
         match res {
             OverlayResult::Copy(img, _) => {
                 if clipboard::write_image(&img).is_ok() {
@@ -742,7 +750,7 @@ impl App {
         }
     }
 
-    fn persist_history(&self) {
+    fn persist_history(&mut self) {
         let dir = HistoryFile::dir(&data_dir());
         let _ = std::fs::create_dir_all(&dir);
         if let Ok(rd) = std::fs::read_dir(&dir) {
@@ -752,17 +760,26 @@ impl App {
         }
         let mut names = Vec::new();
         let mut kept = SnipHistory::new();
-        for e in &self.history.entries {
+        for e in &mut self.history.entries {
+            if !e.resident() {
+                continue;
+            }
             let name = format!("hist-{:03}.png", names.len());
             let png = encode_png(&e.image);
             if png.is_empty() {
                 continue;
             }
-            if std::fs::write(dir.join(&name), png).is_err() {
+            let path = dir.join(&name);
+            if std::fs::write(&path, png).is_err() {
                 continue;
             }
+            e.disk = Some(path);
             names.push(name);
-            kept.entries.push(e.clone());
+            kept.entries.push(HistoryEntry {
+                rect: e.rect,
+                image: Raster::new(0, 0),
+                disk: e.disk.clone(),
+            });
         }
         let file = kept.to_file(&names);
         if let Ok(text) = file.to_toml() {
@@ -781,25 +798,34 @@ impl App {
         let hist_dir = HistoryFile::dir(&dir);
         let mut hist = SnipHistory::new();
         for meta in file.entries {
-            let Ok(bytes) = std::fs::read(hist_dir.join(&meta.file)) else {
+            let path = hist_dir.join(&meta.file);
+            if !path.is_file() {
                 continue;
-            };
-            let Some(img) = decode_png(&bytes) else {
-                continue;
-            };
+            }
             hist.entries.push(HistoryEntry {
                 rect: meta.rect(),
-                image: img,
+                image: Raster::new(0, 0),
+                disk: Some(path),
             });
         }
         hist.idx = hist.entries.len();
         if !hist.entries.is_empty() {
             crate::logutil::log(&format!(
-                "restored {} snip history entries",
+                "restored {} snip history slots (lazy)",
                 hist.entries.len()
             ));
         }
         self.history = hist;
+    }
+
+    fn retire_pump_window(&self) {
+        let Some(w) = &self.pump_win else {
+            return;
+        };
+        w.set_visible(false);
+        if !native::configure_window_geom(w, 0, 0, 1, 1) {
+            let _ = w.request_inner_size(winit::dpi::PhysicalSize::new(1, 1));
+        }
     }
 
     fn reap_pins(&mut self) {
@@ -1047,10 +1073,8 @@ impl ApplicationHandler<AppEvent> for App {
         if !self.session_restored {
             self.session_restored = true;
             self.restore_session(event_loop);
-            self.restore_history();
-            // Do not prefetch OCR / DXGI here: PP-OCRv5 + a standing
-            // DuplicateOutput session is why the idle tray process sat at
-            // ~200MB. Models load on first OCR; DXGI opens on first F1.
+            // History PNGs stay on disk until the next F1. Loading them here
+            // is how a fresh tray process sat at ~200MB with no overlay.
         }
         self.ensure_pump_window(event_loop);
         if self.start_prefs {
@@ -1171,6 +1195,9 @@ impl ApplicationHandler<AppEvent> for App {
                 if let Some(text) = follow {
                     self.spawn_translate(pin, text);
                 }
+                crate::ocr_run::release_engine();
+                #[cfg(windows)]
+                crate::win32::trim_working_set();
             }
             AppEvent::TranslateDone { pin, result } => {
                 if let Some(p) = self.pins.iter_mut().find(|p| p.window_id() == pin) {
