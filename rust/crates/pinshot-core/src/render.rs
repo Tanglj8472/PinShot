@@ -385,13 +385,13 @@ fn fill_sharp_arrow(pm: &mut Pixmap, a: Point, b: Point, width: i32, t: Transfor
     let vx = -uy;
     let vy = ux;
     let w = width.max(1) as f32;
-    // Snipaste thin: hairline tail, slim neck, long acute head (not a fat
-    // perpendicular triangle glued onto a thick shaft).
+    // Snipaste thin: hairline tail, slim neck, larger spear head with
+    // longer swept barbs (尾翼) — not a stub triangle.
     let tail_hw = 0.42_f32.max(w * 0.14);
     let neck_hw = (w * 0.42).max(tail_hw + 0.18);
-    let barb_hw = (w * 1.0 + 2.1).max(neck_hw * 2.15);
-    let head_len = (w * 6.4 + 12.0).min(len * 0.48).max(9.0f32.min(len * 0.66));
-    let sweep = (head_len * 0.12).min(3.2);
+    let barb_hw = (w * 1.2 + 2.8).max(neck_hw * 2.5);
+    let head_len = (w * 8.5 + 16.0).min(len * 0.56).max(12.0f32.min(len * 0.72));
+    let sweep = (head_len * 0.22).min(6.5);
     let neck = Point::new(b.x - ux * head_len, b.y - uy * head_len);
     let barb = Point::new(neck.x - ux * sweep, neck.y - uy * sweep);
     let mut pb = PathBuilder::new();
@@ -606,15 +606,15 @@ mod tests {
     fn thick_arrow_covers_more_than_thin() {
         let mut base = Raster::new(80, 40);
         base.fill(Rgba::WHITE);
-        let thin = count_red(
+        let thin = count_reddish(
             &compose(&base, &[line_shape(crate::annotation::ArrowKind::Thin)]),
-            16..28,
-            12..28,
+            10..18,
+            16..24,
         );
-        let thick = count_red(
+        let thick = count_reddish(
             &compose(&base, &[line_shape(crate::annotation::ArrowKind::Thick)]),
-            16..28,
-            12..28,
+            10..18,
+            16..24,
         );
         assert!(thick > thin, "thick shaft={thick} thin shaft={thin}");
     }
@@ -650,7 +650,7 @@ mod tests {
         let out = compose(&base, &[line_shape(crate::annotation::ArrowKind::Thin)]);
         let tail_off = count_reddish(&out, 10..20, 12..16);
         let shaft = count_reddish(&out, 16..28, 18..23);
-        let barbs = count_reddish(&out, 26..34, 13..17) + count_reddish(&out, 26..34, 23..27);
+        let barbs = count_reddish(&out, 22..32, 12..17) + count_reddish(&out, 22..32, 23..28);
         assert!(shaft > 8, "needle shaft pixels={shaft}");
         assert!(
             tail_off < 3,
