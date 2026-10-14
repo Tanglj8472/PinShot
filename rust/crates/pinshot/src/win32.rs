@@ -20,7 +20,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, EnumWindows, FindWindowW, GetCursorPos,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, EnumWindows, GetCursorPos,
     GetSystemMetrics, GetWindowLongPtrW, GetWindowTextW, GetWindowThreadProcessId, IsWindow,
     PostMessageW, RegisterClassW, SetCursorPos, SetLayeredWindowAttributes,
     SetWindowDisplayAffinity, SetWindowLongPtrW, SetWindowPos, ShowWindow, GWL_EXSTYLE, GWL_STYLE,

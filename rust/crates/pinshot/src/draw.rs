@@ -865,10 +865,6 @@ impl OverlayFront {
             }
         }
 
-        self.last_hole = hole;
-        self.last_chrome = chrome;
-        self.last_size_label = size_label;
-
         // Write only the dirty tiles into the persistent DIB, then BitBlt
         // the whole DIB. Partial BitBlt of the loupe alone is what stained
         // the freeze; a full blit of an incrementally-updated DIB does not.
@@ -885,6 +881,9 @@ impl OverlayFront {
             self.gdi.write_rect(&self.frame, present);
             self.gdi.blit_rect(hwnd, bounds);
         }
+        self.last_hole = hole;
+        self.last_chrome = chrome;
+        self.last_size_label = size_label;
         self.primed = true;
         let _ = FillRule::Winding;
         let _ = hwnd;
