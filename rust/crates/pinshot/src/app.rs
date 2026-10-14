@@ -41,7 +41,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     match crate::ipc::claim_or_forward(cmd)? {
         crate::ipc::Boot::Forwarded => return Ok(()),
         crate::ipc::Boot::Primary(mtx) => {
-            std::mem::forget(mtx);
+            let _ = mtx;
         }
     }
 

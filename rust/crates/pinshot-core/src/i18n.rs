@@ -61,7 +61,7 @@ const PAIRS: &[(&str, &str)] = &[
     ("Rectangle / Ellipse", "矩形 / 椭圆"),
     ("Line / Arrow", "直线 / 箭头"),
     ("Line / arrow (Shift+drag continues polyline)", "直线 / 箭头（Shift+拖动继续折线）"),
-    ("Pencil", "铅笔"),
+    ("Pencil", "画笔"),
     ("Marker", "记号笔"),
     ("Mosaic / blur", "马赛克 / 模糊"),
     ("Text", "文字"),

@@ -494,6 +494,9 @@ fn font_files() -> &'static [PathBuf] {
         if let Some(home) = std::env::var_os("HOME") {
             dirs.push(PathBuf::from(home).join(".local/share/fonts"));
         }
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            dirs.push(PathBuf::from(local).join("Microsoft/Windows/Fonts"));
+        }
         for dir in dirs {
             walk_fonts(&dir, 0, 3, &mut out);
         }
@@ -571,6 +574,9 @@ fn sibling_variant(path: &Path, bold: bool, italic: bool) -> Option<PathBuf> {
 }
 
 fn find_family_file(family: &str, bold: bool, italic: bool) -> Option<PathBuf> {
+    if let Some(face) = system_family_face(family, bold, italic) {
+        return Some(face.path.clone());
+    }
     for p in preferred_fonts(family, bold, italic) {
         if p.is_file() && is_outline_font(&p) && load_font(&p).is_some() {
             return Some(p);
@@ -623,7 +629,11 @@ fn font_ex(family: &str, bold: bool, italic: bool) -> Option<&'static fontdue::F
             return *hit;
         }
     }
-    let found = find_family_file(family, bold, italic).and_then(|p| load_font(&p));
+    let found = if let Some(face) = system_family_face(family, bold, italic) {
+        load_font_index(&face.path, face.index)
+    } else {
+        find_family_file(family, bold, italic).and_then(|p| load_font(&p))
+    };
     let leaked = match found {
         Some(f) => Some(&*Box::leak(Box::new(f))),
         None => font(),
@@ -634,9 +644,70 @@ fn font_ex(family: &str, bold: bool, italic: bool) -> Option<&'static fontdue::F
     leaked
 }
 
-/// Families we can offer in the toolbar (presets that resolve on this machine).
+struct SystemFontFace {
+    family: String,
+    path: PathBuf,
+    index: u32,
+    bold: bool,
+    italic: bool,
+}
+
+fn system_font_faces() -> &'static [SystemFontFace] {
+    static FACES: OnceLock<Vec<SystemFontFace>> = OnceLock::new();
+    FACES.get_or_init(|| {
+        let mut faces = Vec::new();
+        for path in font_files() {
+            let Ok(bytes) = std::fs::read(path) else { continue; };
+            for index in 0..ttf_parser::fonts_in_collection(&bytes).unwrap_or(1) {
+                let Ok(face) = ttf_parser::Face::parse(&bytes, index) else { continue; };
+                let name = [ttf_parser::name_id::TYPOGRAPHIC_FAMILY, ttf_parser::name_id::FAMILY]
+                    .into_iter().find_map(|id| {
+                        face.names().into_iter().filter(|n| n.name_id == id)
+                            .filter_map(|n| n.to_string().map(|name| (n.language_id == 0x409, name)))
+                            .filter(|(_, name)| !name.trim().is_empty())
+                            .max_by_key(|(english, _)| *english).map(|(_, name)| name)
+                    });
+                if let Some(family) = name {
+                    faces.push(SystemFontFace { family, path: path.clone(), index,
+                        bold: face.is_bold(), italic: face.is_italic() });
+                }
+            }
+        }
+        faces.sort_by_key(|f| f.family.to_lowercase());
+        faces
+    })
+}
+
+fn system_family_face(family: &str, bold: bool, italic: bool) -> Option<&'static SystemFontFace> {
+    if family.trim().is_empty() || FAMILY_PRESETS.iter().any(|(id, _)| family.eq_ignore_ascii_case(id)) {
+        return None;
+    }
+    system_font_faces().iter().filter(|f| f.family.eq_ignore_ascii_case(family))
+        .min_by_key(|f| u8::from(f.bold != bold) + u8::from(f.italic != italic) * 2)
+}
+
+/// Installed font families, including individual faces in TTC collections.
 pub fn available_families() -> Vec<&'static str> {
-    FAMILY_PRESETS.iter().map(|(id, _)| *id).collect()
+    let mut names: Vec<_> = FAMILY_PRESETS.iter().map(|(id, _)| *id).collect();
+    for face in system_font_faces() {
+        if !names.iter().any(|name| name.eq_ignore_ascii_case(&face.family)) {
+            names.push(face.family.as_str());
+        }
+    }
+    names
+}
+
+#[cfg(test)]
+#[test]
+fn installed_family_catalog_resolves_font_and_collection_index() {
+    let faces = system_font_faces();
+    let Some(face) = faces.iter().find(|f| f.index > 0).or_else(|| faces.first()) else { return; };
+    let families = available_families();
+    assert!(families.contains(&face.family.as_str()));
+    let resolved = system_family_face(&face.family, face.bold, face.italic).unwrap();
+    assert_eq!(resolve_family_path(&face.family, face.bold, face.italic), Some(resolved.path.clone()));
+    assert!(load_font_index(&resolved.path, resolved.index).is_some());
+    eprintln!("{} installed families; checked {} collection index {}", families.len() - FAMILY_PRESETS.len(), resolved.family, resolved.index);
 }
 
 pub fn available() -> bool {

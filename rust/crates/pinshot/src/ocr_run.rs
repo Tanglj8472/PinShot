@@ -6,8 +6,10 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use pinshot_core::ocr::{
-    det_edge_pad, det_padding, model_dir, ocr_upsample_for, page_from_blocks, ModelPaths,
-    OcrModelKind, OcrPage, DET_BOX_SCORE, DET_BOX_THRESH, DET_MAX_SIDE, DET_UNCLIP,
+    det_edge_pad, det_padding, ocr_upsample_for, page_from_blocks, DET_BOX_SCORE,
+    DET_BOX_THRESH, DET_MAX_SIDE, DET_UNCLIP,
+    model_dir, ModelPaths,
+    OcrModelKind, OcrPage,
 };
 use pinshot_core::raster::Raster;
 

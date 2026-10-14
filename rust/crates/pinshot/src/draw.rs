@@ -467,6 +467,8 @@ pub struct OverlayFront {
     last_size_label: Rect,
     last_mag: Rect,
     primed: bool,
+    effect_shapes: Vec<pinshot_core::annotation::Shape>,
+    effect_frame: Option<Pixmap>,
 }
 
 #[cfg(windows)]
@@ -731,6 +733,8 @@ impl OverlayFront {
             last_size_label: Rect::EMPTY,
             last_mag: Rect::EMPTY,
             primed: false,
+            effect_shapes: Vec::new(),
+            effect_frame: None,
         })
     }
 
@@ -886,10 +890,13 @@ impl OverlayFront {
                 .iter()
                 .any(|s| matches!(s.kind, Tool::Mosaic | Tool::Eraser));
             if needs_fx {
-                let composed = compose(shot, &shapes);
-                if let Some(src) = composed.to_skia() {
+                if self.effect_frame.is_none() || self.effect_shapes != shapes {
+                    self.effect_frame = compose(shot, &shapes).to_skia();
+                    self.effect_shapes = shapes.clone();
+                }
+                if let Some(src) = self.effect_frame.as_ref() {
                     let ink = restore_r.union(hole).intersect(bounds);
-                    copy_rect(&mut self.frame, &src, ink);
+                    copy_rect(&mut self.frame, src, ink);
                 }
             } else {
                 paint_shapes(&mut self.frame, &shapes);
@@ -911,7 +918,7 @@ impl OverlayFront {
                 // Lines are a segment between endpoints, not an AABB with a
                 // diagonal. Skip the blue box so dragging does not look like
                 // rubber-banding a selection rect.
-                if sh.kind != Tool::Line {
+                if !sh.is_line_stroke() {
                     let hb = sh.bounds().adjusted(-2.0, -2.0, 2.0, 2.0);
                     stroke_rect(&mut self.frame, hb, Rgba::BLUE, 1.0);
                     chrome.push(hb.inflated(HANDLE_SIZE));
@@ -927,6 +934,10 @@ impl OverlayFront {
                         )
                         .inflated(2.0),
                     );
+                }
+                if let Some(r) = annot.selected_text_delete_rect() {
+                    paint_text_delete(&mut self.frame, r);
+                    chrome.push(r.inflated(2.0));
                 }
             }
         }
@@ -971,6 +982,13 @@ impl OverlayFront {
 
         if show_cursor {
             chrome.push(paint_pointer(&mut self.frame, cursor));
+        }
+        if confirm_dont.is_none() && picker.is_none() {
+            let mut hint = annot.cursor_hint(Point::new(cursor.x * dpr, cursor.y * dpr));
+            hint.over_chrome = toolbar.is_some_and(|t| t.contains(cursor));
+            if let Some(width) = crate::cursor::brush_width(annot, pinshot_core::cursor::cursor_for(hint)) {
+                chrome.push(crate::cursor::paint_brush(&mut self.frame, cursor, width / dpr.max(0.1)));
+            }
         }
 
         if let Some(dont) = confirm_dont {
@@ -1313,7 +1331,13 @@ pub fn paint_toolbar(pm: &mut Pixmap, tb: &Toolbar, cursor: Option<Point>) -> Re
                     );
                 }
                 let ink = if b.checked { Rgba::WHITE } else { CHROME_ICON };
-                draw_icon(pm, b.icon, b.rect.adjusted(4.0, 2.0, -4.0, -2.0), Some(ink));
+                if matches!(b.action, crate::toolbar::TbAction::Family(_) | crate::toolbar::TbAction::FontMenuScroll(_)) {
+                    let label = if b.tip.is_empty() { pinshot_core::i18n::tr("Default") } else { b.tip.to_string() };
+                    let label = fit_toolbar_text(&label, b.rect.w - 12.0, 12.0);
+                    crate::text::blit_into_pm(pm, &label, b.rect.x + 6.0, b.rect.y + 4.0, 12, ink, b.checked);
+                } else {
+                    draw_icon(pm, b.icon, b.rect.adjusted(4.0, 2.0, -4.0, -2.0), Some(ink));
+                }
             }
             dirty = dirty.union(menu.rect);
         }
@@ -1333,7 +1357,7 @@ pub fn paint_toolbar(pm: &mut Pixmap, tb: &Toolbar, cursor: Option<Point>) -> Re
             }
         }
         if !tb.slider.is_empty() {
-            paint_slider(pm, tb.slider, tb.width_value, tb.slider_min, tb.slider_max);
+            paint_slider(pm, tb.slider, tb.slider_value, tb.slider_min, tb.slider_max);
         }
         dirty = dirty.union(pr);
     }
@@ -1382,18 +1406,41 @@ pub fn paint_toolbar(pm: &mut Pixmap, tb: &Toolbar, cursor: Option<Point>) -> Re
     dirty.inflated(8.0)
 }
 
+pub fn paint_text_delete(pm: &mut Pixmap, r: Rect) {
+    fill_rounded_rect(pm, r, 3.0, Rgba::WHITE);
+    stroke_rounded_rect(pm, r, 3.0, Rgba::BLUE, 1.0);
+    draw_icon(pm, IconKind::Close, r, Some(Rgba::BLUE));
+}
+
 fn paint_width_chip(pm: &mut Pixmap, r: Rect, value: i32) {
     fill_rounded_rect(pm, r, 4.0, CHROME_SELECTED);
-    let numeric = value >= 8 || r.w >= 27.0;
-    if numeric && value > 0 {
+    paint_width_content(pm, r, value, Rgba::WHITE, true);
+}
+
+fn paint_width_content(pm: &mut Pixmap, r: Rect, value: i32, ink: Rgba, bold: bool) {
+    // Keep four pixels of padding on each side of the circular preview.
+    let max_diameter = (r.w.min(r.h) - 8.0).max(0.0);
+    let diameter = value.max(1) as f32;
+    if diameter > max_diameter && value > 0 {
         let s = format!("{value}");
-        crate::text::blit_into_pm(pm, &s, r.x + 6.0, r.y + 4.0, 12, Rgba::WHITE, true);
+        crate::text::blit_into_pm(pm, &s, r.x + 6.0, r.y + 4.0, 12, ink, bold);
     } else {
-        let d = (value as f32 * 1.6).clamp(4.0, 12.0);
+        let d = diameter.min(max_diameter);
         let cx = r.x + r.w * 0.5 - d * 0.5;
         let cy = r.y + r.h * 0.5 - d * 0.5;
-        fill_rounded_rect(pm, Rect::new(cx, cy, d, d), d * 0.5, Rgba::WHITE);
+        fill_rounded_rect(pm, Rect::new(cx, cy, d, d), d * 0.5, ink);
     }
+}
+
+fn fit_toolbar_text(text: &str, max_width: f32, size: f32) -> String {
+    if pinshot_core::font::measure_chrome(text, size).0 <= max_width { return text.to_string(); }
+    let mut label = text.to_string();
+    while !label.is_empty() {
+        label.pop();
+        let shortened = format!("{label}…");
+        if pinshot_core::font::measure_chrome(&shortened, size).0 <= max_width { return shortened; }
+    }
+    String::new()
 }
 
 fn paint_extra(pm: &mut Pixmap, extra: &TbExtra, cursor: Option<Point>) {
@@ -1411,9 +1458,10 @@ fn paint_extra(pm: &mut Pixmap, extra: &TbExtra, cursor: Option<Point>) {
                 );
             }
             if !extra.label.is_empty() {
+                let label = fit_toolbar_text(&extra.label, extra.rect.w - 22.0, 11.0);
                 crate::text::blit_into_pm(
                     pm,
-                    &extra.label,
+                    &label,
                     extra.rect.x + 6.0,
                     extra.rect.y + 4.0,
                     11,
@@ -1423,7 +1471,7 @@ fn paint_extra(pm: &mut Pixmap, extra: &TbExtra, cursor: Option<Point>) {
             }
             paint_chevron(pm, extra.rect.right() - 12.0, extra.rect.y + 9.0);
         }
-        ExtraKind::Chip | ExtraKind::Icon => {
+        ExtraKind::Icon | ExtraKind::BrushSize(_) => {
             let (fill, ink) = if extra.checked {
                 (CHROME_SELECTED, Rgba::WHITE)
             } else if hot {
@@ -1435,7 +1483,9 @@ fn paint_extra(pm: &mut Pixmap, extra: &TbExtra, cursor: Option<Point>) {
             if extra.checked {
                 stroke_rounded_rect(pm, extra.rect, 3.0, CHROME_SELECTED_EDGE, 1.0);
             }
-            if let Some(icon) = extra.icon {
+            if let ExtraKind::BrushSize(value) = extra.kind {
+                paint_width_content(pm, extra.rect, value, ink, extra.checked);
+            } else if let Some(icon) = extra.icon {
                 draw_icon(
                     pm,
                     icon,

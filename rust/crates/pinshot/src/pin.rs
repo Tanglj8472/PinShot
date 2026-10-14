@@ -94,6 +94,8 @@ pub struct PinWin {
     arrow_kind: ArrowKind,
     ellipse_on: bool,
     line_menu_open: bool,
+    font_menu_open: bool,
+    font_menu_offset: usize,
     toast: Option<String>,
     toast_until: Option<Instant>,
     pub persist_needed: bool,
@@ -180,6 +182,8 @@ impl PinWin {
             arrow_kind: ArrowKind::Thin,
             ellipse_on: false,
             line_menu_open: false,
+            font_menu_open: false,
+            font_menu_offset: 0,
             toast: None,
             toast_until: None,
             persist_needed: false,
@@ -583,6 +587,13 @@ impl PinWin {
             self.annot.option_style(),
         );
         tb.set_width_value(self.annot.option_width());
+        if self.font_menu_open && self.annot.tool == Some(Tool::Text) {
+            if let Some(st) = self.annot.option_style() {
+                self.font_menu_offset = tb.attach_font_menu(over, st, self.font_menu_offset);
+            }
+        } else {
+            self.font_menu_open = false;
+        }
         if self.line_menu_open && self.annot.tool == Some(Tool::Line) {
             if let Some(st) = self.annot.option_style() {
                 tb.attach_line_menu(over, st);
@@ -786,7 +797,7 @@ impl PinWin {
         }
         let mut hint = self.annot.cursor_hint(self.img_pt(self.last_cursor));
         hint.over_chrome = over_chrome;
-        crate::cursor::apply(&self.window, cursor_for(hint));
+        crate::cursor::apply_annot(&self.window, cursor_for(hint), &self.annot);
     }
 
     fn apply_tb(&mut self, a: TbAction) {
@@ -853,6 +864,9 @@ impl PinWin {
             TbAction::WidthSet(v) => {
                 let _ = self.annot.set_option_width(v);
             }
+            TbAction::StrengthSet(v) => {
+                self.annot.set_style_value(Tool::Mosaic, |s| s.size = v.clamp(1, 30));
+            }
             TbAction::Color(i) => {
                 if let Some(tool) = self.annot.tool.filter(|t| *t != Tool::Select) {
                     let c = pinshot_core::palette_colors()[i as usize];
@@ -882,7 +896,7 @@ impl PinWin {
             }
             TbAction::SetMode(mode) => {
                 if let Some(tool) = self.annot.option_tool() {
-                    self.annot.set_style_value(tool, |s| s.mode = mode);
+                    self.annot.set_draw_mode(tool, mode);
                 }
             }
             TbAction::SetEffect(effect) => {
@@ -900,8 +914,20 @@ impl PinWin {
                 self.annot.set_style_value(Tool::Text, |s| s.outline = on);
             }
             TbAction::Family(fam) => {
+                self.font_menu_open = false;
                 self.annot
                     .set_style_value(Tool::Text, |s| s.family = fam.to_string());
+            }
+            TbAction::ToggleFontMenu => {
+                self.font_menu_open = !self.font_menu_open;
+                if self.font_menu_open {
+                    let family = self.annot.option_style().map(|s| s.family.as_str()).unwrap_or("");
+                    self.font_menu_offset = pinshot_core::font::available_families().iter()
+                        .position(|f| f.eq_ignore_ascii_case(family)).unwrap_or(0).saturating_sub(3);
+                }
+            }
+            TbAction::FontMenuScroll(delta) => {
+                self.font_menu_offset = self.font_menu_offset.saturating_add_signed(delta as isize);
             }
             TbAction::Ocr => {
                 self.pending_ocr = true;
@@ -1013,6 +1039,8 @@ impl PinWin {
                     .unwrap_or(false);
                 self.last_cursor = p;
                 if self.annotating
+                { self.dirty = true; }
+                if self.annotating
                     && (self.annot.is_brush_live()
                         || self.annot.is_selecting()
                         || self.annot.is_dragging_text()
@@ -1053,6 +1081,10 @@ impl PinWin {
                     native::raise_on_top(&self.window);
                 }
                 if *button == MouseButton::Right && *state == ElementState::Pressed {
+                    if self.annotating && self.annot.live.as_ref().is_some_and(|s| s.kind == Tool::Line) {
+                        self.annot.move_to(self.img_pt(self.last_cursor), self.mods.shift_key());
+                        self.persist_needed = true;
+                    }
                     if self.annotating && self.annot.right_click() {
                         self.relayout_tb();
                         self.dirty = true;
@@ -1082,8 +1114,9 @@ impl PinWin {
                                 return;
                             }
                         }
-                        if self.line_menu_open {
+                        if self.line_menu_open || self.font_menu_open {
                             self.line_menu_open = false;
+                            self.font_menu_open = false;
                             self.relayout_tb();
                             self.dirty = true;
                             return;
@@ -1156,6 +1189,12 @@ impl PinWin {
                 let Some(angle) = self.wheel.take(raw) else {
                     return;
                 };
+                if self.font_menu_open {
+                    self.font_menu_offset = self.font_menu_offset.saturating_add_signed(if angle > 0 { -3 } else { 3 });
+                    self.relayout_tb();
+                    self.dirty = true;
+                    return;
+                }
                 if self.annotating
                     && (self.annot.tool.is_some()
                         || self.annot.selected.is_some()
@@ -1188,6 +1227,12 @@ impl PinWin {
                 native::focus_window(&self.window);
             }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
+                if self.font_menu_open && event.logical_key == Key::Named(NamedKey::Escape) {
+                    self.font_menu_open = false;
+                    self.relayout_tb();
+                    self.dirty = true;
+                    return;
+                }
                 if self.annot.text_edit.is_some() {
                     let ctrl = self.mods.control_key();
                     let shift = self.mods.shift_key();
@@ -1773,7 +1818,7 @@ impl PinWin {
         if let Some(i) = self.annot.selected {
             if let Some(sh) = self.annot.shapes.get(i) {
                 let m = self.margin() as f32;
-                if sh.kind != pinshot_core::annotation::Tool::Line {
+                if !sh.is_line_stroke() {
                     let hb = sh.bounds().adjusted(-2.0, -2.0, 2.0, 2.0);
                     let sr = Rect::new(
                         m + hb.x * self.scale,
@@ -1790,6 +1835,12 @@ impl PinWin {
                         Rgba::SNIP_RING,
                     );
                 }
+                if let Some(r) = self.annot.selected_text_delete_rect() {
+                    crate::draw::paint_text_delete(&mut pm, Rect::new(
+                        m + r.x * self.scale, m + r.y * self.scale,
+                        r.w * self.scale, r.h * self.scale,
+                    ));
+                }
             }
         }
         if let Some(picker) = &self.color_picker {
@@ -1797,6 +1848,13 @@ impl PinWin {
         }
         if let Some(t) = self.status.as_ref().or(self.toast.as_ref()) {
             crate::draw::paint_toast(&mut pm, t, ww, hh);
+        }
+        if self.annotating && self.color_picker.is_none() {
+            let mut hint = self.annot.cursor_hint(self.img_pt(self.last_cursor));
+            hint.over_chrome = self.toolbar.as_ref().is_some_and(|t| t.contains(self.last_cursor));
+            if let Some(width) = crate::cursor::brush_width(&self.annot, cursor_for(hint)) {
+                crate::cursor::paint_brush(&mut pm, self.last_cursor, width * self.scale);
+            }
         }
         if let Ok(mut buf) = self.surface.buffer_mut() {
             present_argb(&mut buf, &pm);

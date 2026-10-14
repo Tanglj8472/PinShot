@@ -89,7 +89,7 @@ impl Tool {
             Tool::Rect => "Rectangle",
             Tool::Ellipse => "Ellipse",
             Tool::Line => "Line / arrow (Shift+drag continues polyline)",
-            Tool::Pen => "Pencil",
+            Tool::Pen => "Brush",
             Tool::Marker => "Marker",
             Tool::Mosaic => "Mosaic / blur",
             Tool::Text => "Text",
@@ -99,8 +99,8 @@ impl Tool {
     }
 
     pub fn is_brush(self, style: &Style) -> bool {
-        matches!(self, Tool::Pen | Tool::Marker)
-            || (matches!(self, Tool::Mosaic | Tool::Eraser) && style.mode == DrawMode::Brush)
+        matches!(self, Tool::Pen)
+            || (matches!(self, Tool::Marker | Tool::Mosaic | Tool::Eraser) && style.mode == DrawMode::Brush)
     }
 }
 
@@ -156,6 +156,7 @@ pub struct Style {
     pub line_style: LineStyleKind,
     pub mode: DrawMode,
     pub effect: Effect,
+    /// Mosaic cell size / blur strength, independent of brush width.
     pub size: i32,
     pub bold: bool,
     pub italic: bool,
@@ -192,6 +193,7 @@ impl Style {
             Tool::Marker => {
                 s.color = Rgba::MARKER_YELLOW;
                 s.width = 14;
+                s.mode = DrawMode::Brush;
             }
             Tool::Pen => s.width = 3,
             Tool::Line => {
@@ -202,7 +204,10 @@ impl Style {
                 s.mode = DrawMode::Brush;
                 s.width = 16;
             }
-            Tool::Mosaic => s.mode = DrawMode::Brush,
+            Tool::Mosaic => {
+                s.mode = DrawMode::Brush;
+                s.width = 36;
+            }
             Tool::Number => {
                 s.width = 22;
                 s.filled = true;
@@ -248,6 +253,9 @@ pub struct Shape {
 }
 
 impl Shape {
+    pub fn is_line_stroke(&self) -> bool {
+        self.kind == Tool::Line
+    }
     pub fn new(kind: Tool, pts: Vec<Point>, style: Style) -> Self {
         Self {
             kind,
@@ -277,7 +285,7 @@ impl Shape {
                 return Rect::new(p.x, p.y, w + 4.0, h + 2.0);
             }
         }
-        if matches!(self.kind, Tool::Pen | Tool::Marker | Tool::Line) && self.pts.len() > 2 {
+        if matches!(self.kind, Tool::Pen | Tool::Marker | Tool::Line | Tool::Mosaic | Tool::Eraser) && self.pts.len() > 2 {
             let xs = self.pts.iter().map(|p| p.x);
             let ys = self.pts.iter().map(|p| p.y);
             let x0 = xs.clone().fold(f32::MAX, f32::min);
@@ -296,7 +304,9 @@ impl Shape {
 
 /// Start / end nubs for a 2-point line (not the 8-handle AABB of `bounds()`).
 fn line_endpoint_handles(sh: &Shape) -> Option<[(Handle, Point); 2]> {
-    if sh.kind != Tool::Line || sh.pts.len() != 2 {
+    if !sh.is_line_stroke()
+        || sh.pts.len() != 2
+    {
         return None;
     }
     Some([(Handle::Tl, sh.pts[0]), (Handle::Br, sh.pts[1])])
@@ -401,12 +411,15 @@ pub struct Annotator {
     sel_mode: Option<SelMode>,
     sel_origin: Point,
     sel_pts0: Vec<Point>,
+    sel_text_resize: Option<(Rect, i32)>,
     sel_dirty: bool,
     /// Text-tool press on committed text: click re-edits, drag moves.
     pending_text_click: Option<Point>,
     /// After click-outside commit, ignore the rest of this click so we do not
     /// immediately open a new empty box (Snipaste: next click places).
     swallow_text_place: bool,
+    line_press: Option<Point>,
+    line_click_mode: bool,
     wheel_target: Option<usize>,
     wheel_time: Instant,
     wheel_delta: i32,
@@ -428,9 +441,12 @@ impl Default for Annotator {
             sel_mode: None,
             sel_origin: Point::ZERO,
             sel_pts0: Vec::new(),
+            sel_text_resize: None,
             sel_dirty: false,
             pending_text_click: None,
             swallow_text_place: false,
+            line_press: None,
+            line_click_mode: false,
             wheel_target: None,
             wheel_time: Instant::now(),
             wheel_delta: 0,
@@ -439,6 +455,14 @@ impl Default for Annotator {
 }
 
 impl Annotator {
+    pub fn set_draw_mode(&mut self, tool: Tool, mode: DrawMode) {
+        if matches!(tool, Tool::Marker | Tool::Mosaic) {
+            self.set_tool(Some(tool));
+            self.style_mut(tool).mode = mode;
+        } else {
+            self.set_style_value(tool, |s| s.mode = mode);
+        }
+    }
     pub fn new() -> Self {
         Self::default()
     }
@@ -497,6 +521,8 @@ impl Annotator {
     }
 
     pub fn add(&mut self, shape: Shape) {
+        let selectable = shape.kind != Tool::Pen
+            && !(matches!(shape.kind, Tool::Marker | Tool::Mosaic) && shape.style.mode == DrawMode::Brush);
         self.push_edit();
         self.shapes.push(shape);
         let i = self.shapes.len() - 1;
@@ -505,9 +531,9 @@ impl Annotator {
         // draw still edit that shape. Python paints handles only for `selected`
         // (None after add) — keep the edit, and select the shape so the 8
         // handles make the target visible and hittable.
-        self.width_target = Some(i);
-        self.selected = Some(i);
-        self.edit_target = Some(i);
+        self.width_target = selectable.then_some(i);
+        self.selected = selectable.then_some(i);
+        self.edit_target = selectable.then_some(i);
         self.renumber();
     }
 
@@ -573,11 +599,16 @@ impl Annotator {
         }
         shift(&mut self.sel_pts0, d);
         self.sel_origin = self.sel_origin.add(d);
+        if let Some((bounds, _)) = self.sel_text_resize.as_mut() {
+            *bounds = bounds.translated(dx, dy);
+        }
         self.undo.translate_all(dx, dy);
     }
 
     pub fn clear(&mut self) {
         self.shapes.clear();
+        self.line_press = None;
+        self.line_click_mode = false;
         self.live = None;
         self.selected = None;
         self.next_number = 1;
@@ -602,6 +633,8 @@ impl Annotator {
     }
 
     pub fn finish(&mut self) {
+        self.line_press = None;
+        self.line_click_mode = false;
         if let Some(ed) = self.text_edit.take() {
             if !ed.text.trim().is_empty() {
                 if let Some(idx) = ed.existing {
@@ -623,8 +656,16 @@ impl Annotator {
             self.edit_target = None;
             self.width_target = None;
         }
-        if let Some(sh) = self.live.take() {
-            let ok = sh.pts.len() > 1
+        if let Some(mut sh) = self.live.take() {
+            if sh.kind == Tool::Line {
+                while sh.pts.len() > 2 && sh.pts[sh.pts.len() - 2] == *sh.pts.last().unwrap() {
+                    sh.pts.pop();
+                }
+            }
+            let marker_dot = matches!(sh.kind, Tool::Marker | Tool::Mosaic)
+                && sh.style.mode == DrawMode::Brush
+                && !sh.pts.is_empty();
+            let ok = marker_dot || sh.pts.len() > 1
                 && (sh.pts[0].manhattan(*sh.pts.last().unwrap()) > 2.0 || sh.pts.len() > 2);
             if ok {
                 self.add(sh);
@@ -810,7 +851,7 @@ impl Annotator {
     }
 
     /// Width shown in the toolbar panel: live / selected shape, else the tool default.
-    /// Mosaic uses `size`; text uses `font_size` (Python panel spins).
+    /// Text uses `font_size`; other tools use brush/stroke width.
     pub fn option_width(&self) -> i32 {
         let (kind, st) = if self.text_edit.is_some() {
             (
@@ -835,7 +876,6 @@ impl Annotator {
         };
         match kind {
             Tool::Text => st.font_size,
-            Tool::Mosaic => st.size,
             _ => st.width,
         }
     }
@@ -913,7 +953,6 @@ impl Annotator {
         };
         let clamped = match kind {
             Tool::Text => value.clamp(8, 120),
-            Tool::Mosaic => value.clamp(1, 30),
             Tool::Number => value.clamp(12, 80),
             _ => value.clamp(1, 60),
         };
@@ -953,7 +992,6 @@ impl Annotator {
     fn assign_style_width(st: &mut Style, kind: Tool, value: i32) {
         match kind {
             Tool::Text => st.font_size = value,
-            Tool::Mosaic => st.size = value,
             Tool::Number => {
                 st.width = value;
                 st.font_size = (st.width as f32 * 0.65) as i32;
@@ -978,7 +1016,6 @@ impl Annotator {
     fn nudge_style(st: &mut Style, kind: Tool, delta: i32) {
         match kind {
             Tool::Text => st.font_size = (st.font_size + 2 * delta).clamp(8, 120),
-            Tool::Mosaic => st.size = (st.size + delta).clamp(1, 30),
             Tool::Number => {
                 st.width = (st.width + 2 * delta).clamp(12, 80);
                 st.font_size = (st.width as f32 * 0.65) as i32;
@@ -990,6 +1027,9 @@ impl Annotator {
 
     pub fn hit_test(&self, img_pt: Point) -> Option<usize> {
         for (i, sh) in self.shapes.iter().enumerate().rev() {
+            if sh.kind == Tool::Pen || (matches!(sh.kind, Tool::Marker | Tool::Mosaic) && sh.style.mode == DrawMode::Brush) {
+                continue;
+            }
             if sh.kind == Tool::Eraser {
                 if self.hits_shape(sh, img_pt) {
                     return None;
@@ -1019,7 +1059,7 @@ impl Annotator {
         match sh.kind {
             Tool::Mosaic => {
                 if sh.style.mode == DrawMode::Brush {
-                    dist_to_polyline(p, &sh.pts) <= (sh.style.size as f32 * 3.0).max(4.0)
+                    dist_to_polyline(p, &sh.pts) <= (sh.style.width as f32 / 2.0).max(4.0)
                 } else {
                     b.contains(p)
                 }
@@ -1046,7 +1086,15 @@ impl Annotator {
     pub fn hit_handle_of_selected(&self, img_pt: Point) -> Option<Handle> {
         let i = self.selected?;
         let sh = self.shapes.get(i)?;
+        if sh.kind == Tool::Pen || (matches!(sh.kind, Tool::Marker | Tool::Mosaic) && sh.style.mode == DrawMode::Brush) {
+            return None;
+        }
         let slop = HANDLE_SIZE / 2.0 + 2.0;
+        if sh.kind == Tool::Text {
+            return self.selected_handle_points().into_iter().find_map(|(h, c)| {
+                ((img_pt.x - c.x).abs() <= slop && (img_pt.y - c.y).abs() <= slop).then_some(h)
+            });
+        }
         if let Some(pts) = line_endpoint_handles(sh) {
             for (h, c) in pts {
                 if (img_pt.x - c.x).abs() <= slop && (img_pt.y - c.y).abs() <= slop {
@@ -1059,12 +1107,33 @@ impl Annotator {
         hit_handle(b, img_pt, slop)
     }
 
+    pub fn selected_text_delete_rect(&self) -> Option<Rect> {
+        let sh = self.shapes.get(self.selected?)?;
+        if sh.kind != Tool::Text { return None; }
+        let c = handle_points(sh.bounds().inflated(2.0)).into_iter()
+            .find(|(h, _)| *h == Handle::Tr)?.1;
+        Some(Rect::new(c.x - 7.0, c.y - 7.0, 14.0, 14.0))
+    }
+
     pub fn delete_selected(&mut self) -> bool {
         if let Some(i) = self.selected {
             if i < self.shapes.len() {
                 self.push_edit();
                 self.shapes.remove(i);
                 self.selected = None;
+                self.edit_target = None;
+                self.width_target = None;
+                self.sel_mode = None;
+                self.sel_text_resize = None;
+                self.sel_pts0.clear();
+                self.pending_text_click = None;
+                if self.text_edit.as_ref().is_some_and(|ed| ed.existing == Some(i)) {
+                    self.text_edit = None;
+                } else if let Some(ed) = self.text_edit.as_mut() {
+                    if let Some(index) = ed.existing.as_mut() {
+                        if *index > i { *index -= 1; }
+                    }
+                }
                 self.renumber();
                 return true;
             }
@@ -1111,6 +1180,7 @@ impl Annotator {
             selecting_handle: self.selecting_handle(),
             hover_shape,
             hover_shape_handle,
+            hover_shape_delete: self.selected_text_delete_rect().is_some_and(|r| r.contains(img_pt)),
             editing_text: self.is_editing_text(),
             drawing: self.live.is_some(),
             ..Default::default()
@@ -1126,12 +1196,24 @@ impl Annotator {
 
     /// Left-button press in image coordinates. Returns true if the annotator consumed the event.
     pub fn press(&mut self, img_pt: Point, shift: bool) -> bool {
+        if self.selected_text_delete_rect().is_some_and(|r| r.contains(img_pt)) {
+            return self.delete_selected();
+        }
         let tool = self.tool;
+        if self.line_click_mode && self.live.as_ref().is_some_and(|s| s.kind == Tool::Line) {
+            self.move_to(img_pt, shift);
+            if let Some(sh) = self.live.as_mut() {
+                sh.pts.push(img_pt);
+            }
+            return true;
+        }
 
         // Select, or any drawing tool except eraser/mosaic/text, steals a hit
         // on an existing shape so the 8 handles appear. Text follows Snipaste:
         // click existing text to re-edit; click elsewhere to place a new box.
         let steal = tool == Some(Tool::Select)
+            || (self.selected.and_then(|i| self.shapes.get(i)).is_some_and(|sh| sh.kind == Tool::Text)
+                && self.hit_handle_of_selected(img_pt).is_some())
             || (tool != Some(Tool::Eraser)
                 && tool != Some(Tool::Mosaic)
                 && tool != Some(Tool::Text)
@@ -1144,6 +1226,8 @@ impl Annotator {
                     self.sel_origin = img_pt;
                     self.sel_dirty = false;
                     self.sel_pts0 = self.shapes[self.selected.unwrap()].pts.clone();
+                    let sh = &self.shapes[self.selected.unwrap()];
+                    self.sel_text_resize = (sh.kind == Tool::Text).then(|| (sh.bounds(), sh.style.font_size));
                     return true;
                 }
             }
@@ -1243,6 +1327,9 @@ impl Annotator {
             }
             _ => {
                 self.live = Some(Shape::new(tool, vec![img_pt, img_pt], st));
+                if tool == Tool::Line {
+                    self.line_press = Some(img_pt);
+                }
                 true
             }
         }
@@ -1478,6 +1565,18 @@ impl Annotator {
 
     /// Snipaste: right-click ends the current annotation (including text).
     pub fn right_click(&mut self) -> bool {
+        if self.live.is_none() && self.text_edit.is_none()
+            && (self.selected.is_some() || self.edit_target.is_some() || self.width_target.is_some())
+        {
+            self.selected = None;
+            self.edit_target = None;
+            self.width_target = None;
+            self.wheel_target = None;
+            self.wheel_delta = 0;
+            self.sel_mode = None;
+            self.sel_pts0.clear();
+            return true;
+        }
         if self.tool.is_none() && self.text_edit.is_none() && self.live.is_none() {
             return false;
         }
@@ -1495,7 +1594,7 @@ impl Annotator {
 
     pub fn move_to(&mut self, img_pt: Point, shift: bool) -> bool {
         if let (Some(mode), Some(idx)) = (self.sel_mode, self.selected) {
-            if img_pt == self.sel_origin {
+            if img_pt == self.sel_origin && !self.sel_dirty {
                 return true;
             }
             if !self.sel_dirty {
@@ -1549,7 +1648,9 @@ impl Annotator {
         if shift && matches!(sh.kind, Tool::Rect | Tool::Ellipse) {
             pt = constrain_square(sh.pts[0], img_pt);
         }
-        if sh.kind == Tool::Line && sh.pts.len() >= 2 {
+        if sh.is_line_stroke()
+            && sh.pts.len() >= 2
+        {
             // Segment from the press origin to the pointer. Never fold into
             // Rect::normalized() corners (that is the selection-box diagonal).
             let n = sh.pts.len();
@@ -1564,6 +1665,31 @@ impl Annotator {
 
     fn resize_selected(&mut self, idx: usize, h: Handle, pt: Point) {
         let sh = &mut self.shapes[idx];
+        if sh.kind == Tool::Text {
+            let Some((bounds, font_size)) = self.sel_text_resize else { return; };
+            // Use the press-time bounds and pointer offset so intermediate
+            // motion events cannot compound the scale or cause a first-frame jump.
+            let delta = pt.sub(self.sel_origin);
+            let vx = if h.has_left() { -bounds.w } else if h.has_right() { bounds.w } else { 0.0 };
+            let vy = if h.has_top() { -bounds.h } else if h.has_bottom() { bounds.h } else { 0.0 };
+            let length_sq = vx * vx + vy * vy;
+            let scale = if length_sq > 0.0 { 1.0 + (delta.x * vx + delta.y * vy) / length_sq } else { 1.0 };
+            sh.style.font_size = (font_size as f32 * scale).round().clamp(8.0, 120.0) as i32;
+            let resized = sh.bounds();
+            // Keep the opposite corner/edge midpoint anchored using the actual
+            // measured glyph bounds, including rounding and font-size limits.
+            let x = if h.has_left() { bounds.right() - resized.w }
+                else if h.has_right() { bounds.x }
+                else { bounds.center().x - resized.w * 0.5 };
+            let y = if h.has_top() { bounds.bottom() - resized.h }
+                else if h.has_bottom() { bounds.y }
+                else { bounds.center().y - resized.h * 0.5 };
+            sh.pts = vec![Point::new(x, y)];
+            if let Some(ed) = self.text_edit.as_mut() {
+                if ed.existing == Some(idx) { ed.img_pt = sh.pts[0]; }
+            }
+            return;
+        }
         if sh.kind == Tool::Number && self.sel_pts0.len() == 1 {
             let c = self.sel_pts0[0];
             let r = pt.manhattan(c).max(8.0);
@@ -1594,7 +1720,9 @@ impl Annotator {
         }
         // Two-point line/arrow: drag moves that endpoint. Do not rewrite as
         // the AABB diagonal (top-left → bottom-right of a selection box).
-        if sh.kind == Tool::Line && self.sel_pts0.len() >= 2 {
+        if sh.is_line_stroke()
+            && self.sel_pts0.len() >= 2
+        {
             let a0 = self.sel_pts0[0];
             let b0 = *self.sel_pts0.last().unwrap();
             if h == Handle::Tl {
@@ -1628,13 +1756,7 @@ impl Annotator {
             b.h = pt.y - b.y;
         }
         let b = b.normalized();
-        if sh.kind == Tool::Text {
-            // Snipaste: drag the corners of the text box to scale the glyphs.
-            sh.style.font_size = ((b.h - 6.0) / 1.25).round().clamp(8.0, 120.0) as i32;
-            sh.pts = vec![b.top_left()];
-        } else {
-            sh.pts = vec![b.top_left(), b.bottom_right()];
-        }
+        sh.pts = vec![b.top_left(), b.bottom_right()];
     }
 
     pub fn release(&mut self, img_pt: Point) -> bool {
@@ -1688,11 +1810,33 @@ impl Annotator {
             return true;
         }
         if self.sel_mode.is_some() || self.tool == Some(Tool::Select) {
+            if matches!(self.sel_mode, Some(SelMode::Handle(_))) && self.sel_text_resize.is_some() {
+                self.move_to(img_pt, false);
+            }
             self.sel_mode = None;
+            self.sel_text_resize = None;
             self.sel_pts0.clear();
             return true;
         }
         if self.live.is_some() {
+            if self.live.as_ref().is_some_and(|s| matches!(s.kind, Tool::Marker | Tool::Mosaic)) {
+                self.move_to(img_pt, false);
+            }
+            if self.live.as_ref().is_some_and(|s| s.kind == Tool::Line) {
+                if self.line_click_mode {
+                    return true;
+                }
+                if let Some(origin) = self.line_press.take() {
+                    if img_pt.manhattan(origin) <= 5.0 {
+                        self.line_click_mode = true;
+                        if let Some(sh) = self.live.as_mut() {
+                            sh.pts = vec![origin, origin];
+                        }
+                        return true;
+                    }
+                    self.move_to(img_pt, false);
+                }
+            }
             self.finish();
             return true;
         }
@@ -1705,7 +1849,9 @@ impl Annotator {
                 if let Some(pts) = line_endpoint_handles(sh) {
                     return pts.to_vec();
                 }
-                return handle_points(sh.bounds().adjusted(-2.0, -2.0, 2.0, 2.0)).to_vec();
+                return handle_points(sh.bounds().adjusted(-2.0, -2.0, 2.0, 2.0)).into_iter()
+                    .filter(|(h, _)| sh.kind != Tool::Text || matches!(h, Handle::Tl | Handle::Bl | Handle::Br))
+                    .collect();
             }
         }
         Vec::new()
@@ -1917,14 +2063,39 @@ mod tests {
     }
 
     #[test]
-    fn option_width_text_uses_font_size_mosaic_uses_size() {
+    fn option_width_text_uses_font_size_mosaic_uses_brush_width() {
         let mut a = Annotator::new();
         a.set_tool(Some(Tool::Text));
         assert_eq!(a.option_width(), a.style(Tool::Text).font_size);
         a.set_tool(Some(Tool::Mosaic));
-        assert_eq!(a.option_width(), a.style(Tool::Mosaic).size);
+        assert_eq!(a.option_width(), a.style(Tool::Mosaic).width);
         a.set_tool(Some(Tool::Rect));
         assert_eq!(a.option_width(), a.style(Tool::Rect).width);
+    }
+
+    #[test]
+    fn effect_strength_and_brush_width_are_independent() {
+        let mut a = Annotator::new();
+        a.set_tool(Some(Tool::Mosaic));
+        let width = a.option_width();
+        a.set_style_value(Tool::Mosaic, |s| s.size = 20);
+        assert_eq!(a.option_width(), width);
+        a.set_option_width(24);
+        assert_eq!(a.style(Tool::Mosaic).width, 24);
+        assert_eq!(a.style(Tool::Mosaic).size, 20);
+        a.wheel(120);
+        assert_eq!(a.style(Tool::Mosaic).width, 25);
+        assert_eq!(a.style(Tool::Mosaic).size, 20);
+        a.set_draw_mode(Tool::Mosaic, DrawMode::Rect);
+        a.press(Point::new(10.0, 10.0), false);
+        a.release(Point::new(50.0, 40.0));
+        let pts = a.shapes[0].pts.clone();
+        a.set_style_value(Tool::Mosaic, |s| s.size = 8);
+        assert_eq!(a.shapes[0].style.size, 8);
+        assert_eq!(a.shapes[0].style.width, 25);
+        assert_eq!(a.shapes[0].pts, pts);
+        a.undo();
+        assert_eq!(a.shapes[0].style.size, 20);
     }
 
     #[test]
@@ -2444,5 +2615,183 @@ mod tests {
         assert!(a.shapes.is_empty());
         a.release(Point::new(40.0, 4.0));
         assert_eq!(a.shapes[0].style.arrow_kind(), ArrowKind::Thick);
+    }
+
+    #[test]
+    fn click_polyline_commits_only_on_right_click_and_undoes_as_one_shape() {
+        for kind in [ArrowKind::None, ArrowKind::Thin, ArrowKind::Thick, ArrowKind::Hollow] {
+            let mut a = Annotator::new();
+            a.set_tool(Some(Tool::Line));
+            a.style_mut(Tool::Line).set_arrow_kind(kind);
+            let start = Point::new(10.0, 10.0);
+            let bend = Point::new(80.0, 10.0);
+            let end = Point::new(80.0, 70.0);
+            a.press(start, false);
+            a.release(start);
+            a.move_to(bend, false);
+            a.press(bend, false);
+            a.release(bend);
+            assert!(a.shapes.is_empty());
+            a.move_to(end, false);
+            assert!(a.right_click());
+            assert_eq!(a.shapes.len(), 1);
+            assert_eq!(a.shapes[0].pts, vec![start, bend, end]);
+            assert_eq!(a.shapes[0].style.arrow_kind(), kind);
+            assert!(a.live.is_none());
+            assert!(a.undo());
+            assert!(a.shapes.is_empty());
+        }
+    }
+
+    #[test]
+    fn dragged_line_uses_release_endpoint_without_motion_event() {
+        let mut a = Annotator::new();
+        a.set_tool(Some(Tool::Line));
+        let start = Point::new(10.0, 10.0);
+        let end = Point::new(90.0, 70.0);
+        a.press(start, false);
+        a.release(end);
+        assert_eq!(a.shapes[0].pts, vec![start, end]);
+        assert!(a.live.is_none());
+    }
+
+    #[test]
+    fn marker_brush_follows_path_while_rect_keeps_endpoints() {
+        for mode in [DrawMode::Brush, DrawMode::Rect] {
+            let mut a = Annotator::new();
+            a.set_tool(Some(Tool::Marker));
+            a.style_mut(Tool::Marker).mode = mode;
+            let start = Point::new(10.0, 10.0);
+            let end = Point::new(90.0, 70.0);
+            a.press(start, false);
+            let bend = Point::new(50.0, 5.0);
+            a.move_to(bend, false);
+            a.release(end);
+            let expected = if mode == DrawMode::Brush { vec![start, bend, end] } else { vec![start, end] };
+            assert_eq!(a.shapes[0].pts, expected);
+            assert_eq!(a.shapes[0].style.mode, mode);
+            if mode == DrawMode::Brush {
+                assert_eq!(a.selected, None);
+                assert_eq!(a.edit_target, None);
+                assert_eq!(a.width_target, None);
+                assert_eq!(a.hit_test(bend), None);
+                a.set_tool(Some(Tool::Select));
+                a.press(bend, false);
+                a.move_to(Point::new(60.0, 15.0), false);
+                a.release(Point::new(60.0, 15.0));
+                assert_eq!(a.selected, None);
+                assert_eq!(a.shapes[0].pts, expected);
+            } else {
+                assert_eq!(a.selected, Some(0));
+                assert_eq!(a.hit_test(Point::new(50.0, 40.0)), Some(0));
+            }
+        }
+    }
+
+    #[test]
+    fn effect_brush_follows_freehand_path_and_remains_unselectable() {
+        for effect in [Effect::Mosaic, Effect::Blur] {
+            let mut a = Annotator::new();
+            a.set_tool(Some(Tool::Mosaic));
+            a.style_mut(Tool::Mosaic).effect = effect;
+            a.style_mut(Tool::Mosaic).mode = DrawMode::Brush;
+            let start = Point::new(10.0, 10.0);
+            let bend = Point::new(70.0, 80.0);
+            let end = Point::new(30.0, 20.0);
+            a.press(start, false);
+            assert!(a.is_brush_live());
+            a.move_to(bend, false);
+            a.release(end);
+            let sh = &a.shapes[0];
+            assert_eq!(sh.pts, vec![start, bend, end]);
+            assert_eq!(sh.bounds(), Rect::new(10.0, 10.0, 60.0, 70.0));
+            assert!(!sh.is_line_stroke());
+            assert_eq!(a.selected, None);
+            assert_eq!(a.hit_test(bend), None);
+            a.undo();
+            assert!(a.shapes.is_empty());
+            a.press(start, false);
+            a.release(start);
+            assert_eq!(a.shapes[0].pts, vec![start]);
+        }
+    }
+
+    #[test]
+    fn effect_rect_keeps_only_drag_endpoints() {
+        let mut a = Annotator::new();
+        a.set_tool(Some(Tool::Mosaic));
+        a.style_mut(Tool::Mosaic).mode = DrawMode::Rect;
+        let start = Point::new(10.0, 10.0);
+        let end = Point::new(90.0, 70.0);
+        a.press(start, false);
+        assert!(!a.is_brush_live());
+        a.move_to(Point::new(50.0, 5.0), false);
+        a.release(end);
+        assert_eq!(a.shapes[0].pts, vec![start, end]);
+    }
+
+    #[test]
+    fn text_resize_is_uniform_anchored_and_independent_of_motion_events() {
+        for handle in [Handle::Tl, Handle::Bl, Handle::Br] {
+            let mut a = Annotator::new();
+            a.set_tool(Some(Tool::Select));
+            let mut text = Shape::new(Tool::Text, vec![Point::new(200.0, 200.0)], Style::for_tool(Tool::Text));
+            text.text = "Resize text\nSecond line".into();
+            text.style.font_size = 24;
+            a.add(text.clone());
+            let bounds = text.bounds();
+            let start = crate::geom::handle_points(bounds.inflated(2.0)).into_iter()
+                .find(|(h, _)| *h == handle).unwrap().1;
+            assert_eq!(a.hit_handle_of_selected(start), Some(handle));
+            a.press(start, false);
+            let mut direct = a.clone();
+            let delta = Point::new(
+                if handle.has_left() { -bounds.w } else if handle.has_right() { bounds.w } else { 0.0 },
+                if handle.has_top() { -bounds.h } else if handle.has_bottom() { bounds.h } else { 0.0 },
+            );
+            a.move_to(start.add(delta.scale(0.5)), false);
+            a.move_to(start, false);
+            assert_eq!(a.shapes[0], text, "returning to the press position restores the text");
+            a.move_to(start.add(delta.scale(0.25)), false);
+            a.move_to(start.add(delta), false);
+            a.release(start.add(delta));
+            direct.release(start.add(delta));
+            assert_eq!(a.shapes, direct.shapes, "{handle:?}: release-only and stepped drag must match");
+            assert_eq!(a.shapes[0].style.font_size, 48);
+            let resized = a.shapes[0].bounds();
+            assert!(resized.w > bounds.w && resized.h > bounds.h);
+            let anchor = |b: Rect| Point::new(
+                if handle.has_left() { b.right() } else if handle.has_right() { b.x } else { b.center().x },
+                if handle.has_top() { b.bottom() } else if handle.has_bottom() { b.y } else { b.center().y },
+            );
+            assert!(anchor(bounds).distance(anchor(resized)) < 0.01);
+            a.undo();
+            assert_eq!(a.shapes, vec![text]);
+        }
+    }
+
+    #[test]
+    fn text_has_three_resize_corners_and_undoable_delete_button() {
+        let mut a = Annotator::new();
+        a.set_tool(Some(Tool::Text));
+        let mut text = Shape::new(Tool::Text, vec![Point::new(100.0, 100.0)], Style::for_tool(Tool::Text));
+        text.text = "Selected text annotation".into();
+        a.add(text.clone());
+        assert_eq!(a.selected_handle_points().iter().map(|(h, _)| *h).collect::<Vec<_>>(),
+            vec![Handle::Tl, Handle::Bl, Handle::Br]);
+        for (handle, pt) in handle_points(text.bounds().inflated(2.0)) {
+            if !matches!(handle, Handle::Tl | Handle::Bl | Handle::Br) {
+                assert_eq!(a.hit_handle_of_selected(pt), None);
+            }
+        }
+        let close = a.selected_text_delete_rect().unwrap().center();
+        assert_eq!(crate::cursor::cursor_for(a.cursor_hint(close)), crate::cursor::CursorKind::Arrow);
+        a.press(close, false);
+        a.release(close);
+        assert!(a.shapes.is_empty());
+        assert!(a.selected.is_none() && a.edit_target.is_none() && a.width_target.is_none());
+        assert!(a.text_edit.is_none());
+        a.undo();
+        assert_eq!(a.shapes, vec![text]);
     }
 }

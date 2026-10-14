@@ -6,7 +6,7 @@ Python/PySide6 的跨平台重写：`pinshot-core` 可移植，宿主在 **Linux
 
 ## 技术栈
 
-| 层 | 选择 |
+| 层 | 选nihn
 |---|---|
 | 窗口 | `winit` 0.30 |
 | 自绘 | `tiny-skia` + `softbuffer`（Linux）；Windows 遮罩另用脏矩形 GDI） |

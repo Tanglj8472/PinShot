@@ -46,6 +46,7 @@ pub struct CursorHint {
     /// Pointer is over an existing shape.
     pub hover_shape: bool,
     pub hover_shape_handle: Option<Handle>,
+    pub hover_shape_delete: bool,
     pub editing_text: bool,
     /// Live stroke / shape in progress.
     pub drawing: bool,
@@ -58,7 +59,7 @@ pub struct CursorHint {
 }
 
 pub fn cursor_for(h: CursorHint) -> CursorKind {
-    if h.over_chrome {
+    if h.over_chrome || h.hover_shape_delete {
         return CursorKind::Arrow;
     }
     if h.editing_text {

@@ -84,6 +84,8 @@ pub struct Overlay {
     arrow_kind: ArrowKind,
     ellipse_on: bool,
     line_menu_open: bool,
+    font_menu_open: bool,
+    font_menu_offset: usize,
     dpr: f32,
     result: Option<OverlayResult>,
     dirty: bool,
@@ -254,6 +256,8 @@ impl Overlay {
             arrow_kind: ArrowKind::Thin,
             ellipse_on: false,
             line_menu_open: false,
+            font_menu_open: false,
+            font_menu_offset: 0,
             dpr: 1.0,
             result: None,
             dirty: true,
@@ -396,7 +400,7 @@ impl Overlay {
             }
         });
         hint.over_selection = self.sel.has_sel() && self.sel.normalized().contains(self.cursor);
-        crate::cursor::apply(&self.window, cursor_for(hint));
+        crate::cursor::apply_annot(&self.window, cursor_for(hint), &self.annot);
     }
 
     fn release_grab(&mut self) {
@@ -613,6 +617,13 @@ impl Overlay {
                 self.annot.option_style(),
             );
             tb.set_width_value(self.annot.option_width());
+            if self.font_menu_open && self.annot.tool == Some(Tool::Text) {
+                if let Some(st) = self.annot.option_style() {
+                    self.font_menu_offset = tb.attach_font_menu(self.bounds(), st, self.font_menu_offset);
+                }
+            } else {
+                self.font_menu_open = false;
+            }
             if self.line_menu_open && self.annot.tool == Some(Tool::Line) {
                 if let Some(st) = self.annot.option_style() {
                     tb.attach_line_menu(self.bounds(), st);
@@ -893,6 +904,9 @@ impl Overlay {
             TbAction::WidthSet(v) => {
                 self.annot.set_option_width(v);
             }
+            TbAction::StrengthSet(v) => {
+                self.annot.set_style_value(Tool::Mosaic, |s| s.size = v.clamp(1, 30));
+            }
             TbAction::Color(i) => {
                 if let Some(tool) = self.annot.tool.filter(|t| *t != Tool::Select) {
                     let c = pinshot_core::palette_colors()[i as usize];
@@ -902,7 +916,11 @@ impl Overlay {
             TbAction::CustomColor => self.pick_custom_color(),
             TbAction::Fill(on) => self.style_tool(|s| s.filled = on),
             TbAction::LineStyle(ls) => self.style_tool(|s| s.line_style = ls),
-            TbAction::SetMode(mode) => self.style_tool(|s| s.mode = mode),
+            TbAction::SetMode(mode) => {
+                if let Some(tool) = self.annot.option_tool() {
+                    self.annot.set_draw_mode(tool, mode);
+                }
+            }
             TbAction::SetEffect(effect) => self.style_tool(|s| s.effect = effect),
             TbAction::Bold(on) => {
                 self.style_tool(|s| s.bold = on);
@@ -914,8 +932,20 @@ impl Overlay {
             }
             TbAction::Outline(on) => self.style_tool(|s| s.outline = on),
             TbAction::Family(fam) => {
+                self.font_menu_open = false;
                 self.style_tool(|s| s.family = fam.to_string());
                 self.log_font_resolve();
+            }
+            TbAction::ToggleFontMenu => {
+                self.font_menu_open = !self.font_menu_open;
+                if self.font_menu_open {
+                    let family = self.annot.option_style().map(|s| s.family.as_str()).unwrap_or("");
+                    self.font_menu_offset = pinshot_core::font::available_families().iter()
+                        .position(|f| f.eq_ignore_ascii_case(family)).unwrap_or(0).saturating_sub(3);
+                }
+            }
+            TbAction::FontMenuScroll(delta) => {
+                self.font_menu_offset = self.font_menu_offset.saturating_add_signed(delta as isize);
             }
         }
         crate::logutil::log(&format!("tb {a:?}"));
@@ -1195,8 +1225,9 @@ impl Overlay {
                     return;
                 }
             }
-            if self.line_menu_open {
+            if self.line_menu_open || self.font_menu_open {
                 self.line_menu_open = false;
+                self.font_menu_open = false;
                 self.relayout_toolbar();
                 self.mark_dirty();
                 return;
@@ -1248,6 +1279,9 @@ impl Overlay {
                 }
             }
         } else if pressed && button == MouseButton::Right {
+            if self.annot.live.as_ref().is_some_and(|s| s.kind == Tool::Line) {
+                self.annot.move_to(self.img_pt(pt), self.mods.shift_key());
+            }
             if self.annot.right_click() {
                 self.sync_ime();
                 self.relayout_toolbar();
@@ -1410,6 +1444,12 @@ impl Overlay {
                 let Some(angle) = self.wheel.take(raw) else {
                     return;
                 };
+                if self.font_menu_open {
+                    self.font_menu_offset = self.font_menu_offset.saturating_add_signed(if angle > 0 { -3 } else { 3 });
+                    self.relayout_toolbar();
+                    self.mark_dirty();
+                    return;
+                }
                 if self.annot.wheel_at(self.img_pt(self.cursor), angle) {
                     crate::logutil::log(&format!(
                         "overlay wheel {angle:+} width={}",
@@ -1502,6 +1542,12 @@ impl Overlay {
     }
 
     fn key(&mut self, key: &Key, text: Option<&str>) {
+        if self.font_menu_open && *key == Key::Named(NamedKey::Escape) {
+            self.font_menu_open = false;
+            self.relayout_toolbar();
+            self.mark_dirty();
+            return;
+        }
         if self.color_picker.is_some() {
             match key {
                 Key::Named(NamedKey::Enter) => self.accept_picker(),

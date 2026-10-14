@@ -220,8 +220,8 @@ impl Raster {
     /// Cheap box-ish blur via downsample + upsample (Python EffectCache "blur").
     pub fn blur(&self, size: u32) -> Self {
         let f = size.max(2);
-        self.scale_nn((self.width / f).max(1), (self.height / f).max(1))
-            .scale_nn(self.width, self.height)
+        self.scale_linear((self.width / f).max(1), (self.height / f).max(1))
+            .scale_linear(self.width, self.height)
     }
 
     pub fn scale_nn(&self, nw: u32, nh: u32) -> Self {

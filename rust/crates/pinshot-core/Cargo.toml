@@ -13,3 +13,4 @@ toml = { workspace = true }
 thiserror = { workspace = true }
 tiny-skia = { workspace = true }
 fontdue = "0.9"
+ttf-parser = "0.25"

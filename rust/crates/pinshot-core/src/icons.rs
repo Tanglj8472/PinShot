@@ -47,6 +47,9 @@ pub enum IconKind {
     Dash,
     Dot,
     Blur,
+    Bold,
+    Italic,
+    TextOutline,
 }
 
 impl IconKind {
@@ -83,6 +86,9 @@ impl IconKind {
             "dash" => Self::Dash,
             "dot" => Self::Dot,
             "blur" => Self::Blur,
+            "bold" => Self::Bold,
+            "italic" => Self::Italic,
+            "text_outline" => Self::TextOutline,
             _ => return None,
         })
     }
@@ -247,6 +253,49 @@ pub fn draw_icon(pixmap: &mut Pixmap, kind: IconKind, cell: Rect, color: Option<
     let st = stroke(1.6);
 
     match kind {
+        IconKind::Bold => {
+            let mut pb = PathBuilder::new();
+            pb.move_to(4.0, 3.0);
+            pb.line_to(10.0, 3.0);
+            pb.cubic_to(17.0, 3.0, 17.0, 9.0, 12.0, 9.8);
+            pb.cubic_to(18.0, 10.0, 18.0, 17.0, 10.0, 17.0);
+            pb.line_to(4.0, 17.0);
+            pb.close();
+            pb.move_to(7.0, 5.5);
+            pb.line_to(10.0, 5.5);
+            pb.cubic_to(13.5, 5.5, 13.5, 8.5, 10.0, 8.5);
+            pb.line_to(7.0, 8.5);
+            pb.close();
+            pb.move_to(7.0, 11.0);
+            pb.line_to(10.0, 11.0);
+            pb.cubic_to(14.5, 11.0, 14.5, 14.5, 10.0, 14.5);
+            pb.line_to(7.0, 14.5);
+            pb.close();
+            if let Some(path) = pb.finish() {
+                pixmap.fill_path(&path, &p, FillRule::EvenOdd, t, None);
+            }
+        }
+        IconKind::Italic => {
+            for (a, b) in [((8.0, 3.0), (15.0, 3.0)), ((12.0, 3.0), (8.0, 17.0)), ((5.0, 17.0), (12.0, 17.0))] {
+                if let Some(path) = line_path(a, b) {
+                    pixmap.stroke_path(&path, &p, &stroke(2.0), t, None);
+                }
+            }
+        }
+        IconKind::TextOutline => {
+            let mut pb = PathBuilder::new();
+            pb.move_to(3.0, 17.0);
+            for (x, y) in [(8.0, 3.0), (12.0, 3.0), (17.0, 17.0), (13.0, 17.0),
+                (11.5, 13.0), (8.5, 13.0), (7.0, 17.0)] { pb.line_to(x, y); }
+            pb.close();
+            pb.move_to(9.0, 10.0);
+            pb.line_to(11.0, 10.0);
+            pb.line_to(10.0, 6.5);
+            pb.close();
+            if let Some(path) = pb.finish() {
+                pixmap.stroke_path(&path, &p, &stroke(1.1), t, None);
+            }
+        }
         IconKind::Rect => {
             if let Some(r) = tiny_skia::Rect::from_xywh(3.5, 5.5, 13.0, 9.0) {
                 pixmap.stroke_path(&PathBuilder::from_rect(r), &p, &st, t, None);
@@ -750,11 +799,24 @@ mod tests {
             IconKind::Fill,
             IconKind::Outline,
             IconKind::Eraser,
+            IconKind::Bold,
+            IconKind::Italic,
+            IconKind::TextOutline,
         ] {
             pm.fill(tiny_skia::Color::TRANSPARENT);
             draw_icon(&mut pm, kind, Rect::new(2.0, 2.0, 20.0, 20.0), None);
             let painted = pm.pixels().iter().any(|p| p.alpha() > 0);
             assert!(painted, "{kind:?} produced an empty icon");
+            if matches!(kind, IconKind::Bold | IconKind::Italic | IconKind::TextOutline) {
+                if let Ok(dir) = std::env::var("PINSHOT_DUMP_ICONS") {
+                    let dir = std::path::PathBuf::from(dir);
+                    let _ = std::fs::create_dir_all(&dir);
+                    let mut preview = Pixmap::new(120, 120).unwrap();
+                    preview.fill(tiny_skia::Color::WHITE);
+                    draw_icon(&mut preview, kind, Rect::new(10.0, 10.0, 100.0, 100.0), None);
+                    preview.save_png(dir.join(format!("{kind:?}.png"))).unwrap();
+                }
+            }
         }
     }
 
