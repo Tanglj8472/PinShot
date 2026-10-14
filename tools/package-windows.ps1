@@ -80,12 +80,31 @@ foreach ($source in $sources) {
         $relative = $_.FullName.Substring($source.Length).TrimStart('\')
         $dest = Join-Path $licenses $relative
         New-Item -ItemType Directory -Path (Split-Path $dest -Parent) -Force | Out-Null
-        Copy-Item -LiteralPath $_.FullName -Destination $dest
+        $stream = [IO.File]::OpenRead($_.FullName)
+        try {
+            $header = New-Object byte[] 16
+            $null = $stream.Read($header, 0, 16)
+            $encrypted = [Text.Encoding]::ASCII.GetString($header).StartsWith('%TSD-Header-###%')
+        } finally { $stream.Dispose() }
+        if ($encrypted) {
+            # Use the original Cargo archive when a local file-encryption driver
+            # exposes ciphertext to packaging tools.
+            $parts = $relative -split '\\', 3
+            if ($parts.Count -ne 3) { throw "Encrypted license: $relative" }
+            $archive = Join-Path $cargoRoot ("registry\cache\" + $parts[0] + '\' + $parts[1] + '.crate')
+            if (-not (Test-Path -LiteralPath $archive)) { throw "Missing original license archive: $archive" }
+            $member = $parts[1] + '/' + $parts[2].Replace('\', '/')
+            $licenseText = & tar.exe -xOf $archive $member | Out-String
+            if ($LASTEXITCODE -ne 0 -or -not $licenseText) { throw "License extraction failed: $member" }
+            $licenseText | Set-Content -LiteralPath $dest -Encoding utf8
+        } else {
+            Copy-Item -LiteralPath $_.FullName -Destination $dest
+        }
         $count++
     }
 }
 if ($count -eq 0) { throw 'No third-party licenses found' }
-$reported = & (Join-Path $payload 'pinshot.exe') --version
+$reported = (& (Join-Path $payload 'pinshot.exe') --version | Out-String).Trim()
 if ($LASTEXITCODE -ne 0 -or "$reported" -notmatch "PinShot $([regex]::Escape($version)) \(windows-rust\)") {
     throw "Version smoke failed: $reported"
 }

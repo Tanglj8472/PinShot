@@ -30,7 +30,7 @@ jobs:
       - name: version smoke
         shell: pwsh
         run: |
-          $out = & .\target\release\pinshot.exe --version
+          $out = (& .\target\release\pinshot.exe --version | Out-String).Trim()
           Write-Host $out
           if ($out -notmatch "PinShot .*windows-rust") { exit 1 }
       - uses: actions/upload-artifact@v4
@@ -44,7 +44,7 @@ jobs:
         shell: pwsh
         run: |
           Copy-Item -Force .\target\release\pinshot.exe .\target\release\pinshot-ocr.exe
-          $out = & .\target\release\pinshot-ocr.exe --version
+          $out = (& .\target\release\pinshot-ocr.exe --version | Out-String).Trim()
           Write-Host $out
           if ($out -notmatch "PinShot .*windows-rust") { exit 1 }
       - uses: actions/upload-artifact@v4
