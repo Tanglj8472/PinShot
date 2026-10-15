@@ -818,6 +818,8 @@ impl OverlayFront {
         confirm_dont: Option<bool>,
         picker: Option<&pinshot_core::ColorPicker>,
     ) {
+        let first_paint = !self.primed;
+        let t_pixels = std::time::Instant::now();
         let bounds = self.bounds();
         let hole = if sel.has_sel() {
             sel.normalized()
@@ -920,7 +922,11 @@ impl OverlayFront {
             }
             dim_outside_hole(&mut self.frame, restore_r, hole, self.dim);
         }
+        if first_paint {
+            crate::logutil::ms("overlay paint pixels", t_pixels);
+        }
 
+        let t_chrome = std::time::Instant::now();
         let mut chrome: Vec<Rect> = Vec::new();
         for sh in &annot.visible_shapes() {
             let pad = sh.style.width.max(8) as f32 + 8.0;
@@ -1052,12 +1058,16 @@ impl OverlayFront {
                 chrome.push(r.inflated(2.0));
             }
         }
+        if first_paint {
+            crate::logutil::ms("overlay paint chrome", t_chrome);
+        }
 
         // Write only the dirty tiles into the persistent DIB, then BitBlt
         // the whole DIB. Partial BitBlt of the loupe alone is what stained
         // the freeze; a full blit of an incrementally-updated DIB does not.
         #[cfg(windows)]
         {
+            let t_gdi = std::time::Instant::now();
             // Tile writes. Unioning loupe + size chip + ring strips becomes
             // the hole AABB and recopies a maximized window on every move.
             if !self.primed || restore_r.area() > bounds.area() * 0.55 {
@@ -1077,6 +1087,9 @@ impl OverlayFront {
             // left the staircase shadow on the freeze; the hitch was the
             // CPU hole memcpy, not this SRCCOPY.
             self.gdi.blit_rect(hwnd, bounds);
+            if first_paint {
+                crate::logutil::ms("overlay paint gdi", t_gdi);
+            }
         }
         self.last_hole = hole;
         self.last_chrome = chrome;
