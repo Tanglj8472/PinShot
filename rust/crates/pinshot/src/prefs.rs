@@ -30,9 +30,9 @@ const PREFS_MIN_W: f32 = 420.0;
 const PREFS_MIN_H: f32 = PREFS_H;
 const PREFS_MAX_H: f32 = PREFS_H;
 const FOOTER_H: f32 = 32.0;
-const FORM_LABEL_W: f32 = 104.0;
-const ROW_H: f32 = 20.0;
-const CONTROL_W: f32 = 260.0;
+const FORM_LABEL_W: f32 = 120.0;
+const ROW_H: f32 = 26.0;
+const CONTROL_W: f32 = 280.0;
 
 fn prefs_inner_size() -> egui::Vec2 {
     egui::vec2(PREFS_W, PREFS_H)
@@ -518,10 +518,19 @@ impl eframe::App for PrefsApp {
             .show(ctx, |ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(4.0, 3.0);
                 ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 2.0;
+                    let gap = ui.spacing().item_spacing.x;
+                    let tab_w = ((ui.available_width() - gap * (TABS.len() - 1) as f32)
+                        / TABS.len() as f32)
+                        .max(1.0);
                     for (i, name) in TABS.iter().enumerate() {
                         let selected = self.tab == i;
-                        if ui.selectable_label(selected, tr(name)).clicked() {
+                        if ui
+                            .add_sized(
+                                [tab_w, ROW_H + 4.0],
+                                egui::SelectableLabel::new(selected, tr(name)),
+                            )
+                            .clicked()
+                        {
                             self.tab = i;
                         }
                     }

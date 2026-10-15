@@ -284,18 +284,13 @@ impl PrefsWin {
         let h = size.height.max(8) as f32;
         self.hits.clear();
         let mut y = 52.0;
-        self.hits.push(Hit {
-            rect: Rect::new(16.0, 12.0, 100.0, 28.0),
-            field: Field::Tab(0),
-        });
-        self.hits.push(Hit {
-            rect: Rect::new(126.0, 12.0, 100.0, 28.0),
-            field: Field::Tab(1),
-        });
-        self.hits.push(Hit {
-            rect: Rect::new(236.0, 12.0, 100.0, 28.0),
-            field: Field::Tab(2),
-        });
+        let tab_w = ((w - 32.0) / 3.0).max(1.0);
+        for i in 0..3u8 {
+            self.hits.push(Hit {
+                rect: Rect::new(16.0 + i as f32 * tab_w, 12.0, tab_w, 28.0),
+                field: Field::Tab(i),
+            });
+        }
         let row_w = (w - 32.0).max(200.0);
         match self.tab {
             0 => {
@@ -358,8 +353,9 @@ impl PrefsWin {
             Rect::new(0.0, 0.0, w as f32, h as f32),
             thm.bg,
         );
+        let tab_w = ((w as f32 - 32.0) / 3.0).max(1.0);
         for (i, name) in [tr("General"), tr("Hotkeys"), tr("Output")].iter().enumerate() {
-            let r = Rect::new(16.0 + i as f32 * 110.0, 12.0, 100.0, 28.0);
+            let r = Rect::new(16.0 + i as f32 * tab_w, 12.0, tab_w, 28.0);
             fill_rect(
                 &mut pm,
                 r,
