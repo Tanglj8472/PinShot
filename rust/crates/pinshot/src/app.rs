@@ -489,6 +489,17 @@ impl App {
         // Full-desktop history frames stay on disk. Keeping 10 of them in
         // the tray process is why Task Manager never dropped after a snip.
         self.history.evict_pixels();
+        self.handle_overlay_result(event_loop, res);
+        if resnip {
+            self.restore.wait_after_overlay = true;
+            crate::logutil::log("resnip: wait 150ms for overlay to leave the DXGI frame");
+            self.request_snip(event_loop, false);
+        } else {
+            self.restore_fallback_if_needed();
+        }
+    }
+
+    fn handle_overlay_result(&mut self, event_loop: &ActiveEventLoop, res: OverlayResult) {
         match res {
             OverlayResult::Copy(img, _) => {
                 if clipboard::write_image(&img).is_ok() {
@@ -522,13 +533,6 @@ impl App {
             }
             OverlayResult::Cancel => {}
             OverlayResult::Resnip => {}
-        }
-        if resnip {
-            self.restore.wait_after_overlay = true;
-            crate::logutil::log("resnip: wait 150ms for overlay to leave the DXGI frame");
-            self.request_snip(event_loop, false);
-        } else {
-            self.restore_fallback_if_needed();
         }
     }
 
