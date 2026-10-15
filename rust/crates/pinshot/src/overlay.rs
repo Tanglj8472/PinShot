@@ -356,16 +356,26 @@ impl Overlay {
         native::focus_window(&s.window);
         // Capture already includes the taskbar. Cloak the live explorer
         // chrome so it cannot restack above this HWND and steal clicks.
+        let t_trays = Instant::now();
         native::cloak_shell_trays(true);
+        crate::logutil::ms("overlay start cloak trays", t_trays);
         // After focus the taskbar may jump above an already-TOPMOST overlay.
+        let t_cover = Instant::now();
         s.cover_desktop();
+        crate::logutil::ms("overlay start cover desktop", t_cover);
         // Recycled HWND often skips CursorMoved until the mouse actually
         // moves. Nudge 1px (and back) so hover paints on a still cursor.
+        let t_hover = Instant::now();
         s.synth_pointer_hover();
+        crate::logutil::ms("overlay start synth hover", t_hover);
+        let t_second = Instant::now();
         if s.dirty {
             s.redraw();
         }
+        crate::logutil::ms("overlay start second redraw", t_second);
+        let t_cover2 = Instant::now();
         s.cover_desktop();
+        crate::logutil::ms("overlay start cover desktop 2", t_cover2);
         crate::logutil::ms("overlay start", t0);
         Ok(s)
     }
