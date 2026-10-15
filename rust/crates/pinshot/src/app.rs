@@ -528,7 +528,10 @@ impl App {
     fn request_quit(&mut self, event_loop: &ActiveEventLoop) {
         crate::logutil::log("quit");
         if let Some(path) = self.pending_installer.take() {
-            crate::update_run::defer_install_after_quit(path);
+            if let Err(e) = crate::update_run::defer_install_after_quit(path) {
+                crate::logutil::log(&format!("update helper: {e}"));
+                return;
+            }
         }
         prefs::close_settings();
         if let Some(w) = self.prefs.as_mut() {

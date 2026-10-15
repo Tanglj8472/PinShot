@@ -449,9 +449,10 @@ impl eframe::App for PrefsApp {
                         Err(e) => format!("{} {e}", tr("Update check failed:")),
                     };
                     if let Some(path) = install {
-                        #[cfg(windows)]
-                        let _ = crate::ipc::send("quit");
-                        crate::update_run::defer_install_after_quit(path);
+                        if let Err(e) = crate::update_run::defer_install_after_quit(path) {
+                            self.status = format!("{} {e}", tr("Update check failed:"));
+                            return;
+                        }
                         std::process::exit(0);
                     }
                 }

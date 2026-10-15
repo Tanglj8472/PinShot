@@ -1,6 +1,6 @@
 //! Scheduled update checks (GitHub `*-windows-rust` releases).
 
-use chrono::{DateTime, Local, NaiveTime, TimeZone, Timelike};
+use chrono::{DateTime, Local, NaiveTime, TimeZone};
 use serde::{Deserialize, Serialize};
 
 pub const WINDOWS_RELEASE_SUFFIX: &str = "-windows-rust";

@@ -2940,7 +2940,7 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
 name = "pinshot"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "arboard",
  "eframe",
@@ -2951,6 +2951,7 @@ dependencies = [
  "paddle-ocr-rs",
  "pinshot-core",
  "raw-window-handle",
+ "ring",
  "serde",
  "serde_json",
  "softbuffer",
@@ -2966,7 +2967,7 @@ dependencies = [
 
 [[package]]
 name = "pinshot-core"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "chrono",
  "fontdue",

@@ -7,6 +7,7 @@ on:
     paths:
       - "rust/**"
       - "tools/package-windows.ps1"
+      - "tools/test-windows-upgrade.ps1"
       - "packaging/**"
       - ".github/workflows/build-rust-windows.yml"
       - ".github/workflows/build-rust-linux.yml"
@@ -58,6 +59,18 @@ jobs:
       - name: Package installer and portable ZIP
         shell: pwsh
         run: ../tools/package-windows.ps1 -SkipTests
+      - name: Installation, update and configuration regression tests
+        shell: pwsh
+        run: |
+          $stage = Get-ChildItem ../dist -Directory -Filter 'stage-*' | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          $payload = (Get-ChildItem -LiteralPath $stage.FullName -Directory | Select-Object -First 1).FullName
+          $compiler = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+          $iscc = if ($compiler) { $compiler.Source } else { Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe' }
+          ../tools/test-windows-upgrade.ps1 -PayloadDir $payload -Iscc $iscc
+          ../tools/test-windows-upgrade.ps1 -PayloadDir $payload -Iscc $iscc -FreshInstall
+          ../tools/test-windows-upgrade.ps1 -PayloadDir $payload -Iscc $iscc -RejectShutdown
+          ../tools/test-windows-upgrade.ps1 -PayloadDir $payload -Iscc $iscc -RestartAfterInstall
+          ../tools/test-windows-upgrade.ps1 -PayloadDir $payload -Iscc $iscc -UpdateHelper
       - uses: actions/upload-artifact@v4
         with:
           name: pinshot-windows-x64-packages

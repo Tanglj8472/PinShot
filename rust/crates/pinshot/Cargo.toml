@@ -22,6 +22,7 @@ ocr-cuda = ["ocr", "ort/cuda"]
 pinshot-core = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+ring = "0.17"
 winit = { version = "0.30", default-features = false, features = ["rwh_06", "x11"] }
 softbuffer = "0.4"
 tiny-skia = { workspace = true }

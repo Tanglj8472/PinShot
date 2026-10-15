@@ -305,6 +305,21 @@ pub fn save(cfg: &Config) -> Result<(), ConfigError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn older_config_preserves_user_values_when_new_settings_are_added() {
+        let old = "schema_version = 2\nlanguage = 'en'\nrun_at_login = false\n\
+            hotkey_snip = 'Ctrl+Alt+P'\nocr_model = 'mobile'\n\
+            [translate]\nprovider = 'edge'\napi_key = 'test-key-do-not-use'\n";
+        let config = Config::from_toml(old).unwrap();
+        assert_eq!(config.schema_version, SCHEMA_VERSION);
+        assert_eq!(config.language, "en");
+        assert_eq!(config.hotkey_snip, "Ctrl+Alt+P");
+        assert!(!config.run_at_login);
+        assert_eq!(config.ocr_model, "mobile");
+        assert_eq!(config.translate.api_key, "test-key-do-not-use");
+        assert_eq!(Config::from_toml(&config.to_toml().unwrap()).unwrap(), config);
+    }
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static N: AtomicU64 = AtomicU64::new(0);

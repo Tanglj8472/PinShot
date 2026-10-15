@@ -9,14 +9,19 @@ fn main() {
         pinshot::run_preferences();
         return;
     }
-    if args.iter().any(|a| a == "--quit-for-install") {
-        pinshot::update_run::quit_for_install();
+    if let Some(i) = args.iter().position(|a| a == "--quit-for-install") {
+        let install_dir = args.get(i + 1).map(std::path::Path::new);
+        if let Err(e) = pinshot::update_run::quit_for_install(install_dir) {
+            eprintln!("PinShot quit-for-install: {e}");
+            std::process::exit(1);
+        }
         return;
     }
     if let Some(i) = args.iter().position(|a| a == "--install-after-quit") {
         if let Some(path) = args.get(i + 1) {
             pinshot::logutil_ensure();
-            if let Err(e) = pinshot::update_run::run_install_after_quit(std::path::Path::new(path)) {
+            if let Err(e) = pinshot::update_run::run_install_after_quit(std::path::Path::new(path))
+            {
                 eprintln!("PinShot install-after-quit: {e}");
                 std::process::exit(1);
             }

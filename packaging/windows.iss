@@ -7,9 +7,12 @@
 #ifndef DistDir
   #error DistDir is required
 #endif
+#ifndef InstallerAppId
+  #define InstallerAppId "{{D7F304E1-DA08-4C84-B224-3110EBD4A023}"
+#endif
 
 [Setup]
-AppId={{D7F304E1-DA08-4C84-B224-3110EBD4A023}
+AppId={#InstallerAppId}
 AppName=PinShot
 AppVersion={#AppVersion}
 AppPublisher=PinShot
@@ -34,7 +37,11 @@ RestartApplications=no
 Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
 
 [Files]
-Source: "{#PayloadDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+; Keep the shutdown helper and its DLLs first for solid-compressed extraction.
+; Always run the NEW helper from {tmp}, never the executable being replaced.
+Source: "{#PayloadDir}\pinshot.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#PayloadDir}\*.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#PayloadDir}\*"; DestDir: "{app}"; Excludes: "pinshot.exe,*.dll"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\PinShot"; Filename: "{app}\pinshot.exe"; IconFilename: "{app}\pinshot.ico"
@@ -42,17 +49,64 @@ Name: "{autodesktop}\PinShot"; Filename: "{app}\pinshot.exe"; IconFilename: "{ap
 
 [Run]
 Filename: "{app}\pinshot.exe"; Description: "Launch PinShot"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\pinshot.exe"; Flags: nowait skipifnotsilent runasoriginaluser; Check: RestartAfterUpdate
 
 [Code]
-function PrepareToInstall(var NeedsRestart: Boolean): String;
+function RestartAfterUpdate: Boolean;
+begin
+  Result := ExpandConstant('{param:PINSHOTRESTART|0}') = '1';
+end;
+
+function ShutdownError(const ExePath, HelperDir: String): String;
 var
   ResultCode: Integer;
-  ExePath: String;
 begin
   Result := '';
+  Log('Running shutdown helper: ' + ExePath);
+  if not Exec(ExePath, '--quit-for-install "' + ExpandConstant('{app}') + '"',
+    HelperDir, SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    Result := 'Unable to start the PinShot shutdown helper. Windows error: ' + IntToStr(ResultCode)
+  else if ResultCode <> 0 then
+    Result := 'PinShot could not be closed (helper exit code ' + IntToStr(ResultCode) +
+      '). Close PinShot or check its permissions, then retry.';
+  if Result <> '' then Log(Result);
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ExePath: String;
+  HelperDir: String;
+begin
+  Result := '';
+  try
+    ExtractTemporaryFiles('{app}\pinshot.exe');
+    ExtractTemporaryFiles('{app}\*.dll');
+    // ExtractTemporaryFiles preserves the literal app placeholder under tmp.
+    HelperDir := ExpandConstant('{tmp}') + '\{app}';
+    ExePath := HelperDir + '\pinshot.exe';
+    Result := ShutdownError(ExePath, HelperDir);
+  except
+    Result := 'Unable to prepare the PinShot shutdown helper: ' + GetExceptionMessage;
+    Log(Result);
+  end;
+end;
+
+function InitializeUninstall: Boolean;
+var
+  ErrorText: String;
+  ExePath: String;
+begin
+  Result := True;
   ExePath := ExpandConstant('{app}\pinshot.exe');
-  if FileExists(ExePath) then
-    Exec(ExePath, '--quit-for-install', ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode)
-  else
-    Exec('taskkill.exe', '/IM pinshot.exe /F /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  if not FileExists(ExePath) then Exit;
+  try
+    ErrorText := ShutdownError(ExePath, ExpandConstant('{app}'));
+  except
+    ErrorText := 'Unable to prepare PinShot for uninstall: ' + GetExceptionMessage;
+    Log(ErrorText);
+  end;
+  if ErrorText <> '' then begin
+    SuppressibleMsgBox(ErrorText, mbError, MB_OK, IDOK);
+    Result := False;
+  end;
 end;

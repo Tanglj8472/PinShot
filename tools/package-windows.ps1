@@ -73,6 +73,10 @@ Copy-Item -LiteralPath (Join-Path $repo 'docs\third-party.md') -Destination $pay
 # Include available upstream license files; no model or system font redistribution.
 $licenses = Join-Path $payload 'licenses'
 New-Item -ItemType Directory -Path $licenses | Out-Null
+$bundledNotices = Join-Path $repo 'packaging\licenses'
+if (Test-Path -LiteralPath $bundledNotices) {
+    Copy-Item -LiteralPath $bundledNotices -Destination (Join-Path $licenses 'runtime') -Recurse
+}
 $cargoRoot = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { Join-Path $env:USERPROFILE '.cargo' }
 $sources = @((Join-Path $cargoRoot 'registry\src'), (Join-Path $release 'build'))
 $count = 0
@@ -115,7 +119,9 @@ if ($LASTEXITCODE -ne 0 -or "$reported" -notmatch "PinShot $([regex]::Escape($ve
 & $Iscc "/DAppVersion=$version" "/DPayloadDir=$payload" "/DDistDir=$dist" (Join-Path $repo 'packaging\windows.iss')
 if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed' }
 $zip = Join-Path $dist "$name.zip"
-Compress-Archive -LiteralPath $payload -DestinationPath $zip -Force
+Get-ChildItem -LiteralPath $payload -Recurse -File | Where-Object { $_.LastWriteTimeUtc.Year -lt 1980 } |
+    ForEach-Object { $_.LastWriteTimeUtc = [datetime]'1980-01-01T00:00:00Z' }
+Compress-Archive -LiteralPath $payload -DestinationPath $zip -Force -ErrorAction Stop
 $artifacts = @((Join-Path $dist "$name-setup.exe"), $zip)
 $sums = foreach ($artifact in $artifacts) {
     $hash = (Get-FileHash -LiteralPath $artifact -Algorithm SHA256).Hash.ToLowerInvariant()
