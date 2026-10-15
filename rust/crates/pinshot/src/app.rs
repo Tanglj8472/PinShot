@@ -1535,6 +1535,10 @@ impl ApplicationHandler<AppEvent> for App {
             }
         }
         self.pump_overlay_and_schedule_wake(event_loop);
+        self.maintain_windows(event_loop);
+    }
+
+    fn maintain_windows(&mut self, event_loop: &ActiveEventLoop) {
         let mut persist = false;
         for p in &mut self.pins {
             p.tick_glow();
