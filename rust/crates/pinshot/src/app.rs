@@ -1534,36 +1534,7 @@ impl ApplicationHandler<AppEvent> for App {
                 let _ = self.proxy.send_event(AppEvent::Tray(cmd));
             }
         }
-        if let Some(ov) = &mut self.overlay {
-            if ov.peek_result().is_none() {
-                ov.pump_redraw();
-            }
-        }
-        self.finish_overlay(event_loop);
-        if self.overlay.is_some() {
-            // X11: drain the overlay pointer grab. Windows: Wait — Poll
-            // spun about_to_wait and made the loupe hitch.
-            #[cfg(unix)]
-            event_loop.set_control_flow(ControlFlow::Poll);
-            #[cfg(not(unix))]
-            if let Some(ov) = &self.overlay {
-                if let Some(t) = ov.next_wake() {
-                    event_loop.set_control_flow(ControlFlow::WaitUntil(t));
-                }
-            }
-        } else {
-            let mut wake = self.snip.at;
-            for p in &self.pins {
-                if let Some(t) = p.next_wake() {
-                    wake = Some(wake.map(|w| w.min(t)).unwrap_or(t));
-                }
-            }
-            if let Some(at) = wake {
-                if Instant::now() < at {
-                    event_loop.set_control_flow(ControlFlow::WaitUntil(at));
-                }
-            }
-        }
+        self.pump_overlay_and_schedule_wake(event_loop);
         let mut persist = false;
         for p in &mut self.pins {
             p.tick_glow();
@@ -1624,6 +1595,38 @@ impl ApplicationHandler<AppEvent> for App {
 
     #[cfg(not(windows))]
     fn prefetch_dxgi(&mut self, _event_loop: &ActiveEventLoop) {}
+
+    fn pump_overlay_and_schedule_wake(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(ov) = &mut self.overlay {
+            if ov.peek_result().is_none() {
+                ov.pump_redraw();
+            }
+        }
+        self.finish_overlay(event_loop);
+        if self.overlay.is_some() {
+            // X11 drains the pointer grab; Windows waits for the next redraw.
+            #[cfg(unix)]
+            event_loop.set_control_flow(ControlFlow::Poll);
+            #[cfg(not(unix))]
+            if let Some(ov) = &self.overlay {
+                if let Some(t) = ov.next_wake() {
+                    event_loop.set_control_flow(ControlFlow::WaitUntil(t));
+                }
+            }
+            return;
+        }
+        let mut wake = self.snip.at;
+        for p in &self.pins {
+            if let Some(t) = p.next_wake() {
+                wake = Some(wake.map(|w| w.min(t)).unwrap_or(t));
+            }
+        }
+        if let Some(at) = wake {
+            if Instant::now() < at {
+                event_loop.set_control_flow(ControlFlow::WaitUntil(at));
+            }
+        }
+    }
 
     fn advance_snip_schedule(&mut self, event_loop: &ActiveEventLoop) {
         let Some(at) = self.snip.at else {
