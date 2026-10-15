@@ -896,9 +896,17 @@ impl OverlayFront {
             hole.intersect(restore_r)
         };
         if shapes.is_empty() {
+            let t_restore = std::time::Instant::now();
             self.restore(restore_r);
+            if first_paint {
+                crate::logutil::ms("overlay paint restore", t_restore);
+            }
             if !hole_refresh.is_empty() {
+                let t_hole = std::time::Instant::now();
                 copy_rect(&mut self.frame, &self.shot, hole_refresh);
+                if first_paint {
+                    crate::logutil::ms("overlay paint hole", t_hole);
+                }
             }
         } else {
             copy_rect(&mut self.frame, &self.shot, restore_r);
