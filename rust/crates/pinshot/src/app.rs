@@ -1242,19 +1242,8 @@ impl ApplicationHandler<AppEvent> for App {
             }
             AppEvent::OpenPrefs => self.open_prefs_win(event_loop),
             AppEvent::UpdateCheckDone(result) => self.handle_update_done(event_loop, result),
-            AppEvent::X11Key {
-                keysym,
-                mods,
-                pressed,
-            } => {
-                if let Some(ov) = self.overlay.as_mut() {
-                    ov.handle_x11_key(keysym, mods, pressed);
-                    self.finish_overlay(event_loop);
-                } else if pressed && keysym == 0xffbe {
-                    // Esc already closed the overlay; the grab loop still
-                    // saw F1 and forwarded it as X11Key. Do not drop it.
-                    self.request_snip(event_loop, false);
-                }
+            AppEvent::X11Key { keysym, mods, pressed } => {
+                self.handle_x11_key(event_loop, keysym, mods, pressed)
             }
             AppEvent::PinMenu(action) => self.apply_pin_menu(action),
             AppEvent::Ipc(cmd) => self.handle_ipc_command(cmd),
@@ -1369,6 +1358,16 @@ impl ApplicationHandler<AppEvent> for App {
                 }
             }
             Err(err) => eprintln!("{}", tr(&err)),
+        }
+    }
+
+    fn handle_x11_key(&mut self, event_loop: &ActiveEventLoop, keysym: u32, mods: u16, pressed: bool) {
+        if let Some(ov) = self.overlay.as_mut() {
+            ov.handle_x11_key(keysym, mods, pressed);
+            self.finish_overlay(event_loop);
+        } else if pressed && keysym == 0xffbe {
+            // Esc already closed the overlay; the grab loop may still forward F1.
+            self.request_snip(event_loop, false);
         }
     }
 
