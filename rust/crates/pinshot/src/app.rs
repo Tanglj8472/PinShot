@@ -1528,32 +1528,7 @@ impl ApplicationHandler<AppEvent> for App {
                 self.hotkeys = Some(h);
             }
         }
-        if let Some(at) = self.snip.at {
-            if Instant::now() >= at {
-                if self.snip.countdown.is_some() {
-                    if self.snip.countdown_left > 1 {
-                        self.snip.countdown_left -= 1;
-                        if let Some(cd) = &mut self.snip.countdown {
-                            cd.set_left(self.snip.countdown_left);
-                        }
-                        self.snip.at = Some(Instant::now() + Duration::from_secs(1));
-                    } else {
-                        self.snip.countdown = None;
-                        self.prepare_capture_hide();
-                        self.snip.at =
-                            Some(Instant::now() + Duration::from_millis(self.hide_wait_ms()));
-                    }
-                } else {
-                    self.snip.at = None;
-                    self.begin_snip(event_loop);
-                    if self.overlay.is_none() {
-                        self.restore_fallback_if_needed();
-                    }
-                }
-            } else {
-                event_loop.set_control_flow(ControlFlow::WaitUntil(at));
-            }
-        }
+        self.advance_snip_schedule(event_loop);
         if let Some(tray) = &self.tray {
             if let Some(cmd) = tray.poll() {
                 let _ = self.proxy.send_event(AppEvent::Tray(cmd));
@@ -1649,4 +1624,33 @@ impl ApplicationHandler<AppEvent> for App {
 
     #[cfg(not(windows))]
     fn prefetch_dxgi(&mut self, _event_loop: &ActiveEventLoop) {}
+
+    fn advance_snip_schedule(&mut self, event_loop: &ActiveEventLoop) {
+        let Some(at) = self.snip.at else {
+            return;
+        };
+        if Instant::now() < at {
+            event_loop.set_control_flow(ControlFlow::WaitUntil(at));
+            return;
+        }
+        if self.snip.countdown.is_some() {
+            if self.snip.countdown_left > 1 {
+                self.snip.countdown_left -= 1;
+                if let Some(cd) = &mut self.snip.countdown {
+                    cd.set_left(self.snip.countdown_left);
+                }
+                self.snip.at = Some(Instant::now() + Duration::from_secs(1));
+            } else {
+                self.snip.countdown = None;
+                self.prepare_capture_hide();
+                self.snip.at = Some(Instant::now() + Duration::from_millis(self.hide_wait_ms()));
+            }
+        } else {
+            self.snip.at = None;
+            self.begin_snip(event_loop);
+            if self.overlay.is_none() {
+                self.restore_fallback_if_needed();
+            }
+        }
+    }
 }
