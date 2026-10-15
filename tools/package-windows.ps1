@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$Iscc,
     [switch]$SkipTests,
     [switch]$SkipBuild,
@@ -112,6 +112,16 @@ foreach ($source in $sources) {
     }
 }
 if ($count -eq 0) { throw 'No third-party licenses found' }
+Get-ChildItem -LiteralPath $payload -File -Recurse | ForEach-Object {
+    $stream = [IO.File]::OpenRead($_.FullName)
+    try {
+        $header = New-Object byte[] 16
+        $null = $stream.Read($header, 0, 16)
+        if ([Text.Encoding]::ASCII.GetString($header).StartsWith('%TSD-Header-###%')) {
+            throw "Encrypted file in release payload: $($_.FullName). Package from a clean Git archive."
+        }
+    } finally { $stream.Dispose() }
+}
 $reported = (& (Join-Path $payload 'pinshot.exe') --version | Out-String).Trim()
 if ($LASTEXITCODE -ne 0 -or "$reported" -notmatch "PinShot $([regex]::Escape($version)) \(windows-rust\)") {
     throw "Version smoke failed: $reported"
