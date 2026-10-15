@@ -1389,36 +1389,8 @@ impl ApplicationHandler<AppEvent> for App {
         if self.handle_aux_window_event(id, &event) {
             return;
         }
-        if let Some(ov) = self.overlay.as_mut() {
-            if ov.window_id() == id {
-                if let WindowEvent::MouseInput {
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                    ..
-                } = &event
-                {
-                    let now = Instant::now();
-                    let pt = ov.cursor();
-                    if let Some((wid, t, prev)) = self.last_click {
-                        // Same-spot only — a toolbar click then a drag inside
-                        // the hole is not a double-click (would copy/abort A).
-                        if wid == id
-                            && now.duration_since(t).as_millis() < 350
-                            && pt.manhattan(prev) <= 12.0
-                        {
-                            ov.on_double_click();
-                            self.last_click = None;
-                        } else {
-                            self.last_click = Some((id, now, pt));
-                        }
-                    } else {
-                        self.last_click = Some((id, now, pt));
-                    }
-                }
-                ov.handle(&event);
-                self.finish_overlay(event_loop);
+        if self.handle_overlay_window_event(event_loop, id, &event) {
                 return;
-            }
         }
         let mut open_menu = None;
         let mut close_menu = false;
@@ -1498,6 +1470,43 @@ impl ApplicationHandler<AppEvent> for App {
         if let Some(pid) = open_menu {
             self.open_pin_menu(event_loop, pid);
         }
+    }
+
+    fn handle_overlay_window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        id: WindowId,
+        event: &WindowEvent,
+    ) -> bool {
+        let Some(ov) = self.overlay.as_mut() else {
+            return false;
+        };
+        if ov.window_id() != id {
+            return false;
+        }
+        if let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+            ..
+        } = event
+        {
+            let now = Instant::now();
+            let pt = ov.cursor();
+            if let Some((wid, t, prev)) = self.last_click {
+                // Same-spot only: a toolbar click then a drag is not a double-click.
+                if wid == id && now.duration_since(t).as_millis() < 350 && pt.manhattan(prev) <= 12.0 {
+                    ov.on_double_click();
+                    self.last_click = None;
+                } else {
+                    self.last_click = Some((id, now, pt));
+                }
+            } else {
+                self.last_click = Some((id, now, pt));
+            }
+        }
+        ov.handle(event);
+        self.finish_overlay(event_loop);
+        true
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
