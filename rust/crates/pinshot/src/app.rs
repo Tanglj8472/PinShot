@@ -1136,8 +1136,8 @@ fn decode_png(bytes: &[u8]) -> Option<Raster> {
     Raster::from_rgba(img.width(), img.height(), img.into_raw())
 }
 
-impl ApplicationHandler<AppEvent> for App {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+impl App {
+    fn init_runtime(&mut self, event_loop: &ActiveEventLoop) {
         #[cfg(windows)]
         {
             // Warm the fontdue chrome stack before the first F1. On Windows
@@ -1233,8 +1233,8 @@ impl App {
 
 }
 
-impl ApplicationHandler<AppEvent> for App {
-    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
+impl App {
+    fn dispatch_user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
         match event {
             AppEvent::Hotkey(command) => self.handle_hotkey(event_loop, command),
             AppEvent::Tray(command) => self.handle_tray_command(event_loop, command),
@@ -1433,8 +1433,8 @@ impl App {
 
 }
 
-impl ApplicationHandler<AppEvent> for App {
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+impl App {
+    fn dispatch_window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         if let WindowEvent::ModifiersChanged(m) = &event {
             self.mods = m.state();
         }
@@ -1566,8 +1566,8 @@ impl App {
 
 }
 
-impl ApplicationHandler<AppEvent> for App {
-    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+impl App {
+    fn dispatch_about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         if event_loop.exiting() {
             return;
         }
@@ -1720,5 +1720,23 @@ impl App {
                 self.restore_fallback_if_needed();
             }
         }
+    }
+}
+
+impl ApplicationHandler<AppEvent> for App {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        self.init_runtime(event_loop);
+    }
+
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
+        self.dispatch_user_event(event_loop, event);
+    }
+
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        self.dispatch_window_event(event_loop, id, event);
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        self.dispatch_about_to_wait(event_loop);
     }
 }
