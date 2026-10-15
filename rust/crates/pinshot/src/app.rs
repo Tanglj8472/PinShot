@@ -509,12 +509,7 @@ impl App {
             OverlayResult::Pin(img, _, pos) => self.spawn_pin(event_loop, img, Some(pos), None),
             OverlayResult::Save(img) => self.save_overlay_image(&img),
             OverlayResult::Ocr(img, translate, pos) => {
-                self.spawn_pin(event_loop, img.clone(), Some(pos), None);
-                if let Some(p) = self.pins.last_mut() {
-                    p.set_status(Some(tr("Recognizing…")));
-                    let id = p.window_id();
-                    self.spawn_ocr(id, img, translate);
-                }
+                self.handle_overlay_ocr(event_loop, img, translate, pos)
             }
             OverlayResult::Cancel => {}
             OverlayResult::Resnip => {}
@@ -533,6 +528,21 @@ impl App {
             if crate::dialog::save_raster(img, &path, self.cfg.image_quality).is_ok() {
                 eprintln!("{}", tr(&format!("Saved {path}")));
             }
+        }
+    }
+
+    fn handle_overlay_ocr(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        img: Raster,
+        translate: bool,
+        pos: (i32, i32),
+    ) {
+        self.spawn_pin(event_loop, img.clone(), Some(pos), None);
+        if let Some(p) = self.pins.last_mut() {
+            p.set_status(Some(tr("Recognizing…")));
+            let id = p.window_id();
+            self.spawn_ocr(id, img, translate);
         }
     }
 
