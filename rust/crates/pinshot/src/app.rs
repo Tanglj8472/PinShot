@@ -116,7 +116,6 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
 /// `request_snip` (`overlay || snip.at || snip.countdown`) is exactly
 /// `phase != Idle`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[derive(Debug, PartialEq, Clone, Copy)]
 enum SnipPhase {
     /// Nothing pending; hotkeys/tray can arm a new snip.
     Idle,
