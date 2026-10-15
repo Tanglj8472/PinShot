@@ -1189,6 +1189,9 @@ impl ApplicationHandler<AppEvent> for App {
         }
     }
 
+}
+
+impl App {
     fn handle_hotkey(&mut self, event_loop: &ActiveEventLoop, command: Command) {
         match command {
             Command::Snip => self.request_snip(event_loop, false),
@@ -1228,6 +1231,9 @@ impl ApplicationHandler<AppEvent> for App {
         }
     }
 
+}
+
+impl ApplicationHandler<AppEvent> for App {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
         match event {
             AppEvent::Hotkey(command) => self.handle_hotkey(event_loop, command),
@@ -1256,6 +1262,9 @@ impl ApplicationHandler<AppEvent> for App {
         }
     }
 
+}
+
+impl App {
     fn handle_ipc_command(&mut self, command: String) {
         match command.as_str() {
             "reload-settings" => match config::load() {
@@ -1371,6 +1380,9 @@ impl ApplicationHandler<AppEvent> for App {
         }
     }
 
+}
+
+impl App {
     fn handle_aux_window_event(&mut self, id: WindowId, event: &WindowEvent) -> bool {
         if self
             .prefs
@@ -1419,6 +1431,9 @@ impl ApplicationHandler<AppEvent> for App {
         false
     }
 
+}
+
+impl ApplicationHandler<AppEvent> for App {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         if let WindowEvent::ModifiersChanged(m) = &event {
             self.mods = m.state();
@@ -1509,6 +1524,9 @@ impl ApplicationHandler<AppEvent> for App {
         }
     }
 
+}
+
+impl App {
     fn handle_overlay_window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -1546,6 +1564,9 @@ impl ApplicationHandler<AppEvent> for App {
         true
     }
 
+}
+
+impl ApplicationHandler<AppEvent> for App {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         if event_loop.exiting() {
             return;
@@ -1575,6 +1596,9 @@ impl ApplicationHandler<AppEvent> for App {
         self.maintain_windows(event_loop);
     }
 
+}
+
+impl App {
     fn maintain_windows(&mut self, event_loop: &ActiveEventLoop) {
         let mut persist = false;
         for p in &mut self.pins {
