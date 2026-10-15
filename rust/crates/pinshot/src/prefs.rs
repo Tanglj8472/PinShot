@@ -187,7 +187,8 @@ pub fn run_preferences() {
                 .unwrap_or(0)
                 .min(TABS.len() - 1);
             Ok(Box::new(PrefsApp {
-                draft: cfg,
+                draft: cfg.clone(),
+                saved: cfg,
                 tab,
                 group_sel: 0,
                 group_edit: String::new(),
@@ -283,6 +284,7 @@ enum UpdateCheckMsg {
 
 struct PrefsApp {
     draft: Config,
+    saved: Config,
     tab: usize,
     group_sel: usize,
     group_edit: String,
@@ -319,6 +321,7 @@ impl PrefsApp {
             self.status = tr("Could not save settings");
             return false;
         }
+        self.saved = self.draft.clone();
         i18n::set_lang(self.draft.lang());
         match crate::ipc::send("reload-settings") {
             Ok(()) => self.status = tr("Settings applied."),
@@ -501,18 +504,12 @@ impl eframe::App for PrefsApp {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                         }
                         ui.add_space(4.0);
-                        if ui.button(tr("OK")).clicked() {
-                            if self.apply() {
-                                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                            }
-                        }
-                        ui.add_space(4.0);
-                        if ui.button(tr("Apply")).clicked() {
-                            self.apply();
-                        }
                     });
                 });
             });
+        if self.draft != self.saved {
+            self.apply();
+        }
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::central_panel(&ctx.style())
@@ -811,7 +808,7 @@ impl PrefsApp {
         }
         ui.add_space(4.0);
         ui.weak(tr(
-            "Hotkeys already used by another app cannot be bound. Click Apply to rebind.",
+            "Hotkeys already used by another app cannot be bound. Changes save automatically.",
         ));
     }
 
@@ -1364,6 +1361,7 @@ mod tests {
                 start_minimized: false,
                 ..Config::default()
             },
+            saved: Config::default(),
             tab: 0,
             group_sel: 0,
             group_edit: String::new(),
@@ -1393,6 +1391,7 @@ mod tests {
                 },
                 ..Config::default()
             },
+            saved: Config::default(),
             tab: 6,
             group_sel: 0,
             group_edit: String::new(),

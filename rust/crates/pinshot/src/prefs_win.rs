@@ -37,8 +37,6 @@ enum Field {
     Browse,
     QualMinus,
     QualPlus,
-    Apply,
-    Ok,
     Cancel,
     Hk(u8),
     Tab(u8),
@@ -136,6 +134,9 @@ impl PrefsWin {
                 crate::native::focus_window(&self.window);
                 if let Some(f) = self.hit() {
                     self.dispatch_tab_or_click(f);
+                    if !matches!(f, Field::Cancel | Field::Tab(_) | Field::Hk(_)) {
+                        self.apply();
+                    }
                 } else {
                     self.armed = None;
                 }
@@ -146,6 +147,7 @@ impl PrefsWin {
                 if let Some(i) = self.armed {
                     if let Some(seq) = key_to_seq(&event.logical_key, self.mods) {
                         self.set_hk(i, seq);
+                        self.apply();
                         self.armed = None;
                         self.dirty = true;
                         self.relayout();
@@ -154,10 +156,7 @@ impl PrefsWin {
                 }
                 match &event.logical_key {
                     Key::Named(NamedKey::Escape) => self.close(),
-                    Key::Named(NamedKey::Enter) => {
-                        self.apply();
-                        self.close();
-                    }
+                    Key::Named(NamedKey::Enter) => self.close(),
                     _ => {}
                 }
             }
@@ -228,11 +227,6 @@ impl PrefsWin {
             }
             Field::QualMinus => self.draft.image_quality = self.draft.image_quality.saturating_sub(1).max(1),
             Field::QualPlus => self.draft.image_quality = (self.draft.image_quality + 1).min(100),
-            Field::Apply => self.apply(),
-            Field::Ok => {
-                self.apply();
-                self.close();
-            }
             Field::Cancel => self.close(),
             Field::Hk(i) => self.armed = Some(i),
             Field::Tab(_) => {}
@@ -337,9 +331,7 @@ impl PrefsWin {
             }
         }
         let by = h - 48.0;
-        push(self, 16.0, by, 80.0, Field::Apply);
-        push(self, 106.0, by, 80.0, Field::Ok);
-        push(self, 196.0, by, 80.0, Field::Cancel);
+        push(self, w - 96.0, by, 80.0, Field::Cancel);
         let _ = w;
     }
 
@@ -464,11 +456,7 @@ impl PrefsWin {
         }
         let _ = y;
         let by = h as f32 - 48.0;
-        for (lab, x, _field) in [
-            (tr("Apply"), 16.0, Field::Apply),
-            (tr("OK"), 106.0, Field::Ok),
-            (tr("Cancel"), 196.0, Field::Cancel),
-        ] {
+        for (lab, x, _field) in [(tr("Cancel"), w as f32 - 96.0, Field::Cancel)] {
             let r = Rect::new(x, by, 80.0, 32.0);
             let hover = r.contains(self.cursor);
             fill_rounded_rect(&mut pm, r, 5.0, if hover { thm.hover } else { thm.panel });
