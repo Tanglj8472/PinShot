@@ -1841,6 +1841,7 @@ impl Overlay {
             matches!(self.sel.state, SelState::Creating | SelState::Resizing),
             self.sel.state == SelState::Idle && !self.sel.has_sel(),
         );
+        let t_paint = Instant::now();
         self.front.paint(
             hwnd_of(&self.window),
             &self.sel,
@@ -1857,6 +1858,7 @@ impl Overlay {
             self.confirm.as_ref().map(|c| c.dont),
             self.color_picker.as_ref(),
         );
+        crate::logutil::ms("overlay redraw paint", t_paint);
         #[cfg(not(windows))]
         if let Some(surface) = &mut self.surface {
             let pm = self.front.pixmap();
@@ -1877,6 +1879,7 @@ impl Overlay {
         // the cursor, not this HWND.
         #[cfg(windows)]
         native::cloak_window(&self.window, false);
+        let t_window = Instant::now();
         self.window.set_visible(true);
         // First uncloak only: restack above the (now cloaked) tray. Doing
         // this on every mouse move invalidates the client and stains the
@@ -1886,6 +1889,7 @@ impl Overlay {
             self.cover_desktop();
             self.need_stack = false;
         }
+        crate::logutil::ms("overlay redraw window", t_window);
         self.dirty = false;
     }
 

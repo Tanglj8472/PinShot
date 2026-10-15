@@ -101,6 +101,8 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         update_inflight: false,
         update_poll_at: None,
         pending_installer: None,
+        #[cfg(windows)]
+        dxgi_prefetched: false,
     };
     event_loop.run_app(&mut app).map_err(|e| e.to_string())
 }
@@ -148,6 +150,8 @@ struct App {
     update_inflight: bool,
     update_poll_at: Option<Instant>,
     pending_installer: Option<std::path::PathBuf>,
+    #[cfg(windows)]
+    dxgi_prefetched: bool,
 }
 
 impl App {
@@ -460,14 +464,8 @@ impl App {
         crate::logutil::log("overlay closed");
         crate::native::release_stray_grabs();
         self.retire_pump_window();
-        let ocr_pending = matches!(res, OverlayResult::Ocr(_, _, _));
-        // Do not drop the ONNX engine or trim the working set before OCR.
-        // EmptyWorkingSet + tearing down WebGPU/DML sessions is why detect
-        // came back with no boxes after the memory pass.
-        if !resnip && !ocr_pending {
-            #[cfg(windows)]
-            crate::capture::Capture::release_idle();
-        }
+        // Keep DXGI warm between screenshots. Reopening D3D11 and
+        // DuplicateOutput on every F1 puts initialization on the hot path.
         if persist {
             let t0 = Instant::now();
             self.persist_history();
@@ -1114,6 +1112,11 @@ fn decode_png(bytes: &[u8]) -> Option<Raster> {
 
 impl ApplicationHandler<AppEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        #[cfg(windows)]
+        if !self.dxgi_prefetched {
+            self.dxgi_prefetched = true;
+            crate::capture::Capture::prefetch();
+        }
         if self.hotkeys.is_none() {
             match native::install_hotkeys(self.proxy.clone(), &self.cfg) {
                 Ok(h) => self.hotkeys = Some(h),
