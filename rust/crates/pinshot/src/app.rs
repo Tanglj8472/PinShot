@@ -1189,42 +1189,49 @@ impl ApplicationHandler<AppEvent> for App {
         }
     }
 
-    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
-        match event {
-            AppEvent::Hotkey(Command::Snip) => self.request_snip(event_loop, false),
-            AppEvent::Hotkey(Command::PinClipboard) => {
+    fn handle_hotkey(&mut self, event_loop: &ActiveEventLoop, command: Command) {
+        match command {
+            Command::Snip => self.request_snip(event_loop, false),
+            Command::PinClipboard => {
                 if self.overlay.is_none() {
                     self.pin_clipboard(event_loop);
                 }
             }
-            AppEvent::Hotkey(Command::HideAllPins) => self.toggle_pins(),
-            AppEvent::Hotkey(Command::RestoreClosed) => self.restore_closed(event_loop),
-            AppEvent::Hotkey(Command::ClickThrough) => {
+            Command::HideAllPins => self.toggle_pins(),
+            Command::RestoreClosed => self.restore_closed(event_loop),
+            Command::ClickThrough => {
                 if let Some(p) = self.pins.last_mut() {
-                    let on = !p.click_through;
-                    p.set_click_through(on);
+                    p.set_click_through(!p.click_through);
                 }
             }
-            AppEvent::Hotkey(Command::Quit) => self.request_quit(event_loop),
-            AppEvent::Hotkey(Command::OpenSettings) => {
-                prefs::open(self.cfg.clone(), self.proxy.clone());
-            }
-            AppEvent::Hotkey(Command::CaptureTranslate) => self.request_snip(event_loop, true),
-            AppEvent::Hotkey(Command::SelectionTranslate) => {
-                if self.overlay.is_some() {
-                    // Overlay F5 already runs OCR+translate on the selection.
-                } else {
+            Command::Quit => self.request_quit(event_loop),
+            Command::OpenSettings => prefs::open(self.cfg.clone(), self.proxy.clone()),
+            Command::CaptureTranslate => self.request_snip(event_loop, true),
+            Command::SelectionTranslate => {
+                if self.overlay.is_none() {
                     self.pin_or_selection_translate();
                 }
             }
-            AppEvent::Tray(TrayCmd::Snip) => self.request_snip(event_loop, false),
-            AppEvent::Tray(TrayCmd::Pin) => self.pin_clipboard(event_loop),
-            AppEvent::Tray(TrayCmd::HideAll) => self.toggle_pins(),
-            AppEvent::Tray(TrayCmd::Settings) => prefs::open(self.cfg.clone(), self.proxy.clone()),
-            AppEvent::Tray(TrayCmd::Quit) => self.request_quit(event_loop),
-            AppEvent::Tray(TrayCmd::Translate) => self.request_snip(event_loop, true),
-            AppEvent::Tray(TrayCmd::Restore) => self.restore_closed(event_loop),
-            AppEvent::Tray(TrayCmd::ToggleGroup(name)) => self.toggle_group(name),
+        }
+    }
+
+    fn handle_tray_command(&mut self, event_loop: &ActiveEventLoop, command: TrayCmd) {
+        match command {
+            TrayCmd::Snip => self.request_snip(event_loop, false),
+            TrayCmd::Pin => self.pin_clipboard(event_loop),
+            TrayCmd::HideAll => self.toggle_pins(),
+            TrayCmd::Settings => prefs::open(self.cfg.clone(), self.proxy.clone()),
+            TrayCmd::Quit => self.request_quit(event_loop),
+            TrayCmd::Translate => self.request_snip(event_loop, true),
+            TrayCmd::Restore => self.restore_closed(event_loop),
+            TrayCmd::ToggleGroup(name) => self.toggle_group(name),
+        }
+    }
+
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
+        match event {
+            AppEvent::Hotkey(command) => self.handle_hotkey(event_loop, command),
+            AppEvent::Tray(command) => self.handle_tray_command(event_loop, command),
             AppEvent::PrefsApplied(cfg) => self.apply_cfg(cfg),
             AppEvent::RaisePrefs => {
                 if let Some(w) = &self.prefs {
