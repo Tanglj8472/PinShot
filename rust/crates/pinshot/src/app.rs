@@ -1268,16 +1268,7 @@ impl ApplicationHandler<AppEvent> for App {
                 }
             }
             AppEvent::PinMenu(action) => self.apply_pin_menu(action),
-            AppEvent::Ipc(cmd) if cmd == "reload-settings" => match config::load() {
-                Ok(cfg) => self.apply_cfg(cfg),
-                Err(e) => crate::logutil::log(&format!("reload settings: {e}")),
-            },
-            AppEvent::Ipc(cmd) if cmd == "raise" => {
-                if let Some(fb) = &self.fallback {
-                    fb.show();
-                }
-            }
-            AppEvent::Ipc(_) => {}
+            AppEvent::Ipc(cmd) => self.handle_ipc_command(cmd),
             AppEvent::OcrProgress { pin, message } => {
                 if let Some(p) = self.pins.iter_mut().find(|p| p.window_id() == pin) {
                     p.set_status(Some(tr(&message)));
@@ -1338,6 +1329,21 @@ impl ApplicationHandler<AppEvent> for App {
                 }
                 Err(err) => eprintln!("{}", tr(&err)),
             },
+        }
+    }
+
+    fn handle_ipc_command(&mut self, command: String) {
+        match command.as_str() {
+            "reload-settings" => match config::load() {
+                Ok(cfg) => self.apply_cfg(cfg),
+                Err(e) => crate::logutil::log(&format!("reload settings: {e}")),
+            },
+            "raise" => {
+                if let Some(fb) = &self.fallback {
+                    fb.show();
+                }
+            }
+            _ => {}
         }
     }
 
