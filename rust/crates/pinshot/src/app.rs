@@ -1514,25 +1514,7 @@ impl ApplicationHandler<AppEvent> for App {
             return;
         }
         event_loop.set_control_flow(ControlFlow::Wait);
-        #[cfg(windows)]
-        if !self.dxgi_prefetched {
-            if let Some(at) = self.dxgi_prefetch_at {
-                if Instant::now() >= at {
-                    if crate::capture::Capture::prefetch() {
-                        self.dxgi_prefetched = true;
-                        self.dxgi_prefetch_at = None;
-                    } else {
-                        // Locked desktops reject DuplicateOutput. Keep the
-                        // retry pending so unlock can warm DXGI before F1.
-                        let next = Instant::now() + Duration::from_secs(2);
-                        self.dxgi_prefetch_at = Some(next);
-                        event_loop.set_control_flow(ControlFlow::WaitUntil(next));
-                    }
-                } else {
-                    event_loop.set_control_flow(ControlFlow::WaitUntil(at));
-                }
-            }
-        }
+        self.prefetch_dxgi(event_loop);
         let poll = self
             .update_poll_at
             .map(|t| t.elapsed() >= Duration::from_secs(60))
@@ -1641,4 +1623,30 @@ impl ApplicationHandler<AppEvent> for App {
             self.persist_session();
         }
     }
+
+    #[cfg(windows)]
+    fn prefetch_dxgi(&mut self, event_loop: &ActiveEventLoop) {
+        if self.dxgi_prefetched {
+            return;
+        }
+        let Some(at) = self.dxgi_prefetch_at else {
+            return;
+        };
+        if Instant::now() < at {
+            event_loop.set_control_flow(ControlFlow::WaitUntil(at));
+            return;
+        }
+        if crate::capture::Capture::prefetch() {
+            self.dxgi_prefetched = true;
+            self.dxgi_prefetch_at = None;
+        } else {
+            // Locked desktops reject DuplicateOutput; retry after unlock.
+            let next = Instant::now() + Duration::from_secs(2);
+            self.dxgi_prefetch_at = Some(next);
+            event_loop.set_control_flow(ControlFlow::WaitUntil(next));
+        }
+    }
+
+    #[cfg(not(windows))]
+    fn prefetch_dxgi(&mut self, _event_loop: &ActiveEventLoop) {}
 }
