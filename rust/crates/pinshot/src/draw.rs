@@ -547,6 +547,23 @@ impl GdiBits {
         }
         let pw = pm.width() as usize;
         let src = pm.data();
+        // The first frame is the whole 4160x1400 desktop. Keep the hot
+        // full-frame path in packed u32 form so LLVM can vectorize the
+        // RGBA -> BGRA swap; the small dirty-rect path below stays simple.
+        if x0 == 0 && y0 == 0 && x1 == self.w && y1 == self.h && x1 == pm.width() as i32 {
+            let pixels = (self.w as usize) * (self.h as usize);
+            let src32 = src.as_ptr().cast::<u32>();
+            let dst32 = self.bits.cast::<u32>();
+            for i in 0..pixels {
+                let p = unsafe { *src32.add(i) };
+                unsafe {
+                    *dst32.add(i) = (p & 0xff00_ff00)
+                        | ((p & 0x00ff_0000) >> 16)
+                        | ((p & 0x0000_00ff) << 16);
+                }
+            }
+            return;
+        }
         unsafe {
             for y in y0..y1 {
                 let srow = (y as usize * pw + x0 as usize) * 4;
