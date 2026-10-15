@@ -1258,50 +1258,11 @@ impl ApplicationHandler<AppEvent> for App {
             }
             AppEvent::PinMenu(action) => self.apply_pin_menu(action),
             AppEvent::Ipc(cmd) => self.handle_ipc_command(cmd),
-            AppEvent::OcrProgress { pin, message } => {
-                if let Some(p) = self.pins.iter_mut().find(|p| p.window_id() == pin) {
-                    p.set_status(Some(tr(&message)));
-                }
+            AppEvent::OcrProgress { pin, message } => self.handle_ocr_progress(pin, message),
+            AppEvent::OcrDone { pin, result, translate } => {
+                self.handle_ocr_done(pin, result, translate)
             }
-            AppEvent::OcrDone {
-                pin,
-                result,
-                translate,
-            } => {
-                let mut follow = None;
-                if let Some(p) = self.pins.iter_mut().find(|p| p.window_id() == pin) {
-                    match result {
-                        Ok(page) => {
-                            let text = page.text.clone();
-                            p.attach_ocr(page);
-                            if translate && !text.trim().is_empty() {
-                                p.set_translating(true);
-                                follow = Some(text);
-                            }
-                        }
-                        Err(err) => {
-                            p.set_status(None);
-                            p.toast(tr(&err));
-                        }
-                    }
-                }
-                if let Some(text) = follow {
-                    self.spawn_translate(pin, text);
-                }
-                #[cfg(windows)]
-                crate::capture::Capture::release_idle();
-            }
-            AppEvent::TranslateDone { pin, result } => {
-                if let Some(p) = self.pins.iter_mut().find(|p| p.window_id() == pin) {
-                    match result {
-                        Ok(text) => p.set_translation(text),
-                        Err(err) => {
-                            p.set_translating(false);
-                            p.toast(tr(&err));
-                        }
-                    }
-                }
-            }
+            AppEvent::TranslateDone { pin, result } => self.handle_translate_done(pin, result),
             AppEvent::SelectionText(result) => match result {
                 Ok(text) => {
                     let img = clipboard::text_card(&text, 280, 120);
@@ -1352,6 +1313,54 @@ impl ApplicationHandler<AppEvent> for App {
                 self.request_quit(event_loop);
             }
             _ => self.finish_update_check(result),
+        }
+    }
+
+    fn handle_ocr_progress(&mut self, pin: WindowId, message: String) {
+        if let Some(p) = self.pins.iter_mut().find(|p| p.window_id() == pin) {
+            p.set_status(Some(tr(&message)));
+        }
+    }
+
+    fn handle_ocr_done(
+        &mut self,
+        pin: WindowId,
+        result: Result<pinshot_core::ocr::OcrPage, String>,
+        translate: bool,
+    ) {
+        let mut follow = None;
+        if let Some(p) = self.pins.iter_mut().find(|p| p.window_id() == pin) {
+            match result {
+                Ok(page) => {
+                    let text = page.text.clone();
+                    p.attach_ocr(page);
+                    if translate && !text.trim().is_empty() {
+                        p.set_translating(true);
+                        follow = Some(text);
+                    }
+                }
+                Err(err) => {
+                    p.set_status(None);
+                    p.toast(tr(&err));
+                }
+            }
+        }
+        if let Some(text) = follow {
+            self.spawn_translate(pin, text);
+        }
+        #[cfg(windows)]
+        crate::capture::Capture::release_idle();
+    }
+
+    fn handle_translate_done(&mut self, pin: WindowId, result: Result<String, String>) {
+        if let Some(p) = self.pins.iter_mut().find(|p| p.window_id() == pin) {
+            match result {
+                Ok(text) => p.set_translation(text),
+                Err(err) => {
+                    p.set_translating(false);
+                    p.toast(tr(&err));
+                }
+            }
         }
     }
 
