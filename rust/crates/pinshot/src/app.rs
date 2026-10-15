@@ -1481,9 +1481,16 @@ impl ApplicationHandler<AppEvent> for App {
         if !self.dxgi_prefetched {
             if let Some(at) = self.dxgi_prefetch_at {
                 if Instant::now() >= at {
-                    self.dxgi_prefetched = true;
-                    self.dxgi_prefetch_at = None;
-                    crate::capture::Capture::prefetch();
+                    if crate::capture::Capture::prefetch() {
+                        self.dxgi_prefetched = true;
+                        self.dxgi_prefetch_at = None;
+                    } else {
+                        // Locked desktops reject DuplicateOutput. Keep the
+                        // retry pending so unlock can warm DXGI before F1.
+                        let next = Instant::now() + Duration::from_secs(2);
+                        self.dxgi_prefetch_at = Some(next);
+                        event_loop.set_control_flow(ControlFlow::WaitUntil(next));
+                    }
                 } else {
                     event_loop.set_control_flow(ControlFlow::WaitUntil(at));
                 }

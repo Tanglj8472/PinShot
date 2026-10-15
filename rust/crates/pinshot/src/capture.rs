@@ -78,21 +78,28 @@ impl Capture {
 
     /// Warm the DXGI duplicator on the UI thread so the first F1 is not a
     /// D3D11CreateDevice + DuplicateOutput stall.
-    pub fn prefetch() {
+    pub fn prefetch() -> bool {
         unsafe {
             let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
         }
         let t0 = Instant::now();
-        match grab_dxgi() {
-            Ok(frames) => crate::logutil::log(&format!(
-                "dxgi prefetch outputs={} {}×{}",
-                frames.len(),
-                frames.first().map(|f| f.image.width).unwrap_or(0),
-                frames.first().map(|f| f.image.height).unwrap_or(0)
-            )),
-            Err(e) => crate::logutil::log(&format!("dxgi prefetch: {e}")),
-        }
+        let ok = match grab_dxgi() {
+            Ok(frames) => {
+                crate::logutil::log(&format!(
+                    "dxgi prefetch outputs={} {}×{}",
+                    frames.len(),
+                    frames.first().map(|f| f.image.width).unwrap_or(0),
+                    frames.first().map(|f| f.image.height).unwrap_or(0)
+                ));
+                true
+            }
+            Err(e) => {
+                crate::logutil::log(&format!("dxgi prefetch: {e}"));
+                false
+            }
+        };
         crate::logutil::ms("dxgi prefetch", t0);
+        ok
     }
 
     /// Drop the standing DXGI session after the overlay closes. Each output
