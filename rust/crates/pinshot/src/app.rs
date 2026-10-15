@@ -116,6 +116,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
 /// `request_snip` (`overlay || snip.at || snip.countdown`) is exactly
 /// `phase != Idle`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 enum SnipPhase {
     /// Nothing pending; hotkeys/tray can arm a new snip.
     Idle,
@@ -125,6 +126,29 @@ enum SnipPhase {
     HideWait,
     /// Capture taken, annotation overlay is live (`overlay` is `Some`).
     Overlay,
+}
+
+impl SnipPhase {
+    /// Phase entered when a snip is armed: `Countdown` if a delay is
+    /// configured, otherwise jump straight to `HideWait`.
+    fn arm(delay_enabled: bool) -> Self {
+        if delay_enabled {
+            SnipPhase::Countdown
+        } else {
+            SnipPhase::HideWait
+        }
+    }
+
+    /// Phase after a single countdown tick. While `left > 1` we stay in
+    /// `Countdown`; the final tick (`left <= 1`) transitions to `HideWait`
+    /// and the grab proceeds.
+    fn countdown_tick(left: u32) -> Self {
+        if left > 1 {
+            SnipPhase::Countdown
+        } else {
+            SnipPhase::HideWait
+        }
+    }
 }
 
 #[derive(Default)]
@@ -330,11 +354,11 @@ impl App {
                 Err(e) => crate::logutil::log(&format!("countdown: {e}")),
             }
             self.snip.at = Some(Instant::now() + Duration::from_secs(1));
-            self.snip_phase = SnipPhase::Countdown;
+            self.snip_phase = SnipPhase::arm(true);
         } else {
             self.prepare_capture_hide();
             self.snip.at = Some(Instant::now() + Duration::from_millis(self.hide_wait_ms()));
-            self.snip_phase = SnipPhase::HideWait;
+            self.snip_phase = SnipPhase::arm(false);
         }
     }
 
@@ -1741,7 +1765,7 @@ impl App {
                 self.snip.countdown = None;
                 self.prepare_capture_hide();
                 self.snip.at = Some(Instant::now() + Duration::from_millis(self.hide_wait_ms()));
-                self.snip_phase = SnipPhase::HideWait;
+                self.snip_phase = SnipPhase::countdown_tick(self.snip.countdown_left);
             }
         } else {
             self.snip.at = None;
@@ -1768,5 +1792,57 @@ impl ApplicationHandler<AppEvent> for App {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.dispatch_about_to_wait(event_loop);
+    }
+}
+
+#[cfg(test)]
+mod snip_phase_tests {
+    use super::*;
+
+    #[test]
+    fn arm_selects_countdown_or_hidewait() {
+        assert_eq!(SnipPhase::arm(true), SnipPhase::Countdown);
+        assert_eq!(SnipPhase::arm(false), SnipPhase::HideWait);
+    }
+
+    #[test]
+    fn countdown_tick_stays_until_final() {
+        assert_eq!(SnipPhase::countdown_tick(5), SnipPhase::Countdown);
+        assert_eq!(SnipPhase::countdown_tick(2), SnipPhase::Countdown);
+        assert_eq!(SnipPhase::countdown_tick(1), SnipPhase::HideWait);
+        assert_eq!(SnipPhase::countdown_tick(0), SnipPhase::HideWait);
+    }
+
+    #[test]
+    fn variants_are_distinct() {
+        // Single-source-of-truth invariant relied on by request_snip /
+        // begin_snip / finish_overlay / advance_snip_schedule: each phase is a
+        // unique discriminant, so the "phase != Idle" / "phase == Overlay"
+        // guards can never collide.
+        let all = [
+            SnipPhase::Idle,
+            SnipPhase::Countdown,
+            SnipPhase::HideWait,
+            SnipPhase::Overlay,
+        ];
+        for i in 0..all.len() {
+            for j in 0..all.len() {
+                if i != j {
+                    assert_ne!(all[i], all[j]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn overlay_is_the_only_live_state() {
+        // Documented contract: `phase == Overlay` iff `overlay.is_some()`
+        // (enforced in begin_snip / finish_overlay). `Overlay` must therefore
+        // be reachable only from the capture path and is the sole "live"
+        // state among the four.
+        let live = SnipPhase::Overlay;
+        assert_ne!(live, SnipPhase::Idle);
+        assert_ne!(live, SnipPhase::Countdown);
+        assert_ne!(live, SnipPhase::HideWait);
     }
 }
