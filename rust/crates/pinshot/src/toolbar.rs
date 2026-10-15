@@ -337,13 +337,11 @@ impl Toolbar {
                         | Tool::Ellipse
                         | Tool::Line
                         | Tool::Pen
-                        | Tool::Eraser
                         | Tool::Number
                 )
             );
-            let numeric_width = active == Some(Tool::Eraser);
             if show_width {
-                let ww = if numeric_width { 28.0 } else { 26.0 };
+                let ww = 26.0;
                 width_label = Rect::new(chip_x, chip_y, ww, 24.0);
                 chip_x += ww + 4.0;
                 push_sep(&mut seps, &mut chip_x, chip_y);
@@ -405,7 +403,7 @@ impl Toolbar {
                             st.has_arrow(),
                         );
                     }
-                    Some(Tool::Marker) => {
+                    Some(Tool::Marker | Tool::Eraser) => {
                         push_brush_chip(
                             &mut extras,
                             &mut chip_x,
@@ -459,24 +457,6 @@ impl Toolbar {
                         slider = Rect::new(chip_x, chip_y + 6.0, 72.0, 12.0);
                         slider_max = 30;
                         chip_x += 80.0;
-                    }
-                    Some(Tool::Eraser) => {
-                        push_icon(
-                            &mut extras,
-                            &mut chip_x,
-                            chip_y,
-                            IconKind::Pen,
-                            TbAction::SetMode(DrawMode::Brush),
-                            st.mode == DrawMode::Brush,
-                        );
-                        push_icon(
-                            &mut extras,
-                            &mut chip_x,
-                            chip_y,
-                            IconKind::Rect,
-                            TbAction::SetMode(DrawMode::Rect),
-                            st.mode == DrawMode::Rect,
-                        );
                     }
                     Some(Tool::Text) => {
                         push_icon(
@@ -1274,5 +1254,22 @@ mod tests {
         assert!(!mos.slider.is_empty(), "mosaic panel has a strength slider");
         let at = Point::new(mos.slider.x + mos.slider.w * 0.5, mos.slider.y + 4.0);
         assert!(matches!(mos.hit(at), Some(TbAction::StrengthSet(_))));
+    }
+
+    #[test]
+    fn eraser_panel_uses_size_chip_as_brush_button_and_fill_button() {
+        let st = Style::for_tool(Tool::Eraser);
+        let tb = Toolbar::layout(
+            Rect::new(100.0, 100.0, 400.0, 240.0),
+            Rect::new(0.0, 0.0, 1920.0, 1200.0),
+            Some(Tool::Eraser), ArrowKind::None, Some(&st),
+        );
+        assert!(tb.width_label.is_empty());
+        let brush = tb.extras.iter().find(|e| e.action == TbAction::SetMode(DrawMode::Brush)).unwrap();
+        assert_eq!(brush.kind, ExtraKind::BrushSize(st.width));
+        assert!(brush.checked);
+        let fill = tb.extras.iter().find(|e| e.action == TbAction::SetMode(DrawMode::Rect)).unwrap();
+        assert_eq!(fill.icon, Some(IconKind::Fill));
+        assert!(!fill.checked);
     }
 }

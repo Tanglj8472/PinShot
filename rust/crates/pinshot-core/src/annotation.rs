@@ -456,7 +456,7 @@ impl Default for Annotator {
 
 impl Annotator {
     pub fn set_draw_mode(&mut self, tool: Tool, mode: DrawMode) {
-        if matches!(tool, Tool::Marker | Tool::Mosaic) {
+        if matches!(tool, Tool::Marker | Tool::Mosaic | Tool::Eraser) {
             self.set_tool(Some(tool));
             self.style_mut(tool).mode = mode;
         } else {
@@ -521,7 +521,7 @@ impl Annotator {
     }
 
     pub fn add(&mut self, shape: Shape) {
-        let selectable = shape.kind != Tool::Pen
+        let selectable = !matches!(shape.kind, Tool::Pen | Tool::Eraser)
             && !(matches!(shape.kind, Tool::Marker | Tool::Mosaic) && shape.style.mode == DrawMode::Brush);
         self.push_edit();
         self.shapes.push(shape);
@@ -662,7 +662,7 @@ impl Annotator {
                     sh.pts.pop();
                 }
             }
-            let marker_dot = matches!(sh.kind, Tool::Marker | Tool::Mosaic)
+            let marker_dot = matches!(sh.kind, Tool::Marker | Tool::Mosaic | Tool::Eraser)
                 && sh.style.mode == DrawMode::Brush
                 && !sh.pts.is_empty();
             let ok = marker_dot || sh.pts.len() > 1
@@ -1086,7 +1086,7 @@ impl Annotator {
     pub fn hit_handle_of_selected(&self, img_pt: Point) -> Option<Handle> {
         let i = self.selected?;
         let sh = self.shapes.get(i)?;
-        if sh.kind == Tool::Pen || (matches!(sh.kind, Tool::Marker | Tool::Mosaic) && sh.style.mode == DrawMode::Brush) {
+        if matches!(sh.kind, Tool::Pen | Tool::Eraser) || (matches!(sh.kind, Tool::Marker | Tool::Mosaic) && sh.style.mode == DrawMode::Brush) {
             return None;
         }
         let slop = HANDLE_SIZE / 2.0 + 2.0;
@@ -1819,7 +1819,7 @@ impl Annotator {
             return true;
         }
         if self.live.is_some() {
-            if self.live.as_ref().is_some_and(|s| matches!(s.kind, Tool::Marker | Tool::Mosaic)) {
+            if self.live.as_ref().is_some_and(|s| matches!(s.kind, Tool::Marker | Tool::Mosaic | Tool::Eraser)) {
                 self.move_to(img_pt, false);
             }
             if self.live.as_ref().is_some_and(|s| s.kind == Tool::Line) {
@@ -2687,6 +2687,46 @@ mod tests {
                 assert_eq!(a.hit_test(Point::new(50.0, 40.0)), Some(0));
             }
         }
+    }
+
+    #[test]
+    fn eraser_modes_are_unselectable_and_preserve_freehand_or_rect_geometry() {
+        for mode in [DrawMode::Brush, DrawMode::Rect] {
+            let mut a = Annotator::new();
+            a.set_draw_mode(Tool::Eraser, mode);
+            let start = Point::new(10.0, 10.0);
+            let bend = Point::new(70.0, 80.0);
+            let end = Point::new(30.0, 20.0);
+            a.press(start, false);
+            a.move_to(bend, false);
+            a.release(end);
+            let expected = if mode == DrawMode::Brush { vec![start, bend, end] } else { vec![start, end] };
+            assert_eq!(a.shapes[0].pts, expected);
+            assert_eq!(a.selected, None);
+            assert_eq!(a.edit_target, None);
+            assert_eq!(a.width_target, None);
+            assert_eq!(a.hit_test(end), None);
+            a.set_tool(Some(Tool::Select));
+            a.press(end, false);
+            a.move_to(bend, false);
+            a.release(bend);
+            assert_eq!(a.shapes[0].pts, expected);
+            assert_eq!(a.selected, None);
+            a.undo();
+            assert!(a.shapes.is_empty());
+        }
+    }
+
+    #[test]
+    fn eraser_brush_click_commits_a_dot() {
+        let mut a = Annotator::new();
+        a.set_tool(Some(Tool::Eraser));
+        let point = Point::new(25.0, 25.0);
+        a.press(point, false);
+        a.release(point);
+        assert_eq!(a.shapes.len(), 1);
+        assert_eq!(a.shapes[0].pts, vec![point]);
+        assert_eq!(a.selected, None);
     }
 
     #[test]

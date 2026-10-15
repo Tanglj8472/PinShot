@@ -37,6 +37,16 @@ impl Lang {
 }
 
 const PAIRS: &[(&str, &str)] = &[
+    ("Press a shortcut…", "请按下快捷键…"),
+    ("Click to set", "点击设置"),
+    ("PinShot shortcut warning", "PinShot 快捷键提示"),
+    ("Shortcuts unavailable. Click to change them in Settings.", "快捷键被占用或无法注册，点击通知前往设置修改。"),
+    ("Selection translation", "划词翻译"),
+    ("Some shortcuts could not be enabled:", "以下快捷键无法启用："),
+    ("Already in use or assigned to another PinShot action", "已被占用或与 PinShot 其他功能重复"),
+    ("Invalid shortcut", "快捷键格式无效"),
+    ("Could not register shortcut", "快捷键注册失败"),
+    ("Change these shortcuts in Settings, or close the application using them. Other shortcuts remain available.", "请在设置中修改这些快捷键，或关闭占用它们的应用后重新启动 PinShot。其他快捷键仍可正常使用。"),
     ("PinShot Settings", "PinShot 设置"),
     ("Could not save settings", "设置保存失败"),
     ("Saved. Restart PinShot to apply.", "已保存，重启后生效。"),

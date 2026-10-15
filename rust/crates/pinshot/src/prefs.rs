@@ -54,6 +54,18 @@ pub fn is_open() -> bool {
     OPEN.load(Ordering::SeqCst)
 }
 
+#[cfg(windows)]
+pub fn settings_has_focus() -> bool {
+    let child = CHILD.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(child) = child.as_ref() else { return false; };
+    unsafe {
+        use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
+        let mut pid = 0;
+        GetWindowThreadProcessId(GetForegroundWindow(), Some(&mut pid));
+        pid == child.id()
+    }
+}
+
 pub fn mark_closed() {
     OPEN.store(false, Ordering::SeqCst);
 }
@@ -764,21 +776,21 @@ impl PrefsApp {
     fn ui_control(&mut self, ui: &mut Ui) {
         ui.label(RichText::new(tr("Global hotkeys")).strong());
         form_grid(ui, "prefs_hotkeys", |ui| {
-            form_line(ui, tr("Snip:"), &mut self.draft.hotkey_snip);
-            form_line(ui, tr("Pin clipboard:"), &mut self.draft.hotkey_pin);
-            form_line(ui, tr("Hide/show pins:"), &mut self.draft.hotkey_hide_all);
-            form_line(ui, tr("Restore last pin:"), &mut self.draft.hotkey_restore);
-            form_line(
+            form_hotkey(ui, tr("Snip:"), &mut self.draft.hotkey_snip);
+            form_hotkey(ui, tr("Pin clipboard:"), &mut self.draft.hotkey_pin);
+            form_hotkey(ui, tr("Hide/show pins:"), &mut self.draft.hotkey_hide_all);
+            form_hotkey(ui, tr("Restore last pin:"), &mut self.draft.hotkey_restore);
+            form_hotkey(
                 ui,
                 tr("Select-text translate:"),
                 &mut self.draft.hotkey_selection_translate,
             );
-            form_line(
+            form_hotkey(
                 ui,
                 tr("Snip and translate:"),
                 &mut self.draft.hotkey_capture_translate,
             );
-            form_line(
+            form_hotkey(
                 ui,
                 tr("Click-through:"),
                 &mut self.draft.hotkey_clickthrough,
@@ -1129,6 +1141,145 @@ fn form_combo(
 
 fn form_line(ui: &mut Ui, label: String, val: &mut String) {
     form_line_hint(ui, label, val, "");
+}
+
+#[derive(Clone)]
+struct HotkeyCapture {
+    #[cfg(windows)]
+    down: [bool; 256],
+}
+
+fn form_hotkey(ui: &mut Ui, label: String, val: &mut String) {
+    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+        ui.set_min_width(FORM_LABEL_W);
+        ui.label(&label);
+    });
+    let id = ui.make_persistent_id(("hotkey_capture", &label));
+    let mut capture = ui.ctx().data_mut(|data| data.get_temp::<HotkeyCapture>(id));
+    ui.horizontal(|ui| {
+        let text = if capture.is_some() { tr("Press a shortcut…") }
+            else if val.is_empty() { tr("Click to set") } else { val.clone() };
+        let response = ui.add_sized([CONTROL_W - 48.0, ROW_H], egui::Button::new(text));
+        if response.clicked() {
+            response.request_focus();
+            capture = Some(HotkeyCapture {
+                #[cfg(windows)]
+                down: keyboard_snapshot(),
+            });
+        } else if !response.has_focus() || !ui.input(|i| i.focused) {
+            capture = None;
+        }
+        if let Some(state) = capture.as_mut() {
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(16));
+            #[cfg(windows)]
+            let pressed = {
+                let down = keyboard_snapshot();
+                let key = (8..256).find(|&vk| down[vk] && !state.down[vk]
+                    && !matches!(vk, 0x10..=0x12 | 0x5b..=0x5c | 0xa0..=0xa5));
+                state.down = down;
+                key.and_then(|vk| recorded_vk(vk as u32, &down))
+            };
+            #[cfg(not(windows))]
+            let pressed = {
+                let _ = state;
+                ui.input(|i| i.events.iter().find_map(|event| {
+                    if let egui::Event::Key { key, physical_key, pressed: true, repeat: false, modifiers, .. } = event {
+                        recorded_egui_key(physical_key.unwrap_or(*key), *modifiers)
+                    } else { None }
+                }))
+            };
+            if let Some(seq) = pressed {
+                if seq != "Escape" { *val = seq; }
+                capture = None;
+                response.surrender_focus();
+            }
+            // Do not let recorded keys activate other controls or insert text.
+            ui.input_mut(|i| i.events.retain(|event| !matches!(event,
+                egui::Event::Key { .. } | egui::Event::Text(_))));
+        }
+        if ui.small_button(tr("Clear")).clicked() {
+            val.clear();
+            capture = None;
+        }
+    });
+    ui.ctx().data_mut(|data| {
+        if let Some(capture) = capture { data.insert_temp(id, capture); }
+        else { data.remove::<HotkeyCapture>(id); }
+    });
+    ui.end_row();
+}
+
+#[cfg(windows)]
+fn keyboard_snapshot() -> [bool; 256] {
+    std::array::from_fn(|vk| unsafe {
+        windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(vk as i32) as u16 & 0x8000 != 0
+    })
+}
+
+#[cfg(windows)]
+fn recorded_vk(vk: u32, down: &[bool; 256]) -> Option<String> {
+    let key = match vk {
+        0x30..=0x39 | 0x41..=0x5a => char::from_u32(vk)?.to_string(),
+        0x70..=0x87 => format!("F{}", vk - 0x70 + 1),
+        0x08 => "Backspace".into(), 0x09 => "Tab".into(), 0x0d => "Enter".into(),
+        0x1b => "Escape".into(), 0x20 => "Space".into(), 0x13 => "Pause".into(),
+        0x21 => "PageUp".into(), 0x22 => "PageDown".into(), 0x23 => "End".into(),
+        0x24 => "Home".into(), 0x25 => "Left".into(), 0x26 => "Up".into(),
+        0x27 => "Right".into(), 0x28 => "Down".into(), 0x2c => "PrintScreen".into(),
+        0x2d => "Insert".into(), 0x2e => "Delete".into(),
+        0xc0 => "`".into(), 0xbd => "-".into(), 0xbb => "=".into(),
+        0xdb => "[".into(), 0xdd => "]".into(), 0xba => ";".into(),
+        0xde => "'".into(), 0xbc => ",".into(), 0xbe => ".".into(),
+        0xbf => "/".into(), 0xdc => "\\".into(), _ => return None,
+    };
+    shortcut_sequence(&key, down[0x11], down[0x10], down[0x12], down[0x5b] || down[0x5c])
+}
+
+#[cfg(not(windows))]
+fn recorded_egui_key(key: egui::Key, mods: egui::Modifiers) -> Option<String> {
+    let name = match key {
+        egui::Key::ArrowLeft => "Left", egui::Key::ArrowRight => "Right",
+        egui::Key::ArrowUp => "Up", egui::Key::ArrowDown => "Down",
+        _ => key.name(),
+    };
+    shortcut_sequence(name, mods.ctrl, mods.shift, mods.alt, mods.mac_cmd)
+}
+
+fn shortcut_sequence(key: &str, ctrl: bool, shift: bool, alt: bool, win: bool) -> Option<String> {
+    let mut parts = Vec::new();
+    if ctrl { parts.push("Ctrl"); }
+    if shift { parts.push("Shift"); }
+    if alt { parts.push("Alt"); }
+    if win { parts.push("Win"); }
+    parts.push(key);
+    let seq = parts.join("+");
+    pinshot_core::hotkey::parse_hotkey(&seq).map(|_| seq)
+}
+
+#[cfg(test)]
+mod shortcut_capture_tests {
+    use super::*;
+
+    #[test]
+    fn records_modifiers_and_keys_not_typed_text() {
+        assert_eq!(shortcut_sequence("F1", false, false, false, false).as_deref(), Some("F1"));
+        assert_eq!(shortcut_sequence("A", true, true, false, false).as_deref(), Some("Ctrl+Shift+A"));
+        assert_eq!(shortcut_sequence("F12", false, false, true, true).as_deref(), Some("Alt+Win+F12"));
+        assert!(shortcut_sequence("Ctrl", true, false, false, false).is_none());
+        assert!(shortcut_sequence("输入字符", false, false, false, false).is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_recording_uses_virtual_keys_with_shift_and_win() {
+        let mut down = [false; 256];
+        down[0x11] = true;
+        down[0x10] = true;
+        assert_eq!(recorded_vk(0x31, &down).as_deref(), Some("Ctrl+Shift+1"));
+        down[0x5c] = true;
+        assert_eq!(recorded_vk(0x7b, &down).as_deref(), Some("Ctrl+Shift+Win+F12"));
+        assert!(recorded_vk(0x10, &down).is_none());
+    }
 }
 
 fn form_line_hint(ui: &mut Ui, label: String, val: &mut String, hint: &str) {

@@ -488,6 +488,8 @@ struct HotkeyBind {
 
 static PROXY: Mutex<Option<EventLoopProxy<AppEvent>>> = Mutex::new(None);
 static BINDS: Mutex<Vec<HotkeyBind>> = Mutex::new(Vec::new());
+const HOTKEY_NOTICE_MESSAGE: u32 = 0x8000 + 42;
+const HOTKEY_NOTICE_ID: u32 = 42;
 
 unsafe extern "system" fn hotkey_wndproc(
     hwnd: HWND,
@@ -495,7 +497,27 @@ unsafe extern "system" fn hotkey_wndproc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    if msg == HOTKEY_NOTICE_MESSAGE {
+        use windows::Win32::UI::Shell::{NIN_BALLOONHIDE, NIN_BALLOONTIMEOUT, NIN_BALLOONUSERCLICK};
+        let event = lparam.0 as u32;
+        if event == NIN_BALLOONUSERCLICK {
+            if let Ok(proxy) = PROXY.lock() {
+                if let Some(proxy) = proxy.as_ref() {
+                    let _ = proxy.send_event(AppEvent::Hotkey(Command::OpenSettings));
+                }
+            }
+        }
+        if matches!(event, NIN_BALLOONHIDE | NIN_BALLOONTIMEOUT | NIN_BALLOONUSERCLICK) {
+            remove_hotkey_notice(hwnd);
+        }
+        return LRESULT(0);
+    }
     if msg == WM_HOTKEY {
+        // Settings records actual key states, including our already-bound keys.
+        // Do not launch a snip/translation while the user is editing shortcuts.
+        if crate::prefs::settings_has_focus() {
+            return LRESULT(0);
+        }
         let id = wparam.0 as i32;
         if let Ok(binds) = BINDS.lock() {
             if let Some(b) = binds.iter().find(|b| b.id == id) {
@@ -549,49 +571,173 @@ impl HotkeyHost {
             let _ = ShowWindow(hwnd, SW_HIDE);
             let _ = UpdateWindow(hwnd);
 
-            let specs: [(&str, Command); 6] = [
-                (&cfg.hotkey_snip, Command::Snip),
-                (&cfg.hotkey_pin, Command::PinClipboard),
-                (&cfg.hotkey_hide_all, Command::HideAllPins),
-                (&cfg.hotkey_restore, Command::RestoreClosed),
-                (&cfg.hotkey_selection_translate, Command::SelectionTranslate),
-                (&cfg.hotkey_capture_translate, Command::CaptureTranslate),
+            let specs = [
+                (&cfg.hotkey_snip, Command::Snip, "Snip"),
+                (&cfg.hotkey_pin, Command::PinClipboard, "Pin clipboard"),
+                (&cfg.hotkey_hide_all, Command::HideAllPins, "Hide/Show all pins"),
+                (&cfg.hotkey_restore, Command::RestoreClosed, "Restore last closed pin"),
+                (&cfg.hotkey_selection_translate, Command::SelectionTranslate, "Selection translation"),
+                (&cfg.hotkey_capture_translate, Command::CaptureTranslate, "Snip and translate"),
+                (&cfg.hotkey_clickthrough, Command::ClickThrough, "Click-through"),
             ];
             let mut ids = Vec::new();
             let mut binds = Vec::new();
+            let mut failures = Vec::new();
             let mut next = 0xA000i32;
-            for (seq, cmd) in specs {
-                if let Some(Hotkey { mods, vk }) = parse_hotkey(seq) {
-                    if RegisterHotKey(hwnd, next, HOT_KEY_MODIFIERS(mods | MOD_NOREPEAT), vk)
-                        .is_ok()
-                    {
-                        binds.push(HotkeyBind { id: next, cmd });
-                        ids.push(next);
+            for (seq, cmd, label) in specs {
+                if !seq.trim().is_empty() {
+                    match register_hotkey(hwnd, next, seq) {
+                        Ok(()) => {
+                            binds.push(HotkeyBind { id: next, cmd });
+                            ids.push(next);
+                        }
+                        Err(reason) => failures.push(format!(
+                            "{}: {} — {reason}", pinshot_core::i18n::tr(label), seq.trim()
+                        )),
                     }
                 }
                 next += 1;
             }
-            if !cfg.hotkey_clickthrough.trim().is_empty() {
-                if let Some(Hotkey { mods, vk }) = parse_hotkey(&cfg.hotkey_clickthrough) {
-                    if RegisterHotKey(hwnd, next, HOT_KEY_MODIFIERS(mods | MOD_NOREPEAT), vk)
-                        .is_ok()
-                    {
-                        binds.push(HotkeyBind {
-                            id: next,
-                            cmd: Command::ClickThrough,
-                        });
-                        ids.push(next);
-                    }
-                }
-            }
             *BINDS.lock().expect("binds") = binds;
+            notify_hotkey_failures(hwnd, failures);
             Ok(Self { hwnd, ids })
         }
     }
 }
 
+fn register_hotkey(hwnd: HWND, id: i32, seq: &str) -> Result<(), String> {
+    use pinshot_core::i18n::tr;
+    let Hotkey { mods, vk } = parse_hotkey(seq)
+        .ok_or_else(|| tr("Invalid shortcut").to_string())?;
+    unsafe { RegisterHotKey(hwnd, id, HOT_KEY_MODIFIERS(mods | MOD_NOREPEAT), vk) }
+        .map_err(|error| {
+            // ERROR_HOTKEY_ALREADY_REGISTERED also covers duplicate settings.
+            if error.code() == windows::core::HRESULT::from_win32(1409) {
+                tr("Already in use or assigned to another PinShot action").to_string()
+            } else {
+                format!("{}: {error}", tr("Could not register shortcut"))
+            }
+        })
+}
+
+#[cfg(test)]
+mod hotkey_registration_tests {
+    use super::*;
+
+    #[test]
+    fn invalid_shortcut_is_reported() {
+        assert!(register_hotkey(HWND::default(), 0x7ef0, "not a shortcut").is_err());
+    }
+
+    #[test]
+    fn notification_text_is_terminated_without_splitting_surrogates() {
+        let mut buffer = [9; 4];
+        copy_notice_text(&mut buffer, "中😀文");
+        assert_eq!(String::from_utf16(&buffer[..3]).unwrap(), "中😀");
+        assert_eq!(buffer[3], 0);
+        copy_notice_text(&mut buffer, "ab😀");
+        assert_eq!(buffer, [b'a' as u16, b'b' as u16, 0, 0]);
+    }
+
+    #[test]
+    fn occupied_shortcut_is_reported_and_can_be_registered_after_release() {
+        // Hold a rarely used shortcut on another thread, without interfering
+        // with the user's configured shortcuts or showing a notification.
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let owner = std::thread::spawn(move || {
+            let seq = (13..=24).map(|n| format!("Ctrl+Alt+Shift+F{n}"))
+                .find(|seq| register_hotkey(HWND::default(), 0x7ef0, seq).is_ok());
+            ready_tx.send(seq).unwrap();
+            let _ = release_rx.recv();
+            unsafe { let _ = UnregisterHotKey(None, 0x7ef0); }
+        });
+        let seq = ready_rx.recv().unwrap();
+        let conflict = seq.as_ref().map(|seq| register_hotkey(HWND::default(), 0x7ef1, seq));
+        let _ = release_tx.send(());
+        owner.join().unwrap();
+        let seq = seq.expect("no spare test shortcut available");
+        assert!(conflict.unwrap().is_err(), "occupied shortcut must fail");
+        let registered = register_hotkey(HWND::default(), 0x7ef1, &seq);
+        unsafe { let _ = UnregisterHotKey(None, 0x7ef1); }
+        assert!(registered.is_ok(), "released shortcut must be available");
+    }
+}
+
+fn notify_hotkey_failures(hwnd: HWND, failures: Vec<String>) {
+    if failures.is_empty() {
+        return;
+    }
+    use pinshot_core::i18n::tr;
+    let message = format!("{}\n\n{}\n\n{}",
+        tr("Some shortcuts could not be enabled:"), failures.join("\n"),
+        tr("Change these shortcuts in Settings, or close the application using them. Other shortcuts remain available."));
+    crate::logutil::log(&message);
+    // Keep the system's bounded notification body concise; full failure
+    // reasons remain in the log. Put the action before the potentially long list.
+    let summary = format!("{}\n{}", tr("Shortcuts unavailable. Click to change them in Settings."),
+        failures.iter().map(|failure| failure.split(" — ").next().unwrap_or(failure))
+            .collect::<Vec<_>>().join("\n"));
+    // Native Windows notification: no dialog, focus change or startup blocking.
+    // This temporary notification icon is removed on dismissal or host teardown.
+    use windows::Win32::UI::Shell::{
+        Shell_NotifyIconW, NOTIFYICONDATAW, NIF_ICON, NIF_INFO, NIF_MESSAGE,
+        NIIF_WARNING, NIM_ADD, NIM_MODIFY,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{LoadIconW, IDI_WARNING};
+    let mut notice = NOTIFYICONDATAW {
+        cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+        hWnd: hwnd,
+        uID: HOTKEY_NOTICE_ID,
+        uFlags: NIF_ICON | NIF_MESSAGE,
+        uCallbackMessage: HOTKEY_NOTICE_MESSAGE,
+        hIcon: unsafe { LoadIconW(None, IDI_WARNING) }.unwrap_or_default(),
+        ..Default::default()
+    };
+    unsafe {
+        if !Shell_NotifyIconW(NIM_ADD, &notice).as_bool() {
+            crate::logutil::log("hotkey notification: could not add notification icon");
+            return;
+        }
+        notice.uFlags = NIF_INFO;
+        notice.dwInfoFlags = NIIF_WARNING;
+        copy_notice_text(&mut notice.szInfoTitle, &tr("PinShot shortcut warning"));
+        copy_notice_text(&mut notice.szInfo, &summary);
+        if !Shell_NotifyIconW(NIM_MODIFY, &notice).as_bool() {
+            crate::logutil::log("hotkey notification: Windows rejected notification");
+            remove_hotkey_notice(hwnd);
+        }
+    }
+}
+
+fn copy_notice_text<const N: usize>(buffer: &mut [u16; N], text: &str) {
+    buffer.fill(0);
+    let mut used = 0;
+    for ch in text.chars() {
+        let mut units = [0; 2];
+        let encoded = ch.encode_utf16(&mut units);
+        if used + encoded.len() >= N {
+            break;
+        }
+        buffer[used..used + encoded.len()].copy_from_slice(encoded);
+        used += encoded.len();
+    }
+}
+
+fn remove_hotkey_notice(hwnd: HWND) {
+    use windows::Win32::UI::Shell::{Shell_NotifyIconW, NOTIFYICONDATAW, NIM_DELETE};
+    let notice = NOTIFYICONDATAW {
+        cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+        hWnd: hwnd,
+        uID: HOTKEY_NOTICE_ID,
+        ..Default::default()
+    };
+    unsafe { let _ = Shell_NotifyIconW(NIM_DELETE, &notice); }
+}
+
 impl Drop for HotkeyHost {
     fn drop(&mut self) {
+        remove_hotkey_notice(self.hwnd);
         unsafe {
             for id in &self.ids {
                 let _ = UnregisterHotKey(self.hwnd, *id);

@@ -28,7 +28,7 @@ pub fn brush_width(annot: &pinshot_core::Annotator, kind: CursorKind) -> Option<
     match tool {
         Tool::Line | Tool::Pen => Some(st.width.max(1) as f32),
         Tool::Marker if st.mode == DrawMode::Brush => Some(st.width.max(1) as f32),
-        Tool::Mosaic if st.mode == DrawMode::Brush => Some(st.width.max(1) as f32),
+        Tool::Mosaic | Tool::Eraser if st.mode == DrawMode::Brush => Some(st.width.max(1) as f32),
         _ => None,
     }
 }
@@ -36,6 +36,17 @@ pub fn brush_width(annot: &pinshot_core::Annotator, kind: CursorKind) -> Option<
 pub fn apply_annot(window: &Window, kind: CursorKind, annot: &pinshot_core::Annotator) {
     apply(window, kind);
     if brush_width(annot, kind).is_some() { window.set_cursor_visible(false); }
+}
+
+#[cfg(test)]
+#[test]
+fn eraser_brush_has_round_size_cursor_but_rect_does_not() {
+    use pinshot_core::annotation::{Annotator, DrawMode, Tool};
+    let mut annot = Annotator::new();
+    annot.set_draw_mode(Tool::Eraser, DrawMode::Brush);
+    assert_eq!(brush_width(&annot, CursorKind::Cell), Some(16.0));
+    annot.set_draw_mode(Tool::Eraser, DrawMode::Rect);
+    assert_eq!(brush_width(&annot, CursorKind::Cell), None);
 }
 
 pub fn paint_brush(pm: &mut tiny_skia::Pixmap, pt: pinshot_core::geom::Point, width: f32) -> pinshot_core::geom::Rect {
