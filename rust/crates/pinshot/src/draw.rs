@@ -820,6 +820,7 @@ impl OverlayFront {
     ) {
         let first_paint = !self.primed;
         let t_pixels = std::time::Instant::now();
+        let t_setup = std::time::Instant::now();
         let bounds = self.bounds();
         let hole = if sel.has_sel() {
             sel.normalized()
@@ -842,12 +843,19 @@ impl OverlayFront {
             size_label_dirty(hole, &size_text, fw, fh).intersect(bounds)
         };
         let hole_pad = hole.inflated(10.0).union(size_label).intersect(bounds);
+        if first_paint {
+            crate::logutil::ms("overlay paint setup", t_setup);
+        }
+        let t_mag = std::time::Instant::now();
         let mag_layout = if mag_on {
             let (color, phys) = pinshot_core::sample_color(shot, cursor, dpr);
             Some(layout_magnifier(cursor, bounds, color, phys))
         } else {
             None
         };
+        if first_paint {
+            crate::logutil::ms("overlay paint magnifier", t_mag);
+        }
         let mag_dirty = mag_layout
             .map(|m| m.grid.union(m.info).inflated(14.0))
             .unwrap_or(Rect::EMPTY);
@@ -872,6 +880,7 @@ impl OverlayFront {
         if restore_r.area() > bounds.area() * 0.55 {
             restore_r = bounds;
         }
+        let t_shapes = std::time::Instant::now();
         let shapes = annot.visible_shapes();
         let mut annot_dirty = Rect::EMPTY;
         for sh in &shapes {
@@ -879,6 +888,9 @@ impl OverlayFront {
             annot_dirty = annot_dirty.union(sh.bounds().inflated(pad));
         }
         annot_dirty = annot_dirty.intersect(bounds);
+        if first_paint {
+            crate::logutil::ms("overlay paint shapes", t_shapes);
+        }
         if !annot_dirty.is_empty() {
             restore_r = restore_r.union(annot_dirty).intersect(bounds);
             if restore_r.area() > bounds.area() * 0.55 {
