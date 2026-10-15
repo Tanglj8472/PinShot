@@ -1334,11 +1334,7 @@ impl ApplicationHandler<AppEvent> for App {
         }
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if let WindowEvent::ModifiersChanged(m) = &event {
-            self.mods = m.state();
-        }
-
+    fn handle_aux_window_event(&mut self, id: WindowId, event: &WindowEvent) -> bool {
         if self
             .prefs
             .as_ref()
@@ -1346,12 +1342,12 @@ impl ApplicationHandler<AppEvent> for App {
             .unwrap_or(false)
         {
             if let Some(pw) = self.prefs.as_mut() {
-                pw.handle(&event);
+                pw.handle(event);
             }
             if self.prefs.as_ref().map(|w| w.closed).unwrap_or(false) {
                 self.prefs = None;
             }
-            return;
+            return true;
         }
         if self
             .pin_menu
@@ -1359,7 +1355,7 @@ impl ApplicationHandler<AppEvent> for App {
             .map(|m| m.window_id() == id)
             .unwrap_or(false)
         {
-            let action = self.pin_menu.as_mut().and_then(|m| m.handle(&event));
+            let action = self.pin_menu.as_mut().and_then(|m| m.handle(event));
             let closed = self.pin_menu.as_ref().map(|m| m.closed).unwrap_or(false);
             if action.is_some() || closed {
                 self.dismiss_pin_menu();
@@ -1367,21 +1363,31 @@ impl ApplicationHandler<AppEvent> for App {
             if let Some(action) = action {
                 let _ = self.proxy.send_event(AppEvent::PinMenu(action));
             }
-            return;
+            return true;
         }
         if let Some(cd) = self.snip.countdown.as_mut() {
             if cd.window_id() == id {
-                cd.handle(&event);
-                return;
+                cd.handle(event);
+                return true;
             }
         }
         if let Some(fb) = self.fallback.as_mut() {
             if fb.window_id() == id {
-                if let Some(cmd) = fb.handle(&event) {
+                if let Some(cmd) = fb.handle(event) {
                     let _ = self.proxy.send_event(AppEvent::Tray(cmd));
                 }
-                return;
+                return true;
             }
+        }
+        false
+    }
+
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        if let WindowEvent::ModifiersChanged(m) = &event {
+            self.mods = m.state();
+        }
+        if self.handle_aux_window_event(id, &event) {
+            return;
         }
         if let Some(ov) = self.overlay.as_mut() {
             if ov.window_id() == id {
