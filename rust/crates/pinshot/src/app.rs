@@ -1241,18 +1241,7 @@ impl ApplicationHandler<AppEvent> for App {
                 }
             }
             AppEvent::OpenPrefs => self.open_prefs_win(event_loop),
-            AppEvent::UpdateCheckDone(r) => match &r {
-                Ok(crate::update_run::UpdateOutcome::ReadyToInstall {
-                    setup_path,
-                    version,
-                }) => {
-                    crate::logutil::log(&format!("update ready {version}"));
-                    self.finish_update_check(Ok(crate::update_run::UpdateOutcome::UpToDate));
-                    self.pending_installer = Some(setup_path.clone());
-                    self.request_quit(event_loop);
-                }
-                _ => self.finish_update_check(r),
-            },
+            AppEvent::UpdateCheckDone(result) => self.handle_update_done(event_loop, result),
             AppEvent::X11Key {
                 keysym,
                 mods,
@@ -1344,6 +1333,25 @@ impl ApplicationHandler<AppEvent> for App {
                 }
             }
             _ => {}
+        }
+    }
+
+    fn handle_update_done(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        result: Result<crate::update_run::UpdateOutcome, String>,
+    ) {
+        match &result {
+            Ok(crate::update_run::UpdateOutcome::ReadyToInstall {
+                setup_path,
+                version,
+            }) => {
+                crate::logutil::log(&format!("update ready {version}"));
+                self.finish_update_check(Ok(crate::update_run::UpdateOutcome::UpToDate));
+                self.pending_installer = Some(setup_path.clone());
+                self.request_quit(event_loop);
+            }
+            _ => self.finish_update_check(result),
         }
     }
 
