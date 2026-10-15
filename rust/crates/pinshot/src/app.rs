@@ -1116,6 +1116,12 @@ impl ApplicationHandler<AppEvent> for App {
         if !self.dxgi_prefetched {
             self.dxgi_prefetched = true;
             crate::capture::Capture::prefetch();
+            // Warm the fontdue chrome stack before the first F1. On Windows
+            // this may parse the large msyh.ttc collection; doing it here
+            // moves that one-time cost out of the screenshot hot path.
+            let t_font = Instant::now();
+            let _ = pinshot_core::font::chrome_font_paths();
+            crate::logutil::ms("chrome font prefetch", t_font);
         }
         if self.hotkeys.is_none() {
             match native::install_hotkeys(self.proxy.clone(), &self.cfg) {
