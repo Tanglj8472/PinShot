@@ -83,13 +83,9 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         mods: ModifiersState::empty(),
         last_click: None,
         pins_hidden: false,
-        snip_at: None,
-        translate_next: false,
+        snip: SnipSchedule::default(),
         session_restored: false,
-        countdown: None,
-        countdown_left: 0,
-        restore_fallback: false,
-        wait_after_overlay: false,
+        restore: DesktopRestore::default(),
         prefs: None,
         pin_menu: None,
         menu_pin: None,
@@ -107,6 +103,20 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         dxgi_prefetch_at: Some(Instant::now() + Duration::from_millis(500)),
     };
     event_loop.run_app(&mut app).map_err(|e| e.to_string())
+}
+
+#[derive(Default)]
+struct SnipSchedule {
+    at: Option<Instant>,
+    translate_next: bool,
+    countdown: Option<CountdownWin>,
+    countdown_left: u32,
+}
+
+#[derive(Default)]
+struct DesktopRestore {
+    fallback_hidden: bool,
+    wait_after_overlay: bool,
 }
 
 struct App {
@@ -128,14 +138,9 @@ struct App {
     mods: ModifiersState,
     last_click: Option<(WindowId, Instant, Point)>,
     pins_hidden: bool,
-    snip_at: Option<Instant>,
-    translate_next: bool,
+    snip: SnipSchedule,
     session_restored: bool,
-    countdown: Option<CountdownWin>,
-    countdown_left: u32,
-    restore_fallback: bool,
-    /// Overlay just closed — wait for DWM to drop it before DXGI grab (F1 resnip).
-    wait_after_overlay: bool,
+    restore: DesktopRestore,
     prefs: Option<crate::prefs_win::PrefsWin>,
     pin_menu: Option<crate::pin_menu::PinMenuWin>,
     menu_pin: Option<WindowId>,
@@ -290,28 +295,28 @@ impl App {
                 return;
             }
         }
-        if self.overlay.is_some() || self.snip_at.is_some() || self.countdown.is_some() {
+        if self.overlay.is_some() || self.snip.at.is_some() || self.snip.countdown.is_some() {
             return;
         }
-        self.translate_next = translate;
+        self.snip.translate_next = translate;
         let delay = self.cfg.snip_delay;
         if delay > 0 {
-            self.countdown_left = delay;
+            self.snip.countdown_left = delay;
             match CountdownWin::create(event_loop, delay) {
-                Ok(c) => self.countdown = Some(c),
+                Ok(c) => self.snip.countdown = Some(c),
                 Err(e) => crate::logutil::log(&format!("countdown: {e}")),
             }
-            self.snip_at = Some(Instant::now() + Duration::from_secs(1));
+            self.snip.at = Some(Instant::now() + Duration::from_secs(1));
         } else {
             self.prepare_capture_hide();
-            self.snip_at = Some(Instant::now() + Duration::from_millis(self.hide_wait_ms()));
+            self.snip.at = Some(Instant::now() + Duration::from_millis(self.hide_wait_ms()));
         }
     }
 
     fn hide_wait_ms(&self) -> u64 {
         // Overlay is visible to DXGI (remote-desktop tools must see it). After
         // it closes, give DWM a beat so the next grab is not the overlay itself.
-        if self.wait_after_overlay || self.restore_fallback {
+        if self.restore.wait_after_overlay || self.restore.fallback_hidden {
             150
         } else {
             0
@@ -328,18 +333,18 @@ impl App {
         if let Some(fb) = &self.fallback {
             if fb.is_visible() {
                 fb.hide();
-                self.restore_fallback = true;
+                self.restore.fallback_hidden = true;
             }
         }
-        self.countdown = None;
+        self.snip.countdown = None;
     }
 
     fn restore_fallback_if_needed(&mut self) {
-        if self.restore_fallback {
+        if self.restore.fallback_hidden {
             if let Some(fb) = &self.fallback {
                 fb.show();
             }
-            self.restore_fallback = false;
+            self.restore.fallback_hidden = false;
         }
     }
 
@@ -347,14 +352,14 @@ impl App {
         if self.overlay.is_some() {
             return;
         }
-        self.wait_after_overlay = false;
+        self.restore.wait_after_overlay = false;
         crate::logutil::log("begin_snip capture");
         if self.history.entries.is_empty() {
             self.restore_history();
         }
         let t0 = Instant::now();
-        let translate = self.translate_next;
-        self.translate_next = false;
+        let translate = self.snip.translate_next;
+        self.snip.translate_next = false;
         #[cfg(unix)]
         if self.input_hold.is_none() {
             self.input_hold = Some(crate::x11util::InputHold::grab());
@@ -519,7 +524,7 @@ impl App {
             OverlayResult::Resnip => {}
         }
         if resnip {
-            self.wait_after_overlay = true;
+            self.restore.wait_after_overlay = true;
             crate::logutil::log("resnip: wait 150ms for overlay to leave the DXGI frame");
             self.request_snip(event_loop, false);
         } else {
@@ -1347,7 +1352,7 @@ impl ApplicationHandler<AppEvent> for App {
             }
             return;
         }
-        if let Some(cd) = self.countdown.as_mut() {
+        if let Some(cd) = self.snip.countdown.as_mut() {
             if cd.window_id() == id {
                 cd.handle(&event);
                 return;
@@ -1509,23 +1514,23 @@ impl ApplicationHandler<AppEvent> for App {
                 self.hotkeys = Some(h);
             }
         }
-        if let Some(at) = self.snip_at {
+        if let Some(at) = self.snip.at {
             if Instant::now() >= at {
-                if self.countdown.is_some() {
-                    if self.countdown_left > 1 {
-                        self.countdown_left -= 1;
-                        if let Some(cd) = &mut self.countdown {
-                            cd.set_left(self.countdown_left);
+                if self.snip.countdown.is_some() {
+                    if self.snip.countdown_left > 1 {
+                        self.snip.countdown_left -= 1;
+                        if let Some(cd) = &mut self.snip.countdown {
+                            cd.set_left(self.snip.countdown_left);
                         }
-                        self.snip_at = Some(Instant::now() + Duration::from_secs(1));
+                        self.snip.at = Some(Instant::now() + Duration::from_secs(1));
                     } else {
-                        self.countdown = None;
+                        self.snip.countdown = None;
                         self.prepare_capture_hide();
-                        self.snip_at =
+                        self.snip.at =
                             Some(Instant::now() + Duration::from_millis(self.hide_wait_ms()));
                     }
                 } else {
-                    self.snip_at = None;
+                    self.snip.at = None;
                     self.begin_snip(event_loop);
                     if self.overlay.is_none() {
                         self.restore_fallback_if_needed();
@@ -1558,7 +1563,7 @@ impl ApplicationHandler<AppEvent> for App {
                 }
             }
         } else {
-            let mut wake = self.snip_at;
+            let mut wake = self.snip.at;
             for p in &self.pins {
                 if let Some(t) = p.next_wake() {
                     wake = Some(wake.map(|w| w.min(t)).unwrap_or(t));
