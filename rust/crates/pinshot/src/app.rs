@@ -103,6 +103,8 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         pending_installer: None,
         #[cfg(windows)]
         dxgi_prefetched: false,
+        #[cfg(windows)]
+        dxgi_prefetch_at: Some(Instant::now() + Duration::from_millis(500)),
     };
     event_loop.run_app(&mut app).map_err(|e| e.to_string())
 }
@@ -152,6 +154,8 @@ struct App {
     pending_installer: Option<std::path::PathBuf>,
     #[cfg(windows)]
     dxgi_prefetched: bool,
+    #[cfg(windows)]
+    dxgi_prefetch_at: Option<Instant>,
 }
 
 impl App {
@@ -1113,9 +1117,7 @@ fn decode_png(bytes: &[u8]) -> Option<Raster> {
 impl ApplicationHandler<AppEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         #[cfg(windows)]
-        if !self.dxgi_prefetched {
-            self.dxgi_prefetched = true;
-            crate::capture::Capture::prefetch();
+        {
             // Warm the fontdue chrome stack before the first F1. On Windows
             // this may parse the large msyh.ttc collection; doing it here
             // moves that one-time cost out of the screenshot hot path.
@@ -1475,6 +1477,18 @@ impl ApplicationHandler<AppEvent> for App {
             return;
         }
         event_loop.set_control_flow(ControlFlow::Wait);
+        #[cfg(windows)]
+        if !self.dxgi_prefetched {
+            if let Some(at) = self.dxgi_prefetch_at {
+                if Instant::now() >= at {
+                    self.dxgi_prefetched = true;
+                    self.dxgi_prefetch_at = None;
+                    crate::capture::Capture::prefetch();
+                } else {
+                    event_loop.set_control_flow(ControlFlow::WaitUntil(at));
+                }
+            }
+        }
         let poll = self
             .update_poll_at
             .map(|t| t.elapsed() >= Duration::from_secs(60))

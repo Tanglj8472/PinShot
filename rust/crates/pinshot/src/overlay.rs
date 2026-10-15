@@ -365,14 +365,17 @@ impl Overlay {
         crate::logutil::ms("overlay start cover desktop", t_cover);
         // Recycled HWND often skips CursorMoved until the mouse actually
         // moves. Nudge 1px (and back) so hover paints on a still cursor.
-        let t_hover = Instant::now();
-        s.synth_pointer_hover();
-        crate::logutil::ms("overlay start synth hover", t_hover);
-        let t_second = Instant::now();
-        if s.dirty {
-            s.redraw();
+        #[cfg(not(windows))]
+        {
+            let t_hover = Instant::now();
+            s.synth_pointer_hover();
+            crate::logutil::ms("overlay start synth hover", t_hover);
+            let t_second = Instant::now();
+            if s.dirty {
+                s.redraw();
+            }
+            crate::logutil::ms("overlay start second redraw", t_second);
         }
-        crate::logutil::ms("overlay start second redraw", t_second);
         let t_cover2 = Instant::now();
         s.cover_desktop();
         crate::logutil::ms("overlay start cover desktop 2", t_cover2);
