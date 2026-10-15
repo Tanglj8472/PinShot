@@ -491,19 +491,15 @@ impl eframe::App for PrefsApp {
             )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    if TABS.get(self.tab) != Some(&"About")
-                        && ui.button(tr("Restore Defaults")).clicked()
-                    {
-                        self.restore_tab();
-                    }
                     if !self.status.is_empty() {
                         ui.colored_label(Color32::from_rgb(180, 80, 40), &self.status);
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button(tr("Cancel")).clicked() {
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        if TABS.get(self.tab) != Some(&"About")
+                            && ui.button(tr("Restore Defaults")).clicked()
+                        {
+                            self.restore_tab();
                         }
-                        ui.add_space(4.0);
                     });
                 });
             });

@@ -37,7 +37,6 @@ enum Field {
     Browse,
     QualMinus,
     QualPlus,
-    Cancel,
     Hk(u8),
     Tab(u8),
 }
@@ -134,7 +133,7 @@ impl PrefsWin {
                 crate::native::focus_window(&self.window);
                 if let Some(f) = self.hit() {
                     self.dispatch_tab_or_click(f);
-                    if !matches!(f, Field::Cancel | Field::Tab(_) | Field::Hk(_)) {
+                    if !matches!(f, Field::Tab(_) | Field::Hk(_)) {
                         self.apply();
                     }
                 } else {
@@ -227,7 +226,6 @@ impl PrefsWin {
             }
             Field::QualMinus => self.draft.image_quality = self.draft.image_quality.saturating_sub(1).max(1),
             Field::QualPlus => self.draft.image_quality = (self.draft.image_quality + 1).min(100),
-            Field::Cancel => self.close(),
             Field::Hk(i) => self.armed = Some(i),
             Field::Tab(_) => {}
         }
@@ -326,7 +324,6 @@ impl PrefsWin {
             }
         }
         let by = h - 48.0;
-        push(self, w - 96.0, by, 80.0, Field::Cancel);
         let _ = w;
     }
 
@@ -452,13 +449,6 @@ impl PrefsWin {
         }
         let _ = y;
         let by = h as f32 - 48.0;
-        for (lab, x, _field) in [(tr("Cancel"), w as f32 - 96.0, Field::Cancel)] {
-            let r = Rect::new(x, by, 80.0, 32.0);
-            let hover = r.contains(self.cursor);
-            fill_rounded_rect(&mut pm, r, 5.0, if hover { thm.hover } else { thm.panel });
-            stroke_rounded_rect(&mut pm, r, 5.0, thm.border, 1.0);
-            crate::text::blit_into_pm(&mut pm, &lab, r.x + 12.0, r.y + 7.0, 13, thm.text, true);
-        }
         if !self.status.is_empty() {
             crate::text::blit_into_pm(
                 &mut pm,
