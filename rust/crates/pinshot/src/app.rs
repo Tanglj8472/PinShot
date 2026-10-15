@@ -507,22 +507,7 @@ impl App {
                 }
             }
             OverlayResult::Pin(img, _, pos) => self.spawn_pin(event_loop, img, Some(pos), None),
-            OverlayResult::Save(img) => {
-                let folder = self.cfg.quick_save_folder.trim();
-                let suggested = if folder.is_empty() {
-                    "pinshot.png".into()
-                } else {
-                    {
-                        let sep = if cfg!(windows) { "\\" } else { "/" };
-                        format!("{folder}{sep}pinshot.png")
-                    }
-                };
-                if let Some(path) = crate::dialog::save_path(&suggested) {
-                    if crate::dialog::save_raster(&img, &path, self.cfg.image_quality).is_ok() {
-                        eprintln!("{}", tr(&format!("Saved {path}")));
-                    }
-                }
-            }
+            OverlayResult::Save(img) => self.save_overlay_image(&img),
             OverlayResult::Ocr(img, translate, pos) => {
                 self.spawn_pin(event_loop, img.clone(), Some(pos), None);
                 if let Some(p) = self.pins.last_mut() {
@@ -533,6 +518,21 @@ impl App {
             }
             OverlayResult::Cancel => {}
             OverlayResult::Resnip => {}
+        }
+    }
+
+    fn save_overlay_image(&self, img: &Raster) {
+        let folder = self.cfg.quick_save_folder.trim();
+        let suggested = if folder.is_empty() {
+            "pinshot.png".into()
+        } else {
+            let sep = if cfg!(windows) { "\\" } else { "/" };
+            format!("{folder}{sep}pinshot.png")
+        };
+        if let Some(path) = crate::dialog::save_path(&suggested) {
+            if crate::dialog::save_raster(img, &path, self.cfg.image_quality).is_ok() {
+                eprintln!("{}", tr(&format!("Saved {path}")));
+            }
         }
     }
 
