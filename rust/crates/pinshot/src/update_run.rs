@@ -483,3 +483,8 @@ mod tests {
         assert!(checksum_from_manifest("bad setup.exe", "setup.exe").is_err());
     }
 }
+
+#[cfg(not(windows))]
+pub fn run_install_after_quit(_setup: &Path) -> Result<(), String> {
+    Err("Automatic installation is only supported on Windows".into())
+}
