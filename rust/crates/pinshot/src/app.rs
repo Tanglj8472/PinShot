@@ -473,22 +473,7 @@ impl App {
         crate::logutil::log("overlay closed");
         crate::native::release_stray_grabs();
         self.retire_pump_window();
-        // Keep DXGI warm between screenshots. Reopening D3D11 and
-        // DuplicateOutput on every F1 puts initialization on the hot path.
-        if persist {
-            let t0 = Instant::now();
-            self.persist_history();
-            crate::logutil::log(&format!(
-                "persist history {} entries in {}ms",
-                self.history.entries.len(),
-                t0.elapsed().as_millis()
-            ));
-        } else {
-            crate::logutil::log("skip history persist (cancel/resnip)");
-        }
-        // Full-desktop history frames stay on disk. Keeping 10 of them in
-        // the tray process is why Task Manager never dropped after a snip.
-        self.history.evict_pixels();
+        self.persist_overlay_history(persist);
         self.handle_overlay_result(event_loop, res);
         if resnip {
             self.restore.wait_after_overlay = true;
@@ -514,6 +499,24 @@ impl App {
             OverlayResult::Cancel => {}
             OverlayResult::Resnip => {}
         }
+    }
+
+    fn persist_overlay_history(&mut self, persist: bool) {
+        // Keep DXGI warm between screenshots. Reopening D3D11 and
+        // DuplicateOutput on every F1 puts initialization on the hot path.
+        if persist {
+            let t0 = Instant::now();
+            self.persist_history();
+            crate::logutil::log(&format!(
+                "persist history {} entries in {}ms",
+                self.history.entries.len(),
+                t0.elapsed().as_millis()
+            ));
+        } else {
+            crate::logutil::log("skip history persist (cancel/resnip)");
+        }
+        // Full-desktop history frames stay on disk; only metadata remains hot.
+        self.history.evict_pixels();
     }
 
     fn save_overlay_image(&self, img: &Raster) {
