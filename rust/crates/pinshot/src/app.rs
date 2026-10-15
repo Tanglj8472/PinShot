@@ -1263,22 +1263,7 @@ impl ApplicationHandler<AppEvent> for App {
                 self.handle_ocr_done(pin, result, translate)
             }
             AppEvent::TranslateDone { pin, result } => self.handle_translate_done(pin, result),
-            AppEvent::SelectionText(result) => match result {
-                Ok(text) => {
-                    let img = clipboard::text_card(&text, 280, 120);
-                    let page = pinshot_core::ocr::page_from_plain(&text, img.width, img.height);
-                    self.spawn_pin(event_loop, img, None, None);
-                    let pin_id = self.pins.last().map(|p| p.window_id());
-                    if let Some(p) = self.pins.last_mut() {
-                        p.attach_ocr(page);
-                        p.set_translating(true);
-                    }
-                    if let Some(id) = pin_id {
-                        self.spawn_translate(id, text);
-                    }
-                }
-                Err(err) => eprintln!("{}", tr(&err)),
-            },
+            AppEvent::SelectionText(result) => self.handle_selection_text(event_loop, result),
         }
     }
 
@@ -1361,6 +1346,29 @@ impl ApplicationHandler<AppEvent> for App {
                     p.toast(tr(&err));
                 }
             }
+        }
+    }
+
+    fn handle_selection_text(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        result: Result<String, String>,
+    ) {
+        match result {
+            Ok(text) => {
+                let img = clipboard::text_card(&text, 280, 120);
+                let page = pinshot_core::ocr::page_from_plain(&text, img.width, img.height);
+                self.spawn_pin(event_loop, img, None, None);
+                let pin_id = self.pins.last().map(|p| p.window_id());
+                if let Some(p) = self.pins.last_mut() {
+                    p.attach_ocr(page);
+                    p.set_translating(true);
+                }
+                if let Some(id) = pin_id {
+                    self.spawn_translate(id, text);
+                }
+            }
+            Err(err) => eprintln!("{}", tr(&err)),
         }
     }
 
