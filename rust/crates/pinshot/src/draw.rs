@@ -1366,7 +1366,7 @@ pub fn paint_toolbar(pm: &mut Pixmap, tb: &Toolbar, cursor: Option<Point>) -> Re
             }
         }
         let ink = if b.checked { Rgba::WHITE } else { CHROME_ICON };
-        draw_icon(pm, b.icon, b.rect.adjusted(2.0, 2.0, -2.0, -2.0), Some(ink));
+        draw_icon(pm, b.icon, b.rect.adjusted(3.0, 3.0, -3.0, -3.0), Some(ink));
     }
     let mut dirty = tb.bar;
     if let Some(pr) = tb.panel {

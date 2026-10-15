@@ -191,10 +191,11 @@ pub struct TbMenu {
     pub items: Vec<TbButton>,
 }
 
-/// Compact cells (Snipaste-like density). Hit-testing uses the same metrics.
-const CELL: f32 = 24.0;
-const PAD: f32 = 3.0;
-const SEP: f32 = 8.0;
+/// Main toolbar cell metrics. Hit-testing uses the same metrics as painting.
+const CELL: f32 = 30.0;
+const PAD: f32 = 6.0;
+const GAP: f32 = 4.0;
+const SEP: f32 = 12.0;
 
 impl Toolbar {
     pub fn layout(
@@ -267,7 +268,12 @@ impl Toolbar {
         };
         let n_tools = tools.len() as f32;
         let n_acts = acts.len() as f32;
-        let w = PAD * 2.0 + n_tools * CELL + SEP + n_acts * CELL;
+        let w = PAD * 2.0
+            + n_tools * CELL
+            + (n_tools - 1.0).max(0.0) * GAP
+            + SEP
+            + n_acts * CELL
+            + (n_acts - 1.0).max(0.0) * GAP;
         let h = CELL + PAD * 2.0;
         let mut x = sel.right() + 1.0 - w;
         let mut y = sel.bottom() + 8.0;
@@ -295,7 +301,7 @@ impl Toolbar {
                 tip,
                 checked,
             });
-            cx += CELL;
+            cx += CELL + GAP;
         }
         cx += SEP;
         for (icon, action, tip) in acts {
@@ -306,7 +312,7 @@ impl Toolbar {
                 tip,
                 checked: false,
             });
-            cx += CELL;
+            cx += CELL + GAP;
         }
 
         let mut panel = None;
@@ -591,7 +597,7 @@ impl Toolbar {
             (IconKind::Close, TbAction::Close, "Close"),
         ];
         let n_acts = acts.len() as f32;
-        let w = PAD * 2.0 + n_acts * CELL;
+        let w = PAD * 2.0 + n_acts * CELL + (n_acts - 1.0).max(0.0) * GAP;
         let h = CELL + PAD * 2.0;
         let mut x = sel.right() - w - 4.0;
         let mut y = sel.bottom() - h - 4.0;
@@ -614,7 +620,7 @@ impl Toolbar {
                 tip,
                 checked: false,
             });
-            cx += CELL;
+            cx += CELL + GAP;
         }
         Self {
             bar,
@@ -1177,8 +1183,8 @@ mod tests {
         let over = Rect::new(0.0, 0.0, 1920.0, 1200.0);
         let tb = Toolbar::layout(sel, over, None, ArrowKind::None, None);
         assert!(
-            tb.bar.h <= 32.0,
-            "toolbar should be denser than the old 34px bar, h={}",
+            tb.bar.h >= 40.0,
+            "toolbar should use the larger unified button height, h={}",
             tb.bar.h
         );
         let text = tb.button_center(TbAction::Tool(Tool::Text)).unwrap();
