@@ -302,6 +302,17 @@ pub fn save(cfg: &Config) -> Result<(), ConfigError> {
     cfg.save_to(&config_path())
 }
 
+/// Record an update check without persisting a stale UI draft or app snapshot.
+pub fn record_update_check(unix: i64) -> Result<(), ConfigError> {
+    record_update_check_at(&config_path(), unix)
+}
+
+fn record_update_check_at(path: &Path, unix: i64) -> Result<(), ConfigError> {
+    let mut cfg = Config::load_from(path)?;
+    cfg.update.last_check_unix = unix;
+    cfg.save_to(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -319,6 +330,22 @@ mod tests {
         assert_eq!(config.ocr_model, "mobile");
         assert_eq!(config.translate.api_key, "test-key-do-not-use");
         assert_eq!(Config::from_toml(&config.to_toml().unwrap()).unwrap(), config);
+    }
+
+    #[test]
+    fn update_check_only_changes_timestamp_and_preserves_unreadable_config() {
+        let path = temp_path();
+        let mut cfg = Config::default();
+        cfg.hotkey_snip = "Ctrl+Alt+P".into();
+        cfg.translate.api_key = "test-key-do-not-use".into();
+        cfg.save_to(&path).unwrap();
+        record_update_check_at(&path, 12345).unwrap();
+        cfg.update.last_check_unix = 12345;
+        assert_eq!(Config::load_from(&path).unwrap(), cfg);
+        fs::write(&path, "not valid TOML [[").unwrap();
+        assert!(record_update_check_at(&path, 23456).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "not valid TOML [[");
+        fs::remove_file(&path).unwrap();
     }
     use std::sync::atomic::{AtomicU64, Ordering};
 

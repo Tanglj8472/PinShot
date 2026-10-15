@@ -429,7 +429,9 @@ impl eframe::App for PrefsApp {
                 Ok(UpdateCheckMsg::Done(r)) => {
                     self.update_check_rx = None;
                     self.draft.update.last_check_unix = pinshot_core::update::now_unix();
-                    let _ = config::save(&self.draft);
+                    if let Err(e) = config::record_update_check(self.draft.update.last_check_unix) {
+                        crate::logutil::log(&format!("save update timestamp: {e}"));
+                    }
                     let install = match &r {
                         Ok(crate::update_run::UpdateOutcome::ReadyToInstall { setup_path, .. }) => {
                             Some(setup_path.clone())

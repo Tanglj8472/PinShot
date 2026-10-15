@@ -225,7 +225,7 @@ impl App {
     fn finish_update_check(&mut self, result: Result<crate::update_run::UpdateOutcome, String>) {
         self.update_inflight = false;
         self.cfg.update.last_check_unix = pinshot_core::update::now_unix();
-        if let Err(e) = pinshot_core::config::save(&self.cfg) {
+        if let Err(e) = pinshot_core::config::record_update_check(self.cfg.update.last_check_unix) {
             crate::logutil::log(&format!("save after update check: {e}"));
         }
         match result {
