@@ -821,7 +821,12 @@ impl OverlayFront {
         let first_paint = !self.primed;
         let t_pixels = std::time::Instant::now();
         let t_setup = std::time::Instant::now();
+        let t_bounds = std::time::Instant::now();
         let bounds = self.bounds();
+        if first_paint {
+            crate::logutil::ms("overlay paint setup bounds", t_bounds);
+        }
+        let t_hole = std::time::Instant::now();
         let hole = if sel.has_sel() {
             sel.normalized()
         } else if sel.state == SelState::Idle {
@@ -830,8 +835,12 @@ impl OverlayFront {
             sel.normalized()
         };
         let hole = clip_rect(hole, bounds);
+        if first_paint {
+            crate::logutil::ms("overlay paint setup hole", t_hole);
+        }
         let fw = self.frame.width();
         let fh = self.frame.height();
+        let t_label = std::time::Instant::now();
         let size_text = if hole.is_empty() {
             String::new()
         } else {
@@ -842,7 +851,14 @@ impl OverlayFront {
         } else {
             size_label_dirty(hole, &size_text, fw, fh).intersect(bounds)
         };
+        if first_paint {
+            crate::logutil::ms("overlay paint setup label", t_label);
+        }
+        let t_pad = std::time::Instant::now();
         let hole_pad = hole.inflated(10.0).union(size_label).intersect(bounds);
+        if first_paint {
+            crate::logutil::ms("overlay paint setup pad", t_pad);
+        }
         if first_paint {
             crate::logutil::ms("overlay paint setup", t_setup);
         }
