@@ -84,6 +84,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         last_click: None,
         pins_hidden: false,
         snip: SnipSchedule::default(),
+        snip_phase: SnipPhase::Idle,
         session_restored: false,
         restore: DesktopRestore::default(),
         prefs: None,
@@ -103,6 +104,27 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         dxgi_prefetch_at: Some(Instant::now() + Duration::from_millis(500)),
     };
     event_loop.run_app(&mut app).map_err(|e| e.to_string())
+}
+
+/// Single source of truth for the snip lifecycle.
+///
+/// Replaces the previous implicit combination of `overlay.is_some()`,
+/// `snip.at.is_some()` and `snip.countdown.is_some()`. The maintained
+/// invariant is: `phase == Overlay` iff `overlay.is_some()`, and
+/// `phase == Idle` iff none of `overlay`/`snip.at`/`snip.countdown` are set.
+/// Every transition below keeps this invariant, so the old tri-state read in
+/// `request_snip` (`overlay || snip.at || snip.countdown`) is exactly
+/// `phase != Idle`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum SnipPhase {
+    /// Nothing pending; hotkeys/tray can arm a new snip.
+    Idle,
+    /// Countdown window ticking down (`snip.countdown` is `Some`).
+    Countdown,
+    /// Fallback hidden, waiting `hide_wait_ms()` before the grab.
+    HideWait,
+    /// Capture taken, annotation overlay is live (`overlay` is `Some`).
+    Overlay,
 }
 
 #[derive(Default)]
@@ -139,6 +161,7 @@ struct App {
     last_click: Option<(WindowId, Instant, Point)>,
     pins_hidden: bool,
     snip: SnipSchedule,
+    snip_phase: SnipPhase,
     session_restored: bool,
     restore: DesktopRestore,
     prefs: Option<crate::prefs_win::PrefsWin>,
@@ -270,7 +293,7 @@ impl App {
     }
 
     fn request_snip(&mut self, event_loop: &ActiveEventLoop, translate: bool) {
-        if self.overlay.is_some() {
+        if self.snip_phase == SnipPhase::Overlay {
             let closing_resnip = self
                 .overlay
                 .as_ref()
@@ -295,7 +318,7 @@ impl App {
                 return;
             }
         }
-        if self.overlay.is_some() || self.snip.at.is_some() || self.snip.countdown.is_some() {
+        if self.snip_phase != SnipPhase::Idle {
             return;
         }
         self.snip.translate_next = translate;
@@ -307,9 +330,11 @@ impl App {
                 Err(e) => crate::logutil::log(&format!("countdown: {e}")),
             }
             self.snip.at = Some(Instant::now() + Duration::from_secs(1));
+            self.snip_phase = SnipPhase::Countdown;
         } else {
             self.prepare_capture_hide();
             self.snip.at = Some(Instant::now() + Duration::from_millis(self.hide_wait_ms()));
+            self.snip_phase = SnipPhase::HideWait;
         }
     }
 
@@ -349,7 +374,7 @@ impl App {
     }
 
     fn begin_snip(&mut self, event_loop: &ActiveEventLoop) {
-        if self.overlay.is_some() {
+        if self.snip_phase == SnipPhase::Overlay {
             return;
         }
         self.restore.wait_after_overlay = false;
@@ -385,6 +410,7 @@ impl App {
                     ov.history = std::mem::take(&mut self.history);
                     self.pump_win = Some(ov.window_rc());
                     self.overlay = Some(ov);
+                    self.snip_phase = SnipPhase::Overlay;
                 }
                 Err(e) => {
                     #[cfg(unix)]
@@ -392,6 +418,7 @@ impl App {
                         self.input_hold = None;
                     }
                     eprintln!("PinShot overlay: {e}");
+                    self.snip_phase = SnipPhase::Idle;
                 }
             },
             Err(e) => {
@@ -400,6 +427,7 @@ impl App {
                     self.input_hold = None;
                 }
                 eprintln!("PinShot capture: {e}");
+                self.snip_phase = SnipPhase::Idle;
             }
         }
         crate::logutil::ms("begin_snip total", t0);
@@ -467,6 +495,7 @@ impl App {
         self.history.entries.truncate(self.cfg.history_max as usize);
         let persist = res.writes_history();
         let resnip = matches!(res, OverlayResult::Resnip);
+        self.snip_phase = SnipPhase::Idle;
         ov.hide_for_capture();
         self.pump_win = Some(ov.window_rc());
         drop(ov);
@@ -1712,11 +1741,12 @@ impl App {
                 self.snip.countdown = None;
                 self.prepare_capture_hide();
                 self.snip.at = Some(Instant::now() + Duration::from_millis(self.hide_wait_ms()));
+                self.snip_phase = SnipPhase::HideWait;
             }
         } else {
             self.snip.at = None;
             self.begin_snip(event_loop);
-            if self.overlay.is_none() {
+            if self.snip_phase != SnipPhase::Overlay {
                 self.restore_fallback_if_needed();
             }
         }
