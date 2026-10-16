@@ -84,7 +84,7 @@ mod tests {
     }
 
     #[test]
-    fn grid_matches_snipaste_scale() {
+    fn grid_matches_reference_tool_scale() {
         let overlay = Rect::new(0.0, 0.0, 800.0, 600.0);
         let mag = layout_magnifier(Point::new(40.0, 40.0), overlay, Rgba::RED, Point::ZERO);
         assert_eq!(mag.grid.w, (MAG_N * MAG_ZOOM) as f32);

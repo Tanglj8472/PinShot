@@ -37,7 +37,7 @@ pub fn init_process() {
     }
 }
 
-/// Pins / overlay / countdown: hide from the Windows taskbar (Snipaste-style).
+/// Pins / overlay / countdown: hide from the Windows taskbar (参考工具-style).
 /// winit otherwise sets `WS_EX_APPWINDOW` and explorer draws a caption icon.
 pub fn as_tool_window(attrs: WindowAttributes) -> WindowAttributes {
     #[cfg(windows)]

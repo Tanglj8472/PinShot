@@ -3,7 +3,7 @@
 //! Must run *before* the overlay is created. All-black frames are rejected so a
 //! timed-out DXGI first frame cannot hide a working GDI fallback.
 //!
-//! Snipaste stays fast because it keeps a live `DuplicateOutput` session. Creating
+//! 参考工具 stays fast because it keeps a live `DuplicateOutput` session. Creating
 //! a D3D device + duplicator on every F1, then waiting 350ms×8 for the first
 //! frame, was the bulk of PinShot's "Rust is slower than C++" delay.
 

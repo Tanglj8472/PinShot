@@ -68,7 +68,7 @@ pub fn toggle_line_arrow(annot: &mut Annotator, arrow_kind: &mut ArrowKind) {
     annot.convert_line_arrow(next);
 }
 
-/// Tab while annotating: rectangle ↔ ellipse, or line ↔ arrow (Snipaste).
+/// Tab while annotating: rectangle ↔ ellipse, or line ↔ arrow (参考工具).
 pub fn toggle_grouped_variant(
     annot: &mut Annotator,
     arrow_kind: &mut ArrowKind,
@@ -103,9 +103,9 @@ fn icon_for_arrow(kind: ArrowKind) -> IconKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TbAction {
     Tool(Tool),
-    /// Combined rectangle / ellipse entry (Snipaste).
+    /// Combined rectangle / ellipse entry (参考工具).
     Shape,
-    /// Combined line / arrow entry (Snipaste).
+    /// Combined line / arrow entry (参考工具).
     LineStroke,
     Undo,
     Redo,
@@ -611,7 +611,7 @@ impl Toolbar {
         }
     }
 
-    /// Compact Snipaste-style hover strip on an idle pin (OCR / save / copy / close).
+    /// Compact 参考工具-style hover strip on an idle pin (OCR / save / copy / close).
     pub fn layout_pin_hover(sel: Rect, overlay: Rect) -> Self {
         let acts = [
             (IconKind::Ocr, TbAction::Ocr, "Recognize text"),
@@ -1076,7 +1076,7 @@ mod tests {
         let pw = tb.panel.unwrap().w;
         assert!(
             pw < 420.0,
-            "Snipaste sub-panel hugs the chips, not a 500px strip, w={pw}"
+            "参考工具 sub-panel hugs the chips, not a 500px strip, w={pw}"
         );
         assert_eq!(
             tb.seps.len(),
@@ -1297,7 +1297,7 @@ mod tests {
             .iter()
             .find(|e| e.action == TbAction::Outline(true) || e.action == TbAction::Outline(false));
         assert_eq!(a.and_then(|e| e.icon), Some(IconKind::TextOutline));
-        assert!(tb.panel.unwrap().h <= 36.0, "Snipaste sub-panel is one row");
+        assert!(tb.panel.unwrap().h <= 36.0, "参考工具 sub-panel is one row");
         let mos = Toolbar::layout(
             sel,
             over,

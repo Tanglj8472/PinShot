@@ -135,7 +135,7 @@ pub fn apply_overlay_style(hwnd: HWND) {
         SetWindowLongPtrW(hwnd, GWL_STYLE, WS_POPUP.0 as isize | visible);
         let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
         // winit sets WS_EX_APPWINDOW by default; that forces a taskbar button
-        // even after OR-ing TOOLWINDOW. Snipaste is TOOLWINDOW from create.
+        // even after OR-ing TOOLWINDOW. 参考工具 is TOOLWINDOW from create.
         SetWindowLongPtrW(
             hwnd,
             GWL_EXSTYLE,
@@ -294,7 +294,7 @@ pub fn virtual_desktop() -> (i32, i32, i32, i32) {
     }
 }
 
-/// Snipaste-style: Preferences is a tool window, not a taskbar app.
+/// 参考工具-style: Preferences is a tool window, not a taskbar app.
 pub fn restyle_prefs_windows() {
     unsafe {
         let pid = GetCurrentProcessId();

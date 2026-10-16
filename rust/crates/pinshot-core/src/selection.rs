@@ -89,7 +89,7 @@ impl Selection {
                 self.rect = self.normalized();
                 return PressKind::Move;
             }
-            // Click outside an existing selection: keep it (Snipaste-like).
+            // Click outside an existing selection: keep it (参考工具-like).
             return PressKind::Ignore;
         }
         if self.has_sel() {
@@ -158,7 +158,7 @@ impl Selection {
                 self.moved = self.moved.max(pt.manhattan(origin));
                 let is_click = self.moved <= CLICK_PX;
                 if is_click {
-                    // Click: Snipaste window-detect. A press-and-drag keeps the span
+                    // Click: 参考工具 window-detect. A press-and-drag keeps the span
                     // even if QueryPointer has not yet caught up with the finger.
                     self.rect = if hover.is_empty() { bounds } else { hover };
                 } else if pt.manhattan(origin) > CLICK_PX {

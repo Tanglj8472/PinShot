@@ -5,13 +5,13 @@ Statuses: **done** / **partial** / **missing** / **impossible**.
 
 Counts at the bottom. Python sources are not modified.
 
-**UX reference for text / settings / OCR (2026-10-12):** Snipaste public docs
-([Getting Started](https://docs.snipaste.com/getting-started),
-[Key Bindings](https://docs.snipaste.com/key-bindings),
-[FAQ](https://docs.snipaste.com/faq)), not the Python PinShot UI.
-Clean-room only — no binary analysis, no copied assets. Snipaste has no
+**UX reference for text / settings / OCR (2026-10-12):** 参考工具 public docs
+([Getting Started](公开文档),
+[Key Bindings](公开文档),
+[FAQ](公开文档)), not the Python PinShot UI.
+Clean-room only — no binary analysis, no copied assets. 参考工具 has no
 OCR result window (PRO copies to clipboard); PinShot keeps its result
-window but styles it like Snipaste prefs (egui, CJK, always-on-top).
+window but styles it like 参考工具 prefs (egui, CJK, always-on-top).
 
 ## Platform layer
 
@@ -96,7 +96,7 @@ window but styles it like Snipaste prefs (egui, CJK, always-on-top).
 | `adjust_width` + 0.5s undo merge | done |
 | `wheel` trunc(angle/120) | `Annotator::wheel` | done |
 | `start_text` / `commit_text` / `begin_edit_text` | done + painted dashed editor | done |
-| `key` Esc/Enter/IME | overlay + pin + `Ime::Commit` + Linux `XGrabKeyboard` | done | Keep grab while typing (xdotool CJK `0x01000000\|cp`); pause only during IME preedit. Esc cancels text, not snip ([FAQ #9](https://docs.snipaste.com/faq)). Click-outside commits (no handles, no new box). Drag moves committed text. Caret at click; hug-width editor; hide committed copy while editing. Right-click finishes. Mid-click / Ctrl+V paste. |
+| `key` Esc/Enter/IME | overlay + pin + `Ime::Commit` + Linux `XGrabKeyboard` | done | Keep grab while typing (xdotool CJK `0x01000000\|cp`); pause only during IME preedit. Esc cancels text, not snip ([FAQ #9](公开文档)). Click-outside commits (no handles, no new box). Drag moves committed text. Caret at click; hug-width editor; hide committed copy while editing. Right-click finishes. Mid-click / Ctrl+V paste. |
 | `press` select-on-click, mosaic no-steal | done |
 | `_resize_selected` number/polyline/rect | done |
 | `_push_edit` / undo 50 / redo | `UndoStack` | done |
@@ -117,7 +117,7 @@ window but styles it like Snipaste prefs (egui, CJK, always-on-top).
 | Tool order Rect Ellipse Line Arrow Pen Marker Mosaic Text Number | `toolbar.rs` | done |
 | OCR / Translate / Undo Redo Close Pin Save Copy | done |
 | Pin Check (done) | `TbAction::Check` | done |
-| Palette 20 + width −/+ | done | Snipaste-style: blue width chip (dot or number) + 2×10 palette; mosaic uses a slider (`WidthSet`) instead of −/+ |
+| Palette 20 + width −/+ | done | 参考工具-style: blue width chip (dot or number) + 2×10 palette; mosaic uses a slider (`WidthSet`) instead of −/+ |
 | Per-tool panel (filled, dash, blur, font…) | Compact hugging one-row panel | done | Rect Fill/Outline/line-style; Line style combo; Pen colour-only; Mosaic mosaic/blur + slider; Text B/I/A + font combo; Eraser size + brush/rect. Red corner dot on the active tool. OCR has its own document icon + hover tooltip |
 | Tips / i18n keys | `Tool::tip` + `tr` painted on hover | done |
 
@@ -132,7 +132,7 @@ window but styles it like Snipaste prefs (egui, CJK, always-on-top).
 | TOOL_KEYS R E P T N … | R E P T N + 1/2/3/4 | done |
 | Esc close / Ctrl+W | done |
 | Double-click close/hide/none + tip | `PinWin::on_double_click` | done | First hit tips; `dblclick_tip_shown` persisted |
-| Context menu full (`build_menu`) | Win32 popup / in-process `PinMenuWin` | done | Compact Snipaste flyouts: Zoom 33.3/50/100/200 + Current + Smoothing; Image processing rotate/flip; Move to group (name + count); size submenu (Group/Zoom/Rotation/Opacity/mirrors/Grayscale/Color inverted). Esc closes menu only |
+| Context menu full (`build_menu`) | Win32 popup / in-process `PinMenuWin` | done | Compact 参考工具 flyouts: Zoom 33.3/50/100/200 + Current + Smoothing; Image processing rotate/flip; Move to group (name + count); size submenu (Group/Zoom/Rotation/Opacity/mirrors/Grayscale/Color inverted). Esc closes menu only |
 | Rotate / flip / paste / replace file | done | Also grayscale / invert / bilinear smoothing on paint |
 | Shadow / thumb | `shadow` + Shift+dblclick 72px thumb | done | Default on when `_NET_WM_CM_Sn` is owned; persisted. Widget is image+2M, photo at (M,M), `WA_TranslucentBackground` + premultiplied ARGB present; hairline `QRectF(r).adjusted(-0.5,-0.5,-0.5,-0.5)`; session stores image origin |
 | Click-through XShape / WS_EX_TRANSPARENT | done |
@@ -144,7 +144,7 @@ window but styles it like Snipaste prefs (egui, CJK, always-on-top).
 
 | Python | Rust | Status |
 |---|---|---|
-| `prefs.PrefsDialog` General/Hotkeys/Output + Advanced | `prefs.rs` egui `--settings-window` (Linux + Windows) | done | Tabs match Snipaste Preferences: General / Interface / Snip / Paste / Output / Control / About (no Update — PinShot has no updater). Window hugs the form (measured widget height, 480×~100–320, not a fixed empty square). Restore Defaults per page; Apply/OK/Cancel footer. CJK: Noto/Source Han/wqy Linux, YaHei Windows. `prefs_win.rs` remains as in-process fallback. |
+| `prefs.PrefsDialog` General/Hotkeys/Output + Advanced | `prefs.rs` egui `--settings-window` (Linux + Windows) | done | Tabs match 参考工具 Preferences: General / Interface / Snip / Paste / Output / Control / About (no Update — PinShot has no updater). Window hugs the form (measured widget height, 480×~100–320, not a fixed empty square). Restore Defaults per page; Apply/OK/Cancel footer. CJK: Noto/Source Han/wqy Linux, YaHei Windows. `prefs_win.rs` remains as in-process fallback. |
 | zh/en only, light/dark/system | done | Linux prefs/fallback repaint on Apply; system ≈ GTK_THEME |
 | Hotkey conflict detection | `hotkey::find_conflicts` | done |
 | Groups add/rename/remove | done |

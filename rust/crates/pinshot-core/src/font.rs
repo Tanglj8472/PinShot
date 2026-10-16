@@ -755,7 +755,7 @@ pub fn measure(text: &str, px: f32) -> (f32, f32) {
 }
 
 /// Annotation text: family face when it has the glyph, else the chrome CJK/Latin stack
-/// (Snipaste: default text annotation uses the interface font).
+/// (参考工具: default text annotation uses the interface font).
 fn pick_annot(ch: char, family: &str, bold: bool, italic: bool) -> Option<&'static fontdue::Font> {
     if family.trim().is_empty() && !bold && !italic {
         return pick_chrome(ch);

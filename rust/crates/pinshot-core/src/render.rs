@@ -845,7 +845,7 @@ fn fill_sharp_arrow(pm: &mut Pixmap, a: Point, b: Point, width: i32, t: Transfor
     let vx = -uy;
     let vy = ux;
     let w = width.max(1) as f32;
-    // Snipaste thin: hairline tail, slim neck, larger spear head with
+    // 参考工具 thin: hairline tail, slim neck, larger spear head with
     // longer swept barbs (尾翼) — not a stub triangle.
     let tail_hw = 0.42_f32.max(w * 0.14);
     let neck_hw = (w * 0.42).max(tail_hw + 0.18);
@@ -1185,7 +1185,7 @@ mod tests {
             );
             if let Some(pm) = preview.to_skia() {
                 if let Ok(png) = pm.encode_png() {
-                    let path = std::path::PathBuf::from(&dir).join("thin_arrow_snipaste.png");
+                    let path = std::path::PathBuf::from(&dir).join("thin_arrow_reference_tool.png");
                     let _ = std::fs::write(path, png);
                 }
             }

@@ -504,7 +504,7 @@ impl PinWin {
         let Some(ocr) = self.ocr.as_mut() else {
             return;
         };
-        // Reading-order caret range (RapidOCR / Snipaste style), not a
+        // Reading-order caret range (RapidOCR / 参考工具 style), not a
         // geometric band: a tall drag used to copy every token between the
         // first and last box that touched the rectangle.
         let start =

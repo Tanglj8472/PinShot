@@ -3,7 +3,7 @@
 //! Overlay frames are composited incrementally: the 6k-class virtual desktop is
 //! *not* rebuilt on every mouse move. Empty-annot tiles restore from the
 //! pre-dimmed freeze. Ink is painted on the undimmed capture first, then the
-//! dim is applied *outside* the hole (Snipaste: strokes in the shadow sit
+//! dim is applied *outside* the hole (参考工具: strokes in the shadow sit
 //! under the dim). Chrome (ring / loupe / toolbar) is last and stays bright.
 
 #[cfg(windows)]
@@ -915,7 +915,7 @@ impl OverlayFront {
         }
 
         // Hole interior: undimmed capture. Ink is painted on the freeze first,
-        // then the dim covers everything except the hole (Snipaste).
+        // then the dim covers everything except the hole (参考工具).
         let hole_refresh = if hole.is_empty() {
             Rect::EMPTY
         } else if hole_changed {
@@ -969,7 +969,7 @@ impl OverlayFront {
             chrome.push(sh.bounds().inflated(pad).intersect(bounds));
         }
 
-        // Python / Snipaste: handles only for `selected`. Text commit leaves
+        // Python / 参考工具: handles only for `selected`. Text commit leaves
         // width_target but must not keep a blue box and 8 nubs.
         if let Some(i) = annot.selected {
             if let Some(sh) = annot.shapes.get(i) {
@@ -1248,7 +1248,7 @@ fn paint_magnifier(
     // Opaque 1px chrome — AA `stroke_rect` / `fill_rect` SrcOver onto the
     // already-dimmed freeze leaves a darker halo that dirty-rects miss.
     fill_px_border(pm, gx, gy, n * z, n * z, 1, Rgba::WHITE);
-    // Snipaste: blue crosshair through the whole preview, white box on the
+    // 参考工具: blue crosshair through the whole preview, white box on the
     // centre source pixel.
     let mid = n / 2;
     let cell_x = gx + mid * z;
@@ -3071,7 +3071,7 @@ mod tests {
     }
 
     #[test]
-    fn magnifier_paints_snipaste_crosshair() {
+    fn magnifier_paints_reference_tool_crosshair() {
         let mut shot = gray_shot(80, 80, 40);
         shot.set(40, 40, Rgba::rgb(200, 40, 40));
         let cursor = Point::new(40.0, 40.0);

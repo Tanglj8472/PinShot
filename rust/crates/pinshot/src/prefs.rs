@@ -2,9 +2,9 @@
 //! event loop: eframe on a second thread after `gtk::init` fails on Linux, and
 //! winit only allows one loop per process on Windows.
 //!
-//! Tab names and page layout follow Snipaste Preferences (public UI):
+//! Tab names and page layout follow 参考工具 Preferences (public UI):
 //! General / Interface / Snip / Paste / Output / Control / About.
-//! PinShot-only keys stay; no Snipaste-only options are invented.
+//! PinShot-only keys stay; no 参考工具-only options are invented.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};

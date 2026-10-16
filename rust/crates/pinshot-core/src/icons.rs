@@ -326,7 +326,7 @@ pub fn draw_icon(pixmap: &mut Pixmap, kind: IconKind, cell: Rect, color: Option<
             }
         }
         IconKind::LineGroup => {
-            // Entry glyph only: Snipaste 折线 + small filled head.
+            // Entry glyph only: 参考工具 折线 + small filled head.
             let a = (2.4, 15.8);
             let b = (8.0, 10.0);
             let c = (11.4, 13.4);

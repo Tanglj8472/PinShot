@@ -2,11 +2,11 @@
 
 对照源：`main` 上的 Python/PySide6 PinShot。Rust 在 `rust/`，分支 `rust`。Python 源码不改。
 
-文字工具 / 设置窗 / OCR 的**交互与版式**对照 Snipaste 公开文档
-（[docs.snipaste.com](https://docs.snipaste.com/) Getting Started / Key Bindings / FAQ），
-洁净室实现，不拆二进制、不抄资源。Snipaste 无 OCR 结果窗时保留 PinShot 功能，UX 跟设置窗同一套 egui + CJK。
+文字工具 / 设置窗 / OCR 的**交互与版式**对照 参考工具 公开文档
+（[docs.reference_tool.com](公开文档) Getting Started / Key Bindings / FAQ），
+洁净室实现，不拆二进制、不抄资源。参考工具 无 OCR 结果窗时保留 PinShot 功能，UX 跟设置窗同一套 egui + CJK。
 
-最后更新：2026-10-12（文本 14 项 + 工具栏/贴图菜单对齐 Snipaste 截图）。
+最后更新：2026-10-12（文本 14 项 + 工具栏/贴图菜单对齐 参考工具 截图）。
 
 ---
 
@@ -16,8 +16,8 @@ HEAD 在本轮：OCR 改 paddle-ocr-rs（PP-OCRv5），识别后就地钉在截�
 
 | 面 | 状态 |
 |---|---|
-| 文字标注（对照 Snipaste） | **已修**：xdotool CJK（Unicode keysym，编辑时保持 grab）；caret 落笔即可见（2px 填充）；框贴紧字形；点框外只提交（无手柄、不新开空框）；回编隐藏已提交副本；caret 跟点击；拖已提交文字是移动 |
-| 设置窗（对照 Snipaste 版式） | **已修**：七个标签固定 480×300（按最高的 Control 页）；主题下拉与其它 `form_combo` 同宽同箭头；每页恢复默认；底栏应用/确定/取消 |
+| 文字标注（对照 参考工具） | **已修**：xdotool CJK（Unicode keysym，编辑时保持 grab）；caret 落笔即可见（2px 填充）；框贴紧字形；点框外只提交（无手柄、不新开空框）；回编隐藏已提交副本；caret 跟点击；拖已提交文字是移动 |
+| 设置窗（对照 参考工具 版式） | **已修**：七个标签固定 480×300（按最高的 Control 页）；主题下拉与其它 `form_combo` 同宽同箭头；每页恢复默认；底栏应用/确定/取消 |
 | OCR（就地拖选，无结果窗） | **本轮**：paddle-ocr-rs PP-OCRv5；overlay OCR/F5 直接出钉图；拖选文字 + C 复制；F5 底条翻译；失败 toast；OCR 独立图标仍在工具栏 |
 | chrome 文字（芯片 / 菜单 / toast / prefs） | **已修**：平滑 AA；CJK 优先 Noto/Source Han/Droid/文泉驿，拉丁 Liberation |
 | 标注工具栏 / 子面板视觉 | **本轮**：贴内容的单行子面板（不再 500px 空条）；蓝底线宽圆点/数字；直线线型下拉；文字 B/I/A + 字体下拉；马赛克滑条；选中亮蓝+红点；色块三角 |
@@ -35,7 +35,7 @@ HEAD 在本轮：OCR 改 paddle-ocr-rs（PP-OCRv5），识别后就地钉在截�
 | Windows 实机 | **未关**：Linux-first 改动后尚未在真 Windows 上复测（CI 绿） |
 | AT-SPI / IME / 合成器 | 限制同前，见「已知限制」 |
 
-`PARITY.md`：done 115 / partial 0 / missing 0 / impossible 6（合计 121）。文字/设置/OCR 的 UX 对照 Snipaste 公开文档。
+`PARITY.md`：done 115 / partial 0 / missing 0 / impossible 6（合计 121）。文字/设置/OCR 的 UX 对照 参考工具 公开文档。
 
 ---
 
@@ -45,7 +45,7 @@ HEAD 在本轮：OCR 改 paddle-ocr-rs（PP-OCRv5），识别后就地钉在截�
 |---|---|
 | 语言/运行时 | 用 Rust 重写宿主 + 可移植核心，去掉 PySide6/Qt |
 | 平台顺序 | **先 Linux X11**（Xfce / xfwm4，1920×1200；无托盘则 4 按钮 fallback），再 Windows |
-| 行为 | 功能与 Python PinShot 对齐（[`PARITY.md`](PARITY.md)）；文字 / 设置 / OCR 的交互与版式对照 [Snipaste 公开文档](https://docs.snipaste.com/) |
+| 行为 | 功能与 Python PinShot 对齐（[`PARITY.md`](PARITY.md)）；文字 / 设置 / OCR 的交互与版式对照 [参考工具 公开文档](公开文档) |
 | 体积 | 单文件 `pinshot`；Linux 默认链 ort（模型仍按需下载）；Windows OCR 走 `--features ocr` / `pinshot-ocr.exe` |
 | 架构 | `pinshot-core` 可移植；`pinshot` 经 `native` 分叉 `linux_x11` / `windows` |
 
@@ -59,7 +59,7 @@ HEAD 在本轮：OCR 改 paddle-ocr-rs（PP-OCRv5），识别后就地钉在截�
 
 ### 工具栏 / 贴图菜单 + 14 项实机 bug（本轮）
 
-对照 Snipaste 截图：overlay 工具栏子面板（矩形填充/描边图标、直线线型、画笔色盘、马赛克尺寸、文字 B/I/A、橡皮）和贴图右键（Copy/Save/Show toolbar/Shadow/Zoom 33.3·50·100·200+Smoothing/Image processing/Paste/Replace by file/Move to group/View in folder/Close/Destroy/尺寸子菜单）。保留 PinShot 的 OCR/翻译、椭圆、序号、记号笔。
+对照 参考工具 截图：overlay 工具栏子面板（矩形填充/描边图标、直线线型、画笔色盘、马赛克尺寸、文字 B/I/A、橡皮）和贴图右键（Copy/Save/Show toolbar/Shadow/Zoom 33.3·50·100·200+Smoothing/Image processing/Paste/Replace by file/Move to group/View in folder/Close/Destroy/尺寸子菜单）。保留 PinShot 的 OCR/翻译、椭圆、序号、记号笔。
 
 | 项 | 改了什么 |
 |---|---|
@@ -69,11 +69,11 @@ HEAD 在本轮：OCR 改 paddle-ocr-rs（PP-OCRv5），识别后就地钉在截�
 | 工具栏 | 贴内容子面板、蓝底线宽、线型/字体下拉、马赛克滑条、亮蓝选中 |
 | 贴图 | 飞出子菜单；灰度/反色/平滑 |
 
-验证：`cargo test --workspace --lib`；`cargo build --release --bin pinshot`。截图 `/opt/cursor/artifacts/snipaste-toolbar/`。
+验证：`cargo test --workspace --lib`；`cargo build --release --bin pinshot`。截图 `/opt/cursor/artifacts/reference_tool-toolbar/`。
 
-### 文本 / 设置 / OCR 对齐 Snipaste（上轮）
+### 文本 / 设置 / OCR 对齐 参考工具（上轮）
 
-公开对照：[Getting Started](https://docs.snipaste.com/getting-started)（右键结束当前形状、拖角缩放文字）、[Key Bindings](https://docs.snipaste.com/key-bindings)（编辑时滚轮/`1`/`2`/`[`/`]` 改宽）、[FAQ #9](https://docs.snipaste.com/faq)（右键结束文字输入）。Esc 结束文字而不是截图、中键粘贴、默认无描边、界面字体、选中文字工具再点可回编，来自 Snipaste changelog / 可见行为。洁净室：不 RE、不抄资源。
+公开对照：[Getting Started](公开文档)（右键结束当前形状、拖角缩放文字）、[Key Bindings](公开文档)（编辑时滚轮/`1`/`2`/`[`/`]` 改宽）、[FAQ #9](公开文档)（右键结束文字输入）。Esc 结束文字而不是截图、中键粘贴、默认无描边、界面字体、选中文字工具再点可回编，来自 参考工具 changelog / 可见行为。洁净室：不 RE、不抄资源。
 
 | 项 | 原先坏在哪 | 改了什么 |
 |---|---|---|
@@ -81,7 +81,7 @@ HEAD 在本轮：OCR 改 paddle-ocr-rs（PP-OCRv5），识别后就地钉在截�
 | 设置 | Linux 自制 `prefs_win` 乱；GTK 初始化后再起 eframe 静默失败；固定方窗短页空一截 | 双平台 spawn `--settings-window`；egui Grid；CJK `ui_font`；Apply/OK/Cancel；`config.toml` 全保留；按控件 `allocate_ui(…, 0)` 量高度再 `InnerSize`，480 宽、不可拉伸 |
 | OCR | Linux 默认无 `ocr` feature；条带检测非 DBNet；结果窗同样踩 GTK+eframe | unix 始终链 ort；DBNet + letterbox + rec H=48 + cls 180°；`--ocr-window` 独立进程（浅色 + CJK，跟设置窗同一套） |
 
-验证：`cargo test --workspace --lib` 绿（含 `text_default_style_matches_snipaste`、`prefs_window_hugs_each_tab`）。`PINSHOT_OCR_SMOKE=1` → `ocr smoke => "Hello你好PinShot"`。`cargo build --release --bin pinshot` Linux 绿。Xvfb `:36` 1920×1200 + xfwm4：设置窗 `prefs hug` 界面 body=57→115px / 常规 171→229 / 控制 241→299（不再同一块空方）。截图 `/opt/cursor/artifacts/snipaste-align/`。模型走 RapidOCR ModelScope v3.9.2（旧 v3.2.0 / HuggingFace 文件名已失效）。
+验证：`cargo test --workspace --lib` 绿（含 `text_default_style_matches_reference_tool`、`prefs_window_hugs_each_tab`）。`PINSHOT_OCR_SMOKE=1` → `ocr smoke => "Hello你好PinShot"`。`cargo build --release --bin pinshot` Linux 绿。Xvfb `:36` 1920×1200 + xfwm4：设置窗 `prefs hug` 界面 body=57→115px / 常规 171→229 / 控制 241→299（不再同一块空方）。截图 `/opt/cursor/artifacts/reference_tool-align/`。模型走 RapidOCR ModelScope v3.9.2（旧 v3.2.0 / HuggingFace 文件名已失效）。
 
 ### UI chrome 文字 AA（上轮）
 

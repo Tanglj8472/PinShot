@@ -112,7 +112,7 @@ pub enum LineStyleKind {
     Dot,
 }
 
-/// Line-tool head (Snipaste: none / thin / thick / hollow).
+/// Line-tool head (参考工具: none / thin / thick / hollow).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ArrowKind {
@@ -213,7 +213,7 @@ impl Style {
                 s.filled = true;
                 s.font_size = 14;
             }
-            // Snipaste: default text annotation is not outlined; dark interface font.
+            // 参考工具: default text annotation is not outlined; dark interface font.
             Tool::Text => {
                 s.outline = false;
                 s.font_size = 22;
@@ -419,7 +419,7 @@ pub struct Annotator {
     /// Text-tool press on committed text: click re-edits, drag moves.
     pending_text_click: Option<Point>,
     /// After click-outside commit, ignore the rest of this click so we do not
-    /// immediately open a new empty box (Snipaste: next click places).
+    /// immediately open a new empty box (参考工具: next click places).
     swallow_text_place: bool,
     line_press: Option<Point>,
     line_click_mode: bool,
@@ -512,7 +512,7 @@ impl Annotator {
     }
 
     /// Shapes to paint: hide the committed copy while its editor is open
-    /// so glyphs are not drawn twice (Snipaste).
+    /// so glyphs are not drawn twice (参考工具).
     pub fn visible_shapes(&self) -> Vec<Shape> {
         let skip = self.text_edit.as_ref().and_then(|e| e.existing);
         let mut out: Vec<Shape> = self
@@ -666,7 +666,7 @@ impl Annotator {
                     self.add(sh);
                 }
             }
-            // Snipaste: committing text does not leave a selection box / 8 handles.
+            // 参考工具: committing text does not leave a selection box / 8 handles.
             // `add()` would otherwise keep width_target, and chrome paints that.
             self.selected = None;
             self.edit_target = None;
@@ -723,7 +723,7 @@ impl Annotator {
         setter(self.style_mut(kind));
     }
 
-    /// Snipaste: rectangle and ellipse share one tool; switching the chip (or Tab)
+    /// 参考工具: rectangle and ellipse share one tool; switching the chip (or Tab)
     /// retargets the live / selected shape instead of starting a new one.
     pub fn convert_rect_ellipse(&mut self, to: Tool) {
         if !matches!(to, Tool::Rect | Tool::Ellipse) {
@@ -1092,7 +1092,7 @@ impl Annotator {
             }
             Tool::Select => false,
             Tool::Text => {
-                // Glyph ink plus a Snipaste-style border grab so drag-to-move
+                // Glyph ink plus a 参考工具-style border grab so drag-to-move
                 // still hits when the pointer is on the box edge, not the ink.
                 let pad = (sh.style.font_size.max(12) as f32) * 0.4 + 10.0;
                 b.adjusted(-pad, -pad, pad, pad).contains(p)
@@ -1228,7 +1228,7 @@ impl Annotator {
         }
 
         // Select, or any drawing tool except eraser/mosaic/text, steals a hit
-        // on an existing shape so the 8 handles appear. Text follows Snipaste:
+        // on an existing shape so the 8 handles appear. Text follows 参考工具:
         // click existing text to re-edit; click elsewhere to place a new box.
         let steal = tool == Some(Tool::Select)
             || (self.selected.and_then(|i| self.shapes.get(i)).is_some_and(|sh| sh.kind == Tool::Text)
@@ -1281,7 +1281,7 @@ impl Annotator {
                 if let Some(r) = self.text_edit_rect() {
                     if r.contains(img_pt) {
                         self.set_caret_at_x(img_pt.x);
-                        // Drag the box (Snipaste: grab text/border to move) even
+                        // Drag the box (参考工具: grab text/border to move) even
                         // while the caret is already in this editor.
                         if let Some(i) = self.text_edit.as_ref().and_then(|e| e.existing) {
                             if i < self.shapes.len() {
@@ -1419,7 +1419,7 @@ impl Annotator {
     }
 
     /// Wheel over a shape selects it (so width/font follow the hit) then adjusts.
-    /// While typing, the wheel changes the live text size (Snipaste).
+    /// While typing, the wheel changes the live text size (参考工具).
     pub fn wheel_at(&mut self, img_pt: Point, angle_delta: i32) -> bool {
         if self.text_edit.is_none() && self.live.is_none() && self.selected.is_none() {
             if let Some(i) = self.hit_test(img_pt) {
@@ -1439,7 +1439,7 @@ impl Annotator {
             return;
         }
         let pt = sh.pts.first().copied().unwrap_or(Point::ZERO);
-        // Snipaste FAQ / changelog: re-edit while the text icon is selected.
+        // 参考工具 FAQ / changelog: re-edit while the text icon is selected.
         // Double-click from Select still stays on Select so the 8 handles remain.
         if self.tool != Some(Tool::Text) {
             self.set_tool(Some(Tool::Select));
@@ -1449,7 +1449,7 @@ impl Annotator {
         self.start_text(pt, Some(idx));
     }
 
-    /// Place the caret at image-space `x` (click-to-caret, Snipaste).
+    /// Place the caret at image-space `x` (click-to-caret, 参考工具).
     pub fn set_caret_at_x(&mut self, x: f32) {
         let Some(ed) = self.text_edit.as_ref() else {
             return;
@@ -1478,7 +1478,7 @@ impl Annotator {
     }
 
     /// Editor box hugs the glyphs. An empty box stays wide enough that the
-    /// caret and outline are visible on the first click (Snipaste).
+    /// caret and outline are visible on the first click (参考工具).
     pub fn text_edit_rect(&self) -> Option<Rect> {
         let ed = self.text_edit.as_ref()?;
         let st = self.text_edit_style();
@@ -1582,7 +1582,7 @@ impl Annotator {
         ed.blink = Instant::now();
     }
 
-    /// Snipaste: right-click ends the current annotation (including text).
+    /// 参考工具: right-click ends the current annotation (including text).
     pub fn right_click(&mut self) -> bool {
         if self.live.is_none() && self.text_edit.is_none()
             && (self.selected.is_some() || self.edit_target.is_some() || self.width_target.is_some())
@@ -2246,10 +2246,10 @@ mod tests {
     }
 
     #[test]
-    fn text_default_style_matches_snipaste() {
+    fn text_default_style_matches_reference_tool() {
         let a = Annotator::new();
         let st = a.style(Tool::Text);
-        assert!(!st.outline, "Snipaste default text is not outlined");
+        assert!(!st.outline, "参考工具 default text is not outlined");
         assert_eq!(st.font_size, 22);
         assert_eq!(st.color, Rgba::rgb(30, 30, 30));
     }

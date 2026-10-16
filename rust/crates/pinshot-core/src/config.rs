@@ -189,7 +189,7 @@ impl Config {
         self.history_max = self.history_max.max(1);
         self.closed_pins_max = self.closed_pins_max.max(1);
         self.dim_alpha = self.dim_alpha.min(200);
-        // v1 overlay hardcoded 110, which is too light vs Snipaste and makes
+        // v1 overlay hardcoded 110, which is too light vs 参考工具 and makes
         // the magnifier look like it paints an extra shadow on the freeze.
         if self.schema_version < 2 && self.dim_alpha == 110 {
             self.dim_alpha = 160;
@@ -529,7 +529,7 @@ mod tests {
     }
 
     #[test]
-    fn v1_light_mask_becomes_snipaste_dim() {
+    fn v1_light_mask_becomes_reference_tool_dim() {
         let c = Config::from_toml("schema_version = 1\ndim_alpha = 110\n").unwrap();
         assert_eq!(c.dim_alpha, 160);
         assert_eq!(c.schema_version, 3);
