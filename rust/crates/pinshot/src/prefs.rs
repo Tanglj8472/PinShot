@@ -29,9 +29,9 @@ const PREFS_W: f32 = 540.0;
 const PREFS_MIN_W: f32 = 420.0;
 const PREFS_MIN_H: f32 = 220.0;
 const PREFS_MAX_H: f32 = 760.0;
-const FOOTER_H: f32 = 44.0;
+const FOOTER_H: f32 = 48.0;
 const FORM_LABEL_W: f32 = 152.0;
-const ROW_H: f32 = 28.0;
+const ROW_H: f32 = 32.0;
 const FORM_GAP: f32 = 12.0;
 const CONTENT_MARGIN: i8 = 16;
 const CONTROL_W: f32 = PREFS_W - 2.0 * CONTENT_MARGIN as f32 - FORM_LABEL_W - FORM_GAP;
@@ -179,8 +179,8 @@ pub fn run_preferences() {
         Box::new(move |cc| {
             crate::ui_font::install_cjk(&cc.egui_ctx);
             let mut style = (*cc.egui_ctx.style()).clone();
-            style.spacing.item_spacing = egui::vec2(8.0, 8.0);
-            style.spacing.button_padding = egui::vec2(10.0, 5.0);
+            style.spacing.item_spacing = egui::vec2(8.0, 10.0);
+            style.spacing.button_padding = egui::vec2(10.0, 6.0);
             style.spacing.interact_size.y = ROW_H;
             style.spacing.combo_height = 240.0;
             cc.egui_ctx.set_style(style);
@@ -233,8 +233,12 @@ fn apply_theme(ctx: &egui::Context, theme: &str) {
     visuals.widgets.inactive.weak_bg_fill = color(palette.panel);
     visuals.widgets.hovered.bg_fill = color(palette.hover);
     visuals.widgets.hovered.weak_bg_fill = color(palette.hover);
+    visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, color(palette.border));
+    visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, color(palette.accent));
+    visuals.widgets.active.bg_fill = color(palette.hover);
+    visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0, color(palette.accent));
     visuals.selection.bg_fill = if dark { Color32::from_rgb(38, 69, 104) } else { Color32::from_rgb(222, 237, 252) };
-    visuals.selection.stroke = egui::Stroke::new(1.0, color(palette.text));
+    visuals.selection.stroke = egui::Stroke::new(1.0, color(palette.accent));
     for widget in [&mut visuals.widgets.inactive, &mut visuals.widgets.hovered, &mut visuals.widgets.active] {
         widget.corner_radius = egui::CornerRadius::same(4);
     }
@@ -550,14 +554,20 @@ impl eframe::App for PrefsApp {
                     .inner_margin(egui::Margin::symmetric(CONTENT_MARGIN, 12)),
             )
             .show(ctx, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(3.0, 0.0);
+                    ui.spacing_mut().button_padding = egui::vec2(3.0, 4.0);
+                    let tab_width = (ui.available_width() - (TABS.len() - 1) as f32 * 3.0)
+                        / TABS.len() as f32;
                     for (i, name) in TABS.iter().enumerate() {
                         let selected = self.tab == i;
                         if ui
                             .add_sized(
-                                [44.0, ROW_H + 4.0],
-                                egui::SelectableLabel::new(selected, tr(name)),
+                                [tab_width, ROW_H + 4.0],
+                                egui::SelectableLabel::new(
+                                    selected,
+                                    RichText::new(tr(name)).size(11.5),
+                                ),
                             )
                             .clicked()
                         {
@@ -1154,7 +1164,7 @@ fn ocr_model_download_button(
     };
     let (rect, response) = ui.allocate_exact_size(size, sense);
     let visuals = ui.style().visuals.widgets.inactive;
-    let rounding = egui::CornerRadius::same(3);
+    let rounding = egui::CornerRadius::same(5);
     let stroke = visuals.bg_stroke;
     ui.painter().rect_filled(rect, rounding, visuals.bg_fill);
     let accent = ui.style().visuals.selection.bg_fill;
@@ -1424,8 +1434,8 @@ mod tests {
                 let ctx = egui::Context::default();
                 crate::ui_font::install_cjk(&ctx);
                 ctx.style_mut(|style| {
-                    style.spacing.item_spacing = egui::vec2(8.0, 8.0);
-                    style.spacing.button_padding = egui::vec2(10.0, 5.0);
+                    style.spacing.item_spacing = egui::vec2(8.0, 10.0);
+                    style.spacing.button_padding = egui::vec2(10.0, 6.0);
                     style.spacing.interact_size.y = ROW_H;
                 });
                 let mut cfg = Config::default();
