@@ -1,62 +1,73 @@
-# PinShot Rust
+# PinShot
 
-**说明：** 完整中文文档见 [README.zh-CN.md](README.zh-CN.md)（GitHub 在中文界面下会优先展示该文件）。
+PinShot 是一款面向 Windows 的开源截图与屏幕标注工具，使用 Rust 构建。它将区域截图、即时标注、图片贴图、文字识别和翻译整合在一个轻量工作流中。
 
-使用 Rust 实现的桌面截图、标注与贴图工具。此分支只维护 Rust 版本；旧 Python/Qt 实现保留在 Git 历史中。
+## 功能
 
-## 下载与安装
+- 快捷键、托盘菜单和命令行启动截图。
+- 支持多显示器、窗口区域识别和高 DPI 屏幕。
+- 直线、箭头、矩形、椭圆、画笔、记号笔、序号、文字、橡皮擦、马赛克和模糊。
+- 标注可编辑，支持移动、调整大小、撤销和取消选择。
+- 复制到剪贴板、保存图片、历史记录和截图贴图。
+- OCR 文字识别，以及可配置的翻译服务商。
+- DXGI 优先的屏幕捕获，并在不兼容环境中自动回退到 GDI。
+- 分级运行日志和按日期保存的诊断文件。
 
-在 [Releases](https://github.com/Tanglj8472/pinshot/releases) 下载 Windows x64 安装包 `PinShot-*-windows-x64-setup.exe`，或解压便携 ZIP 后运行 `pinshot.exe`。便携包中的 DLL 必须与程序放在一起。
+## 系统要求
 
-Windows 发布包包含 OCR 支持，首次识别需要联网下载模型，之后可离线识别。翻译会向设置中选择的服务发送文字。安装包未代码签名，Windows 可能显示 SmartScreen 提示，请核对发布页及 SHA-256。
+- Windows 10 版本 2004（Build 19041）或更高版本。
+- x64 处理器。
+- OCR 功能需要下载对应模型文件。
 
-## 功能与操作
+## 快速开始
 
-- 区域截图、窗口识别、复制、保存与置顶贴图。
-- 矩形、椭圆、直线、箭头、画笔、记号笔、文字、编号、模糊和马赛克。
-- 直线/箭头：拖动绘制单段；单击起点、继续单击添加转折点，右键结束。
-- 记号笔和模糊/马赛克提供笔涂抹与区域填充；左侧粗细控件兼作笔模式按钮。笔迹不可选中或拖动，支持撤销。
-- 模糊/马赛克共用效果切换按钮；滑条控制效果强度，滚轮调整笔触粗细。
-- 系统字体下拉选择，加粗、斜体、描边；文字框左上、左下、右下角等比例缩放，右上角 × 删除。
-- PP-OCRv5 本地识别及可配置的在线翻译。
+### 使用发布版本
 
-默认 `F1` 截图、`F3` 贴出剪贴板、`Esc` 退出当前操作；快捷键可在设置中修改，已有用户配置优先。标注完成后右键取消选中。
+从 GitHub Releases 下载 Windows 安装包，运行安装程序后即可通过托盘图标或快捷键开始截图。
 
-## 从源码运行
+### 从源码构建
 
-Windows 需要 Rust stable、Visual Studio C++ Build Tools 和 Windows SDK。
+需要安装 Rust stable 工具链和 Windows MSVC 编译工具链。
 
 ```powershell
 cd rust
-cargo run --release --bin pinshot --features ocr
 cargo run --release --bin pinshot --features ocr -- --debug
-cargo test --workspace --features ocr
 ```
 
-Windows 不需要 OCR 时可去掉 `--features ocr`。Linux 当前支持 X11，依赖与命令见 [Rust 开发说明](rust/README.zh-CN.md)。
+不需要 OCR 时可以省略 `--features ocr`。
 
-## 打包 Windows 安装程序
+## 常用操作
 
-安装 Inno Setup 6 后，在仓库根目录执行：
+截图完成后，可以使用工具栏编辑图片。左键拖动用于创建区域和笔迹；右键用于结束部分多步骤操作、取消选择或关闭当前交互。工具栏会记住常用的大小、模糊程度和其他工具参数。
 
-```powershell
-powershell -ExecutionPolicy Bypass -File tools/package-windows.ps1
-```
+截图可以复制到剪贴板、保存到图片目录或固定到桌面上。贴图窗口支持缩放和拖动。
 
-脚本测试并构建 OCR 版本，收集运行库，生成安装包、便携 ZIP 和校验清单到 `dist/`。详见 [发布流程](docs/releasing.md)。
+## 配置与日志
+
+设置页可以配置快捷键、保存目录、文件名格式、语言、OCR、翻译服务商和日志等级。
+
+日志文件保存在 `%APPDATA%\\PinShot`，每天生成一个 TXT 文件，默认只保留最近两天。日志等级包括关闭、普通、详细和调试；排查截图卡顿或兼容性问题时可以临时使用调试级别。
 
 ## 项目结构
 
-```text
-rust/crates/pinshot-core/  标注、渲染、OCR 数据与配置
-rust/crates/pinshot/       窗口、输入、截图、托盘与平台实现
-assets/                   应用图标
-tools/                    打包脚本
-packaging/                安装程序定义
-.github/workflows/        Windows / Linux 构建验证
-docs/                     维护与发布说明
+- `rust/crates/pinshot-core/`：跨模块的数据结构、标注模型、渲染和配置逻辑。
+- `rust/crates/pinshot/`：Windows/Linux 平台集成、截图窗口、工具栏、OCR 和翻译。
+- `packaging/`：Windows 安装程序配置和安装回归测试。
+- `tools/`：构建、运行库检查和系统验证脚本。
+- `docs/`：设计说明、日志说明和验证记录。
+
+## 开发与验证
+
+```powershell
+cd rust
+cargo fmt --all -- --check
+cargo test --locked --workspace
+cargo test --locked --workspace --features ocr
+cargo check --locked --workspace
 ```
 
-Windows 配置、日志和数据位于 `%APPDATA%\PinShot`。Linux 遵循 XDG 配置与数据目录。卸载默认保留用户数据。
+Windows 安装程序由 GitHub Actions 构建，并执行安装、升级、卸载、用户数据保留和运行库检查。
 
-开发约定见 [CONTRIBUTING.md](CONTRIBUTING.md)。Cargo 元数据声明 MIT；第三方依赖遵循各自许可证，见 [第三方说明](docs/third-party.md)。
+## 许可
+
+项目源代码和第三方依赖的许可信息请参阅仓库中的许可证及 `packaging/licenses/` 目录。
