@@ -208,7 +208,16 @@ pub fn run_install_after_quit(setup: &Path) -> Result<(), String> {
     crate::logutil::ensure_stdio();
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let install_dir = exe.parent().ok_or("update helper has no directory")?;
-    quit_for_install(Some(install_dir))?;
+    // PinShot uses one user-wide IPC/mutex namespace.  When older copies are
+    // installed in another directory, leaving one of them alive can make the
+    // freshly installed executable forward to that old copy and exit.  Close
+    // every PinShot instance before upgrading, while retaining `install_dir`
+    // as the sole destination passed to the installer.
+    crate::logutil::log(&format!(
+        "update: closing all PinShot instances; destination={}",
+        install_dir.display()
+    ));
+    quit_for_install(None)?;
     launch_installer(setup, install_dir)?;
     crate::logutil::flush();
     std::process::exit(0);
