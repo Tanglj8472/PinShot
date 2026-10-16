@@ -401,6 +401,9 @@ pub struct Annotator {
     pub shapes: Vec<Shape>,
     pub live: Option<Shape>,
     pub selected: Option<usize>,
+    /// Shapes that have been explicitly deselected cannot be selected again.
+    /// This matches the one-edit session used by the annotation UI.
+    selection_locked: Vec<bool>,
     pub next_number: i32,
     pub text_edit: Option<TextEdit>,
     /// Last committed shape the user clicked (Python `edit_target`).
@@ -433,6 +436,7 @@ impl Default for Annotator {
             shapes: Vec::new(),
             live: None,
             selected: None,
+            selection_locked: Vec::new(),
             next_number: 1,
             text_edit: None,
             edit_target: None,
@@ -488,10 +492,19 @@ impl Annotator {
         self.wheel_target = None;
         self.wheel_delta = 0;
         if tool != Some(Tool::Select) {
+            self.lock_selected();
             self.selected = None;
         }
         self.tool = tool;
         self.sel_mode = None;
+    }
+
+    fn lock_selected(&mut self) {
+        if let Some(i) = self.selected {
+            if i < self.selection_locked.len() {
+                self.selection_locked[i] = true;
+            }
+        }
     }
 
     pub fn all_shapes(&self) -> impl Iterator<Item = &Shape> {
@@ -526,6 +539,7 @@ impl Annotator {
         self.push_edit();
         self.shapes.push(shape);
         let i = self.shapes.len() - 1;
+        self.selection_locked.push(false);
         // Python `add` sets only `width_target`. `option_target` is
         // live | selected | edit_target | width_target, so Solid/color after a
         // draw still edit that shape. Python paints handles only for `selected`
@@ -540,6 +554,7 @@ impl Annotator {
     pub fn undo(&mut self) -> bool {
         self.finish();
         self.selected = None;
+        self.selection_locked.clear();
         self.edit_target = None;
         self.wheel_target = None;
         self.width_target = None;
@@ -553,6 +568,7 @@ impl Annotator {
 
     pub fn redo(&mut self) -> bool {
         self.selected = None;
+        self.selection_locked.clear();
         self.edit_target = None;
         self.wheel_target = None;
         self.width_target = None;
@@ -1027,6 +1043,9 @@ impl Annotator {
 
     pub fn hit_test(&self, img_pt: Point) -> Option<usize> {
         for (i, sh) in self.shapes.iter().enumerate().rev() {
+            if self.selection_locked.get(i).copied().unwrap_or(false) {
+                continue;
+            }
             if sh.kind == Tool::Pen || (matches!(sh.kind, Tool::Marker | Tool::Mosaic) && sh.style.mode == DrawMode::Brush) {
                 continue;
             }
@@ -1568,6 +1587,7 @@ impl Annotator {
         if self.live.is_none() && self.text_edit.is_none()
             && (self.selected.is_some() || self.edit_target.is_some() || self.width_target.is_some())
         {
+            self.lock_selected();
             self.selected = None;
             self.edit_target = None;
             self.width_target = None;
@@ -1885,6 +1905,22 @@ mod tests {
     }
 
     #[test]
+    fn deselected_shape_cannot_be_selected_again() {
+        let mut a = Annotator::new();
+        a.add(rect_shape());
+        a.shapes[0].style.filled = true;
+        assert_eq!(a.selected, Some(0));
+        assert!(a.right_click());
+        assert!(a.selected.is_none());
+        assert!(a.hit_test(Point::new(100.0, 100.0)).is_none());
+
+        let mut b = Annotator::new();
+        b.add(rect_shape());
+        b.set_tool(Some(Tool::Rect));
+        assert!(b.hit_test(Point::new(40.0, 80.0)).is_none());
+    }
+
+    #[test]
     fn drag_existing_with_drawing_tool_selects_and_moves() {
         let mut a = Annotator::new();
         a.set_tool(Some(Tool::Rect));
@@ -1925,10 +1961,10 @@ mod tests {
     }
 
     #[test]
-    fn drag_without_tool() {
+    fn drag_during_initial_selection() {
         let mut a = Annotator::new();
         a.add(rect_shape());
-        a.set_tool(None);
+        a.set_tool(Some(Tool::Select));
         assert!(a.press(Point::new(40.0, 80.0), false));
         assert_eq!(a.selected, Some(0));
         a.move_to(Point::new(60.0, 80.0), false);
@@ -2178,7 +2214,7 @@ mod tests {
     }
 
     #[test]
-    fn click_shape_edge_selects_even_with_draw_tool() {
+    fn switching_draw_tool_locks_previous_shape() {
         let mut a = Annotator::new();
         a.set_tool(Some(Tool::Line));
         a.set_style_default(Tool::Line, |s| s.arrow = false);
@@ -2187,9 +2223,9 @@ mod tests {
         a.release(Point::new(40.0, 0.0));
         a.set_tool(Some(Tool::Rect));
         assert!(a.press(Point::new(20.0, 0.0), false));
-        assert_eq!(a.selected, Some(0));
+        assert_eq!(a.selected, None);
         assert!(a.text_edit.is_none());
-        assert!(a.live.is_none());
+        assert_eq!(a.live.as_ref().map(|shape| shape.kind), Some(Tool::Rect));
     }
 
     #[test]
@@ -2397,18 +2433,17 @@ mod tests {
     }
 
     #[test]
-    fn wheel_at_selects_hit_shape() {
+    fn wheel_does_not_reselect_locked_shape() {
         let mut a = Annotator::new();
         a.set_tool(Some(Tool::Rect));
         a.press(Point::new(10.0, 10.0), false);
         a.move_to(Point::new(40.0, 40.0), false);
         a.release(Point::new(40.0, 40.0));
-        a.set_tool(Some(Tool::Rect));
-        a.selected = None;
-        a.width_target = None;
+        let width = a.shapes[0].style.width;
+        assert!(a.right_click());
         assert!(a.wheel_at(Point::new(10.0, 10.0), 120));
-        assert_eq!(a.selected, Some(0));
-        assert_eq!(a.shapes[0].style.width, 4);
+        assert_eq!(a.selected, None);
+        assert_eq!(a.shapes[0].style.width, width);
     }
 
     /// Overlay `handle` MouseInput / CursorMoved / MouseInput — not QueryPointer recover.

@@ -8,6 +8,8 @@ on:
       - "rust/**"
       - "tools/package-windows.ps1"
       - "tools/test-windows-upgrade.ps1"
+      - "tools/test-windows-runtime.ps1"
+      - "tools/test-windows-clean-runtime.ps1"
       - "packaging/**"
       - ".github/workflows/build-rust-windows.yml"
       - ".github/workflows/build-rust-linux.yml"
@@ -68,6 +70,7 @@ jobs:
           $iscc = if ($compiler) { $compiler.Source } else { Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe' }
           ../tools/test-windows-upgrade.ps1 -PayloadDir $payload -Iscc $iscc
           ../tools/test-windows-upgrade.ps1 -PayloadDir $payload -Iscc $iscc -FreshInstall
+          ../tools/test-windows-upgrade.ps1 -PayloadDir $payload -Iscc $iscc -FreshInstall -RetryShutdown
           ../tools/test-windows-upgrade.ps1 -PayloadDir $payload -Iscc $iscc -RejectShutdown
           ../tools/test-windows-upgrade.ps1 -PayloadDir $payload -Iscc $iscc -RestartAfterInstall
           ../tools/test-windows-upgrade.ps1 -PayloadDir $payload -Iscc $iscc -UpdateHelper

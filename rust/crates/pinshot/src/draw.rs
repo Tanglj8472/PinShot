@@ -1405,6 +1405,10 @@ pub fn paint_toolbar(pm: &mut Pixmap, tb: &Toolbar, cursor: Option<Point>) -> Re
                     draw_icon(pm, b.icon, b.rect.adjusted(4.0, 2.0, -4.0, -2.0), Some(ink));
                 }
             }
+            if let Some((track, thumb)) = menu.scrollbar {
+                fill_rounded_rect(pm, track, 2.0, CHROME_SEP);
+                fill_rounded_rect(pm, thumb, 2.0, CHROME_ICON);
+            }
             dirty = dirty.union(menu.rect);
         }
         if !tb.custom_color.is_empty() {
@@ -1650,6 +1654,15 @@ pub fn paint_toast(pm: &mut Pixmap, text: &str, w: u32, h: u32) -> Rect {
     );
     // Inflate past glyph overflow so expire restores the leftover pixels.
     boxr.inflated(12.0)
+}
+
+/// Paint the compact keyboard hint in the lower-left shadow margin.
+pub fn paint_shortcut_hint(pm: &mut Pixmap, text: &str, w: u32, h: u32) -> Rect {
+    let (tw, th) = crate::text::measure(text, 11, false);
+    let r = Rect::new(6.0, h as f32 - th as f32 - 10.0, tw as f32 + 12.0, th as f32 + 6.0);
+    fill_rounded_rect(pm, r, 3.0, Rgba::rgba(18, 18, 20, 190));
+    crate::text::blit_into_pm(pm, text, r.x + 6.0, r.y + 3.0, 11, Rgba::rgba(235, 235, 240, 235), false);
+    r.inflated(4.0)
 }
 
 fn blit_into(pm: &mut Pixmap, text: &str, x: i32, y: i32, px: i32, color: Rgba, bold: bool) {

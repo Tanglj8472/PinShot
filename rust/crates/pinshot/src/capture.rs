@@ -10,6 +10,8 @@
 use std::cell::RefCell;
 use std::ffi::c_void;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use pinshot_core::geom::Rect;
@@ -71,19 +73,36 @@ impl Capture {
         unsafe {
             let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
         }
-        let cap = grab_with_fallback(dump);
+        let cap = grab_with_fallback(dump, false);
         crate::logutil::ms("capture grab", t0);
+        cap
+    }
+
+    /// Capture after a resnip. Desktop Duplication can expose one compositor
+    /// frame that still contains the just-closed overlay; discard that frame
+    /// before composing the image shown to the user.
+    pub fn grab_fresh(dump: bool) -> Result<Self, String> {
+        let t0 = Instant::now();
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        }
+        let cap = grab_with_fallback(dump, true);
+        crate::logutil::ms("capture grab fresh", t0);
         cap
     }
 
     /// Warm the DXGI duplicator on the UI thread so the first F1 is not a
     /// D3D11CreateDevice + DuplicateOutput stall.
     pub fn prefetch() -> bool {
+        if dxgi_disabled().load(Ordering::Acquire) {
+            crate::logutil::log_at("trace", "dxgi prefetch skipped: disabled after previous loss");
+            return false;
+        }
         unsafe {
             let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
         }
         let t0 = Instant::now();
-        let ok = match grab_dxgi() {
+        let ok = match grab_dxgi(false) {
             Ok(frames) => {
                 crate::logutil::log(&format!(
                     "dxgi prefetch outputs={} {}×{}",
@@ -116,19 +135,23 @@ impl Capture {
     }
 }
 
-fn grab_with_fallback(dump: bool) -> Result<Capture, String> {
+fn grab_with_fallback(dump: bool, discard_dxgi_frame: bool) -> Result<Capture, String> {
     let mut tried: Vec<String> = Vec::new();
 
-    let t_dxgi = Instant::now();
-    let dxgi = grab_dxgi();
-    crate::logutil::ms("capture dxgi", t_dxgi);
-    match dxgi {
-        Ok(frames) if !frames.is_empty() && !all_blank(&frames) => {
-            return finish_ok(compose(frames, "dxgi"), dump, &tried);
+    if dxgi_disabled().load(Ordering::Acquire) {
+        tried.push("dxgi: disabled after previous loss".into());
+    } else {
+        let t_dxgi = Instant::now();
+        let dxgi = grab_dxgi(discard_dxgi_frame);
+        crate::logutil::ms("capture dxgi", t_dxgi);
+        match dxgi {
+            Ok(frames) if !frames.is_empty() && !all_blank(&frames) => {
+                return finish_ok(compose(frames, "dxgi"), dump, &tried);
+            }
+            Ok(frames) if !frames.is_empty() => tried.push("dxgi: all-black".into()),
+            Ok(_) => tried.push("dxgi: no frames".into()),
+            Err(e) => tried.push(format!("dxgi: {e}")),
         }
-        Ok(frames) if !frames.is_empty() => tried.push("dxgi: all-black".into()),
-        Ok(_) => tried.push("dxgi: no frames".into()),
-        Err(e) => tried.push(format!("dxgi: {e}")),
     }
 
     match grab_gdi_virtual() {
@@ -160,20 +183,14 @@ fn grab_with_fallback(dump: bool) -> Result<Capture, String> {
 
 fn finish_ok(cap: Capture, dump: bool, tried: &[String]) -> Result<Capture, String> {
     if !tried.is_empty() {
-        eprintln!("[pinshot] capture fallback after: {}", tried.join(" | "));
+        crate::logutil::log(&format!("capture: fallback after {}", tried.join(" | ")));
     }
-    let px = cap.composed.get(
-        cap.composed.width as i32 / 2,
-        cap.composed.height as i32 / 2,
-    );
-    eprintln!(
-        "[pinshot] capture {} {}×{} blank={} sample={:?}",
+    crate::logutil::log(&format!(
+        "capture: backend={} size={}x{}",
         cap.backend,
         cap.composed.width,
         cap.composed.height,
-        cap.composed.is_visually_blank(),
-        px
-    );
+    ));
     if dump || std::env::var_os("PINSHOT_DUMP_CAPTURE").is_some() {
         dump_capture(&cap);
     }
@@ -432,6 +449,13 @@ thread_local! {
     static DXGI: RefCell<Option<DxgiDup>> = const { RefCell::new(None) };
 }
 
+// Avoid retrying a lost Desktop Duplication session on the UI path. Virtual
+// displays can take seconds to recreate it, which freezes mouse interaction.
+fn dxgi_disabled() -> &'static AtomicBool {
+    static DISABLED: OnceLock<AtomicBool> = OnceLock::new();
+    DISABLED.get_or_init(|| AtomicBool::new(false))
+}
+
 struct DxgiOutput {
     device: ID3D11Device,
     ctx: ID3D11DeviceContext,
@@ -517,12 +541,12 @@ impl DxgiDup {
         for out in &mut self.outputs {
             match unsafe { acquire_one(&out.device, &out.ctx, &out.dup, &out.desc, &mut out.last) } {
                 Ok(frame) if !frame.image.is_visually_blank() => frames.push(frame),
-                Ok(_) => eprintln!("[pinshot] DXGI output discarded (black first frames)"),
+                Ok(_) => crate::logutil::log_at("trace", "capture: DXGI output discarded (black first frames)"),
                 Err(e) if e.starts_with("lost:") => {
                     lost = Some(e);
                     break;
                 }
-                Err(e) => eprintln!("[pinshot] DXGI output: {e}"),
+                Err(e) => crate::logutil::error(&format!("capture: DXGI output: {e}")),
             }
         }
         if let Some(e) = lost {
@@ -536,7 +560,10 @@ impl DxgiDup {
     }
 }
 
-fn grab_dxgi() -> Result<Vec<ScreenFrame>, String> {
+fn grab_dxgi(discard_first: bool) -> Result<Vec<ScreenFrame>, String> {
+    if dxgi_disabled().load(Ordering::Acquire) {
+        return Err("disabled after previous loss".into());
+    }
     DXGI.with(|slot| {
         let mut slot = slot.borrow_mut();
         let mut last_err = String::from("dxgi");
@@ -553,6 +580,10 @@ fn grab_dxgi() -> Result<Vec<ScreenFrame>, String> {
                 }
             }
             let t_acq = Instant::now();
+            if discard_first {
+                crate::logutil::log_at("trace", "dxgi discard stale resnip frame");
+                let _ = slot.as_mut().unwrap().grab_frames();
+            }
             match slot.as_mut().unwrap().grab_frames() {
                 Ok(frames) => {
                     crate::logutil::ms("dxgi acquire", t_acq);
@@ -562,12 +593,11 @@ fn grab_dxgi() -> Result<Vec<ScreenFrame>, String> {
                     return Ok(frames);
                 }
                 Err(e) => {
-                    crate::logutil::log(&format!("dxgi reset after {e}"));
+                    crate::logutil::log(&format!("dxgi disabled after {e}"));
                     last_err = e;
                     *slot = None;
-                    if attempt == 0 {
-                        continue;
-                    }
+                    dxgi_disabled().store(true, Ordering::Release);
+                    break;
                 }
             }
         }
@@ -661,6 +691,10 @@ unsafe fn acquire_one(
         let pitch = mapped.RowPitch as usize;
         let src = std::slice::from_raw_parts(mapped.pData as *const u8, pitch * h as usize);
         let mut image = if is_rgba(td.Format) {
+            // Channel swap into a scratch buffer, so the staging copy and this
+            // buffer are both live at once. At 4160x1400 that is a second
+            // ~22 MB on top of the mapped staging region.
+            crate::logutil::mem("capture:pre-channel-swap");
             let mut bgra = vec![0u8; src.len()];
             for (d, s) in bgra.chunks_exact_mut(4).zip(src.chunks_exact(4)) {
                 d[0] = s[2];
@@ -668,7 +702,9 @@ unsafe fn acquire_one(
                 d[2] = s[0];
                 d[3] = s[3];
             }
-            Raster::from_bgra_opaque(w, h, &bgra, pitch)
+            let img = Raster::from_bgra_opaque(w, h, &bgra, pitch);
+            crate::logutil::mem("capture:post-channel-swap");
+            img
         } else {
             Raster::from_bgra_opaque(w, h, src, pitch)
         };
@@ -708,7 +744,7 @@ fn dump_path() -> PathBuf {
 fn dump_capture(cap: &Capture) {
     let path = dump_path();
     match crate::dialog::save_raster(&cap.composed, &path.to_string_lossy(), 92) {
-        Ok(()) => eprintln!("[pinshot] dumped capture → {}", path.display()),
-        Err(e) => eprintln!("[pinshot] dump-capture failed: {e}"),
+        Ok(()) => crate::logutil::log("capture: diagnostic image saved to temporary directory"),
+        Err(e) => crate::logutil::error(&format!("capture: diagnostic image save failed: {e}")),
     }
 }

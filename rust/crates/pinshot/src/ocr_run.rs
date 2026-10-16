@@ -6,8 +6,8 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use pinshot_core::ocr::{
-    det_edge_pad, det_padding, ocr_upsample_for, page_from_blocks, DET_BOX_SCORE,
-    DET_BOX_THRESH, DET_MAX_SIDE, DET_UNCLIP,
+    det_edge_pad, det_max_side, det_padding, ocr_upsample_for, page_from_blocks,
+    DET_BOX_SCORE, DET_BOX_THRESH, DET_UNCLIP,
     model_dir, ModelPaths,
     OcrModelKind, OcrPage,
 };
@@ -21,11 +21,14 @@ pub fn recognize_with_progress(
     image: &Raster,
     mut progress: impl FnMut(&str),
 ) -> Result<OcrPage, String> {
+    crate::logutil::mem("ocr:before-recognize");
     crate::logutil::log(&format!("ocr recognize {}x{}", image.width, image.height));
     progress("Downloading OCR models…");
     let paths = ensure_models_with_progress(&mut progress)?;
     progress("Recognizing…");
-    infer(image, &paths)
+    let out = infer(image, &paths);
+    crate::logutil::mem("ocr:after-recognize");
+    out
 }
 
 pub fn release_engine() {
@@ -178,6 +181,21 @@ fn ensure_models_with_progress(progress: &mut dyn FnMut(&str)) -> Result<ModelPa
     };
     let fallback = ModelPaths::for_kind(&dir, other);
     if fallback.ready() {
+        // Falling back is only a reasonable default for Server -> Mobile: mobile
+        // is cheap enough that silently using it costs little. For Mobile ->
+        // Server it is the opposite, and it used to happen with no way to tell:
+        // asking for `ocr_model = "mobile"` on a machine that only had the
+        // server weights installed kept loading the 173 MB server models, so the
+        // setting looked like it had been ignored. Say so explicitly, and only
+        // reuse the fallback when the download below could not fix it anyway.
+        if kind == OcrModelKind::Mobile {
+            crate::logutil::log(&format!(
+                "ocr: requested mobile but only server models are installed; \
+                 falling back to server (larger and slower). \
+                 Run OCR once with network access to download mobile, \
+                 or set PINSHOT_OCR_MODELS to a directory that has them."
+            ));
+        }
         crate::logutil::log(&format!(
             "ocr using fallback {} det={} rec={}",
             other.as_str(),
@@ -262,7 +280,7 @@ fn download_first(
         match download(url, dest, name, progress) {
             Ok(()) => return Ok(()),
             Err(e) => {
-                crate::logutil::log(&format!("ocr download fail {url}: {e}"));
+                crate::logutil::error(&format!("ocr download fail {url}: {e}"));
                 last = e;
             }
         }
@@ -350,6 +368,9 @@ fn infer(image: &Raster, paths: &ModelPaths) -> Result<OcrPage, String> {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(DET_BOX_SCORE);
+    // Peak memory scales roughly with max_side^2, so this one value is the
+    // main memory knob. Override with PINSHOT_OCR_MAX_SIDE to sweep it.
+    let max_side = det_max_side();
     let up = if scale > 1 {
         Some(image.scale_bilinear(image.width * scale, image.height * scale))
     } else {
@@ -368,7 +389,7 @@ fn infer(image: &Raster, paths: &ModelPaths) -> Result<OcrPage, String> {
             .detect(
                 &rgb,
                 det_padding(pad_w, pad_h),
-                DET_MAX_SIDE,
+                max_side,
                 box_score,
                 DET_BOX_THRESH,
                 unclip,
@@ -376,13 +397,17 @@ fn infer(image: &Raster, paths: &ModelPaths) -> Result<OcrPage, String> {
                 false,
             )
             .map_err(|e| format!("ocr detect: {e:?}"))?;
+        let n_blocks = result.text_blocks.len();
         crate::logutil::log(&format!(
-            "ocr blocks {} scale={scale} pad={} edge={edge} max_side={DET_MAX_SIDE} unclip={unclip} box={box_score} {pad_w}x{pad_h} det={} rec={}",
-            result.text_blocks.len(),
+            "ocr blocks {n_blocks} scale={scale} pad={} edge={edge} max_side={max_side} unclip={unclip} box={box_score} {pad_w}x{pad_h} det={} rec={}",
             det_padding(pad_w, pad_h),
             paths.det.display(),
             paths.rec.display()
         ));
+        // Detection activations are the peak; release the padded RGB before the
+        // recognition pass so the two do not overlap.
+        drop(rgb);
+        crate::logutil::mem("ocr:post-detect");
         let mut blocks = Vec::new();
         for b in result.text_blocks {
             // Keep low-score boxes; dropping them lost Wikipedia lines.
@@ -409,13 +434,17 @@ fn infer(image: &Raster, paths: &ModelPaths) -> Result<OcrPage, String> {
             Err("No text found. Select a clearer area.".into())
         } else {
             crate::logutil::log(&format!(
-                "ocr done {} chars {} tokens {}ms kind={} ep={}",
+                "ocr done {} chars {} tokens {}ms kind={} ep={} max_side={max_side} blocks={}",
                 page.text.chars().count(),
                 page.tokens.len(),
                 started.elapsed().as_millis(),
                 kind.as_str(),
                 ocr_ep_label(),
+                n_blocks,
             ));
+            // Log the peak reached during inference: the per-step probes around
+            // the call only bracket it, and this is the number people budget on.
+            crate::logutil::mem("ocr:done");
             Ok(page)
         }
     })
@@ -470,7 +499,7 @@ fn ocr_gpu_pref() -> OcrGpuPref {
 }
 
 fn gpu_ep_available() -> bool {
-    cfg!(windows) || cfg!(feature = "ocr-cuda")
+    cfg!(feature = "ocr-cuda") || cfg!(feature = "ocr-directml") || cfg!(feature = "ocr-webgpu")
 }
 
 fn want_ocr_gpu() -> bool {
@@ -479,86 +508,38 @@ fn want_ocr_gpu() -> bool {
     }
     match ocr_gpu_pref() {
         OcrGpuPref::ForceCpu => false,
+        // An explicit request still wins: the user may have fixed the driver or
+        // swapped models since the fallback was recorded.
         OcrGpuPref::ForceGpu => true,
-        OcrGpuPref::Auto => has_hardware_gpu(),
+        // The GPU providers tested on the target machine are not a reliable
+        // default: WebGPU can fail during lazy shader compilation and DirectML
+        // can stall for minutes. Keep GPU opt-in until a provider is validated.
+        OcrGpuPref::Auto => false,
     }
-}
-
-fn has_hardware_gpu() -> bool {
-    #[cfg(windows)]
-    {
-        windows_has_hardware_gpu()
-    }
-    #[cfg(not(windows))]
-    {
-        linux_has_hardware_gpu()
-    }
-}
-
-#[cfg(windows)]
-fn windows_has_hardware_gpu() -> bool {
-    use windows::Win32::Graphics::Dxgi::{
-        CreateDXGIFactory1, IDXGIFactory1, DXGI_ADAPTER_FLAG_SOFTWARE,
-    };
-    unsafe {
-        let factory: IDXGIFactory1 = match CreateDXGIFactory1() {
-            Ok(f) => f,
-            Err(_) => return false,
-        };
-        let mut idx = 0u32;
-        while let Ok(adapter) = factory.EnumAdapters1(idx) {
-            idx += 1;
-            let Ok(desc) = adapter.GetDesc1() else {
-                continue;
-            };
-            if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32) != 0 {
-                continue;
-            }
-            // Microsoft WARP / Basic Render Driver (software).
-            if desc.VendorId == 0x1414 {
-                continue;
-            }
-            if desc.VendorId != 0 {
-                return true;
-            }
-        }
-        false
-    }
-}
-
-#[cfg(not(windows))]
-fn linux_has_hardware_gpu() -> bool {
-    if std::path::Path::new("/dev/nvidia0").exists() {
-        return true;
-    }
-    let Ok(entries) = fs::read_dir("/sys/class/drm") else {
-        return false;
-    };
-    for ent in entries.flatten() {
-        let name = ent.file_name();
-        let name = name.to_string_lossy();
-        if !name.starts_with("card") || name.contains('-') {
-            continue;
-        }
-        let vendor = fs::read_to_string(ent.path().join("device/vendor")).unwrap_or_default();
-        let vendor = vendor
-            .trim()
-            .trim_start_matches("0x")
-            .trim_start_matches("0X");
-        let id = u32::from_str_radix(vendor, 16).unwrap_or(0);
-        match id {
-            0 | 0x1414 | 0x1234 | 0x1b36 | 0x15ad | 0x80ee => continue,
-            _ => return true,
-        }
-    }
-    false
 }
 
 fn ocr_threads() -> usize {
+    if let Ok(v) = std::env::var("PINSHOT_OCR_THREADS") {
+        if let Ok(n) = v.trim().parse::<usize>() {
+            return n.clamp(1, 16);
+        }
+    }
+    // Adapt to the host instead of baking in the thread count measured on one
+    // machine. The environment variable above remains available for tuning
+    // unusual CPUs or shared/virtual machines.
     std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(2)
-        .clamp(2, 8)
+        .clamp(1, 16)
+}
+
+fn ocr_inter_threads() -> usize {
+    if let Ok(v) = std::env::var("PINSHOT_OCR_INTER_THREADS") {
+        if let Ok(n) = v.trim().parse::<usize>() {
+            return n.clamp(1, 16);
+        }
+    }
+    1
 }
 
 #[cfg(any(feature = "ocr", unix))]
@@ -587,19 +568,23 @@ fn session_gpu(
     let builder = builder
         .with_optimization_level(GraphOptimizationLevel::Level2)?
         .with_intra_threads(threads)?
-        .with_inter_threads(threads)?;
+        .with_inter_threads(ocr_inter_threads())?;
     let mut eps = Vec::new();
     #[cfg(feature = "ocr-cuda")]
     {
         eps.push(ort::execution_providers::CUDAExecutionProvider::default().build());
     }
-    #[cfg(all(windows, not(feature = "ocr-cuda")))]
+    #[cfg(all(windows, feature = "ocr-webgpu"))]
     {
-        use ort::execution_providers::{DirectMLExecutionProvider, WebGPUExecutionProvider};
+        use ort::execution_providers::WebGPUExecutionProvider;
         let wgpu = WebGPUExecutionProvider::default().with_dawn_backend_type(
             ort::execution_providers::webgpu::WebGPUDawnBackendType::D3D12,
         );
         eps.push(wgpu.build());
+    }
+    #[cfg(all(windows, feature = "ocr-directml"))]
+    {
+        use ort::execution_providers::DirectMLExecutionProvider;
         eps.push(DirectMLExecutionProvider::default().build());
     }
     builder.with_execution_providers(eps)
@@ -623,6 +608,7 @@ where
         None => true,
     };
     if need_init {
+        crate::logutil::mem("ocr:pre-load-models");
         let det = paths.det.to_string_lossy();
         let cls = paths.cls.to_string_lossy();
         let rec = paths.rec.to_string_lossy();
@@ -667,9 +653,43 @@ where
         }
         OCR_USED_GPU.store(used_gpu, std::sync::atomic::Ordering::Relaxed);
         *guard = Some((key, ocr));
+        // The resident cost of the whole OCR stack lands here and never comes
+        // back down: ENGINE is a OnceLock, so the ONNX sessions, their optimized
+        // graphs and the CPU arena stay for the life of the process.
+        crate::logutil::mem("ocr:post-load-models");
     }
     let ocr = &mut guard.as_mut().expect("engine").1;
-    f(ocr)
+    crate::logutil::mem("ocr:pre-infer");
+    let r = f(ocr);
+    // WebGPU compiles shaders lazily, so a session can initialise cleanly and
+    // still fail on the first real call. Observed with the mobile models: their
+    // clip op emits `clamp(vec4<f32>, abstract-float, abstract-float)`, which
+    // Dawn's WGSL parser rejects, so `init_models_custom` succeeds and `detect`
+    // fails.
+    //
+    // `f` is FnOnce and is consumed by the call above, so this cannot retry
+    // in place. Instead: drop the broken GPU session and record the fallback so
+    // the *next* OCR run rebuilds on the CPU EP. The failing call still returns
+    // its error, which is the honest outcome for this attempt.
+    if r.is_err()
+        && OCR_USED_GPU.load(std::sync::atomic::Ordering::Relaxed)
+        && ocr_gpu_pref() != OcrGpuPref::ForceGpu
+    {
+        let msg = r.as_ref().err().cloned().unwrap_or_default();
+        if msg.contains("WebGPU") || msg.contains("Shader") {
+            crate::logutil::log(&format!(
+                "ocr: WebGPU EP failed at first call ({msg}); \
+                 dropping this engine so the next run uses CPU"
+            ));
+            // `guard` already holds the ENGINE lock, so clear it here rather
+            // than locking again (that would deadlock). GPU is opt-in, so the
+            // next OCR run rebuilds on CPU unless explicitly forced again.
+            drop(ocr);
+            *guard = None;
+        }
+    }
+    crate::logutil::mem("ocr:post-infer");
+    r
 }
 
 #[cfg(not(any(feature = "ocr", unix)))]
@@ -1130,10 +1150,6 @@ mod gpu_pref_tests {
         assert_eq!(want_ocr_gpu(), gpu_ep_available());
         std::env::remove_var("PINSHOT_OCR_GPU");
         assert_eq!(ocr_gpu_pref(), OcrGpuPref::Auto);
-    }
-
-    #[test]
-    fn hardware_gpu_probe_does_not_panic() {
-        let _ = has_hardware_gpu();
+        assert!(!want_ocr_gpu());
     }
 }

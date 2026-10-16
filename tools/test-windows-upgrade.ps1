@@ -5,7 +5,8 @@ param(
     [switch]$RejectShutdown,
     [switch]$FreshInstall,
     [switch]$RestartAfterInstall,
-    [switch]$UpdateHelper
+    [switch]$UpdateHelper,
+    [switch]$RetryShutdown
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -69,10 +70,10 @@ try {
 
     $appId = '{' + [guid]::NewGuid().ToString() + '}'
     $installerPayload = $PayloadDir
-    if ($RejectShutdown -or $RestartAfterInstall) {
+    if ($RejectShutdown -or $RestartAfterInstall -or $RetryShutdown) {
         $installerPayload = Join-Path $testRoot 'fixture-payload'
         Copy-Item -LiteralPath $PayloadDir -Destination $installerPayload -Recurse
-        $fixtureCfg = if ($RejectShutdown) { 'fail_shutdown' } else { 'restart_app' }
+        $fixtureCfg = if ($RejectShutdown) { 'fail_shutdown' } elseif ($RetryShutdown) { 'retry_shutdown' } else { 'restart_app' }
         & rustc --edition=2021 --cfg $fixtureCfg (Join-Path $repo 'packaging\tests\locked-app.rs') -o (Join-Path $installerPayload 'pinshot.exe')
         if ($LASTEXITCODE -ne 0) { throw 'Shutdown/restart fixture compilation failed' }
     }
@@ -111,6 +112,13 @@ try {
         return
     }
     if ($setupExit -ne 0) { throw "Installer failed: $setupExit. Log: $log" }
+    if ($RetryShutdown) {
+        if ((Get-Content -LiteralPath $log -Raw) -notmatch 'Shutdown helper exit code 1, attempt 1') {
+            throw 'Transient shutdown failure was not exercised'
+        }
+        Write-Host 'PASS: transient shutdown failure is retried without Back/Next'
+        return
+    }
     if ($process) {
         $process.Refresh()
         if (-not $process.HasExited) { throw 'The old application is still running' }
@@ -129,6 +137,13 @@ try {
         $version = (& $fixture --version | Out-String).Trim()
         if ($version -notmatch "PinShot $([regex]::Escape($AppVersion))") { throw "Wrong installed version: $version" }
         Write-Host "PASS: install/upgrade succeeds with intact config/models/history. Log: $log"
+        # Subsequent installs must retain the registered custom destination.
+        $repeatLog = Join-Path $testRoot 'repeat-setup.log'
+        & $installer /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /NOICONS /TASKS= "/LOG=$repeatLog" | Out-String | Write-Host
+        if ($LASTEXITCODE -ne 0) { throw "Repeat installation without /DIR failed: $LASTEXITCODE. Log: $repeatLog" }
+        if ((Get-FileHash -LiteralPath $fixture).Hash -ne $expectedHash) { throw 'Custom installation directory was not retained' }
+        AssertPreserved
+        Write-Host 'PASS: subsequent installation retains the custom destination without /DIR'
     }
 } finally {
     try {

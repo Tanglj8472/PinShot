@@ -26,6 +26,7 @@ pub enum AppEvent {
     },
     #[cfg_attr(not(windows), allow(dead_code))]
     SelectionText(Result<String, String>),
+    SelectionTranslation { source: String, result: Result<String, String> },
     OpenPrefs,
     UpdateCheckDone(Result<UpdateOutcome, String>),
     X11Key {

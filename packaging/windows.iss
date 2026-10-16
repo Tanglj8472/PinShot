@@ -18,9 +18,14 @@ AppVersion={#AppVersion}
 AppPublisher=PinShot
 AppPublisherURL=https://github.com/Tanglj8472/pinshot
 DefaultDirName={localappdata}\Programs\PinShot
+; Keep the destination editable on both first install and upgrade.
+DisableDirPage=no
+UsePreviousAppDir=yes
+AlwaysShowDirOnReadyPage=yes
 DefaultGroupName=PinShot
 PrivilegesRequired=lowest
-MinVersion=10.0
+; The linked ONNX runtime imports DXCore (Windows 10 2004 / build 19041).
+MinVersion=10.0.19041
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir={#DistDir}
@@ -32,9 +37,13 @@ SetupIconFile=..\assets\pinshot.ico
 UninstallDisplayIcon={app}\pinshot.ico
 CloseApplications=yes
 RestartApplications=no
+ShowLanguageDialog=no
+
+[Languages]
+Name: "chinesesimp"; MessagesFile: "ChineseSimplified.isl"
 
 [Tasks]
-Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
+Name: "desktopicon"; Description: "创建桌面快捷方式"; Flags: unchecked
 
 [Files]
 ; Keep the shutdown helper and its DLLs first for solid-compressed extraction.
@@ -48,7 +57,7 @@ Name: "{group}\PinShot"; Filename: "{app}\pinshot.exe"; IconFilename: "{app}\pin
 Name: "{autodesktop}\PinShot"; Filename: "{app}\pinshot.exe"; IconFilename: "{app}\pinshot.ico"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\pinshot.exe"; Description: "Launch PinShot"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\pinshot.exe"; Description: "启动 PinShot"; Flags: nowait postinstall skipifsilent
 Filename: "{app}\pinshot.exe"; Flags: nowait skipifnotsilent runasoriginaluser; Check: RestartAfterUpdate
 
 [Code]
@@ -60,15 +69,27 @@ end;
 function ShutdownError(const ExePath, HelperDir: String): String;
 var
   ResultCode: Integer;
+  Attempt: Integer;
 begin
   Result := '';
   Log('Running shutdown helper: ' + ExePath);
-  if not Exec(ExePath, '--quit-for-install "' + ExpandConstant('{app}') + '"',
-    HelperDir, SW_HIDE, ewWaitUntilTerminated, ResultCode) then
-    Result := 'Unable to start the PinShot shutdown helper. Windows error: ' + IntToStr(ResultCode)
-  else if ResultCode <> 0 then
-    Result := 'PinShot could not be closed (helper exit code ' + IntToStr(ResultCode) +
-      '). Close PinShot or check its permissions, then retry.';
+  for Attempt := 1 to 3 do begin
+    if not Exec(ExePath, '--quit-for-install "' + ExpandConstant('{app}') + '"',
+      HelperDir, SW_HIDE, ewWaitUntilTerminated, ResultCode) then begin
+      Result := '无法启动 PinShot 关闭助手，Windows 错误：' + IntToStr(ResultCode);
+      Break;
+    end;
+    if ResultCode = 0 then Exit;
+    Log('Shutdown helper exit code ' + IntToStr(ResultCode) + ', attempt ' + IntToStr(Attempt));
+    // A process may be between exiting and releasing its image. Retry the
+    // transient failure automatically, just as going Back and Next would.
+    if (ResultCode <> 1) or (Attempt = 3) then begin
+      Result := '无法关闭 PinShot（helper exit code ' + IntToStr(ResultCode) +
+        '）。请退出 PinShot 或检查权限后重试。';
+      Break;
+    end;
+    Sleep(500);
+  end;
   if Result <> '' then Log(Result);
 end;
 
@@ -86,7 +107,7 @@ begin
     ExePath := HelperDir + '\pinshot.exe';
     Result := ShutdownError(ExePath, HelperDir);
   except
-    Result := 'Unable to prepare the PinShot shutdown helper: ' + GetExceptionMessage;
+    Result := '无法准备 PinShot 关闭助手：' + GetExceptionMessage;
     Log(Result);
   end;
 end;
@@ -102,7 +123,7 @@ begin
   try
     ErrorText := ShutdownError(ExePath, ExpandConstant('{app}'));
   except
-    ErrorText := 'Unable to prepare PinShot for uninstall: ' + GetExceptionMessage;
+    ErrorText := '无法准备卸载 PinShot：' + GetExceptionMessage;
     Log(ErrorText);
   end;
   if ErrorText <> '' then begin

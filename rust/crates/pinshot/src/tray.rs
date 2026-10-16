@@ -76,10 +76,15 @@ impl Tray {
         let _ = self._icon.set_visible(false);
     }
 
+    pub fn show_icon(&self) {
+        let _ = self._icon.set_visible(true);
+    }
+
     pub fn poll(&self) -> Option<TrayCmd> {
-        // Menu ids first and drain the queue. Windows emits a tray Click when a
-        // context item is chosen; treating any-button Click as Snip made every
-        // item start a capture (Python only snips on Trigger = left click).
+        // Menu ids first and drain the queue. The tray icon itself uses a
+        // single left click for an immediate screenshot. Right click is left
+        // to tray-icon's native context menu, and double click is ignored so
+        // a screenshot does not wait for or depend on a second click.
         while let Ok(ev) = MenuEvent::receiver().try_recv() {
             if ev.id == self.snip.id() {
                 return Some(TrayCmd::Snip);
@@ -111,10 +116,6 @@ impl Tray {
         while let Ok(ev) = TrayIconEvent::receiver().try_recv() {
             match ev {
                 TrayIconEvent::Click {
-                    button: tray_icon::MouseButton::Left,
-                    ..
-                }
-                | TrayIconEvent::DoubleClick {
                     button: tray_icon::MouseButton::Left,
                     ..
                 } => {

@@ -272,10 +272,7 @@ impl PinMenuWin {
                                     t,
                                 ) {
                                     if let Some(p) = &self.prompt {
-                                        crate::logutil::log(&format!(
-                                            "pin menu prompt text {:?}",
-                                            p.buf
-                                        ));
+                                        crate::logutil::log_at("trace", "pin menu: prompt edited");
                                     }
                                     self.dirty = true;
                                 }
@@ -347,7 +344,7 @@ impl PinMenuWin {
             return None;
         };
         self.close();
-        crate::logutil::log(&format!("pin menu prompt submit {name:?}"));
+        crate::logutil::log("pin menu: prompt submitted");
         Some(match p.kind {
             PromptKind::New => PinMenuAction::NewGroupNamed(name),
             PromptKind::Rename => PinMenuAction::RenameGroupNamed(name),

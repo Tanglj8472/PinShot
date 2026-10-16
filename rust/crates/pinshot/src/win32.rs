@@ -29,10 +29,10 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SetWindowDisplayAffinity, SetWindowLongPtrW, SetWindowPos, ShowWindow, GWL_EXSTYLE, GWL_STYLE,
     HWND_NOTOPMOST, HWND_TOPMOST, LWA_ALPHA, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
     SM_REMOTESESSION, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SWP_FRAMECHANGED, SWP_NOACTIVATE,
-    SWP_NOMOVE, SWP_NOREDRAW, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE,
+    SWP_NOMOVE, SWP_NOREDRAW, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOWNOACTIVATE,
     WINDOW_DISPLAY_AFFINITY, WM_DESTROY, WM_HOTKEY, WNDCLASSW, WS_EX_APPWINDOW, WS_EX_LAYERED,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_MAXIMIZE,
-    WS_OVERLAPPEDWINDOW, WS_POPUP,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
+    WS_POPUP, WS_VISIBLE,
 };
 use winit::event_loop::EventLoopProxy;
 use winit::window::Window;
@@ -126,13 +126,13 @@ pub fn apply_overlay_style(hwnd: HWND) {
     unsafe {
         // Overlapped / caption windows are inset to the work area, so the
         // live taskbar stays on top of the freeze. WS_POPUP covers it.
-        let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
-        SetWindowLongPtrW(
-            hwnd,
-            GWL_STYLE,
-            (style | WS_POPUP.0 as isize)
-                & !(WS_OVERLAPPEDWINDOW.0 as isize | WS_MAXIMIZE.0 as isize),
-        );
+        // Force the overlay to be a borderless popup.  Removing only
+        // WS_OVERLAPPEDWINDOW is not sufficient on some Windows builds:
+        // winit may leave individual caption/frame bits behind and DWM can
+        // briefly paint an otherwise blank non-client title bar while the
+        // window is being shown.
+        let visible = GetWindowLongPtrW(hwnd, GWL_STYLE) & WS_VISIBLE.0 as isize;
+        SetWindowLongPtrW(hwnd, GWL_STYLE, WS_POPUP.0 as isize | visible);
         let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
         // winit sets WS_EX_APPWINDOW by default; that forces a taskbar button
         // even after OR-ing TOOLWINDOW. Snipaste is TOOLWINDOW from create.
@@ -163,7 +163,6 @@ pub fn cover_shell(hwnd: HWND, x: i32, y: i32, w: u32, h: u32) {
     if hwnd.is_invalid() {
         return;
     }
-    apply_overlay_style(hwnd);
     unsafe {
         // HWND_TOPMOST on an *already* topmost HWND is a no-op, so the tray
         // (also TOPMOST) stays above on the second F1. Drop TOPMOST, size to
@@ -175,7 +174,7 @@ pub fn cover_shell(hwnd: HWND, x: i32, y: i32, w: u32, h: u32) {
             y,
             w as i32,
             h as i32,
-            SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+            SWP_NOACTIVATE | SWP_NOREDRAW,
         );
         let _ = SetWindowPos(hwnd, HWND_TOPMOST, x, y, w as i32, h as i32, SWP_NOACTIVATE);
     }

@@ -4,25 +4,34 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 fn main() {
+    // Covers normal returns from settings, installer helpers and forwarded IPC.
+    // Fatal process::exit paths flush in report_runtime_error instead.
+    struct FlushDiagnostics;
+    impl Drop for FlushDiagnostics {
+        fn drop(&mut self) { pinshot::flush_diagnostics(); }
+    }
+    let _diagnostics = FlushDiagnostics;
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--settings-window") {
         pinshot::run_preferences();
         return;
     }
     if let Some(i) = args.iter().position(|a| a == "--quit-for-install") {
+        pinshot::init_diagnostics(&args);
         let install_dir = args.get(i + 1).map(std::path::Path::new);
         if let Err(e) = pinshot::update_run::quit_for_install(install_dir) {
-            eprintln!("PinShot quit-for-install: {e}");
+            pinshot::report_runtime_error("installer: quit-for-install", &e.to_string());
             std::process::exit(1);
         }
         return;
     }
     if let Some(i) = args.iter().position(|a| a == "--install-after-quit") {
         if let Some(path) = args.get(i + 1) {
+            pinshot::init_diagnostics(&args);
             pinshot::logutil_ensure();
             if let Err(e) = pinshot::update_run::run_install_after_quit(std::path::Path::new(path))
             {
-                eprintln!("PinShot install-after-quit: {e}");
+                pinshot::report_runtime_error("installer: install-after-quit", &e.to_string());
                 std::process::exit(1);
             }
             return;
@@ -48,7 +57,7 @@ fn main() {
     }
 
     if let Err(e) = pinshot::run(args) {
-        eprintln!("PinShot: {e}");
+        pinshot::report_runtime_error("app: fatal startup or event loop failure", &e.to_string());
         std::process::exit(1);
     }
 }

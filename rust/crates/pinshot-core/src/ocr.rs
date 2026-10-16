@@ -6,14 +6,26 @@ use crate::geom::{Point, Rect};
 
 pub const MODEL_DIR_NAME: &str = "ocr-models";
 
-/// RapidOCR PP-OCRv5 ONNX (ModelScope v3.9.2). Server (~170 MB) is the
-/// default; mobile (~20 MB) is faster on CPU.
+/// RapidOCR PP-OCRv5 ONNX (ModelScope v3.9.2).
+///
+/// Mobile is the default. Measured on a 1686x729 clip, same image, same
+/// `max_side`:
+///
+/// | tier  | models  | peak Private | time  | chars |
+/// |-------|---------|--------------|-------|-------|
+/// | server| 172.7 MB| 3018 MB      | 15.9 s| 848   |
+/// | mobile|  21.4 MB|  678 MB      |  6.6 s| 846   |
+///
+/// Server is slower *and* heavier, and it also needs the GPU EP to be tolerable,
+/// while mobile additionally fails outright on WebGPU (Dawn rejects the WGSL
+/// that mobile's clip op emits). So mobile is both the default and, in practice,
+/// the only reliable choice on the CPU EP.
 pub const MOBILE_DET_FILE: &str = "ch_PP-OCRv5_mobile_det.onnx";
 pub const MOBILE_REC_FILE: &str = "ch_PP-OCRv5_mobile_rec.onnx";
 pub const SERVER_DET_FILE: &str = "ch_PP-OCRv5_server_det.onnx";
 pub const SERVER_REC_FILE: &str = "ch_PP-OCRv5_server_rec.onnx";
-pub const DET_FILE: &str = SERVER_DET_FILE;
-pub const REC_FILE: &str = SERVER_REC_FILE;
+pub const DET_FILE: &str = MOBILE_DET_FILE;
+pub const REC_FILE: &str = MOBILE_REC_FILE;
 pub const CLS_FILE: &str = "ch_PP-LCNet_x0_25_textline_ori.onnx";
 pub const KEYS_FILE: &str = "ppocr_keys_v5.txt";
 
@@ -26,8 +38,8 @@ pub enum OcrModelKind {
 impl OcrModelKind {
     pub fn parse(s: &str) -> Self {
         match s.trim() {
-            "mobile" => Self::Mobile,
-            _ => Self::Server,
+            "server" => Self::Server,
+            _ => Self::Mobile,
         }
     }
 
@@ -60,6 +72,27 @@ pub const DET_MAX_SIDE: u32 = 2560;
 pub const DET_BOX_SCORE: f32 = 0.5;
 pub const DET_BOX_THRESH: f32 = 0.3;
 pub const DET_UNCLIP: f32 = 1.7;
+
+/// Effective longest side for the detection network, overridable with
+/// `PINSHOT_OCR_MAX_SIDE` so the cost can be swept without a rebuild.
+///
+/// This is the dominant lever on OCR peak memory: `detect()` scales the input up
+/// to this longest side, and activation memory grows roughly with the square of
+/// it. Measured on a 1920x1032 clip with the server models on the WebGPU EP, one
+/// inference went 666 MB -> 2771 MB WorkingSet at 2560, which dwarfs the ~280 MB
+/// that loading the model itself costs. Lowering this is therefore a much bigger
+/// lever than switching model tiers.
+///
+/// Clamped to [640, 4096]: below ~640 small text detection collapses, above 4096
+/// the activation cost grows without any useful gain.
+pub fn det_max_side() -> u32 {
+    if let Ok(v) = std::env::var("PINSHOT_OCR_MAX_SIDE") {
+        if let Ok(n) = v.trim().parse::<u32>() {
+            return n.clamp(640, 4096);
+        }
+    }
+    DET_MAX_SIDE
+}
 
 /// RapidOCR uses 50px pad, but a 2-line 58px crop would become mostly pad
 /// and drop the first line. Keep the default on article-sized clips.
@@ -1040,6 +1073,31 @@ mod tests {
         assert_eq!(det_edge_pad(1295, 58), 8);
         assert_eq!(det_edge_pad(1100, 400), 32);
         assert_eq!(det_edge_pad(8, 8), 8);
+    }
+
+    #[test]
+    fn det_max_side_defaults_and_clamps_env_override() {
+        // These touch process-wide env, so they must not run concurrently with
+        // each other; the suite here is small enough that a single test holding
+        // every case is simpler than adding a lock.
+        std::env::remove_var("PINSHOT_OCR_MAX_SIDE");
+        assert_eq!(det_max_side(), DET_MAX_SIDE);
+
+        std::env::set_var("PINSHOT_OCR_MAX_SIDE", "1280");
+        assert_eq!(det_max_side(), 1280);
+
+        // Below 640 small-text detection collapses; above 4096 the activation
+        // cost grows with no useful gain.
+        std::env::set_var("PINSHOT_OCR_MAX_SIDE", "100");
+        assert_eq!(det_max_side(), 640);
+        std::env::set_var("PINSHOT_OCR_MAX_SIDE", "99999");
+        assert_eq!(det_max_side(), 4096);
+
+        // Junk falls back to the default rather than silently disabling detect.
+        std::env::set_var("PINSHOT_OCR_MAX_SIDE", "abc");
+        assert_eq!(det_max_side(), DET_MAX_SIDE);
+
+        std::env::remove_var("PINSHOT_OCR_MAX_SIDE");
     }
 
     #[test]

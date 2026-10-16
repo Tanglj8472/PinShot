@@ -98,7 +98,7 @@ pub fn text_card(text: &str, _w: u32, _h: u32) -> Raster {
 #[cfg(unix)]
 fn handoff_x11_image(img: &Raster) {
     let Some(png) = encode_png(img) else {
-        crate::logutil::log("clipboard: png encode failed");
+        crate::logutil::error("clipboard: png encode failed");
         return;
     };
     if spawn_stdin(
@@ -108,7 +108,7 @@ fn handoff_x11_image(img: &Raster) {
     ) {
         crate::logutil::log(&format!("clipboard xclip image/png {} bytes", png.len()));
     } else {
-        crate::logutil::log("clipboard xclip handoff failed; arboard owner kept");
+        crate::logutil::error("clipboard xclip handoff failed; arboard owner kept");
     }
 }
 

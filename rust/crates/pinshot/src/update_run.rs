@@ -164,8 +164,18 @@ fn scoped_pinshot_pids(install_dir: Option<&Path>) -> Result<Vec<u32>, String> {
                 windows::core::PWSTR(buffer.as_mut_ptr()),
                 &mut len,
             );
+            let mut exit_code = 259u32; // STILL_ACTIVE
+            let exited = windows::Win32::System::Threading::GetExitCodeProcess(handle, &mut exit_code)
+                .is_ok() && exit_code != 259;
             let _ = CloseHandle(handle);
             if let Err(e) = result {
+                // The process can exit after the Toolhelp snapshot while
+                // QueryFullProcessImageNameW is still inspecting it. The
+                // opened handle, unlike another snapshot, reliably reports
+                // whether that exact process has terminated.
+                if exited {
+                    continue;
+                }
                 if !pinshot_pids(current_pid())?.contains(&pid) {
                     continue;
                 }
@@ -200,6 +210,7 @@ pub fn run_install_after_quit(setup: &Path) -> Result<(), String> {
     let install_dir = exe.parent().ok_or("update helper has no directory")?;
     quit_for_install(Some(install_dir))?;
     launch_installer(setup, install_dir)?;
+    crate::logutil::flush();
     std::process::exit(0);
 }
 

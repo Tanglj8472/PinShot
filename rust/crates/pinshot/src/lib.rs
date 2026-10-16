@@ -10,6 +10,7 @@ mod ocr_run;
 pub mod update_run;
 mod overlay;
 mod translate_run;
+mod translate_popup;
 mod pin;
 mod pin_menu;
 mod prefs;
@@ -60,6 +61,20 @@ mod ipc;
 
 pub use app::run;
 pub use prefs::run_preferences;
+
+/// Logging entry points shared by the GUI host and installer helper binary.
+pub fn init_diagnostics(args: &[String]) {
+    logutil::init(args);
+}
+
+pub fn flush_diagnostics() {
+    logutil::flush();
+}
+
+pub fn report_runtime_error(context: &str, error: &str) {
+    logutil::error(&format!("{context}: {error}"));
+    logutil::flush();
+}
 
 pub fn logutil_ensure() {
     crate::logutil::ensure_stdio();

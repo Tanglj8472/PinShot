@@ -132,10 +132,16 @@ pub fn virtual_desktop() -> (i32, i32, i32, i32) {
     }
 }
 
-/// Offset a new pin from the pointer so F5 / clipboard cards sit next to it.
+/// Place a new pin with its center under the pointer. This makes pasted images
+/// appear where the user clicked instead of using a fixed screen position.
 pub fn pin_pos_near_cursor(w: u32, h: u32) -> (i32, i32) {
     let cursor = cursor_screen().unwrap_or((40, 40));
-    pinshot_core::geom::place_near_cursor(cursor, (w, h), virtual_desktop())
+    let (dx, dy, dw, dh) = virtual_desktop();
+    let x = cursor.0 - w as i32 / 2;
+    let y = cursor.1 - h as i32 / 2;
+    let max_x = (dx + dw - w as i32).max(dx);
+    let max_y = (dy + dh - h as i32).max(dy);
+    (x.clamp(dx, max_x), y.clamp(dy, max_y))
 }
 
 /// Fake a 1px mouse move and restore so overlay hover runs without the user moving.

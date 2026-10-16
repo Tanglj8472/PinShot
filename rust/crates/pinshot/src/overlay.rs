@@ -161,7 +161,10 @@ fn overlay_window(
     let t0 = Instant::now();
     let attrs = native::as_tool_window(
         Window::default_attributes()
-            .with_title("PinShot Snip")
+            // The overlay is a borderless freeze surface. It does not need a
+            // user-visible title; keeping this empty also prevents a transient
+            // native frame from exposing the product name during resnip.
+            .with_title("")
             .with_decorations(false)
             .with_resizable(false)
             .with_visible(false)
@@ -196,6 +199,7 @@ impl Overlay {
         let (vx, vy) = capture.virtual_origin;
         let w = capture.composed.width;
         let h = capture.composed.height;
+        crate::logutil::step("before overlay window");
         let window = overlay_window(event_loop, recycled, vx, vy, w, h)?;
         window.set_cursor(CursorIcon::Crosshair);
         // IME only while a text editor is open; a standing IME grab lets Tab
@@ -208,9 +212,11 @@ impl Overlay {
         };
         let t_front = Instant::now();
         let dim = dim_alpha.max(160);
+        crate::logutil::step("before overlay front");
         let front = OverlayFront::new(&capture.composed, dim)?;
         crate::logutil::ms("overlay front", t_front);
         let t_enum = Instant::now();
+        crate::logutil::step("before enumerate windows");
         let windows = translated_windows(capture.virtual_origin);
         crate::logutil::ms("overlay enum windows", t_enum);
         crate::logutil::log(&format!("detect windows={}", windows.len()));
@@ -343,6 +349,7 @@ impl Overlay {
             let _ = proxy;
         }
         let t_draw = Instant::now();
+        crate::logutil::step("before first redraw");
         s.redraw();
         crate::logutil::ms("overlay first redraw", t_draw);
         #[cfg(windows)]
@@ -357,10 +364,13 @@ impl Overlay {
         // Capture already includes the taskbar. Cloak the live explorer
         // chrome so it cannot restack above this HWND and steal clicks.
         let t_trays = Instant::now();
+        crate::logutil::step("before cloak trays");
         native::cloak_shell_trays(true);
         crate::logutil::ms("overlay start cloak trays", t_trays);
         // After focus the taskbar may jump above an already-TOPMOST overlay.
         let t_cover = Instant::now();
+        crate::logutil::step("before cover desktop");
+        #[cfg(not(windows))]
         s.cover_desktop();
         crate::logutil::ms("overlay start cover desktop", t_cover);
         // Recycled HWND often skips CursorMoved until the mouse actually
@@ -377,6 +387,8 @@ impl Overlay {
             crate::logutil::ms("overlay start second redraw", t_second);
         }
         let t_cover2 = Instant::now();
+        crate::logutil::step("before cover desktop 2");
+        #[cfg(not(windows))]
         s.cover_desktop();
         crate::logutil::ms("overlay start cover desktop 2", t_cover2);
         crate::logutil::ms("overlay start", t0);
@@ -384,7 +396,7 @@ impl Overlay {
     }
 
     fn show_toast(&mut self, text: String) {
-        crate::logutil::log(&format!("toast: {text}"));
+        crate::logutil::log_at("trace", "overlay: toast shown");
         self.toast = Some(text);
         self.toast_until = Some(Instant::now() + Duration::from_millis(1200));
         self.mark_dirty();
@@ -654,7 +666,7 @@ impl Overlay {
         let Some(tb) = &self.toolbar else {
             return;
         };
-        crate::logutil::log(&format!(
+        crate::logutil::log_at("trace", &format!(
             "tb bar {:.0},{:.0} {:.0}x{:.0}",
             tb.bar.x, tb.bar.y, tb.bar.w, tb.bar.h
         ));
@@ -669,11 +681,11 @@ impl Overlay {
             ("Pin", TbAction::Pin),
         ] {
             if let Some(c) = tb.button_center(act) {
-                crate::logutil::log(&format!("tb {name} at {:.0},{:.0}", c.x, c.y));
+                crate::logutil::log_at("trace", &format!("tb {name} at {:.0},{:.0}", c.x, c.y));
             }
         }
         if let Some(pr) = tb.panel {
-            crate::logutil::log(&format!(
+            crate::logutil::log_at("trace", &format!(
                 "tb panel {:.0},{:.0} {:.0}x{:.0}",
                 pr.x, pr.y, pr.w, pr.h
             ));
@@ -961,7 +973,7 @@ impl Overlay {
                 self.font_menu_offset = self.font_menu_offset.saturating_add_signed(delta as isize);
             }
         }
-        crate::logutil::log(&format!("tb {a:?}"));
+        crate::logutil::log_at("trace", &format!("tb {a:?}"));
         if self.result.is_some() {
             return;
         }
@@ -982,7 +994,7 @@ impl Overlay {
         let bold = st.map(|s| s.bold).unwrap_or(false);
         let italic = st.map(|s| s.italic).unwrap_or(false);
         if let Some(p) = pinshot_core::font::resolve_family_path(fam, bold, italic) {
-            crate::logutil::log(&format!(
+            crate::logutil::log_at("trace", &format!(
                 "font resolve {fam:?} bold={bold} italic={italic} -> {}",
                 p.display()
             ));
@@ -1084,7 +1096,7 @@ impl Overlay {
             let dx = (n.x - o.x) * self.dpr;
             let dy = (n.y - o.y) * self.dpr;
             if dx != 0.0 || dy != 0.0 {
-                crate::logutil::log(&format!("sel move {dx:.0},{dy:.0}"));
+                crate::logutil::log_at("trace", &format!("sel move {dx:.0},{dy:.0}"));
             }
         }
     }
@@ -1464,7 +1476,7 @@ impl Overlay {
                     return;
                 }
                 if self.annot.wheel_at(self.img_pt(self.cursor), angle) {
-                    crate::logutil::log(&format!(
+                    crate::logutil::log_at("trace", &format!(
                         "overlay wheel {angle:+} width={}",
                         self.annot.option_width()
                     ));
@@ -1474,7 +1486,7 @@ impl Overlay {
             }
             WindowEvent::Ime(ime) => match ime {
                 winit::event::Ime::Commit(s) => {
-                    crate::logutil::log(&format!("text ime commit {:?}", s));
+                    crate::logutil::log_at("trace", &format!("text: IME committed {} characters", s.chars().count()));
                     self.annot.insert_str(s);
                     self.ime_preedit = false;
                     self.sync_ime();
@@ -1593,7 +1605,7 @@ impl Overlay {
                         self.annot.type_text('\n');
                     } else {
                         if let Some(ed) = &self.annot.text_edit {
-                            crate::logutil::log(&format!("text commit {:?}", ed.text));
+                            crate::logutil::log_at("trace", &format!("text: committed {} characters", ed.text.chars().count()));
                         }
                         self.annot.commit_text(false);
                     }
@@ -1793,7 +1805,7 @@ impl Overlay {
             let adx = (after.x - before.x) * self.dpr;
             let ady = (after.y - before.y) * self.dpr;
             if adx != 0.0 || ady != 0.0 {
-                crate::logutil::log(&format!("sel move {adx:.0},{ady:.0}"));
+                crate::logutil::log_at("trace", &format!("sel move {adx:.0},{ady:.0}"));
             }
         }
         self.relayout_toolbar();
@@ -1890,16 +1902,21 @@ impl Overlay {
         // Uncloak before ShowWindow so DWM / RDP actually composite this frame.
         // Hit-test earlier in start() stays cloaked so UIA sees the window under
         // the cursor, not this HWND.
-        #[cfg(windows)]
-        native::cloak_window(&self.window, false);
         let t_window = Instant::now();
+        #[cfg(not(windows))]
         self.window.set_visible(true);
         // First uncloak only: restack above the (now cloaked) tray. Doing
         // this on every mouse move invalidates the client and stains the
         // freeze under the loupe.
         #[cfg(windows)]
         if self.need_stack {
+            // winit may recalculate native frame styles when showing a
+            // window. Keep it cloaked until that transition has finished.
+            self.window.set_visible(true);
+            native::apply_overlay_style(&self.window);
             self.cover_desktop();
+            self.front.present_full(hwnd_of(&self.window));
+            native::cloak_window(&self.window, false);
             self.need_stack = false;
         }
         crate::logutil::ms("overlay redraw window", t_window);

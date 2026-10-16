@@ -1,6 +1,7 @@
 //! F5 translation: OpenAI-compatible presets, DeepL, Edge as free fallback.
 
 use pinshot_core::config::TranslateSettings;
+use md5::Digest;
 use pinshot_core::translate::{
     deepl_form_body, deepl_read_text, deepl_url, effective_target, lang_family, openai_read_content,
     openai_request_body, read_translation_ex, redact_secret, request_body, request_url,
@@ -38,6 +39,24 @@ pub fn translate_with(
     translate_with_opts(settings, ui_lang, text, true)
 }
 
+pub fn list_models(settings: &TranslateSettings) -> Result<Vec<String>, String> {
+    let base = if settings.api_url.trim().is_empty() {
+        pinshot_core::translate::service_preset(settings.normalized_provider())
+            .map(|p| p.default_url).unwrap_or(pinshot_core::translate::OPENAI_URL_DEFAULT)
+    } else { settings.api_url.trim() }.trim_end_matches('/');
+    let url = if base.is_empty() { "https://api.deepseek.com/models".to_string() }
+        else if base.ends_with("/models") { base.to_string() }
+        else { format!("{base}/models") };
+    if settings.api_key.trim().is_empty() { return Err("API key required".into()); }
+    let raw = ureq::get(&url).set("Authorization", &format!("Bearer {}", settings.api_key.trim()))
+        .timeout(std::time::Duration::from_secs(15)).call()
+        .map_err(|e| e.to_string())?.into_string().map_err(|e| e.to_string())?;
+    let v: serde_json::Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+    let models = v.get("data").and_then(|x| x.as_array()).ok_or_else(|| "No models returned".to_string())?
+        .iter().filter_map(|x| x.get("id").and_then(|x| x.as_str()).map(str::to_owned)).collect::<Vec<_>>();
+    if models.is_empty() { Err("No models returned".into()) } else { Ok(models) }
+}
+
 /// `fallback`: F5 retries the free Edge endpoint if the configured API fails.
 /// The settings Test button passes `false` so the real error is visible.
 pub fn translate_with_opts(
@@ -47,22 +66,41 @@ pub fn translate_with_opts(
     fallback: bool,
 ) -> Result<String, String> {
     let configured = target_for(settings, ui_lang);
+    let started = std::time::Instant::now();
     let to = effective_target(text, &configured);
     let primary = match settings.normalized_provider() {
         "edge" => edge_translate(text, &to),
         "deepl" => deepl_translate(settings, text, &to),
+        "baidu" => baidu_translate(settings, text, &to),
         _ => openai_translate(settings, text, &to),
     };
     match primary {
-        Ok(s) => Ok(s),
+        Ok(s) => {
+            crate::logutil::log("translate: request succeeded");
+            crate::logutil::ms("translate: request", started);
+            Ok(s)
+        },
         Err(e) if fallback && settings.normalized_provider() != "edge" => {
-            crate::logutil::log(&format!("translate fallback edge after: {e}"));
+            // Provider errors may echo credentials or source text. Keep them
+            // for the UI result, but never persist the raw response.
+            crate::logutil::error("translate: primary request failed; trying Edge fallback");
             match edge_translate(text, &to) {
-                Ok(s) => Ok(s),
-                Err(_) => Err(e),
+                Ok(s) => {
+                    crate::logutil::log("translate: Edge fallback succeeded");
+                    crate::logutil::ms("translate: request with fallback", started);
+                    Ok(s)
+                },
+                Err(_) => {
+                    crate::logutil::error("translate: Edge fallback failed");
+                    Err(e)
+                },
             }
         }
-        Err(e) => Err(e),
+        Err(e) => {
+            crate::logutil::error("translate: request failed");
+            crate::logutil::ms("translate: failed request", started);
+            Err(e)
+        },
     }
 }
 
@@ -115,13 +153,20 @@ fn openai_translate(
     let url = resolved_openai_url(settings);
     let body = openai_request_body(&resolved_openai_model(settings), text, target)?;
     log_translate(settings.normalized_provider(), text.chars().count(), target);
+    let key = settings.api_key.trim();
+    if key.is_empty() {
+        return Err("OpenAI API key required".into());
+    }
+    if key.starts_with("http://") || key.starts_with("https://") {
+        return Err("Please enter the OpenAI API key itself, not the API key webpage URL".into());
+    }
     let mut req = ureq::post(&url)
         .set("Content-Type", "application/json")
         .timeout(std::time::Duration::from_secs(30));
-    if !settings.api_key.trim().is_empty() {
+    if !key.is_empty() {
         req = req.set(
             "Authorization",
-            &format!("Bearer {}", settings.api_key.trim()),
+            &format!("Bearer {key}"),
         );
     }
     let raw = match req.send_string(&body) {
@@ -129,11 +174,10 @@ fn openai_translate(
         Err(ureq::Error::Status(code, resp)) => {
             let err_body = resp.into_string().unwrap_or_default();
             let msg = openai_read_content(&err_body).unwrap_or_else(|_| {
-                if code == 401 {
-                    "Invalid API key".into()
-                } else {
-                    format!("HTTP {code}")
-                }
+                serde_json::from_str::<serde_json::Value>(&err_body)
+                    .ok()
+                    .and_then(|v| v.pointer("/error/message").and_then(|x| x.as_str()).map(str::to_owned))
+                    .unwrap_or_else(|| if code == 401 { "Invalid OpenAI API key".into() } else { format!("HTTP {code}") })
             });
             return Err(redact_secret(&msg, &settings.api_key));
         }
@@ -147,17 +191,31 @@ fn deepl_translate(
     text: &str,
     target: &str,
 ) -> Result<String, String> {
-    let url = deepl_url(&settings.api_url);
     let form = deepl_form_body(text, target)?;
     if settings.api_key.trim().is_empty() {
         return Err("DeepL API key required".into());
     }
+    let key = settings.api_key.trim();
+    // DeepL Free keys end in `:fx`; Pro keys do not. If the user left the
+    // default URL in place, select the matching API host automatically.
+    let configured_url = settings.api_url.trim();
+    let url = if configured_url.is_empty()
+        || configured_url == pinshot_core::translate::DEEPL_URL_DEFAULT
+    {
+        if key.ends_with(":fx") {
+            "https://api-free.deepl.com/v2/translate".to_string()
+        } else {
+            "https://api.deepl.com/v2/translate".to_string()
+        }
+    } else {
+        deepl_url(configured_url)
+    };
     log_translate("deepl", text.chars().count(), target);
     let raw = match ureq::post(&url)
         .set("Content-Type", "application/x-www-form-urlencoded")
         .set(
             "Authorization",
-            &format!("DeepL-Auth-Key {}", settings.api_key.trim()),
+            &format!("DeepL-Auth-Key {key}"),
         )
         .timeout(std::time::Duration::from_secs(20))
         .send_string(&form)
@@ -166,17 +224,70 @@ fn deepl_translate(
         Err(ureq::Error::Status(code, resp)) => {
             let err_body = resp.into_string().unwrap_or_default();
             let msg = if code == 403 || code == 401 {
-                "Invalid API key".into()
-            } else if err_body.is_empty() {
-                format!("HTTP {code}")
-            } else {
-                err_body
-            };
+                serde_json::from_str::<serde_json::Value>(&err_body)
+                    .ok().and_then(|v| v.get("message").and_then(|x| x.as_str()).map(str::to_owned))
+                    .unwrap_or_else(|| "Invalid API key or wrong Free/Pro endpoint".into())
+            } else if err_body.is_empty() { format!("HTTP {code}") } else { err_body };
             return Err(redact_secret(&msg, &settings.api_key));
         }
         Err(e) => return Err(redact_secret(&e.to_string(), &settings.api_key)),
     };
     Ok(deepl_read_text(&raw)?.text)
+}
+
+fn baidu_translate(settings: &TranslateSettings, text: &str, target: &str) -> Result<String, String> {
+    if settings.app_id.trim().is_empty() || settings.api_key.trim().is_empty() {
+        return Err("Baidu App ID and API key required".into());
+    }
+    let salt = format!("{}", std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).map_err(|e| e.to_string())?.as_millis());
+    let from = "auto";
+    let to = match target {
+        "zh-Hans" => "zh",
+        "zh-Hant" => "cht",
+        "ja" | "ja-JP" => "jp",
+        other => other,
+    };
+    let sign = baidu_sign(settings.app_id.trim(), text, &salt, settings.api_key.trim());
+    let body = format!("q={}&from={}&to={}&appid={}&salt={}&sign={}",
+        form_escape(text), from, form_escape(to), form_escape(settings.app_id.trim()), salt, sign);
+    let configured = settings.api_url.trim();
+    let base = if configured.is_empty() || configured.contains("qianfan.baidubce.com") {
+        "https://fanyi-api.baidu.com/api/trans/vip/translate".to_string()
+    } else {
+        configured.trim_end_matches('/').to_string()
+    };
+    let url = if base.contains("/api/trans/vip/translate") { base } else { format!("{base}/api/trans/vip/translate") };
+    log_translate("baidu", text.chars().count(), to);
+    let raw = ureq::post(&url).set("Content-Type", "application/x-www-form-urlencoded")
+        .timeout(std::time::Duration::from_secs(20)).send_string(&body)
+        .map_err(|e| redact_secret(&e.to_string(), &settings.api_key))?
+        .into_string().map_err(|e| e.to_string())?;
+    let v: serde_json::Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+    if let Some(code) = v.get("error_code").and_then(|v| v.as_str()) {
+        let msg = v.get("error_msg").and_then(|v| v.as_str()).unwrap_or(code);
+        return Err(redact_secret(&format!("Baidu {code}: {msg}"), &settings.api_key));
+    }
+    let out = v.get("trans_result").and_then(|v| v.as_array())
+        .ok_or_else(|| "Baidu returned no translation".to_string())?;
+    let text = out.iter().filter_map(|x| x.get("dst").and_then(|v| v.as_str())).collect::<Vec<_>>().join("\n");
+    if text.is_empty() { Err("Baidu returned no translation".into()) } else { Ok(text) }
+}
+
+fn baidu_sign(app_id: &str, query: &str, salt: &str, secret_key: &str) -> String {
+    let sign_input = format!("{app_id}{query}{salt}{secret_key}");
+    let digest = md5::Md5::digest(sign_input.as_bytes());
+    format!("{digest:x}")
+}
+
+fn form_escape(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.as_bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') { out.push(*b as char); }
+        else if *b == b' ' { out.push('+'); }
+        else { out.push_str(&format!("%{b:02X}")); }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -245,6 +356,7 @@ mod tests {
             provider: "openai".into(),
             api_url: url,
             api_key: "sk-test-secret-key-xyz".into(),
+            app_id: String::new(),
             model: "gpt-4o-mini".into(),
             target: "en".into(),
         };
@@ -271,6 +383,7 @@ mod tests {
             provider: "openai".into(),
             api_url: url,
             api_key: "sk-test-secret-key-xyz".into(),
+            app_id: String::new(),
             model: "gpt-4o-mini".into(),
             target: "en".into(),
         };
@@ -297,6 +410,7 @@ mod tests {
             provider: "deepl".into(),
             api_url: url,
             api_key: "deepl-secret-xyz".into(),
+            app_id: String::new(),
             model: String::new(),
             target: "en".into(),
         };

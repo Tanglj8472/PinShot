@@ -3,6 +3,7 @@
 use crate::i18n::Lang;
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 pub const SCHEMA_VERSION: u32 = 3;
@@ -25,19 +26,29 @@ pub struct Config {
     pub hotkey_capture_translate: String,
     pub run_at_login: bool,
     pub groups: Vec<String>,
+    #[serde(default = "default_pictures_dir")]
     pub quick_save_folder: String,
+    /// File name template for saved images. Supports `{date}`, `{time}`, and
+    /// `{timestamp}`; the value must end in `.png` or `.jpg`.
+    #[serde(default = "default_save_filename_format")]
+    pub save_filename_format: String,
     pub image_quality: u8,
     pub snip_delay: u32,
     pub history_max: u32,
     pub closed_pins_max: u32,
     pub theme: String,
     pub dim_alpha: u8,
+    #[serde(default = "default_log_level")]
+    pub log_level: String,
     /// `server` (default, ~170 MB, more accurate) or `mobile` (faster on CPU).
     #[serde(default)]
     pub ocr_model: String,
     /// F5 translator (pot / STranslate / openai-translator style).
     #[serde(default)]
     pub translate: TranslateSettings,
+    /// Saved credentials and model settings per provider.
+    #[serde(default)]
+    pub translate_profiles: BTreeMap<String, TranslateSettings>,
     #[serde(default)]
     pub update: crate::update::UpdateSettings,
 }
@@ -65,29 +76,36 @@ impl Default for Config {
                 "Group 2".into(),
                 "Group 3".into(),
             ],
-            quick_save_folder: String::new(),
+            quick_save_folder: default_pictures_dir(),
+            save_filename_format: default_save_filename_format(),
             image_quality: 92,
             snip_delay: 0,
             history_max: 10,
             closed_pins_max: 10,
             theme: "system".into(),
             dim_alpha: 160,
-            ocr_model: "server".into(),
+            log_level: default_log_level(),
+            ocr_model: "mobile".into(),
             translate: TranslateSettings::default(),
+            translate_profiles: BTreeMap::new(),
             update: crate::update::UpdateSettings::default(),
         }
     }
 }
 
+fn default_log_level() -> String { "normal".into() }
+
 /// Provider + endpoint + key + model + target. `api_key` is never shown in Debug.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TranslateSettings {
-    /// OpenAI-compatible preset (`openai` / `deepseek` / `qwen` / `ollama` /
+    /// OpenAI preset (`openai` / `deepseek` /
     /// `baidu`), `deepl`, or `edge` (free fallback).
     pub provider: String,
     pub api_url: String,
     pub api_key: String,
+    #[serde(default)]
+    pub app_id: String,
     pub model: String,
     /// Edge/DeepL/OpenAI `to=` code (`en`, `zh-Hans`, …). Empty = follow UI language.
     pub target: String,
@@ -97,8 +115,9 @@ impl Default for TranslateSettings {
     fn default() -> Self {
         Self {
             provider: "openai".into(),
-            api_url: String::new(),
+            api_url: crate::translate::OPENAI_URL_DEFAULT.into(),
             api_key: String::new(),
+            app_id: String::new(),
             model: String::new(),
             target: String::new(),
         }
@@ -111,6 +130,7 @@ impl std::fmt::Debug for TranslateSettings {
             .field("provider", &self.provider)
             .field("api_url", &self.api_url)
             .field("api_key", &if self.api_key.is_empty() { "" } else { "***" })
+            .field("app_id", &if self.app_id.is_empty() { "" } else { "***" })
             .field("model", &self.model)
             .field("target", &self.target)
             .finish()
@@ -121,9 +141,10 @@ impl TranslateSettings {
     pub fn normalized_provider(&self) -> &str {
         match self.provider.trim() {
             "openai" | "openai-compatible" | "openai_compatible" => "openai",
+            "volcengine" | "volc" | "ark" | "doubao" => "volcengine",
             "deepseek" => "deepseek",
-            "qwen" | "tongyi" | "dashscope" => "qwen",
-            "ollama" => "ollama",
+            "qwen" | "tongyi" | "dashscope" => "openai",
+            "ollama" => "openai",
             "baidu" | "qianfan" | "ernie" | "wenxin" => "baidu",
             "deepl" => "deepl",
             "edge" | "microsoft" | "free" => "edge",
@@ -134,7 +155,7 @@ impl TranslateSettings {
     pub fn uses_openai_compat(&self) -> bool {
         matches!(
             self.normalized_provider(),
-            "openai" | "deepseek" | "qwen" | "ollama" | "baidu"
+            "openai" | "deepseek" | "volcengine" | "baidu"
         )
     }
 }
@@ -145,6 +166,12 @@ impl Config {
     }
 
     pub fn validate(mut self) -> Self {
+        self.log_level = match self.log_level.trim().to_ascii_lowercase().as_str() {
+            "off" => "off",
+            "trace" | "detailed" => "trace",
+            "debug" => "debug",
+            _ => "normal",
+        }.into();
         if Lang::from_code(&self.language) == Lang::ZhCn
             && self.language != "zh_CN"
             && self.language != "en"
@@ -175,6 +202,9 @@ impl Config {
             _ => "mobile".into(),
         };
         self.groups = crate::groups::dedupe(&self.groups);
+        if self.quick_save_folder.trim().is_empty() {
+            self.quick_save_folder = default_pictures_dir();
+        }
         if self.hotkey_selection_translate.trim().is_empty() {
             self.hotkey_selection_translate = "F5".into();
         }
@@ -188,10 +218,17 @@ impl Config {
             self.schema_version = SCHEMA_VERSION;
         }
         self.translate.provider = self.translate.normalized_provider().to_string();
-        self.translate.api_url = self.translate.api_url.trim().to_string();
+        self.translate.api_url = canonical_translate_url(&self.translate.provider).into();
         self.translate.api_key = self.translate.api_key.trim().to_string();
         self.translate.model = self.translate.model.trim().to_string();
         self.translate.target = self.translate.target.trim().to_string();
+        for settings in self.translate_profiles.values_mut() {
+            settings.provider = settings.normalized_provider().to_string();
+            settings.api_url = canonical_translate_url(&settings.provider).into();
+            settings.api_key = settings.api_key.trim().to_string();
+            settings.model = settings.model.trim().to_string();
+            settings.target = settings.target.trim().to_string();
+        }
         self.update = self.update.clone().normalized();
         self
     }
@@ -222,6 +259,59 @@ impl Config {
         fs::rename(&tmp, path).map_err(|e| ConfigError::Io(e.to_string()))?;
         Ok(())
     }
+}
+
+fn default_pictures_dir() -> String {
+    #[cfg(windows)]
+    {
+        if let Ok(profile) = std::env::var("USERPROFILE") {
+            return PathBuf::from(profile).join("Pictures").to_string_lossy().into_owned();
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            return PathBuf::from(home).join("Pictures").to_string_lossy().into_owned();
+        }
+    }
+    "Pictures".into()
+}
+
+fn canonical_translate_url(provider: &str) -> &'static str {
+    match provider {
+        "deepseek" => crate::translate::DEEPSEEK_URL_DEFAULT,
+        "volcengine" => crate::translate::VOLCENGINE_URL_DEFAULT,
+        "baidu" => crate::translate::BAIDU_URL_DEFAULT,
+        "deepl" => crate::translate::DEEPL_URL_DEFAULT,
+        "edge" => crate::translate::EDGE_URL,
+        _ => crate::translate::OPENAI_URL_DEFAULT,
+    }
+}
+
+fn default_save_filename_format() -> String {
+    "pinshot-{date}-{time}.png".into()
+}
+
+/// Expand the user-facing save filename template and keep it a filename rather
+/// than allowing separators in the configured value.
+pub fn expand_save_filename(template: &str) -> String {
+    let now = chrono::Local::now();
+    let mut name = template.trim().to_string();
+    if name.is_empty() {
+        name = default_save_filename_format();
+    }
+    name = name
+        .replace("{date}", &now.format("%Y-%m-%d").to_string())
+        .replace("{time}", &now.format("%H-%M-%S").to_string())
+        .replace("{timestamp}", &now.timestamp().to_string());
+    name = name
+        .chars()
+        .map(|c| if "<>:\"/\\|?*".contains(c) { '_' } else { c })
+        .collect();
+    if !name.to_ascii_lowercase().ends_with(".png") && !name.to_ascii_lowercase().ends_with(".jpg") {
+        name.push_str(".png");
+    }
+    name
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -318,6 +408,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn log_levels_load_old_configs_and_roundtrip() {
+        assert_eq!(Config::from_toml("").unwrap().log_level, "normal");
+        for (input, expected) in [("off", "off"), ("normal", "normal"),
+            ("trace", "trace"), ("debug", "debug"), ("detailed", "trace"),
+            (" DEBUG ", "debug"), ("invalid", "normal")] {
+            let cfg = Config::from_toml(&format!("log_level = '{input}'")).unwrap();
+            assert_eq!(cfg.log_level, expected);
+            assert_eq!(Config::from_toml(&cfg.to_toml().unwrap()).unwrap().log_level, expected);
+        }
+    }
+
+    #[test]
     fn older_config_preserves_user_values_when_new_settings_are_added() {
         let old = "schema_version = 2\nlanguage = 'en'\nrun_at_login = false\n\
             hotkey_snip = 'Ctrl+Alt+P'\nocr_model = 'mobile'\n\
@@ -366,7 +468,7 @@ mod tests {
         assert_eq!(c.schema_version, 3);
         assert_eq!(c.dim_alpha, 160);
         assert!(c.run_at_login);
-        assert_eq!(c.ocr_model, "server");
+        assert_eq!(c.ocr_model, "mobile");
         assert!(c.update.check_on_startup);
     }
 
@@ -478,11 +580,11 @@ mod tests {
 
     #[test]
     fn validate_keeps_compat_presets() {
-        for id in ["deepseek", "qwen", "tongyi", "ollama", "baidu", "qianfan"] {
+        for id in ["deepseek", "baidu", "qianfan"] {
             let c = Config::from_toml(&format!("[translate]\nprovider = \"{id}\"\n")).unwrap();
             assert!(
                 c.translate.uses_openai_compat(),
-                "{id} should stay OpenAI-compatible, got {}",
+                "{id} should stay supported, got {}",
                 c.translate.provider
             );
         }

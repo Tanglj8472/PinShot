@@ -53,6 +53,46 @@ fn polyline(pts: &[Point]) -> Option<Path> {
     pb.finish()
 }
 
+/// Build a smooth freehand path from sampled pointer positions. Using the
+/// midpoint between consecutive samples as the quadratic endpoint avoids the
+/// visibly segmented, ruler-like appearance caused by sparse mouse events.
+fn brush_path(pts: &[Point]) -> Option<Path> {
+    if pts.is_empty() {
+        return None;
+    }
+    let mut pb = PathBuilder::new();
+    pb.move_to(pts[0].x, pts[0].y);
+    if pts.len() == 1 {
+        pb.line_to(pts[0].x + 0.1, pts[0].y);
+        return pb.finish();
+    }
+    for pair in pts.windows(2) {
+        let a = pair[0];
+        let b = pair[1];
+        let mid = Point::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5);
+        pb.quad_to(a.x, a.y, mid.x, mid.y);
+    }
+    let last = pts[pts.len() - 1];
+    let prev = pts[pts.len() - 2];
+    pb.quad_to(prev.x, prev.y, last.x, last.y);
+    pb.finish()
+}
+
+fn smoothed_brush_points(pts: &[Point]) -> Vec<Point> {
+    if pts.len() < 2 {
+        return pts.to_vec();
+    }
+    let mut out = Vec::with_capacity(pts.len() * 2);
+    out.push(pts[0]);
+    for pair in pts.windows(2) {
+        let a = pair[0];
+        let b = pair[1];
+        out.push(Point::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5));
+        out.push(b);
+    }
+    out
+}
+
 fn apply_effect_region(base: &Raster, sh: &Shape) -> Raster {
     match sh.style.effect {
         Effect::Blur => base.blur(sh.style.size.max(1) as u32),
@@ -113,6 +153,7 @@ fn copy_effect_brush(dst: &mut Raster, src: &Raster, pts: &[Point], width: f32) 
 
 fn copy_effect_brush_clipped(dst: &mut Raster, src: &Raster, pts: &[Point], width: f32, clip: Rect) {
     if pts.is_empty() { return; }
+    let pts = smoothed_brush_points(pts);
     let radius = width.max(1.0) / 2.0;
     // Each segment touches only its local bounding box, never the full image.
     let segments = pts.len().saturating_sub(1).max(1);
@@ -688,7 +729,7 @@ fn draw_shape_t(pm: &mut Pixmap, sh: &Shape, t: Transform) {
                         pm.fill_path(&path, &paint(c), FillRule::Winding, t, None);
                     }
                 }
-            } else if let Some(path) = polyline(&sh.pts) {
+            } else if let Some(path) = brush_path(&sh.pts) {
                 pm.stroke_path(&path, &paint(c), &st, t, None);
             }
         }

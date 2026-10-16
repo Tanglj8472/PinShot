@@ -23,12 +23,10 @@ pub const OPENAI_MODEL_DEFAULT: &str = "gpt-4o-mini";
 pub const OPENAI_URL_DEFAULT: &str = "https://api.openai.com/v1";
 pub const DEEPSEEK_URL_DEFAULT: &str = "https://api.deepseek.com";
 pub const DEEPSEEK_MODEL_DEFAULT: &str = "deepseek-chat";
-pub const QWEN_URL_DEFAULT: &str = "https://dashscope.aliyuncs.com/compatible-mode/v1";
-pub const QWEN_MODEL_DEFAULT: &str = "qwen-turbo";
-pub const OLLAMA_URL_DEFAULT: &str = "http://127.0.0.1:11434/v1";
-pub const OLLAMA_MODEL_DEFAULT: &str = "llama3.2";
-pub const BAIDU_URL_DEFAULT: &str = "https://qianfan.baidubce.com/v2";
-pub const BAIDU_MODEL_DEFAULT: &str = "ernie-3.5-8k";
+pub const VOLCENGINE_URL_DEFAULT: &str = "https://ark.cn-beijing.volces.com/api/v3";
+pub const VOLCENGINE_MODEL_DEFAULT: &str = "doubao-seed-2-1-pro-260628";
+pub const BAIDU_URL_DEFAULT: &str = "https://fanyi-api.baidu.com/api/trans/vip/translate";
+pub const BAIDU_MODEL_DEFAULT: &str = "";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ServicePreset {
@@ -49,14 +47,9 @@ pub const COMPAT_PRESETS: &[ServicePreset] = &[
         default_model: DEEPSEEK_MODEL_DEFAULT,
     },
     ServicePreset {
-        id: "qwen",
-        default_url: QWEN_URL_DEFAULT,
-        default_model: QWEN_MODEL_DEFAULT,
-    },
-    ServicePreset {
-        id: "ollama",
-        default_url: OLLAMA_URL_DEFAULT,
-        default_model: OLLAMA_MODEL_DEFAULT,
+        id: "volcengine",
+        default_url: VOLCENGINE_URL_DEFAULT,
+        default_model: VOLCENGINE_MODEL_DEFAULT,
     },
     ServicePreset {
         id: "baidu",
@@ -67,7 +60,7 @@ pub const COMPAT_PRESETS: &[ServicePreset] = &[
 
 pub fn service_preset(id: &str) -> Option<&'static ServicePreset> {
     let id = match id.trim() {
-        "tongyi" | "dashscope" => "qwen",
+        "tongyi" | "dashscope" => "openai",
         "qianfan" | "ernie" | "wenxin" => "baidu",
         "openai-compatible" | "openai_compatible" => "openai",
         other => other,
@@ -473,11 +466,7 @@ mod tests {
             "http://127.0.0.1:11434/v1/chat/completions"
         );
         assert_eq!(
-            openai_chat_url(QWEN_URL_DEFAULT),
-            "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
-        );
-        assert_eq!(
-            openai_chat_url(BAIDU_URL_DEFAULT),
+            openai_chat_url("https://qianfan.baidubce.com/v2"),
             "https://qianfan.baidubce.com/v2/chat/completions"
         );
     }
@@ -494,22 +483,12 @@ mod tests {
         assert_eq!(s.api_url, DEEPSEEK_URL_DEFAULT);
         assert_eq!(s.model, DEEPSEEK_MODEL_DEFAULT);
         assert_eq!(s.api_key, "sk-keep");
-        s.provider = "qwen".into();
-        apply_service_defaults(&mut s);
-        assert_eq!(s.api_url, QWEN_URL_DEFAULT);
-        assert_eq!(s.model, QWEN_MODEL_DEFAULT);
-        s.provider = "ollama".into();
-        apply_service_defaults(&mut s);
-        assert_eq!(s.api_url, OLLAMA_URL_DEFAULT);
-        assert_eq!(resolved_openai_url(&s), "http://127.0.0.1:11434/v1/chat/completions");
         s.provider = "baidu".into();
         apply_service_defaults(&mut s);
         assert_eq!(s.api_url, BAIDU_URL_DEFAULT);
         assert_eq!(s.model, BAIDU_MODEL_DEFAULT);
-        assert_eq!(
-            resolved_openai_url(&s),
-            "https://qianfan.baidubce.com/v2/chat/completions"
-        );
+        // Baidu uses its signed translation endpoint, not chat completions.
+        assert_eq!(s.api_url, "https://fanyi-api.baidu.com/api/trans/vip/translate");
         let empty = crate::config::TranslateSettings::default();
         assert_eq!(empty.provider, "openai");
         assert_eq!(

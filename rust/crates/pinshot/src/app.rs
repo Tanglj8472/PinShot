@@ -30,11 +30,13 @@ use crate::overlay::{Overlay, OverlayResult};
 use crate::pin::PinWin;
 use crate::prefs;
 use crate::tray::Tray;
+use crate::translate_popup::TranslatePopup;
 
 pub fn run(args: Vec<String>) -> Result<(), String> {
     crate::logutil::init(&args);
     native::init_process();
     let cfg = config::load().unwrap_or_default();
+    crate::logutil::set_level(&cfg.log_level);
     set_lang(cfg.lang());
 
     let cmd = crate::ipc::parse_cli_cmd(&args);
@@ -89,6 +91,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         restore: DesktopRestore::default(),
         prefs: None,
         pin_menu: None,
+        translate_popup: None,
         menu_pin: None,
         menu_esc_until: None,
         menu_raise_until: None,
@@ -162,6 +165,7 @@ struct SnipSchedule {
 struct DesktopRestore {
     fallback_hidden: bool,
     wait_after_overlay: bool,
+    discard_dxgi_frame: bool,
 }
 
 struct App {
@@ -189,6 +193,7 @@ struct App {
     restore: DesktopRestore,
     prefs: Option<crate::prefs_win::PrefsWin>,
     pin_menu: Option<crate::pin_menu::PinMenuWin>,
+    translate_popup: Option<TranslatePopup>,
     menu_pin: Option<WindowId>,
     /// Swallow Escape on pins after the menu closes so the still-held Esc
     /// does not close the pin (and persist/reap must not drop the others).
@@ -300,10 +305,11 @@ impl App {
     }
 
     fn apply_cfg(&mut self, cfg: Config) {
+        crate::logutil::set_level(&cfg.log_level);
         set_lang(cfg.lang());
         if cfg.run_at_login != autostart::is_enabled() {
             if let Err(e) = autostart::set_enabled(cfg.run_at_login) {
-                eprintln!("PinShot autostart: {e}");
+                crate::logutil::error(&format!("autostart: {e}"));
             }
         }
         self.cfg = cfg;
@@ -384,6 +390,12 @@ impl App {
                 self.restore.fallback_hidden = true;
             }
         }
+        // A tray click is still being processed when the capture starts. Hide
+        // the icon before the desktop grab so the tray/menu cannot leak into
+        // the captured image.
+        if let Some(tray) = &self.tray {
+            tray.hide_icon();
+        }
         self.snip.countdown = None;
     }
 
@@ -408,6 +420,7 @@ impl App {
         let t0 = Instant::now();
         let translate = self.snip.translate_next;
         self.snip.translate_next = false;
+        crate::logutil::step("before capture");
         #[cfg(unix)]
         if self.input_hold.is_none() {
             self.input_hold = Some(crate::x11util::InputHold::grab());
@@ -415,7 +428,12 @@ impl App {
         #[cfg(unix)]
         let grabbed = Capture::grab_while_held(self.dump_capture);
         #[cfg(not(unix))]
-        let grabbed = Capture::grab(self.dump_capture);
+        let grabbed = if self.restore.discard_dxgi_frame {
+            self.restore.discard_dxgi_frame = false;
+            Capture::grab_fresh(self.dump_capture)
+        } else {
+            Capture::grab(self.dump_capture)
+        };
         match grabbed {
             Ok(cap) => match Overlay::start(
                 event_loop,
@@ -440,7 +458,7 @@ impl App {
                     {
                         self.input_hold = None;
                     }
-                    eprintln!("PinShot overlay: {e}");
+                    crate::logutil::error(&format!("overlay: {e}"));
                     self.snip_phase = SnipPhase::Idle;
                 }
             },
@@ -449,7 +467,7 @@ impl App {
                 {
                     self.input_hold = None;
                 }
-                eprintln!("PinShot capture: {e}");
+                crate::logutil::error(&format!("capture: {e}"));
                 self.snip_phase = SnipPhase::Idle;
             }
         }
@@ -465,7 +483,7 @@ impl App {
             ClipContent::Text(t) => {
                 self.spawn_pin(event_loop, clipboard::text_card(&t, 280, 120), None, None)
             }
-            ClipContent::Empty => eprintln!("{}", tr("Clipboard has no image or text")),
+            ClipContent::Empty => crate::logutil::log("clipboard: no supported image or text"),
         }
     }
 
@@ -502,7 +520,7 @@ impl App {
                     self.persist_session();
                 }
             }
-            Err(e) => eprintln!("PinShot pin: {e}"),
+            Err(e) => crate::logutil::error(&format!("pin: {e}")),
         }
     }
 
@@ -529,10 +547,14 @@ impl App {
         self.handle_overlay_result(event_loop, res);
         if resnip {
             self.restore.wait_after_overlay = true;
+            self.restore.discard_dxgi_frame = true;
             crate::logutil::log("resnip: wait 150ms for overlay to leave the DXGI frame");
             self.request_snip(event_loop, false);
         } else {
             self.restore_fallback_if_needed();
+            if let Some(tray) = &self.tray {
+                tray.show_icon();
+            }
         }
     }
 
@@ -540,7 +562,7 @@ impl App {
         match res {
             OverlayResult::Copy(img, _) => {
                 if clipboard::write_image(&img).is_ok() {
-                    eprintln!("{}", tr("Copied to clipboard"));
+                    crate::logutil::log("clipboard: image copied successfully");
                 }
             }
             OverlayResult::Pin(img, _, pos) => self.spawn_pin(event_loop, img, Some(pos), None),
@@ -573,15 +595,16 @@ impl App {
 
     fn save_overlay_image(&self, img: &Raster) {
         let folder = self.cfg.quick_save_folder.trim();
+        let filename = pinshot_core::config::expand_save_filename(&self.cfg.save_filename_format);
         let suggested = if folder.is_empty() {
-            "pinshot.png".into()
+            filename.clone()
         } else {
             let sep = if cfg!(windows) { "\\" } else { "/" };
-            format!("{folder}{sep}pinshot.png")
+            format!("{folder}{sep}{filename}")
         };
         if let Some(path) = crate::dialog::save_path(&suggested) {
             if crate::dialog::save_raster(img, &path, self.cfg.image_quality).is_ok() {
-                eprintln!("{}", tr(&format!("Saved {path}")));
+                crate::logutil::log("output: image saved successfully");
             }
         }
     }
@@ -595,9 +618,11 @@ impl App {
     ) {
         self.spawn_pin(event_loop, img.clone(), Some(pos), None);
         if let Some(p) = self.pins.last_mut() {
-            p.set_status(Some(tr("Recognizing…")));
-            let id = p.window_id();
-            self.spawn_ocr(id, img, translate);
+            if p.start_ocr() {
+                p.set_status(Some(tr("Recognizing…")));
+                let id = p.window_id();
+                self.spawn_ocr(id, img, translate);
+            }
         }
     }
 
@@ -617,6 +642,9 @@ impl App {
         self.persist_session();
         crate::ocr_run::release_engine();
         crate::logutil::log("quit persist done");
+        // The fallback termination thread can run even if tray teardown stalls.
+        // Persist queued diagnostics before scheduling that forced exit.
+        crate::logutil::flush();
         // Schedule the kill *before* hiding the tray: NIM_DELETE is a
         // SendMessage to the tray HWND and can stall this thread.
         native::schedule_kill_process(0);
@@ -638,7 +666,7 @@ impl App {
         {
             let attrs = native::as_tool_window(
                 Window::default_attributes()
-                    .with_title("PinShot")
+                    .with_title("")
                     .with_decorations(false)
                     .with_visible(false)
                     .with_inner_size(winit::dpi::LogicalSize::new(1.0, 1.0)),
@@ -670,7 +698,7 @@ impl App {
                 }
             })
             .map_err(|e| {
-                crate::logutil::log(&format!("ocr fail: {e}"));
+        crate::logutil::error(&format!("ocr fail: {e}"));
                 e
             });
             match &result {
@@ -695,7 +723,7 @@ impl App {
         std::thread::spawn(move || {
             let result =
                 crate::translate_run::translate_with(&settings, &ui_lang, &text).map_err(|e| {
-                    crate::logutil::log(&format!("translate fail: {e}"));
+                    crate::logutil::error("translate: background request failed");
                     e
                 });
             let _ = proxy.send_event(AppEvent::TranslateDone { pin, result });
@@ -744,10 +772,7 @@ impl App {
     }
 
     fn pin_or_selection_translate(&mut self) {
-        if let Some(id) = self
-            .menu_pin
-            .or_else(|| self.pins.last().map(|p| p.window_id()))
-        {
+        if let Some(id) = self.menu_pin {
             self.start_pin_translate(id);
             return;
         }
@@ -773,7 +798,7 @@ impl App {
     fn selection_translate(&self) {
         #[cfg(not(windows))]
         {
-            eprintln!("{}", tr("Select-text translate is only available here."));
+            crate::logutil::log("selection_translate: unavailable on this platform");
             return;
         }
         #[cfg(windows)]
@@ -803,6 +828,18 @@ impl App {
                 let _ = proxy.send_event(AppEvent::SelectionText(result));
             });
         }
+    }
+
+    fn spawn_selection_translation(&self, source: String) {
+        let proxy = self.proxy.clone();
+        let settings = self.cfg.translate.clone();
+        let ui_lang = self.cfg.language.clone();
+        let input = source.clone();
+        std::thread::spawn(move || {
+            let result = crate::translate_run::translate_with(&settings, &ui_lang, &input)
+                .map_err(|e| { crate::logutil::error("selection_translate: background request failed"); e });
+            let _ = proxy.send_event(AppEvent::SelectionTranslation { source, result });
+        });
     }
 
     fn persist_session(&self) {
@@ -1129,7 +1166,7 @@ impl App {
                     }
                     let _ = pinshot_core::config::save(&self.cfg);
                     self.rebuild_tray();
-                    crate::logutil::log(&format!("pin menu rename {old} -> {new}"));
+                    crate::logutil::log("pin menu: group renamed");
                 }
                 Err(e) => crate::logutil::log(&format!("pin menu rename rejected: {e}")),
             }
@@ -1202,7 +1239,7 @@ impl App {
         if self.hotkeys.is_none() {
             match native::install_hotkeys(self.proxy.clone(), &self.cfg) {
                 Ok(h) => self.hotkeys = Some(h),
-                Err(e) => crate::logutil::log(&format!("hotkeys: {e}")),
+            Err(e) => crate::logutil::error(&format!("hotkeys: {e}")),
             }
         }
         if self.tray.is_none() {
@@ -1214,7 +1251,7 @@ impl App {
             self.session_restored = true;
             if self.cfg.run_at_login != autostart::is_enabled() {
                 if let Err(e) = autostart::set_enabled(self.cfg.run_at_login) {
-                    eprintln!("PinShot autostart: {e}");
+                    crate::logutil::error(&format!("autostart: {e}"));
                 }
             }
             self.restore_session(event_loop);
@@ -1272,12 +1309,22 @@ impl App {
 
     fn handle_tray_command(&mut self, event_loop: &ActiveEventLoop, command: TrayCmd) {
         match command {
-            TrayCmd::Snip => self.request_snip(event_loop, false),
+            TrayCmd::Snip => {
+                if let Some(tray) = &self.tray {
+                    tray.hide_icon();
+                }
+                self.request_snip(event_loop, false);
+            }
             TrayCmd::Pin => self.pin_clipboard(event_loop),
             TrayCmd::HideAll => self.toggle_pins(),
             TrayCmd::Settings => prefs::open(self.cfg.clone(), self.proxy.clone()),
             TrayCmd::Quit => self.request_quit(event_loop),
-            TrayCmd::Translate => self.request_snip(event_loop, true),
+            TrayCmd::Translate => {
+                if let Some(tray) = &self.tray {
+                    tray.hide_icon();
+                }
+                self.request_snip(event_loop, true);
+            }
             TrayCmd::Restore => self.restore_closed(event_loop),
             TrayCmd::ToggleGroup(name) => self.toggle_group(name),
         }
@@ -1311,6 +1358,7 @@ impl App {
             }
             AppEvent::TranslateDone { pin, result } => self.handle_translate_done(pin, result),
             AppEvent::SelectionText(result) => self.handle_selection_text(event_loop, result),
+            AppEvent::SelectionTranslation { source, result } => self.handle_selection_translation(event_loop, source, result),
         }
     }
 
@@ -1365,6 +1413,7 @@ impl App {
     ) {
         let mut follow = None;
         if let Some(p) = self.pins.iter_mut().find(|p| p.window_id() == pin) {
+            p.finish_ocr();
             match result {
                 Ok(page) => {
                     let text = page.text.clone();
@@ -1399,26 +1448,23 @@ impl App {
         }
     }
 
-    fn handle_selection_text(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        result: Result<String, String>,
-    ) {
+    fn handle_selection_text(&mut self, _event_loop: &ActiveEventLoop, result: Result<String, String>) {
+        match result {
+            Ok(text) => self.spawn_selection_translation(text),
+            Err(_) => crate::logutil::error("selection_translate: failed to obtain selected text"),
+        }
+    }
+
+    fn handle_selection_translation(&mut self, event_loop: &ActiveEventLoop, source: String, result: Result<String, String>) {
         match result {
             Ok(text) => {
-                let img = clipboard::text_card(&text, 280, 120);
-                let page = pinshot_core::ocr::page_from_plain(&text, img.width, img.height);
-                self.spawn_pin(event_loop, img, None, None);
-                let pin_id = self.pins.last().map(|p| p.window_id());
-                if let Some(p) = self.pins.last_mut() {
-                    p.attach_ocr(page);
-                    p.set_translating(true);
-                }
-                if let Some(id) = pin_id {
-                    self.spawn_translate(id, text);
+                if let Some(popup) = self.translate_popup.as_mut() {
+                    let _ = popup.handle(&WindowEvent::RedrawRequested);
+                } else if let Ok(popup) = TranslatePopup::create(event_loop, source, text) {
+                    self.translate_popup = Some(popup);
                 }
             }
-            Err(err) => eprintln!("{}", tr(&err)),
+            Err(_) => crate::logutil::error("selection_translate: provider request failed"),
         }
     }
 
@@ -1464,6 +1510,11 @@ impl App {
             if let Some(action) = action {
                 let _ = self.proxy.send_event(AppEvent::PinMenu(action));
             }
+            return true;
+        }
+        if self.translate_popup.as_ref().map(|w| w.window_id() == id).unwrap_or(false) {
+            let close = self.translate_popup.as_mut().map(|w| w.handle(event)).unwrap_or(false);
+            if close { self.translate_popup = None; }
             return true;
         }
         if let Some(cd) = self.snip.countdown.as_mut() {

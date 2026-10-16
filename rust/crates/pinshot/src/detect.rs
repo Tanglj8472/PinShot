@@ -866,7 +866,7 @@ fn log_detect_change(exe: &str, depth: u32, src: u8, ms: u128) {
         }
     });
     if changed {
-        crate::logutil::log(&format!(
+        crate::logutil::log_at("trace", &format!(
             "detect element for: {exe} depth={depth} {ms}ms ({})",
             element_source()
         ));

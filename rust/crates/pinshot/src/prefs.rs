@@ -23,19 +23,22 @@ use crate::event::AppEvent;
 static OPEN: AtomicBool = AtomicBool::new(false);
 static CHILD: Mutex<Option<std::process::Child>> = Mutex::new(None);
 
-/// Snipaste Preferences uses one fixed height (tallest tab). Width hugs the form.
+/// The preferences window keeps a stable width, while its height follows the
+/// selected tab's content.
 const PREFS_W: f32 = 540.0;
-const PREFS_H: f32 = 300.0;
 const PREFS_MIN_W: f32 = 420.0;
-const PREFS_MIN_H: f32 = PREFS_H;
-const PREFS_MAX_H: f32 = PREFS_H;
-const FOOTER_H: f32 = 32.0;
-const FORM_LABEL_W: f32 = 120.0;
-const ROW_H: f32 = 26.0;
-const CONTROL_W: f32 = 280.0;
+const PREFS_MIN_H: f32 = 220.0;
+const PREFS_MAX_H: f32 = 760.0;
+const FOOTER_H: f32 = 44.0;
+const FORM_LABEL_W: f32 = 152.0;
+const ROW_H: f32 = 28.0;
+const FORM_GAP: f32 = 12.0;
+const CONTENT_MARGIN: i8 = 16;
+const CONTROL_W: f32 = PREFS_W - 2.0 * CONTENT_MARGIN as f32 - FORM_LABEL_W - FORM_GAP;
+const ACTION_W: f32 = 80.0;
 
 fn prefs_inner_size() -> egui::Vec2 {
-    egui::vec2(PREFS_W, PREFS_H)
+    egui::vec2(PREFS_W, PREFS_MIN_H)
 }
 
 const TABS: &[&str] = &[
@@ -90,7 +93,7 @@ pub fn open(cfg: Config, proxy: EventLoopProxy<AppEvent>) {
             OPEN.store(true, Ordering::SeqCst);
         }
         Err(e) => {
-            crate::logutil::log(&format!("settings launch: {e}"));
+            crate::logutil::error(&format!("settings launch: {e}"));
             let _ = proxy.send_event(AppEvent::OpenPrefs);
         }
     }
@@ -153,8 +156,8 @@ pub fn run_preferences() {
         viewport: egui::ViewportBuilder::default()
             .with_title(tr("PinShot Preferences"))
             .with_inner_size([size.x, size.y])
-            .with_min_inner_size([PREFS_MIN_W, PREFS_H])
-            .with_max_inner_size([PREFS_W, PREFS_H])
+            .with_min_inner_size([PREFS_MIN_W, PREFS_MIN_H])
+            .with_max_inner_size([PREFS_W, PREFS_MAX_H])
             .with_resizable(false)
             .with_always_on_top()
             .with_taskbar(false)
@@ -176,9 +179,10 @@ pub fn run_preferences() {
         Box::new(move |cc| {
             crate::ui_font::install_cjk(&cc.egui_ctx);
             let mut style = (*cc.egui_ctx.style()).clone();
-            style.spacing.item_spacing = egui::vec2(4.0, 3.0);
-            style.spacing.button_padding = egui::vec2(6.0, 2.0);
+            style.spacing.item_spacing = egui::vec2(8.0, 8.0);
+            style.spacing.button_padding = egui::vec2(10.0, 5.0);
             style.spacing.interact_size.y = ROW_H;
+            style.spacing.combo_height = 240.0;
             cc.egui_ctx.set_style(style);
             apply_theme(&cc.egui_ctx, &cfg.theme);
             let tab = std::env::var("PINSHOT_PREFS_TAB")
@@ -197,10 +201,13 @@ pub fn run_preferences() {
                 ocr_dl_rx: None,
                 ocr_dl_frac: 0.0,
                 update_check_rx: None,
+                models: Vec::new(),
+                models_provider: String::new(),
+                models_rx: None,
             }))
         }),
     ) {
-        crate::logutil::log(&format!("settings window: {e}"));
+        crate::logutil::error(&format!("settings window: {e}"));
     }
     OPEN.store(false, Ordering::SeqCst);
 }
@@ -211,11 +218,27 @@ fn apply_theme(ctx: &egui::Context, theme: &str) {
         "light" => false,
         _ => system_dark(),
     };
-    ctx.set_visuals(if dark {
+    let mut visuals = if dark {
         Visuals::dark()
     } else {
         Visuals::light()
-    });
+    };
+    let palette = crate::draw::UiTheme::resolve(if dark { "dark" } else { "light" });
+    let color = |c: pinshot_core::color::Rgba| Color32::from_rgb(c.r, c.g, c.b);
+    visuals.panel_fill = color(palette.bg);
+    visuals.window_fill = color(palette.bg);
+    visuals.faint_bg_color = color(palette.panel);
+    visuals.override_text_color = Some(color(palette.text));
+    visuals.widgets.inactive.bg_fill = color(palette.panel);
+    visuals.widgets.inactive.weak_bg_fill = color(palette.panel);
+    visuals.widgets.hovered.bg_fill = color(palette.hover);
+    visuals.widgets.hovered.weak_bg_fill = color(palette.hover);
+    visuals.selection.bg_fill = if dark { Color32::from_rgb(38, 69, 104) } else { Color32::from_rgb(222, 237, 252) };
+    visuals.selection.stroke = egui::Stroke::new(1.0, color(palette.text));
+    for widget in [&mut visuals.widgets.inactive, &mut visuals.widgets.hovered, &mut visuals.widgets.active] {
+        widget.corner_radius = egui::CornerRadius::same(4);
+    }
+    ctx.set_visuals(visuals);
 }
 
 fn system_dark() -> bool {
@@ -293,6 +316,9 @@ struct PrefsApp {
     ocr_dl_rx: Option<std::sync::mpsc::Receiver<OcrDlUpdate>>,
     ocr_dl_frac: f32,
     update_check_rx: Option<std::sync::mpsc::Receiver<UpdateCheckMsg>>,
+    models: Vec<String>,
+    models_provider: String,
+    models_rx: Option<std::sync::mpsc::Receiver<Result<Vec<String>, String>>>,
 }
 
 impl PrefsApp {
@@ -317,16 +343,17 @@ impl PrefsApp {
         }
         self.draft = self.draft.clone().validate();
         if let Err(e) = config::save(&self.draft) {
-            crate::logutil::log(&format!("save settings: {e}"));
+            crate::logutil::error(&format!("save settings: {e}"));
             self.status = tr("Could not save settings");
             return false;
         }
+        crate::logutil::set_level(&self.draft.log_level);
         self.saved = self.draft.clone();
         i18n::set_lang(self.draft.lang());
         match crate::ipc::send("reload-settings") {
-            Ok(()) => self.status = tr("Settings applied."),
+            Ok(()) => self.status.clear(),
             Err(e) => {
-                crate::logutil::log(&format!("apply settings: {e}"));
+                crate::logutil::error(&format!("apply settings: {e}"));
                 self.status = tr("Saved. Restart PinShot to apply.");
             }
         }
@@ -340,6 +367,7 @@ impl PrefsApp {
                 self.draft.language = d.language;
                 self.draft.run_at_login = d.run_at_login;
                 self.draft.start_minimized = d.start_minimized;
+                self.draft.log_level = d.log_level;
                 self.draft.ocr_model = d.ocr_model;
             }
             1 => {
@@ -407,6 +435,14 @@ impl eframe::App for PrefsApp {
             }
         }
         let mut ocr_finished = None;
+        if let Some(rx) = self.models_rx.as_ref() {
+            match rx.try_recv() {
+                Ok(Ok(models)) => { self.models = models; self.models_rx = None; self.status = tr("Models refreshed."); }
+                Ok(Err(e)) => { self.models_rx = None; self.status = format!("{} {e}", tr("Model refresh failed:")); }
+                Err(std::sync::mpsc::TryRecvError::Empty) => ctx.request_repaint_after(std::time::Duration::from_millis(80)),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.models_rx = None,
+            }
+        }
         if let Some(rx) = self.ocr_dl_rx.as_ref() {
             loop {
                 match rx.try_recv() {
@@ -445,7 +481,7 @@ impl eframe::App for PrefsApp {
                     self.update_check_rx = None;
                     self.draft.update.last_check_unix = pinshot_core::update::now_unix();
                     if let Err(e) = config::record_update_check(self.draft.update.last_check_unix) {
-                        crate::logutil::log(&format!("save update timestamp: {e}"));
+                        crate::logutil::error(&format!("save update timestamp: {e}"));
                     }
                     let install = match &r {
                         Ok(crate::update_run::UpdateOutcome::ReadyToInstall { setup_path, .. }) => {
@@ -487,18 +523,19 @@ impl eframe::App for PrefsApp {
             .exact_height(FOOTER_H)
             .frame(
                 egui::Frame::side_top_panel(&ctx.style())
-                    .inner_margin(egui::Margin::symmetric(8, 4)),
+                    .inner_margin(egui::Margin::symmetric(CONTENT_MARGIN, 8)),
             )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    if !self.status.is_empty() {
-                        ui.colored_label(Color32::from_rgb(180, 80, 40), &self.status);
-                    }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if TABS.get(self.tab) != Some(&"About")
                             && ui.button(tr("Restore Defaults")).clicked()
                         {
                             self.restore_tab();
+                        }
+                        if !self.status.is_empty() {
+                            ui.add(egui::Label::new(&self.status).truncate())
+                                .on_hover_text(&self.status);
                         }
                     });
                 });
@@ -506,23 +543,20 @@ impl eframe::App for PrefsApp {
         if self.draft != self.saved {
             self.apply();
         }
+        let mut content_height = 0.0_f32;
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::central_panel(&ctx.style())
-                    .inner_margin(egui::Margin::symmetric(8, 4)),
+                    .inner_margin(egui::Margin::symmetric(CONTENT_MARGIN, 12)),
             )
             .show(ctx, |ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(4.0, 3.0);
-                ui.horizontal(|ui| {
-                    let gap = ui.spacing().item_spacing.x;
-                    let tab_w = ((ui.available_width() - gap * (TABS.len() - 1) as f32)
-                        / TABS.len() as f32)
-                        .max(1.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
                     for (i, name) in TABS.iter().enumerate() {
                         let selected = self.tab == i;
                         if ui
                             .add_sized(
-                                [tab_w, ROW_H + 4.0],
+                                [44.0, ROW_H + 4.0],
                                 egui::SelectableLabel::new(selected, tr(name)),
                             )
                             .clicked()
@@ -531,9 +565,9 @@ impl eframe::App for PrefsApp {
                         }
                     }
                 });
-                ui.add_space(1.0);
+                ui.add_space(8.0);
                 ui.separator();
-                ui.add_space(4.0);
+                ui.add_space(8.0);
                 match self.tab {
                     0 => self.ui_general(ui),
                     1 => self.ui_interface(ui),
@@ -545,18 +579,32 @@ impl eframe::App for PrefsApp {
                     7 => self.ui_update(ui),
                     _ => self.ui_about(ui),
                 };
+                // `min_rect().max.y` can include the whole available panel and
+                // therefore reports the old window height. The cursor is the
+                // actual end of the controls rendered by the selected tab.
+                content_height = ui.cursor().min.y;
             });
+        let desired_height = (content_height + FOOTER_H + 10.0)
+            .clamp(PREFS_MIN_H, PREFS_MAX_H);
+        let current_height = ctx.input(|i| {
+            i.viewport()
+                .inner_rect
+                .map(|r| r.height())
+                .unwrap_or(desired_height)
+        });
+        if (current_height - desired_height).abs() > 1.0 {
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
+                PREFS_W,
+                desired_height,
+            )));
+        }
     }
 }
 
 impl PrefsApp {
     fn ui_general(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            ui.label(tr("Language:"));
-            egui::ComboBox::from_id_salt("lang")
-                .icon(combo_chevron)
-                .selected_text(self.draft.lang().display_name())
-                .show_ui(ui, |ui| {
+        form_grid(ui, "prefs_general", |ui| {
+            form_combo(ui, tr("Language:"), "lang", self.draft.lang().display_name(), |ui| {
                     ui.selectable_value(
                         &mut self.draft.language,
                         "zh_CN".into(),
@@ -568,36 +616,49 @@ impl PrefsApp {
                         Lang::En.display_name(),
                     );
                 });
-        });
-        ui.checkbox(&mut self.draft.run_at_login, tr("Run at login"))
-            .on_hover_text(tr("Start PinShot at login (on by default)"));
-        ui.checkbox(&mut self.draft.start_minimized, tr("Start minimized"));
-        ui.horizontal(|ui| {
-            ui.label(tr("OCR model:"));
+            ui.label("");
+            ui.checkbox(&mut self.draft.run_at_login, tr("Run at login"))
+                .on_hover_text(tr("Start PinShot at login (on by default)"));
+            ui.end_row();
+            ui.label("");
+            ui.checkbox(&mut self.draft.start_minimized, tr("Start minimized"));
+            ui.end_row();
+            form_combo(ui, tr("System log:"), "log_level", match self.draft.log_level.as_str() {
+                    "off" => tr("Off"),
+                    "trace" | "detailed" => tr("Trace"),
+                    "debug" => tr("Debug"),
+                    _ => tr("Normal"),
+                }, |ui| {
+                    ui.selectable_value(&mut self.draft.log_level, "off".into(), tr("Off"));
+                    ui.selectable_value(&mut self.draft.log_level, "normal".into(), tr("Normal"));
+                    ui.selectable_value(&mut self.draft.log_level, "trace".into(), tr("Trace"));
+                    ui.selectable_value(&mut self.draft.log_level, "debug".into(), tr("Debug"));
+                });
+            form_label(ui, tr("OCR mode:"));
+            ui.horizontal(|ui| {
             let ocr = match self.draft.ocr_model.as_str() {
-                "server" => tr("Server (more accurate)"),
-                _ => tr("Mobile (faster)"),
+                "server" => tr("High accuracy (slower)"),
+                _ => tr("Fast (recommended)"),
             };
             let downloading = self.ocr_dl_rx.is_some();
             ui.add_enabled_ui(!downloading, |ui| {
                 egui::ComboBox::from_id_salt("ocr_model")
-                    .width(148.0)
+                    .width(CONTROL_W - OCR_DL_BTN_W - 8.0)
                     .icon(combo_chevron)
                     .selected_text(ocr)
                     .show_ui(ui, |ui| {
                         ui.selectable_value(
                             &mut self.draft.ocr_model,
                             "mobile".into(),
-                            tr("Mobile (faster)"),
+                            tr("Fast (recommended)"),
                         );
                         ui.selectable_value(
                             &mut self.draft.ocr_model,
                             "server".into(),
-                            tr("Server (more accurate)"),
+                            tr("High accuracy (slower)"),
                         );
                     });
             });
-            ui.add_space(4.0);
             let ready = crate::ocr_run::models_ready_for_tier(&self.draft.ocr_model);
             if ocr_model_download_button(
                 ui,
@@ -607,15 +668,12 @@ impl PrefsApp {
             ) {
                 self.start_ocr_model_download();
             }
+            });
+            ui.end_row();
         });
-        ui.weak(tr(
-            "Server is the default (more accurate). Mobile is faster on CPU; GPU helps either model.",
-        ));
-        ui.add_space(4.0);
+        ui.add_space(12.0);
         ui.label(RichText::new(tr("Configuration")).strong());
-        ui.horizontal(|ui| {
-            ui.label(config::config_dir().display().to_string());
-        });
+        ui.add(egui::Label::new(config::config_dir().display().to_string()).wrap());
         ui.horizontal(|ui| {
             if ui.button(tr("Open containing folder")).clicked() {
                 reveal_dir(&config::config_dir());
@@ -671,9 +729,12 @@ impl PrefsApp {
             form_slider(ui, tr("Mask opacity:"), &mut self.draft.dim_alpha, 0..=200);
             form_slider(ui, tr("Snip history:"), &mut self.draft.history_max, 1..=50);
         });
-        ui.add_space(2.0);
+        ui.add_space(12.0);
         let mut confirm = !self.draft.skip_abort_confirm;
-        ui.checkbox(&mut confirm, tr("Confirm before abort (Esc)"));
+        ui.horizontal(|ui| {
+            ui.add_space(FORM_LABEL_W + FORM_GAP);
+            ui.checkbox(&mut confirm, tr("Confirm before abort (Esc)"));
+        });
         self.draft.skip_abort_confirm = !confirm;
     }
 
@@ -713,24 +774,28 @@ impl PrefsApp {
                 0..=50,
             );
         });
-        ui.add_space(2.0);
+        ui.add_space(12.0);
         ui.label(RichText::new(tr("Pin groups:")).strong());
         let groups = self.draft.groups.clone();
+        egui::ScrollArea::vertical().id_salt("pin_groups").max_height(144.0).show(ui, |ui| {
         for (i, g) in groups.iter().enumerate() {
             if ui
-                .selectable_label(self.group_sel == i, groups::label(g))
+                .add_sized([ui.available_width(), ROW_H], egui::Button::new(groups::label(g)).selected(self.group_sel == i).frame(false).truncate())
+                .on_hover_text(groups::label(g))
                 .clicked()
             {
                 self.group_sel = i;
                 self.group_edit = g.clone();
             }
         }
+        });
         ui.horizontal(|ui| {
-            ui.add(egui::TextEdit::singleline(&mut self.group_edit).desired_width(200.0));
-            if ui.button(tr("Add")).clicked() {
+            let edit_w = ui.available_width() - 3.0 * (ACTION_W + 8.0);
+            ui.add_sized([edit_w, ROW_H], egui::TextEdit::singleline(&mut self.group_edit));
+            if ui.add_sized([ACTION_W, ROW_H], egui::Button::new(tr("Add"))).clicked() {
                 let _ = groups::ensure(&mut self.draft.groups, &self.group_edit);
             }
-            if ui.button(tr("Rename")).clicked() {
+            if ui.add_sized([ACTION_W, ROW_H], egui::Button::new(tr("Rename"))).clicked() {
                 if let Some(old) = self.draft.groups.get(self.group_sel).cloned() {
                     match groups::rename(&mut self.draft.groups, &old, &self.group_edit) {
                         Ok(_) => {}
@@ -738,7 +803,7 @@ impl PrefsApp {
                     }
                 }
             }
-            if ui.button(tr("Remove")).clicked() {
+            if ui.add_sized([ACTION_W, ROW_H], egui::Button::new(tr("Remove"))).clicked() {
                 if let Some(name) = self.draft.groups.get(self.group_sel).cloned() {
                     if let Err(e) = groups::remove(&mut self.draft.groups, &name) {
                         self.status = tr(&e);
@@ -752,24 +817,28 @@ impl PrefsApp {
     fn ui_output(&mut self, ui: &mut Ui) {
         ui.label(RichText::new(tr("File")).strong());
         form_grid(ui, "prefs_output", |ui| {
-            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                ui.set_min_width(FORM_LABEL_W);
-                ui.label(tr("Save folder:"));
-            });
+            form_label(ui, tr("Save folder:"));
             ui.horizontal(|ui| {
-                let w = (ui.available_width() - 96.0).max(140.0);
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.draft.quick_save_folder).desired_width(w),
-                );
-                if ui.button(tr("Browse…")).clicked() {
+                let w = CONTROL_W - ACTION_W * 2.0 - 16.0;
+                ui.add_sized([w, ROW_H], egui::TextEdit::singleline(&mut self.draft.quick_save_folder));
+                if ui.add_sized([ACTION_W, ROW_H], egui::Button::new(tr("Browse…"))).clicked() {
                     if let Some(p) = crate::dialog::open_folder() {
                         self.draft.quick_save_folder = p;
                     }
                 }
-                if ui.button(tr("Open")).clicked() && !self.draft.quick_save_folder.is_empty() {
+                if ui.add_sized([ACTION_W, ROW_H], egui::Button::new(tr("Open"))).clicked() && !self.draft.quick_save_folder.is_empty() {
                     reveal_dir(Path::new(&self.draft.quick_save_folder));
                 }
             });
+            ui.end_row();
+            form_line_hint(
+                ui,
+                tr("File name format:"),
+                &mut self.draft.save_filename_format,
+                "pinshot-{date}-{time}.png",
+            );
+            ui.label("");
+            ui.add(egui::Label::new(RichText::new(tr("Use {date}, {time}, or {timestamp}.")).weak()).wrap());
             ui.end_row();
             form_slider(ui, tr("Quality:"), &mut self.draft.image_quality, 1..=100);
         });
@@ -811,10 +880,6 @@ impl PrefsApp {
                 )),
             );
         }
-        ui.add_space(4.0);
-        ui.weak(tr(
-            "Hotkeys already used by another app cannot be bound. Changes save automatically.",
-        ));
     }
 
     fn ui_translate(&mut self, ui: &mut Ui) {
@@ -822,18 +887,17 @@ impl PrefsApp {
         form_grid(ui, "prefs_translate", |ui| {
             let prov = match self.draft.translate.normalized_provider() {
                 "deepseek" => tr("DeepSeek"),
-                "qwen" => tr("Tongyi Qwen"),
-                "ollama" => tr("Ollama"),
+                "volcengine" => tr("Volcengine Ark"),
                 "baidu" => tr("Baidu"),
                 "deepl" => tr("DeepL"),
                 "edge" => tr("Microsoft Edge (free)"),
-                _ => tr("OpenAI-compatible"),
+                _ => tr("OpenAI"),
             };
             form_combo(ui, tr("Provider:"), "tr_prov", prov, |ui| {
                 ui.selectable_value(
                     &mut self.draft.translate.provider,
                     "openai".into(),
-                    tr("OpenAI-compatible"),
+                    tr("OpenAI"),
                 );
                 ui.selectable_value(
                     &mut self.draft.translate.provider,
@@ -842,13 +906,8 @@ impl PrefsApp {
                 );
                 ui.selectable_value(
                     &mut self.draft.translate.provider,
-                    "qwen".into(),
-                    tr("Tongyi Qwen"),
-                );
-                ui.selectable_value(
-                    &mut self.draft.translate.provider,
-                    "ollama".into(),
-                    tr("Ollama"),
+                    "volcengine".into(),
+                    tr("Volcengine Ark"),
                 );
                 ui.selectable_value(
                     &mut self.draft.translate.provider,
@@ -897,25 +956,15 @@ impl PrefsApp {
                     tr("Traditional Chinese"),
                 );
             });
-            let openai = self.draft.translate.uses_openai_compat();
+            let baidu = self.draft.translate.normalized_provider() == "baidu";
+            let openai = self.draft.translate.uses_openai_compat() && !baidu;
             let deepl = self.draft.translate.normalized_provider() == "deepl";
             if openai || deepl {
-                let url_hint = if deepl {
-                    pinshot_core::translate::DEEPL_URL_DEFAULT
-                } else {
-                    pinshot_core::translate::service_preset(
-                        self.draft.translate.normalized_provider(),
-                    )
-                    .map(|p| p.default_url)
-                    .unwrap_or(pinshot_core::translate::OPENAI_URL_DEFAULT)
-                };
-                form_line_hint(
-                    ui,
-                    tr("API URL:"),
-                    &mut self.draft.translate.api_url,
-                    url_hint,
-                );
                 form_secret(ui, tr("API key:"), &mut self.draft.translate.api_key);
+            }
+            if baidu {
+                form_line(ui, tr("Baidu App ID:"), &mut self.draft.translate.app_id);
+                form_secret(ui, tr("Baidu Secret Key:"), &mut self.draft.translate.api_key);
             }
             if openai {
                 let model_hint = pinshot_core::translate::service_preset(
@@ -923,16 +972,46 @@ impl PrefsApp {
                 )
                 .map(|p| p.default_model)
                 .unwrap_or(pinshot_core::translate::OPENAI_MODEL_DEFAULT);
-                form_line_hint(
-                    ui,
-                    tr("Model:"),
-                    &mut self.draft.translate.model,
-                    model_hint,
-                );
+                if matches!(self.draft.translate.normalized_provider(), "deepseek" | "volcengine") {
+                    let current = self.draft.translate.model.clone();
+                    form_combo(ui, tr("Available models:"), "tr_models", current, |ui| {
+                        for model in &self.models {
+                            ui.selectable_value(&mut self.draft.translate.model, model.clone(), model);
+                        }
+                    });
+                    ui.label("");
+                    if ui.add_enabled(self.models_rx.is_none(), egui::Button::new(tr("Refresh models"))).clicked() {
+                        let settings = self.draft.translate.clone();
+                        self.models_provider = settings.normalized_provider().to_string();
+                        let (tx, rx) = std::sync::mpsc::channel();
+                        self.models_rx = Some(rx);
+                        std::thread::spawn(move || {
+                            let _ = tx.send(crate::translate_run::list_models(&settings));
+                        });
+                    }
+                    ui.end_row();
+                } else {
+                    form_line_hint(
+                        ui,
+                        tr("Model:"),
+                        &mut self.draft.translate.model,
+                        model_hint,
+                    );
+                }
             }
         });
         if self.draft.translate.provider != prev {
-            pinshot_core::translate::apply_service_defaults(&mut self.draft.translate);
+            self.models.clear();
+            self.models_provider.clear();
+            let old = self.draft.translate.clone();
+            self.draft.translate_profiles.insert(prev, old);
+            let next = self.draft.translate.normalized_provider().to_string();
+            if let Some(saved) = self.draft.translate_profiles.get(&next).cloned() {
+                self.draft.translate = saved;
+                self.draft.translate.provider = next.clone();
+            } else {
+                pinshot_core::translate::apply_service_defaults(&mut self.draft.translate);
+            }
         }
         ui.add_space(4.0);
         ui.horizontal(|ui| {
@@ -941,7 +1020,12 @@ impl PrefsApp {
                 .add_enabled(!testing, egui::Button::new(tr("Test")))
                 .clicked()
             {
-                self.start_translate_test();
+                // Persist the selected provider and its fields before testing.
+                // Otherwise the test can use the draft while a restart still
+                // loads the previous provider from disk.
+                if self.apply() {
+                    self.start_translate_test();
+                }
             }
             if testing {
                 ui.label(tr("Testing…"));
@@ -949,7 +1033,7 @@ impl PrefsApp {
         });
         ui.add_space(2.0);
         ui.weak(tr(
-            "Default is OpenAI-compatible (DeepSeek / Tongyi / Ollama / Baidu fill URL and model). Edge is the free fallback if the API is unset or fails. F5 in-place translate still works.",
+            "OpenAI requires an API URL, key, and model. Edge is the free fallback if the API is unset or fails.",
         ));
     }
 
@@ -994,21 +1078,26 @@ impl PrefsApp {
         ui.weak(tr(
             "When enabled, PinShot checks daily after the time below while it is running. On Windows, a newer release installs silently and restarts.",
         ));
-        ui.horizontal(|ui| {
-            ui.label(tr("Check time:"));
+        form_grid(ui, "prefs_update", |ui| {
+            form_label(ui, tr("Check time:"));
             let (h, m) =
                 pinshot_core::update::parse_check_time(&self.draft.update.check_time).unwrap_or((9, 0));
             let mut hour = h as i32;
             let mut minute = m as i32;
-            ui.add(egui::DragValue::new(&mut hour).range(0..=23));
-            ui.label(":");
-            ui.add(egui::DragValue::new(&mut minute).range(0..=59));
+            ui.horizontal(|ui| {
+                ui.add_sized([ACTION_W, ROW_H], egui::DragValue::new(&mut hour).range(0..=23));
+                ui.label(":");
+                ui.add_sized([ACTION_W, ROW_H], egui::DragValue::new(&mut minute).range(0..=59));
+            });
             self.draft.update.check_time =
                 pinshot_core::update::normalize_check_time(&format!("{hour}:{minute:02}"));
+            ui.end_row();
+            form_label(ui, tr("Last check:"));
+            let last = pinshot_core::update::format_last_check_unix(self.draft.update.last_check_unix)
+                .unwrap_or_else(|| tr("Never"));
+            ui.label(last);
+            ui.end_row();
         });
-        let last = pinshot_core::update::format_last_check_unix(self.draft.update.last_check_unix)
-            .unwrap_or_else(|| tr("Never"));
-        ui.label(format!("{} {last}", tr("Last check:")));
         #[cfg(not(windows))]
         ui.weak(tr("Auto-install is available on Windows only."));
         ui.add_space(4.0);
@@ -1043,7 +1132,7 @@ impl PrefsApp {
 
 /// Always a down chevron when closed. egui's default uses AboveOrBelow and
 /// paints ▲ on short pages (Interface) because the popup opens upward.
-const OCR_DL_BTN_W: f32 = 72.0;
+const OCR_DL_BTN_W: f32 = 92.0;
 
 /// Progress fills the button left → right while downloading; solid green when ready.
 fn ocr_model_download_button(
@@ -1069,7 +1158,7 @@ fn ocr_model_download_button(
     let stroke = visuals.bg_stroke;
     ui.painter().rect_filled(rect, rounding, visuals.bg_fill);
     let accent = ui.style().visuals.selection.bg_fill;
-    let done_fill = Color32::from_rgb(76, 160, 92);
+    let done_fill = Color32::from_rgb(40, 120, 66);
     if ready && !downloading {
         ui.painter().rect_filled(rect, rounding, done_fill);
     } else if downloading {
@@ -1116,10 +1205,18 @@ fn combo_chevron(
 fn form_grid(ui: &mut Ui, id: &'static str, add: impl FnOnce(&mut Ui)) {
     egui::Grid::new(id)
         .num_columns(2)
-        .spacing([8.0, 4.0])
+        .spacing([FORM_GAP, 8.0])
         .min_col_width(FORM_LABEL_W)
         .min_row_height(ROW_H)
         .show(ui, add);
+}
+
+fn form_label(ui: &mut Ui, label: String) {
+    ui.allocate_ui_with_layout(
+        egui::vec2(FORM_LABEL_W, ROW_H),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| { ui.add(egui::Label::new(label).wrap()); },
+    );
 }
 
 fn form_combo(
@@ -1129,12 +1226,10 @@ fn form_combo(
     selected: impl Into<egui::WidgetText>,
     add_contents: impl FnOnce(&mut Ui),
 ) {
-    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-        ui.set_min_width(FORM_LABEL_W);
-        ui.label(label);
-    });
+    form_label(ui, label);
     egui::ComboBox::from_id_salt(id)
         .width(CONTROL_W)
+        .wrap_mode(egui::TextWrapMode::Truncate)
         .icon(combo_chevron)
         .selected_text(selected)
         .show_ui(ui, add_contents);
@@ -1152,16 +1247,13 @@ struct HotkeyCapture {
 }
 
 fn form_hotkey(ui: &mut Ui, label: String, val: &mut String) {
-    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-        ui.set_min_width(FORM_LABEL_W);
-        ui.label(&label);
-    });
+    form_label(ui, label.clone());
     let id = ui.make_persistent_id(("hotkey_capture", &label));
     let mut capture = ui.ctx().data_mut(|data| data.get_temp::<HotkeyCapture>(id));
     ui.horizontal(|ui| {
         let text = if capture.is_some() { tr("Press a shortcut…") }
             else if val.is_empty() { tr("Click to set") } else { val.clone() };
-        let response = ui.add_sized([CONTROL_W - 48.0, ROW_H], egui::Button::new(text));
+        let response = ui.add_sized([CONTROL_W - ACTION_W - 8.0, ROW_H], egui::Button::new(text));
         if response.clicked() {
             response.request_focus();
             capture = Some(HotkeyCapture {
@@ -1199,7 +1291,7 @@ fn form_hotkey(ui: &mut Ui, label: String, val: &mut String) {
             ui.input_mut(|i| i.events.retain(|event| !matches!(event,
                 egui::Event::Key { .. } | egui::Event::Text(_))));
         }
-        if ui.small_button(tr("Clear")).clicked() {
+        if ui.add_sized([ACTION_W, ROW_H], egui::Button::new(tr("Clear"))).clicked() {
             val.clear();
             capture = None;
         }
@@ -1285,29 +1377,21 @@ mod shortcut_capture_tests {
 }
 
 fn form_line_hint(ui: &mut Ui, label: String, val: &mut String, hint: &str) {
-    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-        ui.set_min_width(FORM_LABEL_W);
-        ui.label(label);
-    });
-    ui.add(
+    form_label(ui, label);
+    ui.add_sized([CONTROL_W, ROW_H],
         egui::TextEdit::singleline(val)
             .hint_text(hint)
-            .desired_width(CONTROL_W)
-            .min_size(egui::vec2(CONTROL_W, ROW_H)),
+            .desired_width(CONTROL_W),
     );
     ui.end_row();
 }
 
 fn form_secret(ui: &mut Ui, label: String, val: &mut String) {
-    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-        ui.set_min_width(FORM_LABEL_W);
-        ui.label(label);
-    });
-    ui.add(
+    form_label(ui, label);
+    ui.add_sized([CONTROL_W, ROW_H],
         egui::TextEdit::singleline(val)
             .password(true)
-            .desired_width(CONTROL_W)
-            .min_size(egui::vec2(CONTROL_W, ROW_H)),
+            .desired_width(CONTROL_W),
     );
     ui.end_row();
 }
@@ -1318,11 +1402,12 @@ fn form_slider<Num: egui::emath::Numeric>(
     val: &mut Num,
     range: std::ops::RangeInclusive<Num>,
 ) {
-    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-        ui.set_min_width(FORM_LABEL_W);
-        ui.label(label);
+    form_label(ui, label);
+    ui.scope(|ui| {
+        ui.spacing_mut().slider_width = CONTROL_W - ACTION_W - ui.spacing().item_spacing.x;
+        ui.spacing_mut().interact_size.x = ACTION_W;
+        ui.add_sized([CONTROL_W, ROW_H], egui::Slider::new(val, range));
     });
-    ui.add_sized([CONTROL_W, ROW_H], egui::Slider::new(val, range));
     ui.end_row();
 }
 
@@ -1331,16 +1416,69 @@ mod tests {
     use super::*;
 
     #[test]
-    fn prefs_window_fixed_height() {
+    fn settings_pages_fit_content_column_in_both_languages() {
+        let original = config::load().unwrap_or_default().lang();
+        for lang in [Lang::ZhCn, Lang::En] {
+            i18n::set_lang(lang);
+            for tab in 0..TABS.len() {
+                let ctx = egui::Context::default();
+                crate::ui_font::install_cjk(&ctx);
+                ctx.style_mut(|style| {
+                    style.spacing.item_spacing = egui::vec2(8.0, 8.0);
+                    style.spacing.button_padding = egui::vec2(10.0, 5.0);
+                    style.spacing.interact_size.y = ROW_H;
+                });
+                let mut cfg = Config::default();
+                cfg.groups = (0..24).map(|i| format!("Long group name {i} with more content")).collect();
+                cfg.quick_save_folder = "C:/a/very/long/directory/".repeat(8);
+                let mut app = PrefsApp {
+                    draft: cfg.clone(), saved: cfg, tab, group_sel: 0,
+                    group_edit: String::new(), status: String::new(),
+                    test_rx: None, ocr_dl_rx: None, ocr_dl_frac: 0.0,
+                    update_check_rx: None, models: Vec::new(),
+                    models_provider: String::new(), models_rx: None,
+                };
+                // egui grids settle column widths across frames.
+                for frame in 0..3 {
+                    let _ = ctx.run(egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(PREFS_W, PREFS_MAX_H))),
+                        ..Default::default()
+                    }, |ctx| {
+                        egui::CentralPanel::default()
+                            .frame(egui::Frame::NONE.inner_margin(egui::Margin::same(CONTENT_MARGIN)))
+                            .show(ctx, |ui| {
+                                match tab {
+                                    0 => app.ui_general(ui), 1 => app.ui_interface(ui),
+                                    2 => app.ui_snip(ui), 3 => app.ui_paste(ui),
+                                    4 => app.ui_output(ui), 5 => app.ui_control(ui),
+                                    6 => app.ui_translate(ui), 7 => app.ui_update(ui),
+                                    _ => app.ui_about(ui),
+                                }
+                                if frame == 2 {
+                                    assert!(ui.min_rect().right() <= PREFS_W - CONTENT_MARGIN as f32 + 1.0,
+                                        "{lang:?} {} overflows: {:?}", TABS[tab], ui.min_rect());
+                                    assert!(ui.cursor().min.y < PREFS_MAX_H - FOOTER_H - 100.0,
+                                        "{} exceeds available height", TABS[tab]);
+                                }
+                            });
+                    });
+                }
+            }
+        }
+        i18n::set_lang(original);
+    }
+
+    #[test]
+    fn prefs_window_size_bounds() {
         let size = prefs_inner_size();
         assert_eq!(size.x, PREFS_W);
-        assert_eq!(size.y, PREFS_H);
-        assert!(PREFS_H >= 280.0, "must fit the Control tab");
+        assert_eq!(size.y, PREFS_MIN_H);
+        assert!(PREFS_MIN_H >= 200.0);
         assert!(PREFS_W <= 560.0);
         assert_eq!(TABS.len(), 9);
         assert_eq!(TABS[6], "Translate");
         assert_eq!(TABS[7], "Update");
-        assert_eq!(PREFS_MIN_H, PREFS_MAX_H);
+        assert!(PREFS_MIN_H < PREFS_MAX_H);
     }
 
     #[test]
@@ -1375,6 +1513,9 @@ mod tests {
             ocr_dl_rx: None,
             ocr_dl_frac: 0.0,
             update_check_rx: None,
+                models: Vec::new(),
+                models_provider: String::new(),
+                models_rx: None,
         };
         app.restore_tab();
         let d = Config::default();
@@ -1391,6 +1532,7 @@ mod tests {
                     provider: "edge".into(),
                     api_url: "https://example.invalid".into(),
                     api_key: "sk-x".into(),
+                    app_id: String::new(),
                     model: "x".into(),
                     target: "ja".into(),
                 },
@@ -1405,6 +1547,9 @@ mod tests {
             ocr_dl_rx: None,
             ocr_dl_frac: 0.0,
             update_check_rx: None,
+            models: Vec::new(),
+            models_provider: String::new(),
+            models_rx: None,
         };
         app.restore_tab();
         assert_eq!(app.draft.translate.provider, "openai");

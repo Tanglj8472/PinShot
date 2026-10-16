@@ -18,6 +18,15 @@ fn main() {
     let dir = exe.parent().unwrap();
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--quit-for-install") {
+        #[cfg(retry_shutdown)]
+        {
+            let marker = dir.join("shutdown-retry.txt");
+            if !marker.exists() {
+                std::fs::write(marker, "retry").unwrap();
+                std::process::exit(1);
+            }
+            return;
+        }
         #[cfg(restart_app)]
         {
             if let Ok(pid) = std::fs::read_to_string(dir.join("fixture-pid.txt")) {
@@ -42,7 +51,13 @@ fn main() {
     }
     #[cfg(windows)]
     unsafe {
-        let dll = dir.join("webgpu_dawn.dll");
+        // Exercise a DLL that actually ships in this build. CPU/DirectML OCR
+        // packages need not contain Dawn's optional WebGPU runtime.
+        let dll = ["webgpu_dawn.dll", "DirectML.dll", "msvcp140.dll"]
+            .into_iter()
+            .map(|name| dir.join(name))
+            .find(|path| path.is_file())
+            .expect("test payload has no runtime DLL to lock");
         let name: Vec<_> = dll
             .to_string_lossy()
             .encode_utf16()

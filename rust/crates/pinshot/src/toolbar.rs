@@ -189,6 +189,7 @@ pub struct Toolbar {
 pub struct TbMenu {
     pub rect: Rect,
     pub items: Vec<TbButton>,
+    pub scrollbar: Option<(Rect, Rect)>,
 }
 
 /// Main toolbar cell metrics. Hit-testing uses the same metrics as painting.
@@ -196,6 +197,17 @@ const CELL: f32 = 30.0;
 const PAD: f32 = 6.0;
 const GAP: f32 = 4.0;
 const SEP: f32 = 12.0;
+
+fn font_menu_width(available: f32) -> f32 {
+    let longest = pinshot_core::font::available_families()
+        .iter()
+        .map(|f| f.chars().count())
+        .max()
+        .unwrap_or(7);
+    (longest as f32 * 7.2 + 34.0)
+        .clamp(210.0, 360.0)
+        .min(available)
+}
 
 impl Toolbar {
     pub fn layout(
@@ -303,7 +315,8 @@ impl Toolbar {
             });
             cx += CELL + GAP;
         }
-        cx += SEP;
+        // Replace the trailing tool gap with the inter-group separation.
+        cx += SEP - GAP;
         for (icon, action, tip) in acts {
             buttons.push(TbButton {
                 rect: Rect::new(cx, y + PAD, CELL, CELL),
@@ -495,13 +508,23 @@ impl Toolbar {
                             &mut extras,
                             &mut chip_x,
                             chip_y,
-                            118.0,
+                             font_menu_width(overlay.w),
                             label,
                             None,
                             TbAction::ToggleFontMenu,
                         );
                     }
                     Some(Tool::Number) => {
+                        // Numbered markers use the same size control as the
+                        // marker tool; the mode toggle is intentionally not
+                        // shown because a number is always a point marker.
+                        push_size_chip(
+                            &mut extras,
+                            &mut chip_x,
+                            chip_y,
+                            26.0,
+                            st.width,
+                        );
                         push_icon(
                             &mut extras,
                             &mut chip_x,
@@ -681,7 +704,7 @@ impl Toolbar {
                 checked,
             });
         }
-        self.menu = Some(TbMenu { rect, items });
+        self.menu = Some(TbMenu { rect, items, scrollbar: None });
     }
 
     pub fn attach_font_menu(&mut self, overlay: Rect, style: &Style, offset: usize) -> usize {
@@ -690,7 +713,7 @@ impl Toolbar {
         let rows = (((overlay.h - 6.0) / 24.0).floor() as usize).clamp(3, 10);
         let visible = (rows - 2).min(families.len());
         let offset = offset.min(families.len().saturating_sub(visible));
-        let width = 210.0_f32.min(overlay.w);
+        let width = font_menu_width(overlay.w);
         let height = (visible + 2) as f32 * 24.0 + 6.0;
         let x = pinshot_core::geom::clamp_f32(combo.rect.x, overlay.x, overlay.right() - width);
         let below = combo.rect.bottom() + 2.0;
@@ -699,7 +722,8 @@ impl Toolbar {
         };
         let mut items = Vec::new();
         let mut push = |row: usize, action, tip, checked| items.push(TbButton {
-            rect: Rect::new(x + 3.0, y + 3.0 + row as f32 * 24.0, width - 6.0, 23.0),
+            // Leave a gutter between row content and the scrollbar.
+            rect: Rect::new(x + 3.0, y + 3.0 + row as f32 * 24.0, (width - 14.0).max(0.0), 23.0),
             icon: IconKind::Text, action, tip, checked,
         });
         push(0, TbAction::FontMenuScroll(-3), "↑", false);
@@ -707,7 +731,19 @@ impl Toolbar {
             push(i + 1, TbAction::Family(family), family, style.family.eq_ignore_ascii_case(family));
         }
         push(visible + 1, TbAction::FontMenuScroll(3), "↓", false);
-        self.menu = Some(TbMenu { rect: Rect::new(x, y, width, height), items });
+        let track = Rect::new(x + width - 8.0, y + 4.0, 4.0, height - 8.0);
+        let thumb_h = (track.h * visible as f32 / families.len().max(visible) as f32).max(18.0);
+        let max_offset = families.len().saturating_sub(visible);
+        let thumb_y = if max_offset == 0 {
+            track.y
+        } else {
+            track.y + (track.h - thumb_h) * offset as f32 / max_offset as f32
+        };
+        self.menu = Some(TbMenu {
+            rect: Rect::new(x, y, width, height),
+            items,
+            scrollbar: Some((track, Rect::new(track.x, thumb_y, track.w, thumb_h))),
+        });
         offset
     }
 
@@ -805,6 +841,18 @@ fn push_brush_chip(extras: &mut Vec<TbExtra>, x: &mut f32, y: f32, w: f32, value
         action: TbAction::SetMode(DrawMode::Brush),
         label: String::new(),
         checked,
+        icon: None,
+        kind: ExtraKind::BrushSize(value),
+    });
+    *x += w + 2.0;
+}
+
+fn push_size_chip(extras: &mut Vec<TbExtra>, x: &mut f32, y: f32, w: f32, value: i32) {
+    extras.push(TbExtra {
+        rect: Rect::new(*x, y, w, 24.0),
+        action: TbAction::Width(0),
+        label: String::new(),
+        checked: true,
         icon: None,
         kind: ExtraKind::BrushSize(value),
     });

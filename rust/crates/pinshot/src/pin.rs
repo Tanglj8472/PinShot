@@ -9,7 +9,7 @@ use crate::draw::{
 };
 use crate::native;
 use crate::toolbar::{TbAction, Toolbar};
-use pinshot_core::annotation::{Annotator, ArrowKind, Tool};
+use pinshot_core::annotation::{Annotator, ArrowKind, Style, Tool};
 use pinshot_core::color::Rgba;
 use pinshot_core::colorpicker::{color_picker_layout, ColorPicker, PickerAction};
 use pinshot_core::cursor::cursor_for;
@@ -26,6 +26,26 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
+
+static LAST_TOOL_STYLES: std::sync::OnceLock<std::sync::Mutex<Option<[Style; 9]>>> =
+    std::sync::OnceLock::new();
+
+fn remembered_styles() -> Option<[Style; 9]> {
+    LAST_TOOL_STYLES
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .ok()
+        .and_then(|g| g.clone())
+}
+
+fn remember_styles(styles: &[Style; 9]) {
+    if let Ok(mut g) = LAST_TOOL_STYLES
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+    {
+        *g = Some(styles.clone());
+    }
+}
 
 #[cfg(windows)]
 use crate::win32::{hwnd_of, wide};
@@ -117,6 +137,7 @@ pub struct PinWin {
     ocr: Option<OcrOverlay>,
     ocr_gesture: Option<OcrGesture>,
     pending_ocr: bool,
+    ocr_running: bool,
     pending_translate: bool,
     /// Sticky banner (download / recognize). Unlike toast it does not expire.
     status: Option<String>,
@@ -161,11 +182,15 @@ impl PinWin {
         window.set_ime_allowed(true);
         let context = Context::new(window.clone()).map_err(|e| e.to_string())?;
         let surface = Surface::new(&context, window.clone()).map_err(|e| e.to_string())?;
+        let mut annot = Annotator::new();
+        if let Some(styles) = remembered_styles() {
+            annot.styles = styles;
+        }
         let mut pin = Self {
             window,
             surface,
             img,
-            annot: Annotator::new(),
+            annot,
             scale: 1.0,
             opacity: 1.0,
             click_through: false,
@@ -205,6 +230,7 @@ impl PinWin {
             ocr: None,
             ocr_gesture: None,
             pending_ocr: false,
+            ocr_running: false,
             pending_translate: false,
             status: None,
             ocr_flash_until: None,
@@ -336,7 +362,7 @@ impl PinWin {
             None => tl,
         };
         self.apply_geom(nx, ny, w, h);
-        crate::logutil::log(&format!(
+        crate::logutil::log_at("trace", &format!(
             "pin zoom {old:.3}->{new:.3} {}x{} @ {},{} (was {},{}) anchor {:.0},{:.0}",
             w,
             h,
@@ -407,7 +433,25 @@ impl PinWin {
     }
 
     pub fn request_ocr(&mut self) {
-        self.pending_ocr = true;
+        if self.start_ocr() {
+            self.pending_ocr = true;
+        }
+    }
+
+    pub fn start_ocr(&mut self) -> bool {
+        if self.ocr_running {
+            return false;
+        }
+        self.ocr_running = true;
+        true
+    }
+
+    pub fn ocr_running(&self) -> bool {
+        self.ocr_running
+    }
+
+    pub fn finish_ocr(&mut self) {
+        self.ocr_running = false;
     }
 
     pub fn request_translate(&mut self) {
@@ -542,11 +586,10 @@ impl PinWin {
             if self.thumb {
                 self.toggle_thumb();
             }
-            if self.annot.tool.is_none() {
-                // Select, not Rect: opening the bar must not start drawing a
-                // box, or OCR text cannot be dragged.
-                self.annot.set_tool(Some(Tool::Select));
-            }
+            // Showing the toolbar must not put the pin into annotation-select
+            // mode. Keep the neutral tool state so the image remains movable;
+            // an annotation tool is entered only after the user chooses one.
+            self.annot.set_tool(None);
             self.relayout_tb();
         } else {
             self.annot.set_tool(None);
@@ -930,8 +973,11 @@ impl PinWin {
                 self.font_menu_offset = self.font_menu_offset.saturating_add_signed(delta as isize);
             }
             TbAction::Ocr => {
-                self.pending_ocr = true;
-                self.prefer_select_for_ocr();
+                let running = self.ocr_running;
+                self.request_ocr();
+                if !running {
+                    self.prefer_select_for_ocr();
+                }
             }
             TbAction::Pin => {}
         }
@@ -1138,8 +1184,16 @@ impl PinWin {
                             self.begin_ocr_select(p);
                             return;
                         }
-                        if over_img && self.annot.press(self.img_pt(p), self.mods.shift_key()) {
-                            self.dirty = true;
+                        if over_img {
+                            if self.annot.press(self.img_pt(p), self.mods.shift_key()) {
+                                self.dirty = true;
+                                return;
+                            }
+                            // The toolbar's default Select tool only owns the
+                            // pointer when an annotation is actually hit. If
+                            // the image itself was hit, keep normal pin drag
+                            // behavior without requiring another tool click.
+                            self.begin_drag();
                             return;
                         }
                     } else if let Some(tb) = &self.toolbar {
@@ -1202,7 +1256,7 @@ impl PinWin {
                         || self.annot.hit_test(self.img_pt(self.last_cursor)).is_some())
                 {
                     if self.annot.wheel_at(self.img_pt(self.last_cursor), angle) {
-                        crate::logutil::log(&format!(
+                        crate::logutil::log_at("trace", &format!(
                             "pin wheel {angle:+} width={}",
                             self.annot.option_width()
                         ));
@@ -1219,7 +1273,7 @@ impl PinWin {
                 self.mods = m.state();
             }
             WindowEvent::Ime(winit::event::Ime::Commit(s)) => {
-                crate::logutil::log(&format!("pin text ime commit {:?}", s));
+                crate::logutil::log_at("trace", &format!("pin: IME committed {} characters", s.chars().count()));
                 self.annot.insert_str(s);
                 self.dirty = true;
             }
@@ -1241,7 +1295,7 @@ impl PinWin {
                         Key::Named(NamedKey::Enter) if shift => self.annot.type_text('\n'),
                         Key::Named(NamedKey::Enter) => {
                             if let Some(ed) = &self.annot.text_edit {
-                                crate::logutil::log(&format!("text commit {:?}", ed.text));
+                                crate::logutil::log_at("trace", &format!("pin: text committed {} characters", ed.text.chars().count()));
                             }
                             self.annot.commit_text(false);
                         }
@@ -1548,8 +1602,11 @@ impl PinWin {
                 self.dirty = true;
             }
             PinMenuAction::Ocr => {
-                self.pending_ocr = true;
-                self.prefer_select_for_ocr();
+                let running = self.ocr_running;
+                self.request_ocr();
+                if !running {
+                    self.prefer_select_for_ocr();
+                }
             }
             PinMenuAction::Translate => self.pending_translate = true,
         }
@@ -1600,7 +1657,11 @@ impl PinWin {
     }
 
     fn save(&mut self) {
-        if let Some(path) = crate::dialog::save_path("pinshot.png") {
+        let format = pinshot_core::config::load()
+            .map(|c| c.save_filename_format)
+            .unwrap_or_else(|_| "pinshot-{date}-{time}.png".into());
+        let suggested = pinshot_core::config::expand_save_filename(&format);
+        if let Some(path) = crate::dialog::save_path(&suggested) {
             if crate::dialog::save_raster(&self.rendered(), &path, 92).is_ok() {
                 self.saved_path = Some(path);
             }
@@ -1665,6 +1726,7 @@ impl PinWin {
             return;
         }
         self.expire_toast();
+        remember_styles(&self.annot.styles);
         let (ww, hh) = self.win_px();
         if self
             .surface
