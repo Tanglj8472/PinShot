@@ -78,13 +78,20 @@ end;
 
 function InstalledVersionMatches: Boolean;
 var
-  Expected: String;
+  Major: Cardinal;
+  Minor: Cardinal;
+  Build: Cardinal;
+  Revision: Cardinal;
   Actual: String;
 begin
-  Expected := '{#AppVersion}.0';
-  Actual := GetFileVersion(ExpandConstant('{app}\pinshot.exe'));
-  Result := Actual = Expected;
-  Log('Installed PinShot version check: expected=' + Expected + ', actual=' + Actual);
+  Result := GetVersionNumbers(ExpandConstant('{app}\pinshot.exe'), Major, Minor, Build, Revision);
+  if Result then begin
+    Actual := IntToStr(Major) + '.' + IntToStr(Minor) + '.' + IntToStr(Build);
+    Result := Actual = '{#AppVersion}';
+  end else begin
+    Actual := '<unavailable>';
+  end;
+  Log('Installed PinShot version check: expected={#AppVersion}, actual=' + Actual);
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
