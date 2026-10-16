@@ -489,7 +489,7 @@ LRESULT SelectionOverlay::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
             m_ptCurrent = pt;
             RECT local = RectFromPointsMinSize(m_ptStart, m_ptCurrent, kMinSelectionPx);
             SetSelectionFromLocal(local);
-            // PinShot / Snipaste: release → enter annotation immediately (no OK step).
+            // PinShot / 参考工具: release → enter annotation immediately (no OK step).
             if (m_model.hasSelection)
             {
                 Stop(true);
@@ -789,7 +789,7 @@ void SelectionOverlay::RenderToBitmap()
         if (r < w && b > t)
             m_rt->FillRectangle(D2D1::RectF(r, t, w, b), m_brushDim);
 
-        // Snipaste-like: thin blue selection border + 8 handles; size at top-left.
+        // 参考工具-like: thin blue selection border + 8 handles; size at top-left.
         const float stroke = static_cast<float>(ScaleForDpi(1, m_dpi));
         m_rt->DrawRectangle(D2D1::RectF(l + 0.5f, t + 0.5f, r - 0.5f, b - 0.5f), m_brushAccent, stroke);
 

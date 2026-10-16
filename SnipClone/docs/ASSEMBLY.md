@@ -5,7 +5,7 @@
 | 层 | 参考 | SnipClone 落点 |
 |----|------|----------------|
 | 屏幕捕获 / DPI / Layered / 矢量绘制底层 | PowerToys ZoomIt（MIT，模式级参考，未整棵 vendoring） | `Capture/` · `Common/DpiHelper` · D2D `AnnotationRenderer` · `ImageUtil` |
-| 批注功能组装（谁拥有什么、工具栏怎么对话、导出） | PinShot（自研 Snipaste 式） | `AnnotationOverlay` + `DrawStack` + `Toolbar` + `PinManager` |
+| 批注功能组装（谁拥有什么、工具栏怎么对话、导出） | PinShot（自研 参考工具 式） | `AnnotationOverlay` + `DrawStack` + `Toolbar` + `PinManager` |
 
 ## PinShot 对位
 

@@ -1,7 +1,7 @@
 //==============================================================================
 // SnipClone — screen capture (GDI BitBlt, ZoomIt-style)
 //
-// PinShot / Snipaste assembly: capture virtual desktop first (freeze), then
+// PinShot / 参考工具 assembly: capture virtual desktop first (freeze), then
 // select a region on that frozen frame. ZoomIt Draw mode similarly works from
 // a screen-compatible DC buffer (BitBlt + CAPTUREBLT).
 //==============================================================================

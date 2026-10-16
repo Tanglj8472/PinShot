@@ -179,7 +179,7 @@ void AnnotationRenderer::DrawTextCmd(ID2D1RenderTarget* rt, const DrawCommand& c
     const float h = cmd.style.fontSize * 6.f;
     D2D1_RECT_F layout = D2D1::RectF(x, y, x + w, y + h);
 
-    // PinShot/Snipaste outline: light text → black halo, dark text → white halo.
+    // PinShot/参考工具 outline: light text → black halo, dark text → white halo.
     if (cmd.style.outline)
     {
         const float lum = 0.2126f * cmd.style.color.r + 0.7152f * cmd.style.color.g + 0.0722f * cmd.style.color.b;

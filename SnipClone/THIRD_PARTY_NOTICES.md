@@ -13,7 +13,7 @@ patterns from Microsoft PowerToys ZoomIt (`src/modules/ZoomIt/`), especially:
 - Per-Monitor DPI awareness manifest settings
 
 This repository does **not** vendor the ZoomIt sources wholesale. Capture and
-selection chrome were rewritten; the snip assembly follows PinShot/Snipaste
+selection chrome were rewritten; the snip assembly follows PinShot/参考工具
 (“freeze virtual desktop → select on freeze → crop → annotate”).
 
 ```

@@ -210,7 +210,7 @@ void Toolbar::BuildButtons()
         m_buttons.push_back(b);
     };
 
-    // Snipaste-like order: select | shapes | arrow | pen | mosaic | text | eraser
+    // 参考工具-like order: select | shapes | arrow | pen | mosaic | text | eraser
     // | undo redo | cancel pin save copy. Highlighter deferred.
     addTool(ToolKind::Select, L"选择 (S) — 选中/移动/缩放图形");
     addTool(ToolKind::Rect, L"矩形 (R)  Shift=正方形");

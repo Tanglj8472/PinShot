@@ -1,7 +1,7 @@
-# 文字标注目标（对齐 Snipaste / PinShot）
+# 文字标注目标（对齐 参考工具 / PinShot）
 
 > 说明：演示视频 `文字标注展示.mp4` 位于本机路径，云环境无法直接读取。
-> 本规格以 PinShot 中已按 Snipaste 公开行为实现的文字交互为准，并作为 SnipClone 目标。
+> 本规格以 PinShot 中已按 参考工具 公开行为实现的文字交互为准，并作为 SnipClone 目标。
 
 ## 交互
 

@@ -5,7 +5,7 @@
       version="0.2.0.0"
       type="win32"
       processorArchitecture="*"/>
-  <description>SnipClone — Snipaste-style snipping tool (Win32 + Direct2D)</description>
+  <description>SnipClone — 参考工具-style snipping tool (Win32 + Direct2D)</description>
   <dependency>
     <dependentAssembly>
       <assemblyIdentity

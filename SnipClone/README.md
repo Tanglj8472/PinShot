@@ -1,9 +1,9 @@
 # SnipClone
 
-原生 Win32 + Direct2D 的 Snipaste 风格截图工具。
+原生 Win32 + Direct2D 的 参考工具 风格截图工具。
 
 - **底层**（捕获 / DPI / Layered / 矢量绘制 / 编码）：参考 PowerToys ZoomIt（MIT，见 `THIRD_PARTY_NOTICES.md`）
-- **批注组装**（Annotator 所有权、工具栏对话、copy/pin/save）：对齐本仓库 PinShot（自研 Snipaste 式 UX）
+- **批注组装**（Annotator 所有权、工具栏对话、copy/pin/save）：对齐本仓库 PinShot（自研 参考工具 式 UX）
 
 装配对照见 [`docs/ASSEMBLY.md`](docs/ASSEMBLY.md)。分阶段计划见 [`docs/ROADMAP.md`](docs/ROADMAP.md)；桌面验收见 [`docs/DESKTOP_CHECKLIST.md`](docs/DESKTOP_CHECKLIST.md)；发布见 [`docs/RELEASE.md`](docs/RELEASE.md)。
 

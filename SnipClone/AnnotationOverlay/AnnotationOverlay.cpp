@@ -1,6 +1,6 @@
 //==============================================================================
 // SnipClone — annotation host
-// 文字交互目标：Snipaste / PinShot — 落点浮动 EDIT、Enter 提交、Esc 取消、双击重编
+// 文字交互目标：参考工具 / PinShot — 落点浮动 EDIT、Enter 提交、Esc 取消、双击重编
 //==============================================================================
 #include "AnnotationOverlay.h"
 
@@ -374,7 +374,7 @@ LRESULT AnnotationOverlay::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
 
     case WM_LBUTTONDBLCLK:
     {
-        // Snipaste/PinShot: double-click text to re-edit (even if not on text tool).
+        // 参考工具/PinShot: double-click text to re-edit (even if not on text tool).
         const D2D1_POINT_2F pt = D2D1::Point2F(
             static_cast<float>(GET_X_LPARAM(lParam)),
             static_cast<float>(GET_Y_LPARAM(lParam)));
