@@ -2,6 +2,7 @@ use std::num::NonZeroU32;
 use std::rc::Rc;
 
 use pinshot_core::geom::Point;
+use pinshot_core::icons::app_icon_rgba;
 use softbuffer::{Context, Surface};
 use winit::dpi::LogicalSize;
 use winit::event::{ElementState, MouseButton, WindowEvent};
@@ -22,10 +23,17 @@ pub struct TranslatePopup {
 
 impl TranslatePopup {
     pub fn create(event_loop: &ActiveEventLoop, source: String, translated: String) -> Result<Self, String> {
+        let max_chars = source.chars().count().max(translated.chars().count());
+        let lines = (max_chars as f64 / 58.0).ceil().clamp(1.0, 12.0);
+        let height = (112.0 + lines * 28.0).clamp(180.0, 520.0);
+        let width = (420.0 + (max_chars.min(80) as f64 * 2.0)).clamp(420.0, 760.0);
+        let (iw, ih, rgba) = app_icon_rgba(32);
+        let icon = winit::window::Icon::from_rgba(rgba, iw, ih).ok();
         let window = Rc::new(event_loop.create_window(
             Window::default_attributes()
                 .with_title("PinShot - Translation")
-                .with_inner_size(LogicalSize::new(560.0, 260.0))
+                .with_window_icon(icon)
+                .with_inner_size(LogicalSize::new(width, height))
                 .with_resizable(true),
         ).map_err(|e| e.to_string())?);
         crate::native::exclude_from_capture(&window);

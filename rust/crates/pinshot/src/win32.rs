@@ -683,14 +683,22 @@ fn notify_hotkey_failures(hwnd: HWND, failures: Vec<String>) {
         Shell_NotifyIconW, NOTIFYICONDATAW, NIF_ICON, NIF_INFO, NIF_MESSAGE,
         NIIF_WARNING, NIM_ADD, NIM_MODIFY,
     };
-    use windows::Win32::UI::WindowsAndMessaging::{LoadIconW, IDI_WARNING};
+    use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows::Win32::UI::WindowsAndMessaging::LoadIconW;
+    use windows::core::PCWSTR;
+    let app_icon = unsafe {
+        GetModuleHandleW(None)
+            .ok()
+            .and_then(|module| LoadIconW(module, PCWSTR(1 as *const u16)).ok())
+            .unwrap_or_default()
+    };
     let mut notice = NOTIFYICONDATAW {
         cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
         hWnd: hwnd,
         uID: HOTKEY_NOTICE_ID,
         uFlags: NIF_ICON | NIF_MESSAGE,
         uCallbackMessage: HOTKEY_NOTICE_MESSAGE,
-        hIcon: unsafe { LoadIconW(None, IDI_WARNING) }.unwrap_or_default(),
+        hIcon: app_icon,
         ..Default::default()
     };
     unsafe {

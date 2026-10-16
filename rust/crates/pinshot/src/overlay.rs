@@ -86,6 +86,7 @@ pub struct Overlay {
     line_menu_open: bool,
     font_menu_open: bool,
     font_menu_offset: usize,
+    font_scroll_drag: bool,
     dpr: f32,
     result: Option<OverlayResult>,
     dirty: bool,
@@ -264,6 +265,7 @@ impl Overlay {
             line_menu_open: false,
             font_menu_open: false,
             font_menu_offset: 0,
+            font_scroll_drag: false,
             dpr: 1.0,
             result: None,
             dirty: true,
@@ -1186,6 +1188,16 @@ impl Overlay {
             self.hover_deep = false;
         }
         self.cursor = next;
+        if self.font_scroll_drag {
+            if let Some(tb) = &self.toolbar {
+                if let Some(offset) = tb.font_menu_drag_offset(next) {
+                    self.font_menu_offset = offset;
+                    self.relayout_toolbar();
+                    self.dirty = true;
+                }
+            }
+            return;
+        }
         if self.annot.is_brush_live()
             || self.annot.is_selecting()
             || self.annot.is_dragging_text()
@@ -1245,6 +1257,15 @@ impl Overlay {
             self.held_btn1 = true;
             self.interacted = true;
             if let Some(tb) = &self.toolbar {
+                if self.font_menu_open && tb.font_menu_drag_offset(pt).is_some() {
+                    self.font_scroll_drag = true;
+                    if let Some(offset) = tb.font_menu_drag_offset(pt) {
+                        self.font_menu_offset = offset;
+                        self.relayout_toolbar();
+                    }
+                    self.mark_dirty();
+                    return;
+                }
                 if let Some(a) = tb.hit(pt) {
                     self.apply_tb(a);
                     return;
@@ -1325,6 +1346,7 @@ impl Overlay {
             self.dirty = true;
         } else if !pressed && button == MouseButton::Left {
             self.held_btn1 = false;
+            self.font_scroll_drag = false;
             if self.annot.live.is_some()
                 || self.annot.is_selecting()
                 || self.annot.is_dragging_text()

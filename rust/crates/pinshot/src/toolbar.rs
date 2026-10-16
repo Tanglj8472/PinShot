@@ -711,7 +711,7 @@ impl Toolbar {
         let Some(combo) = self.extras.iter().find(|e| e.action == TbAction::ToggleFontMenu) else { return 0; };
         let families = pinshot_core::font::available_families();
         let rows = (((overlay.h - 6.0) / 24.0).floor() as usize).clamp(3, 10);
-        let visible = (rows - 2).min(families.len());
+        let visible = (rows - 1).min(families.len());
         let offset = offset.min(families.len().saturating_sub(visible));
         let width = font_menu_width(overlay.w);
         let height = (visible + 2) as f32 * 24.0 + 6.0;
@@ -726,11 +726,9 @@ impl Toolbar {
             rect: Rect::new(x + 3.0, y + 3.0 + row as f32 * 24.0, (width - 14.0).max(0.0), 23.0),
             icon: IconKind::Text, action, tip, checked,
         });
-        push(0, TbAction::FontMenuScroll(-3), "↑", false);
         for (i, family) in families.iter().skip(offset).take(visible).enumerate() {
-            push(i + 1, TbAction::Family(family), family, style.family.eq_ignore_ascii_case(family));
+            push(i, TbAction::Family(family), family, style.family.eq_ignore_ascii_case(family));
         }
-        push(visible + 1, TbAction::FontMenuScroll(3), "↓", false);
         let track = Rect::new(x + width - 8.0, y + 4.0, 4.0, height - 8.0);
         let thumb_h = (track.h * visible as f32 / families.len().max(visible) as f32).max(18.0);
         let max_offset = families.len().saturating_sub(visible);
@@ -745,6 +743,18 @@ impl Toolbar {
             scrollbar: Some((track, Rect::new(track.x, thumb_y, track.w, thumb_h))),
         });
         offset
+    }
+
+    pub fn font_menu_drag_offset(&self, point: Point) -> Option<usize> {
+        let menu = self.menu.as_ref()?;
+        let (track, thumb) = menu.scrollbar?;
+        if !track.contains(point) { return None; }
+        let families = pinshot_core::font::available_families();
+        let visible = menu.items.len();
+        let max = families.len().saturating_sub(visible);
+        if max == 0 { return Some(0); }
+        let top = (point.y - thumb.h * 0.5).clamp(track.y, track.bottom() - thumb.h);
+        Some(((top - track.y) / (track.h - thumb.h).max(1.0) * max as f32).round() as usize)
     }
 
     pub fn set_width_value(&mut self, w: i32) {
@@ -1220,7 +1230,7 @@ mod tests {
         let selected = menu.items.iter().find(|b| b.checked).unwrap();
         assert_eq!(tb.hit(selected.rect.center()), Some(selected.action));
         assert_eq!(selected.action, TbAction::Family(families.last().unwrap()));
-        assert!(menu.items.iter().any(|b| b.action == TbAction::FontMenuScroll(-3)));
+        assert!(menu.scrollbar.is_some());
         assert_eq!(tb.attach_font_menu(over, &st, 0), 0);
         assert!(tb.menu.as_ref().unwrap().items.iter().any(|b| b.action == TbAction::Family("")));
     }
