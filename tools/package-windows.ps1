@@ -103,6 +103,12 @@ $dumpbin = Get-ChildItem -LiteralPath (Join-Path $vsRoot 'VC\Tools\MSVC') -Direc
 if (-not $dumpbin) { throw 'MSVC dumpbin.exe not found' }
 & (Join-Path $PSScriptRoot 'test-windows-runtime.ps1') -PayloadDir $payload -Dumpbin $dumpbin
 Copy-Item -LiteralPath (Join-Path $repo 'assets\pinshot.ico') -Destination $payload
+@{
+    product = 'PinShot'
+    version = $version
+    installDirectory = '%LOCALAPPDATA%\Programs\PinShot'
+    managedInstaller = 'PinShot Windows Installer'
+} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $payload 'pinshot-install.json') -Encoding utf8
 $readmeZh = Join-Path $repo 'README.zh-CN.md'
 $readmeDefault = Join-Path $repo 'README.md'
 $readmeSrc = if (Test-Path -LiteralPath $readmeZh) { $readmeZh } else { $readmeDefault }

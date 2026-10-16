@@ -77,6 +77,19 @@ jobs:
           ../tools/test-windows-upgrade.ps1 -PayloadDir $payload -Iscc $iscc -RejectShutdown
           ../tools/test-windows-upgrade.ps1 -PayloadDir $payload -Iscc $iscc -RestartAfterInstall
           ../tools/test-windows-upgrade.ps1 -PayloadDir $payload -Iscc $iscc -UpdateHelper
+      - name: Sign installer when certificate is configured
+        if: ${{ secrets.WINDOWS_SIGNING_CERT_BASE64 != '' }}
+        working-directory: .
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_CERT_BASE64: ${{ secrets.WINDOWS_SIGNING_CERT_BASE64 }}
+          WINDOWS_SIGNING_CERT_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERT_PASSWORD }}
+        run: |
+          ./tools/sign-windows-release.ps1 -DistDir ./dist -CertificateBase64 $env:WINDOWS_SIGNING_CERT_BASE64 -CertificatePassword $env:WINDOWS_SIGNING_CERT_PASSWORD
+      - name: Publish unsigned security metadata
+        if: ${{ secrets.WINDOWS_SIGNING_CERT_BASE64 == '' }}
+        shell: pwsh
+        run: Add-Content -LiteralPath ./dist/SHA256SUMS.txt -Value "`n# Authenticode: not signed (certificate not configured in CI)"
       - uses: actions/upload-artifact@v4
         with:
           name: pinshot-windows-x64-packages

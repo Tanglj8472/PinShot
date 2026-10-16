@@ -17,10 +17,19 @@ AppName=PinShot
 AppVersion={#AppVersion}
 AppPublisher=PinShot
 AppPublisherURL=https://github.com/Tanglj8472/pinshot
+AppSupportURL=https://github.com/Tanglj8472/pinshot/issues
+AppUpdatesURL=https://github.com/Tanglj8472/pinshot/releases
+VersionInfoCompany=PinShot Project
+VersionInfoDescription=PinShot screen capture and annotation tool
+VersionInfoProductName=PinShot
+VersionInfoProductVersion={#AppVersion}
+VersionInfoTextVersion={#AppVersion}
+VersionInfoOriginalFileName=PinShot-{#AppVersion}-windows-x64-setup.exe
+VersionInfoCopyright=Copyright (c) 2026 PinShot Project
 DefaultDirName={localappdata}\Programs\PinShot
-; Keep the destination editable on both first install and upgrade.
-DisableDirPage=no
-UsePreviousAppDir=yes
+; Keep all managed installs in one predictable per-user directory.
+DisableDirPage=yes
+UsePreviousAppDir=no
 AlwaysShowDirOnReadyPage=yes
 DefaultGroupName=PinShot
 PrivilegesRequired=lowest
@@ -38,6 +47,7 @@ UninstallDisplayIcon={app}\pinshot.ico
 CloseApplications=yes
 RestartApplications=no
 ShowLanguageDialog=no
+Uninstallable=yes
 
 [Languages]
 Name: "chinesesimp"; MessagesFile: "ChineseSimplified.isl"
@@ -64,6 +74,25 @@ Filename: "{app}\pinshot.exe"; Flags: nowait skipifnotsilent runasoriginaluser; 
 function RestartAfterUpdate: Boolean;
 begin
   Result := ExpandConstant('{param:PINSHOTRESTART|0}') = '1';
+end;
+
+function InstalledVersionMatches: Boolean;
+var
+  Expected: String;
+  Actual: String;
+begin
+  Expected := '{#AppVersion}.0';
+  Actual := GetFileVersion(ExpandConstant('{app}\pinshot.exe'));
+  Result := Actual = Expected;
+  Log('Installed PinShot version check: expected=' + Expected + ', actual=' + Actual);
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then begin
+    if not InstalledVersionMatches then
+      SuppressibleMsgBox('PinShot 安装后的版本校验失败，请重新安装。', mbError, MB_OK, IDOK);
+  end;
 end;
 
 function ShutdownError(const ExePath, HelperDir: String): String;

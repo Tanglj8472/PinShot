@@ -1,5 +1,6 @@
 [package]
 name = "pinshot"
+build = "build.rs"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -39,6 +40,9 @@ eframe = { version = "0.31", default-features = false, features = ["default_font
 tray-icon = "0.19"
 ort = { version = "=2.0.0-rc.10", optional = true, default-features = false, features = ["download-binaries", "std"] }
 paddle-ocr-rs = { version = "0.6.1", optional = true, default-features = false, features = ["download-binaries"] }
+
+[build-dependencies]
+embed-resource = "3"
 
 [target.'cfg(windows)'.dependencies]
 ort = { version = "=2.0.0-rc.10", optional = true, default-features = false, features = ["download-binaries", "std", "copy-dylibs"] }
