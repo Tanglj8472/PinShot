@@ -78,15 +78,17 @@ end;
 
 function InstalledVersionMatches: Boolean;
 var
-  Major: Cardinal;
-  Minor: Cardinal;
-  Build: Cardinal;
-  Revision: Cardinal;
+  Major: Word;
+  Minor: Word;
+  Revision: Word;
+  Build: Word;
   Actual: String;
 begin
-  Result := GetVersionNumbers(ExpandConstant('{app}\pinshot.exe'), Major, Minor, Build, Revision);
+  // Inno Setup 6: GetVersionNumbers is Filename + VersionMS + VersionLS.
+  // Four-part Major/Minor/Revision/Build requires GetVersionComponents (Word).
+  Result := GetVersionComponents(ExpandConstant('{app}\pinshot.exe'), Major, Minor, Revision, Build);
   if Result then begin
-    Actual := IntToStr(Major) + '.' + IntToStr(Minor) + '.' + IntToStr(Build);
+    Actual := IntToStr(Major) + '.' + IntToStr(Minor) + '.' + IntToStr(Revision);
     Result := Actual = '{#AppVersion}';
   end else begin
     Actual := '<unavailable>';
