@@ -1552,6 +1552,7 @@ mod tests {
                     app_id: String::new(),
                     model: "x".into(),
                     target: "ja".into(),
+            proxy: String::new(),
                 },
                 ..Config::default()
             },
