@@ -976,6 +976,7 @@ impl PrefsApp {
                 form_line(ui, tr("Baidu App ID:"), &mut self.draft.translate.app_id);
                 form_secret(ui, tr("Baidu Secret Key:"), &mut self.draft.translate.api_key);
             }
+            form_line(ui, tr("Provider proxy (optional):"), &mut self.draft.translate.proxy);
             if openai {
                 let model_hint = pinshot_core::translate::service_preset(
                     self.draft.translate.normalized_provider(),
