@@ -99,6 +99,7 @@ pub struct Overlay {
     mods: ModifiersState,
     history_max: u32,
     held_btn1: bool,
+    slider_drag: bool,
     /// Left-button gesture started on this overlay (Esc then asks 放弃截图?).
     interacted: bool,
     #[cfg(unix)]
@@ -293,6 +294,7 @@ impl Overlay {
             mods: ModifiersState::empty(),
             history_max: history_max.max(1),
             held_btn1: false,
+            slider_drag: false,
             interacted: false,
             #[cfg(unix)]
             ptr_grab_ok: false,
@@ -1185,6 +1187,14 @@ impl Overlay {
     fn poll_overlay_pointer(&mut self) {}
 
     fn on_cursor_moved(&mut self, next: Point) {
+        if self.slider_drag {
+            self.cursor = next;
+            if let Some(TbAction::StrengthSet(v)) = self.toolbar.as_ref().and_then(|t| t.hit(next)) {
+                self.apply_tb(TbAction::StrengthSet(v));
+                self.mark_dirty();
+            }
+            return;
+        }
         if self.color_picker.is_some() {
             self.cursor = next;
             self.picker_drag(self.cursor);
@@ -1259,6 +1269,18 @@ impl Overlay {
             SelState::Creating | SelState::Moving | SelState::Resizing
         );
         let pt = self.cursor;
+        if button == MouseButton::Left {
+            if pressed {
+                if let Some(TbAction::StrengthSet(v)) = self.toolbar.as_ref().and_then(|t| t.hit(pt)) {
+                    self.slider_drag = true;
+                    self.apply_tb(TbAction::StrengthSet(v));
+                    self.mark_dirty();
+                    return;
+                }
+            } else {
+                self.slider_drag = false;
+            }
+        }
         if pressed && self.confirm.is_some() {
             if !self.held_btn1 {
                 let _ = self.hit_confirm(pt);
