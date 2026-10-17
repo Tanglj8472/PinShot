@@ -369,6 +369,7 @@ mod tests {
             app_id: String::new(),
             model: "gpt-4o-mini".into(),
             target: "en".into(),
+            proxy: String::new(),
         };
         let out = translate_with(&settings, "zh_CN", "你好").unwrap();
         assert_eq!(out, "Hello from mock");
@@ -396,6 +397,7 @@ mod tests {
             app_id: String::new(),
             model: "gpt-4o-mini".into(),
             target: "en".into(),
+            proxy: String::new(),
         };
         let err = translate_with_opts(&settings, "en", "hello", false).unwrap_err();
         let _ = h.join();
@@ -423,6 +425,7 @@ mod tests {
             app_id: String::new(),
             model: String::new(),
             target: "en".into(),
+            proxy: String::new(),
         };
         let out = translate_with(&settings, "zh_CN", "你好").unwrap();
         assert_eq!(out, "Hello DeepL");
