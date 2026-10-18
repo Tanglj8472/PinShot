@@ -2974,7 +2974,7 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
 name = "pinshot"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "arboard",
  "eframe",
@@ -3004,7 +3004,7 @@ dependencies = [
 
 [[package]]
 name = "pinshot-core"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "chrono",
  "fontdue",
