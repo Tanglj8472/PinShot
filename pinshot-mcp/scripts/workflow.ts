@@ -26,6 +26,8 @@ try {
   const captured = text(await call("capture_screen", {}));
   session = captured.session_id;
   assert.ok(session && captured.width > 40 && captured.height > 40);
+  assert.equal(captured.view?.visible, true, "Capture must open a native preview");
+  assert.ok(captured.view.window_id);
   const annotation = text(await call("add_annotation", { session_id: session,
     kind: "rect", points: [{ x: 5, y: 5 }, { x: 35, y: 35 }], width: 3 }));
   for (const kind of ["ellipse", "line", "arrow", "text", "blur", "mosaic"]) {
@@ -38,6 +40,14 @@ try {
   const state = text(await call("get_state", {}));
   assert.equal(state.pid, before.pid, "All actions must use the same resident PinShot process");
   assert.equal(state.sessions.find((s: { session_id: number }) => s.session_id === session).annotations.length, 7);
+  assert.equal(state.views.find((v: { session_id: number }) => v.session_id === session)?.window_id,
+    captured.view.window_id, "Edits must refresh the same native window");
+  await call("hide_session", { session_id: session });
+  const hidden = text(await call("get_state", {}));
+  assert.ok(!hidden.views.some((v: { session_id: number }) => v.session_id === session));
+  assert.ok(hidden.sessions.some((s: { session_id: number }) => s.session_id === session));
+  const reopened = text(await call("show_session", { session_id: session }));
+  assert.equal(reopened.visible, true);
   const preview = await call("preview_session", { session_id: session });
   assert.ok((preview.content as Array<{ type: string }>).some((c) => c.type === "image"));
   const output = path.join(directory, "result.png");
@@ -48,9 +58,12 @@ try {
   assert.equal(duplicate.isError, true, "Must reject overwriting an existing file");
   await call("remove_annotation", { session_id: session, annotation_id: annotation.annotation_id });
   await call("close_session", { session_id: session });
+  const closed = text(await call("get_state", {}));
+  assert.ok(!closed.views.some((v: { session_id: number }) => v.session_id === session));
+  assert.ok(!closed.sessions.some((s: { session_id: number }) => s.session_id === session));
   session = undefined;
   console.error(`workflow ok: pid=${state.pid}, ${captured.width}x${captured.height}, backend=${captured.backend}`);
-  console.error("native capture -> 7 annotation kinds -> preview -> save -> refuse overwrite -> remove -> close");
+  console.error("native capture -> visible window -> 7 annotation kinds -> same window refresh -> hide/reopen -> preview -> save -> refuse overwrite -> remove -> close window and session");
 } finally {
   if (session !== undefined) await client.callTool({ name: "close_session", arguments: { session_id: session } }).catch(() => {});
   await client.close();

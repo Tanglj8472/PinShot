@@ -40,11 +40,11 @@ export function createServer(): McpServer {
     {
       title: "截取屏幕",
       description: "立即截取 Windows 全部显示器的当前画面，返回 PNG 图片。无需手动框选。",
-      inputSchema: {},
+      inputSchema: { show: z.boolean().default(true).describe("是否同时显示 PinShot 原生预览窗口") },
     },
-    async () => {
+    async ({ show }) => {
       try {
-        const result = await requestNative("capture");
+        const result = await requestNative("capture", { show });
         try {
           return { content: [
             { type: "text" as const, text: JSON.stringify(result) },
@@ -101,6 +101,15 @@ export function createServer(): McpServer {
   server.registerTool("close_session", {
     description: "关闭截图会话并释放内存；最多同时保留四个会话。", inputSchema: { session_id: session },
   }, async (args) => guarded(() => requestNative("close", args)));
+
+  server.registerTool("show_session", {
+    description: "显示或重新打开截图会话的原生贴图预览。AI 后续添加、删除标注会自动刷新；可拖动、滚轮缩放，右键或 Escape 关闭预览。",
+    inputSchema: { session_id: session },
+  }, async (args) => guarded(() => requestNative("show", args)));
+  server.registerTool("hide_session", {
+    description: "关闭会话的可见预览，保留截图和标注，可使用 show_session 重新打开。",
+    inputSchema: { session_id: session },
+  }, async (args) => guarded(() => requestNative("hide", args)));
 
   return server;
 }
