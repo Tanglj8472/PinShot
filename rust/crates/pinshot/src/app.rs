@@ -61,7 +61,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let proxy = event_loop.create_proxy();
     crate::ipc::spawn_server(proxy.clone());
     if args.iter().any(|arg| arg == "--automation") {
-        crate::automation::spawn_server()?;
+        crate::automation::spawn_server(proxy.clone())?;
         crate::logutil::log("native automation enabled");
     }
 
@@ -78,6 +78,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         fallback: None,
         overlay: None,
         pins: Vec::new(),
+        automation_pins: HashMap::new(),
         closed: ClosedStack::default(),
         history: SnipHistory::new(),
         group_vis,
@@ -180,6 +181,7 @@ struct App {
     fallback: Option<FallbackWin>,
     overlay: Option<Overlay>,
     pins: Vec<PinWin>,
+    automation_pins: HashMap<u64, PinWin>,
     closed: ClosedStack,
     history: SnipHistory,
     group_vis: HashMap<String, bool>,
@@ -1337,6 +1339,44 @@ impl App {
 }
 
 impl App {
+    fn automation_view(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        action: &str,
+        session_id: u64,
+        image: Option<std::sync::Arc<pinshot_core::raster::Raster>>,
+    ) -> Result<serde_json::Value, String> {
+        self.automation_pins.retain(|_, pin| !pin.closed);
+        if action == "state" {
+            return Ok(serde_json::json!(self.automation_pins.iter().map(|(id, pin)| serde_json::json!({
+                "session_id": id, "window_id": format!("{:?}", pin.window_id()),
+                "visible": pin.is_visible(), "scale": pin.scale, "position": pin.pos()
+            })).collect::<Vec<_>>()));
+        }
+        if action == "hide" {
+            self.automation_pins.remove(&session_id);
+            return Ok(serde_json::json!({"visible": false}));
+        }
+        if !matches!(action, "show" | "update") { return Err("Unknown view operation".into()); }
+        if !self.automation_pins.contains_key(&session_id) {
+            if action == "update" { return Ok(serde_json::json!({"visible": false})); }
+            let frame = image.as_ref().ok_or("Missing preview image")?;
+            let scale = (960.0 / frame.width.max(1) as f32).min(640.0 / frame.height.max(1) as f32).min(1.0).max(0.05);
+            let pos = native::pin_pos_near_cursor((frame.width as f32 * scale) as u32, (frame.height as f32 * scale) as u32);
+            let pin = PinWin::create_at_scale(event_loop, (**frame).clone(), pos, scale)?;
+            pin.window().set_title("PinShot AI");
+            self.automation_pins.insert(session_id, pin);
+        } else if let Some(frame) = image {
+            if let Some(pin) = self.automation_pins.get_mut(&session_id) {
+                pin.update_automation_image((*frame).clone());
+            }
+        }
+        let pin = self.automation_pins.get(&session_id).ok_or("Missing preview window")?;
+        if action == "show" { pin.show(); }
+        Ok(serde_json::json!({"visible": pin.is_visible(), "window_id": format!("{:?}", pin.window_id()),
+            "scale": pin.scale, "position": pin.pos()}))
+    }
+
     fn dispatch_user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
         match event {
             AppEvent::Hotkey(command) => self.handle_hotkey(event_loop, command),
@@ -1356,6 +1396,10 @@ impl App {
             }
             AppEvent::PinMenu(action) => self.apply_pin_menu(action),
             AppEvent::Ipc(cmd) => self.handle_ipc_command(cmd),
+            AppEvent::AutomationView { action, session_id, image, response } => {
+                let result = self.automation_view(event_loop, &action, session_id, image);
+                let _ = response.send(result);
+            }
             AppEvent::OcrProgress { pin, message } => self.handle_ocr_progress(pin, message),
             AppEvent::OcrDone { pin, result, translate } => {
                 self.handle_ocr_done(pin, result, translate)
@@ -1542,6 +1586,27 @@ impl App {
 
 impl App {
     fn dispatch_window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        // AI previews allow geometry changes but do not create unsynchronised manual annotations.
+        if let Some(session) = self.automation_pins.iter().find(|(_, pin)| pin.window_id() == id).map(|(session, _)| *session) {
+            if let Some(pin) = self.automation_pins.get_mut(&session) {
+                match &event {
+                    WindowEvent::CloseRequested => pin.closed = true,
+                    WindowEvent::KeyboardInput { event, .. } => {
+                        if event.state == ElementState::Pressed && matches!(event.logical_key, Key::Named(NamedKey::Escape)) {
+                            pin.closed = true;
+                        }
+                    }
+                    WindowEvent::MouseInput { button: MouseButton::Right, state: ElementState::Pressed, .. } => pin.closed = true,
+                    WindowEvent::MouseInput { button: MouseButton::Left, .. }
+                    | WindowEvent::CursorMoved { .. } | WindowEvent::MouseWheel { .. }
+                    | WindowEvent::RedrawRequested | WindowEvent::Resized(_) => pin.handle(&event),
+                    _ => {}
+                }
+            }
+            self.automation_pins.retain(|_, pin| !pin.closed);
+            return;
+        }
+
         if let WindowEvent::ModifiersChanged(m) = &event {
             self.mods = m.state();
         }
@@ -1707,6 +1772,9 @@ impl App {
 
 impl App {
     fn maintain_windows(&mut self, event_loop: &ActiveEventLoop) {
+        for pin in self.automation_pins.values_mut() { pin.tick_glow(); pin.pump_redraw(); }
+        self.automation_pins.retain(|_, pin| !pin.closed);
+
         let mut persist = false;
         for p in &mut self.pins {
             p.tick_glow();

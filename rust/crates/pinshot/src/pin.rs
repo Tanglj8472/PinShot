@@ -150,8 +150,18 @@ impl PinWin {
         img: Raster,
         pos: (i32, i32),
     ) -> Result<Self, String> {
-        let w = img.width.max(8);
-        let h = img.height.max(8);
+        Self::create_at_scale(event_loop, img, pos, 1.0)
+    }
+
+    pub fn create_at_scale(
+        event_loop: &ActiveEventLoop,
+        img: Raster,
+        pos: (i32, i32),
+        scale: f32,
+    ) -> Result<Self, String> {
+        let scale = scale.clamp(0.05, 1.0);
+        let w = ((img.width as f32 * scale).round() as u32).max(8);
+        let h = ((img.height as f32 * scale).round() as u32).max(8);
         let can_shadow = native::compositor_active();
         // Python sizes the widget to image + 2M and places the photo at (M,M).
         // Creating at bare image size cropped the shadow pixmap to its top-left
@@ -191,7 +201,7 @@ impl PinWin {
             surface,
             img,
             annot,
-            scale: 1.0,
+            scale,
             opacity: 1.0,
             click_through: false,
             glow: 1.0,
@@ -249,6 +259,18 @@ impl PinWin {
             pos.1 - m
         ));
         Ok(pin)
+    }
+
+    /// Replace an AI session's rendered preview without modifying its geometry.
+    pub fn update_automation_image(&mut self, image: Raster) {
+        let resized = self.img.width != image.width || self.img.height != image.height;
+        self.img = image;
+        self.annot.clear();
+        self.clear_ocr();
+        self.show_toolbar(false);
+        if resized { self.apply_size(); }
+        self.dirty = true;
+        self.window.request_redraw();
     }
 
     pub fn window_id(&self) -> WindowId {
