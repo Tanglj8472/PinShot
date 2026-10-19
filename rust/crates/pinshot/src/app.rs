@@ -60,6 +60,10 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     let proxy = event_loop.create_proxy();
     crate::ipc::spawn_server(proxy.clone());
+    if args.iter().any(|arg| arg == "--automation") {
+        crate::automation::spawn_server()?;
+        crate::logutil::log("native automation enabled");
+    }
 
     let mut group_vis = HashMap::new();
     for g in &cfg.groups {
