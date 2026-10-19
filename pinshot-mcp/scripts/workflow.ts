@@ -28,9 +28,16 @@ try {
   assert.ok(session && captured.width > 40 && captured.height > 40);
   const annotation = text(await call("add_annotation", { session_id: session,
     kind: "rect", points: [{ x: 5, y: 5 }, { x: 35, y: 35 }], width: 3 }));
+  for (const kind of ["ellipse", "line", "arrow", "text", "blur", "mosaic"]) {
+    await call("add_annotation", {
+      session_id: session, kind,
+      points: kind === "text" ? [{ x: 5, y: 5 }] : [{ x: 5, y: 5 }, { x: 35, y: 35 }],
+      ...(kind === "text" ? { text: "PinShot 原生标注", width: 20 } : {}),
+    });
+  }
   const state = text(await call("get_state", {}));
   assert.equal(state.pid, before.pid, "All actions must use the same resident PinShot process");
-  assert.equal(state.sessions.find((s: { session_id: number }) => s.session_id === session).annotations.length, 1);
+  assert.equal(state.sessions.find((s: { session_id: number }) => s.session_id === session).annotations.length, 7);
   const preview = await call("preview_session", { session_id: session });
   assert.ok((preview.content as Array<{ type: string }>).some((c) => c.type === "image"));
   const output = path.join(directory, "result.png");
@@ -42,7 +49,8 @@ try {
   await call("remove_annotation", { session_id: session, annotation_id: annotation.annotation_id });
   await call("close_session", { session_id: session });
   session = undefined;
-  console.error("workflow ok: native capture -> annotate -> preview -> save -> remove -> close");
+  console.error(`workflow ok: pid=${state.pid}, ${captured.width}x${captured.height}, backend=${captured.backend}`);
+  console.error("native capture -> 7 annotation kinds -> preview -> save -> refuse overwrite -> remove -> close");
 } finally {
   if (session !== undefined) await client.callTool({ name: "close_session", arguments: { session_id: session } }).catch(() => {});
   await client.close();
