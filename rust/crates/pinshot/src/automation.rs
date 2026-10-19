@@ -21,7 +21,7 @@ pub(crate) fn normalize_ids(shapes: &mut [Shape]) {
     for shape in shapes {
         let id = match shape.automation_id {
             Some(id) if id > 0 && seen.insert(id) => id,
-            _ => { let id = fresh_id(); seen.insert(id); id }
+            _ => { let mut id = fresh_id(); while !seen.insert(id) { id = fresh_id(); } id }
         };
         shape.automation_id = Some(id);
     }
@@ -112,7 +112,9 @@ impl Automation {
     fn id(&mut self) -> u64 { fresh_id() }
 
     fn collect_closed(&mut self) {
-        let updates = CLOSED_EDITORS.get_or_init(Default::default).lock().ok().map(|mut closed| std::mem::take(&mut *closed)).unwrap_or_default();
+        let updates = CLOSED_EDITORS.get_or_init(Default::default).lock().ok().map(|mut closed| {
+            self.documents.keys().filter_map(|id| closed.remove(id).map(|shapes| (*id, shapes))).collect::<Vec<_>>()
+        }).unwrap_or_default();
         for (session, shapes) in updates {
             if let Some(document) = self.documents.get_mut(&session) {
                 document.shapes = numbered(shapes);
@@ -225,13 +227,13 @@ impl Automation {
             return Ok(result);
         }
         if op == "close" {
-            if self.proxy.is_some() { self.view_request("hide", session, None, Vec::new())?; }
+            if self.proxy.is_some() { self.view_request("close", session, None, Vec::new())?; }
             self.collect_closed();
             self.documents.remove(&session);
             return Ok(json!({"closed": session}));
         }
         if matches!(op, "edit" | "undo" | "redo") {
-            if op == "edit" && !self.documents[&session].shown { self.refresh_view(session, true)?; }
+            if op == "edit" { self.refresh_view(session, true)?; }
             if !self.documents[&session].shown { return Err("Show the session before undo/redo".into()); }
             let result = self.editor_request(session, json!({"op":op, "tool":request["tool"]}))?;
             self.accept_snapshot(session, &result)?;
@@ -366,6 +368,29 @@ fn serve_one(state: &mut Automation) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn closed_editor_changes_are_retained_with_stable_ids() {
+        let session = fresh_id();
+        let mut state = Automation::default();
+        state.documents.insert(session, Document { image: Raster::new(100, 100), origin: (0, 0),
+            backend: "test".into(), shapes: Vec::new(), shown: true, busy: false });
+        let mut shapes = vec![Shape::new(Tool::Rect, vec![Point::new(2.0, 2.0), Point::new(20.0, 20.0)], Style::default())];
+        normalize_ids(&mut shapes);
+        let id = shapes[0].automation_id.unwrap();
+        let mut duplicate = shapes[0].clone();
+        duplicate.pts[0].x = 4.0;
+        shapes.push(duplicate);
+        normalize_ids(&mut shapes);
+        assert_eq!(shapes[0].automation_id, Some(id));
+        assert_ne!(shapes[1].automation_id, Some(id));
+        publish_closed(session, shapes);
+        let status = state.execute(&json!({"op":"status"})).unwrap();
+        assert_eq!(status["sessions"][0]["annotations"].as_array().unwrap().len(), 2);
+        assert_eq!(state.documents[&session].shapes[0].0, id);
+        assert!(!state.documents[&session].shown);
+    }
+
     #[test]
     fn native_export_renders_and_refuses_overwrite() {
         let directory = std::env::temp_dir().join(format!("pinshot-automation-test-{}-{}", std::process::id(),

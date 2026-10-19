@@ -1395,13 +1395,21 @@ impl App {
     ) -> Result<serde_json::Value, String> {
         self.reap_automation_pins();
         if action == "state" {
-            return Ok(serde_json::json!(self.automation_pins.iter().map(|(id, pin)| serde_json::json!({
+            return Ok(serde_json::json!(self.automation_pins.iter().filter(|(_, pin)| pin.is_visible()).map(|(id, pin)| serde_json::json!({
                 "session_id": id, "window_id": format!("{:?}", pin.window_id()),
                 "visible": pin.is_visible(), "scale": pin.scale, "position": pin.pos(),
                 "editing": pin.annotating, "busy": pin.annot.automation_busy()
             })).collect::<Vec<_>>()));
         }
         if action == "hide" {
+            if let Some(pin) = self.automation_pins.get_mut(&session_id) {
+                pin.annot.finish();
+                crate::automation::normalize_ids(&mut pin.annot.shapes);
+                pin.hide();
+            }
+            return Ok(serde_json::json!({"visible": false}));
+        }
+        if action == "close" {
             if let Some(mut pin) = self.automation_pins.remove(&session_id) {
                 pin.annot.finish();
                 crate::automation::normalize_ids(&mut pin.annot.shapes);
@@ -1646,7 +1654,7 @@ impl App {
                         if pin.annotating { pin.annot.right_click(); pin.automation_refresh(); } else { pin.close(); }
                     }
                     WindowEvent::KeyboardInput { event: key, .. } => {
-                        let changes_base = matches!(&key.logical_key, Key::Character(c) if c == "3" || c == "4" || ((c == "1" || c == "2") && pin.annot.tool.is_none()));
+                        let changes_base = pin.annot.text_edit.is_none() && matches!(&key.logical_key, Key::Character(c) if c == "3" || c == "4" || ((c == "1" || c == "2") && pin.annot.tool.is_none()));
                         let unsupported_job = matches!(&key.logical_key, Key::Named(NamedKey::F5));
                         if !changes_base && !unsupported_job { pin.handle(&event); }
                     }
