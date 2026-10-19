@@ -1,6 +1,7 @@
 //! Opt-in native automation: persistent documents, native capture and rendering.
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::io::Write;
 
 use pinshot_core::annotation::{ArrowKind, DrawMode, Effect, Shape, Style, Tool};
 use pinshot_core::color::Rgba;
@@ -136,8 +137,14 @@ impl Automation {
                 // Reserve the output so existing files are never silently overwritten.
                 let file = std::fs::OpenOptions::new().write(true).create_new(true).open(path).map_err(|e| e.to_string())?;
                 let rgba = image::RgbaImage::from_raw(image.width, image.height, image.pixels).ok_or("Invalid raster")?;
-                image::DynamicImage::ImageRgba8(rgba).write_to(&mut std::io::BufWriter::new(file), image::ImageFormat::Png)
-                    .map_err(|e| e.to_string())?;
+                let mut writer = std::io::BufWriter::new(file);
+                let encoded = image::DynamicImage::ImageRgba8(rgba).write_to(&mut writer, image::ImageFormat::Png)
+                    .map_err(|e| e.to_string()).and_then(|_| writer.flush().map_err(|e| e.to_string()));
+                drop(writer);
+                if let Err(error) = encoded {
+                    let _ = std::fs::remove_file(path);
+                    return Err(error);
+                }
                 Ok(json!({"session_id": session, "path": path, "width": image.width, "height": image.height}))
             }
             _ => Err("Unknown operation".into()),
@@ -216,6 +223,29 @@ fn serve_one(state: &mut Automation) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_export_renders_and_refuses_overwrite() {
+        let directory = std::env::temp_dir().join(format!("pinshot-automation-test-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir(&directory).unwrap();
+        let output = directory.join("result.png");
+        let mut state = Automation::default();
+        let mut image = Raster::new(64, 64);
+        image.force_opaque();
+        state.documents.insert(1, Document { image, origin: (0, 0), backend: "test".into(), shapes: Vec::new() });
+        state.next_id = 1;
+        state.execute(&json!({"op":"annotate","session_id":1,"annotation":{"kind":"rect","points":[{"x":5,"y":5},{"x":35,"y":35}],"width":3}})).unwrap();
+        state.execute(&json!({"op":"save","session_id":1,"path":output})).unwrap();
+        let saved = std::fs::read(&output).unwrap();
+        let decoded = image::load_from_memory(&saved).unwrap().to_rgba8();
+        assert_eq!(decoded.dimensions(), (64, 64));
+        assert!(decoded.pixels().any(|p| p.0[0] > 100 && p.0[1] < 50));
+        assert!(state.execute(&json!({"op":"save","session_id":1,"path":output})).is_err());
+        assert_eq!(std::fs::read(&output).unwrap(), saved);
+        std::fs::remove_file(output).unwrap();
+        std::fs::remove_dir(directory).unwrap();
+    }
+
     #[test]
     fn document_lifecycle_and_annotation_validation() {
         let mut state = Automation::default();
