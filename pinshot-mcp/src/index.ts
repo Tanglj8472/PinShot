@@ -111,6 +111,20 @@ export function createServer(): McpServer {
     inputSchema: { session_id: session },
   }, async (args) => guarded(() => requestNative("hide", args)));
 
+  server.registerTool("edit_session", {
+    description: "打开原生标注工具栏并选择工具，供用户继续手工编辑。手工改动会同步到 get_state、预览和导出；未完成的笔迹/文字编辑会阻止 AI 覆盖。",
+    inputSchema: {
+      session_id: session,
+      tool: z.enum(["select", "rect", "ellipse", "line", "arrow", "pen", "marker", "mosaic", "text", "number", "eraser"]).default("select"),
+    },
+  }, async (args) => guarded(() => requestNative("edit", args)));
+  server.registerTool("undo_session", {
+    description: "在可见原生编辑器中撤销一次标注编辑；手工和 AI 编辑使用同一撤销历史。", inputSchema: { session_id: session },
+  }, async (args) => guarded(() => requestNative("undo", args)));
+  server.registerTool("redo_session", {
+    description: "在可见原生编辑器中重做一次标注编辑。", inputSchema: { session_id: session },
+  }, async (args) => guarded(() => requestNative("redo", args)));
+
   return server;
 }
 

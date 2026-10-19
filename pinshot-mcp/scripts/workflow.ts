@@ -42,6 +42,16 @@ try {
   assert.equal(state.sessions.find((s: { session_id: number }) => s.session_id === session).annotations.length, 7);
   assert.equal(state.views.find((v: { session_id: number }) => v.session_id === session)?.window_id,
     captured.view.window_id, "Edits must refresh the same native window");
+  const originalIds = state.sessions.find((s: { session_id: number }) => s.session_id === session).annotations.map((a: { annotation_id: number }) => a.annotation_id);
+  const editor = text(await call("edit_session", { session_id: session, tool: "rect" }));
+  assert.equal(editor.editing, true);
+  await call("undo_session", { session_id: session });
+  const undone = text(await call("get_state", {})).sessions.find((s: { session_id: number }) => s.session_id === session);
+  assert.equal(undone.annotations.length, 6, "Native editor undo must synchronize back to MCP");
+  await call("redo_session", { session_id: session });
+  const redone = text(await call("get_state", {})).sessions.find((s: { session_id: number }) => s.session_id === session);
+  assert.deepEqual(redone.annotations.map((a: { annotation_id: number }) => a.annotation_id), originalIds,
+    "Native editor redo must preserve stable annotation IDs");
   await call("hide_session", { session_id: session });
   const hidden = text(await call("get_state", {}));
   assert.ok(!hidden.views.some((v: { session_id: number }) => v.session_id === session));
@@ -73,7 +83,7 @@ try {
   await call("close_session", { session_id: session });
   session = undefined;
   console.error(`workflow ok: pid=${state.pid}, ${captured.width}x${captured.height}, backend=${captured.backend}`);
-  console.error("native capture -> visible window -> 7 annotation kinds -> same window refresh -> hide/reopen -> preview -> save -> refuse overwrite -> remove -> close window and session");
+  console.error("native capture -> editable window -> 7 annotations -> shared undo/redo with stable IDs -> hide/reopen -> preview -> save -> refuse overwrite -> remove -> close");
 } finally {
   if (session !== undefined) await client.callTool({ name: "close_session", arguments: { session_id: session } }).catch(() => {});
   await client.close();
