@@ -57,10 +57,20 @@ try {
   const duplicate = await client.callTool({ name: "save_session", arguments: { session_id: session, path: output } });
   assert.equal(duplicate.isError, true, "Must reject overwriting an existing file");
   await call("remove_annotation", { session_id: session, annotation_id: annotation.annotation_id });
+  const removed = text(await call("get_state", {}));
+  assert.equal(removed.views.find((v: { session_id: number }) => v.session_id === session)?.window_id,
+    reopened.window_id, "Removing an annotation must preserve the native window");
   await call("close_session", { session_id: session });
   const closed = text(await call("get_state", {}));
   assert.ok(!closed.views.some((v: { session_id: number }) => v.session_id === session));
   assert.ok(!closed.sessions.some((s: { session_id: number }) => s.session_id === session));
+  session = undefined;
+  const headless = text(await call("capture_screen", { show: false }));
+  session = headless.session_id;
+  assert.ok(!(text(await call("get_state", {}))).views.some((v: { session_id: number }) => v.session_id === session));
+  await call("add_annotation", { session_id: session, kind: "line", points: [{ x: 5, y: 5 }, { x: 35, y: 35 }] });
+  assert.ok(!(text(await call("get_state", {}))).views.some((v: { session_id: number }) => v.session_id === session));
+  await call("close_session", { session_id: session });
   session = undefined;
   console.error(`workflow ok: pid=${state.pid}, ${captured.width}x${captured.height}, backend=${captured.backend}`);
   console.error("native capture -> visible window -> 7 annotation kinds -> same window refresh -> hide/reopen -> preview -> save -> refuse overwrite -> remove -> close window and session");
