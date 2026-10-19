@@ -139,7 +139,7 @@ impl Automation {
             return Ok(result);
         }
         if op == "close" {
-            if self.documents[&session].shown { self.view_request("hide", session, None)?; }
+            if self.proxy.is_some() { self.view_request("hide", session, None)?; }
             self.documents.remove(&session);
             return Ok(json!({"closed": session}));
         }

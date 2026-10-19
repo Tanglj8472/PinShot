@@ -44,7 +44,11 @@ codex mcp add pinshot-mcp -- node E:\Tool\pinshot\pinshot-mcp\dist\index.js
 | remove_annotation | 按 annotation_id 删除标注 |
 | preview_session | 返回原生渲染的 PNG |
 | save_session | 保存到绝对 PNG 路径，拒绝覆盖已有文件 |
-| close_session | 释放会话 |
+| close_session | 释放会话，并关闭对应预览窗口 |
+| show_session | 显示或重新打开会话预览 |
+| hide_session | 关闭预览但保留会话 |
+
+`capture_screen` 默认同时打开原生预览窗口，可传 `show: false` 仅创建后台会话。预览初始适配 960×640 范围，支持拖动、滚轮缩放，右键或 Escape 关闭。AI 添加、删除标注会刷新同一窗口；手动关闭预览后会话仍保留。预览不写入普通贴图历史，不提供手工标注编辑，避免与 AI 会话产生不一致。
 
 坐标使用图片左上角为原点的物理像素。text 使用一个点，其余标注使用两个点。width 表示线宽或字号，strength 表示模糊/马赛克程度。最多保留四个会话，每个最多一千个标注。
 
@@ -52,7 +56,7 @@ codex mcp add pinshot-mcp -- node E:\Tool\pinshot\pinshot-mcp\dist\index.js
 
 MCP stdio → Windows 本机命名管道 PinShotAutomation-v1 → PinShot 自动化线程 → Capture::grab / pinshot-core::Shape / render::compose。
 
-只有启动参数 --automation 才启用控制接口。截图和渲染在独立线程执行，自动化会话保存在原生进程内；当前还未与用户正在编辑的截图窗口同步，也未提供 OCR、翻译、贴图和设置控制。
+只有启动参数 --automation 才启用控制接口。截图和渲染在独立线程执行，自动化会话保存在原生进程内；已接入独立原生贴图预览；当前还未与用户手工编辑的截图窗口双向同步，也未提供 OCR、翻译、普通贴图和设置控制。
 
 本阶段自动化传输仅支持 Windows。保留 --capture-to <output.png> 作为独立的一次性原生截图 CLI，MCP 会话工具使用常驻接口。
 
