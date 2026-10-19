@@ -51,8 +51,8 @@ async function main(): Promise<void> {
 
   const listed = await client.listTools();
   const names = listed.tools.map((tool) => tool.name);
-  if (names.length !== 1 || names[0] !== "ping") {
-    throw new Error(`expected only ping, got: ${names.join(",") || "(empty)"}`);
+  if (names.length !== 2 || !names.includes("ping") || !names.includes("capture_screen")) {
+    throw new Error(`expected ping and capture_screen, got: ${names.join(",") || "(empty)"}`);
   }
 
   const defaultResult = await client.callTool({
@@ -75,6 +75,21 @@ async function main(): Promise<void> {
     );
   }
 
+  if (process.argv.includes("--capture")) {
+    const screenshot = await client.callTool({ name: "capture_screen", arguments: {} });
+    if (screenshot.isError || !Array.isArray(screenshot.content)) {
+      throw new Error(`Screenshot failed: ${JSON.stringify(screenshot)}`);
+    }
+    const image = screenshot.content.find((item) => item.type === "image");
+    if (!image || image.type !== "image" || image.mimeType !== "image/png") {
+      throw new Error("Screenshot returned no PNG image");
+    }
+    const png = Buffer.from(image.data, "base64");
+    if (png.readUInt32BE(0) !== 0x89504e47 || png.readUInt32BE(16) === 0 || png.readUInt32BE(20) === 0) {
+      throw new Error("Invalid screenshot PNG");
+    }
+    console.error(`capture_screen(): PNG ${png.readUInt32BE(16)}x${png.readUInt32BE(20)}, ${png.length} bytes`);
+  }
   await client.close();
 
   console.error("smoke ok");

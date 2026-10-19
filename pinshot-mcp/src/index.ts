@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { captureScreen } from "./capture.js";
 
 const SERVER_NAME = "pinshot-mcp";
 const SERVER_VERSION = "0.1.0";
@@ -32,6 +33,25 @@ export function createServer(): McpServer {
     async ({ message }) => ({
       content: [{ type: "text", text: message }],
     }),
+  );
+
+  server.registerTool(
+    "capture_screen",
+    {
+      title: "截取屏幕",
+      description: "立即截取 Windows 全部显示器的当前画面，返回 PNG 图片。无需手动框选。",
+      inputSchema: {},
+    },
+    async () => {
+      try {
+        return { content: [{ type: "image" as const, mimeType: "image/png", data: await captureScreen() }] };
+      } catch (error) {
+        return {
+          isError: true,
+          content: [{ type: "text" as const, text: error instanceof Error ? error.message : String(error) }],
+        };
+      }
+    },
   );
 
   return server;
