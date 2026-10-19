@@ -110,6 +110,7 @@ pub struct PinWin {
     dirty: bool,
     pub group: String,
     pub annotating: bool,
+    pub automation_mode: bool,
     toolbar: Option<Toolbar>,
     arrow_kind: ArrowKind,
     ellipse_on: bool,
@@ -150,7 +151,7 @@ impl PinWin {
         img: Raster,
         pos: (i32, i32),
     ) -> Result<Self, String> {
-        Self::create_at_scale(event_loop, img, pos, 1.0)
+        Self::create_at_scale(event_loop, img, pos, 1.0, Vec::new())
     }
 
     pub fn create_at_scale(
@@ -158,6 +159,7 @@ impl PinWin {
         img: Raster,
         pos: (i32, i32),
         scale: f32,
+        shapes: Vec<pinshot_core::annotation::Shape>,
     ) -> Result<Self, String> {
         let scale = scale.clamp(0.05, 1.0);
         let w = ((img.width as f32 * scale).round() as u32).max(8);
@@ -193,6 +195,7 @@ impl PinWin {
         let context = Context::new(window.clone()).map_err(|e| e.to_string())?;
         let surface = Surface::new(&context, window.clone()).map_err(|e| e.to_string())?;
         let mut annot = Annotator::new();
+        annot.shapes = shapes;
         if let Some(styles) = remembered_styles() {
             annot.styles = styles;
         }
@@ -213,6 +216,7 @@ impl PinWin {
             dirty: true,
             group: groups::DEFAULT.into(),
             annotating: false,
+            automation_mode: false,
             toolbar: None,
             arrow_kind: ArrowKind::Thin,
             ellipse_on: false,
@@ -269,6 +273,12 @@ impl PinWin {
         self.clear_ocr();
         self.show_toolbar(false);
         if resized { self.apply_size(); }
+        self.dirty = true;
+        self.window.request_redraw();
+    }
+
+    pub fn automation_refresh(&mut self) {
+        if self.annotating { self.relayout_tb(); }
         self.dirty = true;
         self.window.request_redraw();
     }
@@ -866,6 +876,10 @@ impl PinWin {
     }
 
     fn apply_tb(&mut self, a: TbAction) {
+        if self.automation_mode && matches!(a, TbAction::Ocr) {
+            self.toast("OCR automation is not connected yet".into());
+            return;
+        }
         match a {
             TbAction::Shape
             | TbAction::LineStroke

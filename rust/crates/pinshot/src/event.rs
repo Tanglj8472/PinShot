@@ -15,6 +15,12 @@ pub enum AppEvent {
         action: String,
         session_id: u64,
         image: Option<std::sync::Arc<pinshot_core::raster::Raster>>,
+        shapes: Vec<pinshot_core::annotation::Shape>,
+        response: std::sync::mpsc::Sender<Result<serde_json::Value, String>>,
+    },
+    AutomationEdit {
+        session_id: u64,
+        command: serde_json::Value,
         response: std::sync::mpsc::Sender<Result<serde_json::Value, String>>,
     },
     OcrDone {
