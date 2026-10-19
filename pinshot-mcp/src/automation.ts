@@ -38,14 +38,20 @@ export async function requestNative(op: string, args: Record<string, unknown> = 
   });
 }
 
-export async function preview(sessionId: number): Promise<string> {
+// MCP stdio clients cap a single message at 10 MB; a full multi-monitor PNG can exceed it.
+const PREVIEW_MAX_SIDE = 1600;
+
+export interface Preview { data: string; width: number; height: number; scale: number }
+
+export async function preview(sessionId: number): Promise<Preview> {
   const directory = await mkdtemp(path.join(tmpdir(), "pinshot-mcp-"));
   try {
     const output = path.join(directory, "preview.png");
-    await requestNative("preview", { session_id: sessionId, path: output });
-    if ((await stat(output)).size > 24 * 1024 * 1024) throw new Error("预览超过 24 MB");
+    const result = await requestNative("preview", { session_id: sessionId, path: output, max_side: PREVIEW_MAX_SIDE });
+    if ((await stat(output)).size > 8 * 1024 * 1024) throw new Error("预览超过 8 MB");
     const bytes = await readFile(output);
     if (!bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) throw new Error("无效 PNG");
-    return bytes.toString("base64");
+    const width = Number(result.width), height = Number(result.height);
+    return { data: bytes.toString("base64"), width, height, scale: width / Number(result.source_width) };
   } finally { await rm(directory, { recursive: true, force: true }); }
 }

@@ -5,7 +5,7 @@ use std::io::Write;
 
 use pinshot_core::annotation::{ArrowKind, DrawMode, Effect, Shape, Style, Tool};
 use pinshot_core::color::Rgba;
-use pinshot_core::geom::Point;
+use pinshot_core::geom::{Point, Rect};
 use pinshot_core::raster::Raster;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -36,6 +36,52 @@ pub(crate) fn publish_closed(session: u64, shapes: Vec<Shape>) {
 fn numbered(shapes: Vec<Shape>) -> Vec<(u64, Shape)> {
     shapes.into_iter().map(|shape| (shape.automation_id.unwrap_or_else(fresh_id), shape)).collect()
 }
+
+fn titled_windows() -> Vec<(Rect, String)> {
+    crate::detect::window_rects().into_iter().filter(|(_, title)| !title.trim().is_empty()).collect()
+}
+
+struct WindowTarget {
+    title: String,
+    rect: Rect,
+    activated: bool,
+}
+
+fn prepare_window(keyword: &str, activate: bool) -> Result<WindowTarget, String> {
+    let needle = keyword.trim().to_lowercase();
+    if needle.is_empty() { return Err("Window title keyword is empty".into()); }
+    let (_, title) = titled_windows().into_iter().find(|(_, title)| title.to_lowercase().contains(&needle))
+        .ok_or_else(|| format!("No visible window title contains \"{}\"; call list_windows first", keyword.trim()))?;
+    let activated = activate && activate_window(&title);
+    if activated { std::thread::sleep(std::time::Duration::from_millis(300)); }
+    let (rect, title) = titled_windows().into_iter().find(|(_, current)| *current == title)
+        .ok_or("Window closed before capture")?;
+    Ok(WindowTarget { title, rect, activated })
+}
+
+#[cfg(windows)]
+fn activate_window(title: &str) -> bool {
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::BOOL;
+    use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+    use windows::Win32::UI::WindowsAndMessaging::{BringWindowToTop, FindWindowW, GetForegroundWindow, GetWindowThreadProcessId, SetForegroundWindow};
+    let wide: Vec<u16> = title.encode_utf16().chain(Some(0)).collect();
+    unsafe {
+        let Ok(hwnd) = FindWindowW(PCWSTR::null(), PCWSTR(wide.as_ptr())) else { return false; };
+        if GetForegroundWindow() == hwnd { return true; }
+        // Windows ignores SetForegroundWindow from background processes unless input queues are attached.
+        let current = GetCurrentThreadId();
+        let foreground = GetWindowThreadProcessId(GetForegroundWindow(), None);
+        let attached = foreground != 0 && foreground != current && AttachThreadInput(current, foreground, BOOL::from(true)).as_bool();
+        let _ = BringWindowToTop(hwnd);
+        let _ = SetForegroundWindow(hwnd);
+        if attached { let _ = AttachThreadInput(current, foreground, BOOL::from(false)); }
+        GetForegroundWindow() == hwnd
+    }
+}
+
+#[cfg(not(windows))]
+fn activate_window(_title: &str) -> bool { false }
 
 struct Document {
     image: Raster,
@@ -200,17 +246,40 @@ impl Automation {
             let views = if self.proxy.is_some() { self.view_request("state", 0, None, Vec::new())? } else { json!([]) };
             return Ok(json!({"protocol": 1, "pid": std::process::id(), "sessions": documents, "views": views}));
         }
+        if op == "windows" {
+            let windows: Vec<_> = titled_windows().into_iter().map(|(rect, title)| {
+                let (x, y, width, height) = rect.to_i32();
+                json!({"title": title, "x": x, "y": y, "width": width, "height": height})
+            }).collect();
+            return Ok(json!({"windows": windows}));
+        }
         if op == "capture" {
             if self.documents.len() >= 4 { return Err("Close a session first (maximum 4)".into()); }
-            let capture = crate::capture::Capture::grab(false)?;
+            let target = match request["window"].as_str() {
+                Some(keyword) => Some(prepare_window(keyword, request["activate"].as_bool().unwrap_or(true))?),
+                None => None,
+            };
+            let capture = if target.is_some() { crate::capture::Capture::grab_fresh(false)? } else { crate::capture::Capture::grab(false)? };
             if u64::from(capture.composed.width) * u64::from(capture.composed.height) > 40_000_000 {
                 return Err("Desktop exceeds 40 million pixels".into());
             }
+            let (image, origin, window) = match target {
+                Some(target) => {
+                    let local = target.rect.translated(-capture.virtual_origin.0 as f32, -capture.virtual_origin.1 as f32)
+                        .intersect(capture.composed.bounds());
+                    if local.is_empty() { return Err("Window is outside the captured desktop".into()); }
+                    let (x, y, _, _) = local.to_i32();
+                    let origin = (capture.virtual_origin.0 + x, capture.virtual_origin.1 + y);
+                    (capture.composed.crop(local), origin, json!({"title": target.title, "activated": target.activated}))
+                }
+                None => (capture.composed, capture.virtual_origin, Value::Null),
+            };
             let id = self.id();
-            let result = json!({"session_id": id, "width": capture.composed.width,
-                "height": capture.composed.height, "origin": capture.virtual_origin, "backend": capture.backend});
-            self.documents.insert(id, Document { image: capture.composed,
-                origin: capture.virtual_origin, backend: capture.backend, shapes: Vec::new(), shown: false, busy: false });
+            let mut result = json!({"session_id": id, "width": image.width,
+                "height": image.height, "origin": origin, "backend": capture.backend});
+            if !window.is_null() { result["window"] = window; }
+            self.documents.insert(id, Document { image,
+                origin, backend: capture.backend, shapes: Vec::new(), shown: false, busy: false });
             return Ok(result);
         }
         let session = request["session_id"].as_u64().ok_or("Missing session_id")?;
@@ -267,11 +336,22 @@ impl Automation {
                     return Err("An absolute PNG path is required".into());
                 }
                 if path.exists() { return Err("Output already exists; choose another path".into()); }
+                let max_side = if op == "preview" { request["max_side"].as_u64() } else { None };
+                if max_side.is_some_and(|side| !(256..=16384).contains(&side)) { return Err("max_side must be 256..16384".into()); }
                 let shapes: Vec<_> = document.shapes.iter().map(|(_, shape)| shape.clone()).collect();
                 let image = pinshot_core::render::compose(&document.image, &shapes);
+                let (source_width, source_height) = (image.width, image.height);
                 // Reserve the output so existing files are never silently overwritten.
                 let file = std::fs::OpenOptions::new().write(true).create_new(true).open(path).map_err(|e| e.to_string())?;
-                let rgba = image::RgbaImage::from_raw(image.width, image.height, image.pixels).ok_or("Invalid raster")?;
+                let mut rgba = image::RgbaImage::from_raw(image.width, image.height, image.pixels).ok_or("Invalid raster")?;
+                if let Some(side) = max_side {
+                    let longest = u64::from(source_width.max(source_height));
+                    if longest > side {
+                        let fit = |n: u32| ((u64::from(n) * side / longest) as u32).max(1);
+                        rgba = image::imageops::resize(&rgba, fit(source_width), fit(source_height), image::imageops::FilterType::Triangle);
+                    }
+                }
+                let (width, height) = rgba.dimensions();
                 let mut writer = std::io::BufWriter::new(file);
                 let encoded = image::DynamicImage::ImageRgba8(rgba).write_to(&mut writer, image::ImageFormat::Png)
                     .map_err(|e| e.to_string()).and_then(|_| writer.flush().map_err(|e| e.to_string()));
@@ -280,7 +360,8 @@ impl Automation {
                     let _ = std::fs::remove_file(path);
                     return Err(error);
                 }
-                Ok(json!({"session_id": session, "path": path, "width": image.width, "height": image.height}))
+                Ok(json!({"session_id": session, "path": path, "width": width, "height": height,
+                    "source_width": source_width, "source_height": source_height}))
             }
             _ => Err("Unknown operation".into()),
         }
@@ -305,14 +386,38 @@ impl Automation {
 }
 
 #[cfg(windows)]
+type Job = (Value, std::sync::mpsc::Sender<Value>);
+
+#[cfg(windows)]
 pub fn spawn_server(proxy: winit::event_loop::EventLoopProxy<crate::event::AppEvent>) -> Result<(), String> {
+    let (jobs, queue) = std::sync::mpsc::channel::<Job>();
+    // Clients are accepted concurrently, but every request is executed in order on this one thread.
     std::thread::Builder::new().name("pinshot-automation".into()).spawn(move || {
         let mut state = Automation { proxy: Some(proxy), ..Automation::default() };
+        for (request, reply) in queue { let _ = reply.send(state.reply(request)); }
+    }).map_err(|e| e.to_string())?;
+    std::thread::Builder::new().name("pinshot-automation-pipe".into()).spawn(move || {
+        let mut listening = None;
         loop {
-            if let Err(error) = serve_one(&mut state) {
+            let pipe = match listening.take().map_or_else(create_pipe, Ok) {
+                Ok(pipe) => pipe,
+                Err(error) => {
+                    crate::logutil::error(&format!("automation: {error}"));
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    continue;
+                }
+            };
+            if let Err(error) = connect_client(&pipe) {
                 crate::logutil::error(&format!("automation: {error}"));
-                std::thread::sleep(std::time::Duration::from_millis(100));
+                continue;
             }
+            // Clients treat a missing pipe name as fatal, so a successor must exist before this instance can close.
+            listening = create_pipe().map_err(|error| crate::logutil::error(&format!("automation: {error}"))).ok();
+            let jobs = jobs.clone();
+            let spawned = std::thread::Builder::new().name("pinshot-automation-client".into()).spawn(move || {
+                if let Err(error) = serve_client(pipe, &jobs) { crate::logutil::error(&format!("automation: {error}")); }
+            });
+            if let Err(error) = spawned { crate::logutil::error(&format!("automation: {error}")); }
         }
     }).map_err(|e| e.to_string())?;
     Ok(())
@@ -324,20 +429,50 @@ pub fn spawn_server(_proxy: winit::event_loop::EventLoopProxy<crate::event::AppE
 }
 
 #[cfg(windows)]
-fn serve_one(state: &mut Automation) -> Result<(), String> {
+struct Pipe(windows::Win32::Foundation::HANDLE);
+
+// The handle is owned by exactly one client thread and closed on drop.
+#[cfg(windows)]
+unsafe impl Send for Pipe {}
+
+#[cfg(windows)]
+impl Drop for Pipe {
+    fn drop(&mut self) {
+        use windows::Win32::Foundation::CloseHandle;
+        use windows::Win32::System::Pipes::DisconnectNamedPipe;
+        unsafe { let _ = DisconnectNamedPipe(self.0); let _ = CloseHandle(self.0); }
+    }
+}
+
+#[cfg(windows)]
+fn create_pipe() -> Result<Pipe, String> {
     use windows::core::w;
-    use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_PIPE_CONNECTED, HANDLE, INVALID_HANDLE_VALUE};
-    use windows::Win32::Storage::FileSystem::{FlushFileBuffers, ReadFile, WriteFile, PIPE_ACCESS_DUPLEX};
-    use windows::Win32::System::Pipes::{ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_WAIT, PIPE_REJECT_REMOTE_CLIENTS};
-    struct Pipe(HANDLE);
-    impl Drop for Pipe { fn drop(&mut self) { unsafe { let _ = DisconnectNamedPipe(self.0); let _ = CloseHandle(self.0); } } }
+    use windows::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows::Win32::Storage::FileSystem::PIPE_ACCESS_DUPLEX;
+    use windows::Win32::System::Pipes::{CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT, PIPE_REJECT_REMOTE_CLIENTS};
     unsafe {
         let handle = CreateNamedPipeW(w!(r"\\.\pipe\PinShotAutomation-v1"), PIPE_ACCESS_DUPLEX,
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
-            1, 65536, 65536, 0, None);
+            PIPE_UNLIMITED_INSTANCES, 65536, 65536, 0, None);
         if handle == INVALID_HANDLE_VALUE { return Err("Cannot create automation pipe".into()); }
-        let pipe = Pipe(handle);
+        Ok(Pipe(handle))
+    }
+}
+
+#[cfg(windows)]
+fn connect_client(pipe: &Pipe) -> Result<(), String> {
+    use windows::Win32::Foundation::{GetLastError, ERROR_PIPE_CONNECTED};
+    use windows::Win32::System::Pipes::ConnectNamedPipe;
+    unsafe {
         if ConnectNamedPipe(pipe.0, None).is_err() && GetLastError() != ERROR_PIPE_CONNECTED { return Err("Automation connect failed".into()); }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn serve_client(pipe: Pipe, jobs: &std::sync::mpsc::Sender<Job>) -> Result<(), String> {
+    use windows::Win32::Storage::FileSystem::{FlushFileBuffers, ReadFile, WriteFile};
+    unsafe {
         let mut bytes = Vec::new();
         loop {
             let mut buffer = [0u8; 4096];
@@ -349,7 +484,12 @@ fn serve_one(state: &mut Automation) -> Result<(), String> {
             if bytes.contains(&b'\n') { break; }
         }
         let reply = match serde_json::from_slice::<Value>(&bytes) {
-            Ok(request) => state.reply(request),
+            Ok(request) => {
+                let id = request["id"].clone();
+                let (sender, receiver) = std::sync::mpsc::channel();
+                jobs.send((request, sender)).map_err(|_| "Automation worker stopped".to_string())?;
+                receiver.recv().unwrap_or_else(|_| json!({"id": id, "error": "Automation worker stopped"}))
+            }
             Err(_) => json!({"id": null, "error": "Invalid JSON request"}),
         };
         let payload = format!("{reply}\n");
@@ -411,6 +551,26 @@ mod tests {
         assert_eq!(std::fs::read(&output).unwrap(), saved);
         std::fs::remove_file(output).unwrap();
         std::fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
+    fn preview_downscales_but_save_keeps_full_resolution() {
+        let directory = std::env::temp_dir().join(format!("pinshot-automation-scale-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir(&directory).unwrap();
+        let mut state = Automation::default();
+        let mut image = Raster::new(1000, 500);
+        image.force_opaque();
+        state.documents.insert(1, Document { image, origin: (0, 0), backend: "test".into(), shapes: Vec::new(), shown: false, busy: false });
+        let preview = state.execute(&json!({"op":"preview","session_id":1,"path":directory.join("p.png"),"max_side":400})).unwrap();
+        assert_eq!((preview["width"].as_u64(), preview["height"].as_u64()), (Some(400), Some(200)));
+        assert_eq!((preview["source_width"].as_u64(), preview["source_height"].as_u64()), (Some(1000), Some(500)));
+        assert_eq!(image::image_dimensions(directory.join("p.png")).unwrap(), (400, 200));
+        let saved = state.execute(&json!({"op":"save","session_id":1,"path":directory.join("s.png"),"max_side":400})).unwrap();
+        assert_eq!(saved["width"].as_u64(), Some(1000));
+        assert!(state.execute(&json!({"op":"preview","session_id":1,"path":directory.join("x.png"),"max_side":10})).is_err());
+        assert!(!directory.join("x.png").exists());
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

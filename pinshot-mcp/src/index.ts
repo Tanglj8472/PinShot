@@ -35,33 +35,56 @@ export function createServer(): McpServer {
     }),
   );
 
+  const failure = (error: unknown) => ({
+    isError: true,
+    content: [{ type: "text" as const, text: error instanceof Error ? error.message : String(error) }],
+  });
+  const withPreview = async (result: Record<string, unknown>) => {
+    const image = await preview(Number(result.session_id));
+    return { content: [
+      { type: "text" as const, text: JSON.stringify({ ...result, preview: { width: image.width, height: image.height, scale: image.scale } }) },
+      { type: "image" as const, mimeType: "image/png", data: image.data },
+    ] };
+  };
+  const capture = async (args: Record<string, unknown>) => {
+    try {
+      const result = await requestNative("capture", args);
+      try { return await withPreview(result); } catch (error) {
+        await requestNative("close", { session_id: result.session_id }).catch(() => {});
+        throw error;
+      }
+    } catch (error) { return failure(error); }
+  };
+  const PREVIEW_NOTE = "返回的图片是长边不超过 1600 像素的缩略图；标注坐标必须使用原图像素，即缩略图坐标除以 preview.scale。";
+
   server.registerTool(
     "capture_screen",
     {
       title: "截取屏幕",
-      description: "立即截取 Windows 全部显示器的当前画面，返回 PNG 图片。无需手动框选。",
+      description: `立即截取 Windows 全部显示器的当前画面，返回 PNG 图片。无需手动框选。${PREVIEW_NOTE}`,
       inputSchema: { show: z.boolean().default(true).describe("是否同时显示 PinShot 原生预览窗口") },
     },
-    async ({ show }) => {
-      try {
-        const result = await requestNative("capture", { show });
-        try {
-          return { content: [
-            { type: "text" as const, text: JSON.stringify(result) },
-            { type: "image" as const, mimeType: "image/png", data: await preview(Number(result.session_id)) },
-          ] };
-        } catch (error) {
-          await requestNative("close", { session_id: result.session_id }).catch(() => {});
-          throw error;
-        }
-      } catch (error) {
-        return {
-          isError: true,
-          content: [{ type: "text" as const, text: error instanceof Error ? error.message : String(error) }],
-        };
-      }
-    },
+    async ({ show }) => capture({ show }),
   );
+
+  server.registerTool("list_windows", {
+    title: "列出窗口",
+    description: "列出当前可见的顶层窗口，按从上到下的层叠顺序返回标题和屏幕物理像素位置。用于为 capture_window 选择标题关键字。",
+    inputSchema: {},
+  }, async () => {
+    try { return { content: [{ type: "text" as const, text: JSON.stringify(await requestNative("windows")) }] }; }
+    catch (error) { return failure(error); }
+  });
+
+  server.registerTool("capture_window", {
+    title: "截取窗口",
+    description: `按标题关键字（不区分大小写，取层叠最上面的匹配）截取单个窗口，效果与 PinShot 手动吸附窗口一致。默认先把窗口切到最前面再截，返回的 window.activated 表示是否切换成功。${PREVIEW_NOTE}`,
+    inputSchema: {
+      title: z.string().min(1).max(512).describe("窗口标题关键字，可先用 list_windows 查看"),
+      activate: z.boolean().default(true).describe("截图前是否把窗口切到最前面；为 false 时被遮挡部分会截到上层窗口"),
+      show: z.boolean().default(true).describe("是否同时显示 PinShot 原生预览窗口"),
+    },
+  }, async ({ title, activate, show }) => capture({ window: title, activate, show }));
 
   const session = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
   const point = z.object({ x: z.number().finite().nonnegative(), y: z.number().finite().nonnegative() });
@@ -89,10 +112,10 @@ export function createServer(): McpServer {
     description: "删除指定会话中的指定标注。", inputSchema: { session_id: session, annotation_id: session },
   }, async (args) => guarded(() => requestNative("remove", args)));
   server.registerTool("preview_session", {
-    description: "返回包含所有标注的原生 PNG 预览。", inputSchema: { session_id: session },
+    description: `返回包含所有标注的原生 PNG 预览。${PREVIEW_NOTE}`, inputSchema: { session_id: session },
   }, async ({ session_id }) => {
-    try { return { content: [{ type: "image" as const, mimeType: "image/png", data: await preview(session_id) }] }; }
-    catch (error) { return { isError: true, content: [{ type: "text" as const, text: error instanceof Error ? error.message : String(error) }] }; }
+    try { return await withPreview({ session_id }); }
+    catch (error) { return failure(error); }
   });
   server.registerTool("save_session", {
     description: "将带标注截图保存为 PNG，path 必须是绝对路径，父目录必须存在，已有文件不会覆盖。",

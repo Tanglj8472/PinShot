@@ -51,8 +51,8 @@ async function main(): Promise<void> {
 
   const listed = await client.listTools();
   const names = listed.tools.map((tool) => tool.name);
-  if (names.length !== 13 || !names.includes("edit_session") || !names.includes("undo_session") || !names.includes("redo_session") || !names.includes("show_session") || !names.includes("hide_session") || !names.includes("ping") || !names.includes("capture_screen") || !names.includes("save_session")) {
-    throw new Error(`expected 13 automation tools, got: ${names.join(",") || "(empty)"}`);
+  if (names.length !== 15 || !names.includes("edit_session") || !names.includes("undo_session") || !names.includes("redo_session") || !names.includes("show_session") || !names.includes("hide_session") || !names.includes("ping") || !names.includes("capture_screen") || !names.includes("save_session") || !names.includes("list_windows") || !names.includes("capture_window")) {
+    throw new Error(`expected 15 automation tools, got: ${names.join(",") || "(empty)"}`);
   }
 
   const defaultResult = await client.callTool({
