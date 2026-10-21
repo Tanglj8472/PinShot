@@ -1,6 +1,9 @@
 name: release-mcp-preview
 
 on:
+  push:
+    branches: [cursor/pinshot-mcp-stdio-d7e3]
+    paths: ['.github/workflows/release-mcp.yml']
   workflow_dispatch:
 
 permissions:
