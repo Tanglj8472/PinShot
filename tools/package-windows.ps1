@@ -185,8 +185,11 @@ $reported = (& (Join-Path $payload 'pinshot.exe') --version | Out-String).Trim()
 if ($LASTEXITCODE -ne 0 -or "$reported" -notmatch "PinShot $([regex]::Escape($version)) \(windows-rust\)") {
     throw "Version smoke failed: $reported"
 }
-$editionArgs = if ($Lite) { @("/DLite=1") } else { @() }
-& $Iscc "/DAppVersion=$version" "/DPayloadDir=$payload" "/DDistDir=$dist" @editionArgs (Join-Path $repo 'packaging\windows.iss')
+[string[]]$compilerArgs = @("/DAppVersion=$version", "/DPayloadDir=$payload", "/DDistDir=$dist")
+if ($Lite) { $compilerArgs += "/DLite=1" }
+$compilerArgs += (Join-Path $repo 'packaging\windows.iss')
+Write-Host ("Installer compiler arguments: " + ($compilerArgs | ConvertTo-Json -Compress))
+& $Iscc @compilerArgs
 if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed' }
 $zip = Join-Path $dist "$name.zip"
 Get-ChildItem -LiteralPath $payload -Recurse -File | Where-Object { $_.LastWriteTimeUtc.Year -lt 1980 } |

@@ -1,63 +1,90 @@
-# pinshot-mcp
+# PinShot MCP
 
-用于练习 AI 驱动 PinShot 的 MCP stdio 服务。Node 服务负责协议，运行中的 Rust PinShot 负责捕获、会话、原生标注和渲染。
+通过 MCP 调用完整版 PinShot 的原生截图、标注和会话功能。Node.js 服务处理协议，Rust 应用执行捕获与渲染。Lite 不包含 MCP。
 
-## 构建与启动
+## 工作方式
 
-```powershell
-cd rust
-cargo build --release --bin pinshot
-# 先退出旧 PinShot；自动化服务需要在主实例启动时开启。
-.\target\release\pinshot.exe --automation
+```text
+MCP 客户端
+    │ stdio
+Node.js MCP 服务
+    │ Windows 本机命名管道
+Rust PinShot：捕获、标注、预览与保存
 ```
 
-另一个终端：
+接口仅在完整版使用 `--automation` 启动后开放，不需要公开网络端口。MCP 自动化不等于通用桌面控制：本组工具不提供任意鼠标点击、键盘输入、设置操作、OCR 或翻译调用。
+
+## 准备与连接
+
+需要 Windows 交互桌面、Node.js 20+ 和本项目完整版。先退出旧实例，再在应用目录执行：
 
 ```powershell
-cd pinshot-mcp
+./pinshot.exe --automation
+```
+
+使用预构建 MCP 服务包时，解压后保留 `dist` 和运行依赖。客户端启动命令为 `node`，参数为 `dist/index.js` 的绝对路径。
+
+从源码运行时，在 `pinshot-mcp` 目录执行：
+
+```powershell
 npm ci
 npm run build
 npm run smoke
-npm run test:workflow
 ```
 
-普通 smoke 只测试工具发现与 ping；test:workflow 会截取真实桌面，添加方框、读取预览、保存到临时目录，验证拒绝覆盖、删除标注和关闭会话，最后清理测试文件。需要可用的 Windows 交互桌面和启用 --automation 的本分支程序。
+将客户端配置指向构建后的入口，例如 `C:/Apps/PinShotMCP/dist/index.js`。客户端配置格式各不相同，应填写对应的 command 与 args 字段。重连后先调用 `ping`，再测试截图；仅更新文件而不重载工具列表，可能仍看到旧工具。
 
-## 连接 Codex
-
-```powershell
-codex mcp add pinshot-mcp -- node E:\Tool\pinshot\pinshot-mcp\dist\index.js
-```
-
-使用自己的绝对路径。重载 MCP 或重启 Codex 后，可以说：
-
-> 截图，在左上角画一个红色方框，给我看预览，然后保存到指定 PNG 路径。
+不要通过 `npm start` 作为已部署客户端入口。stdio 的 stdout 只传协议消息，日志应写 stderr。
 
 ## 工具
 
 | 工具 | 用途 |
 | --- | --- |
-| ping | 测试 MCP 连接 |
-| get_state | 查询原生进程 PID、会话、尺寸、桌面原点、后端和标注 ID |
-| capture_screen | 原生截取全部显示器，建立会话并返回 session_id 与 PNG |
-| add_annotation | 添加 rect、ellipse、line、arrow、text、blur、mosaic |
-| remove_annotation | 按 annotation_id 删除标注 |
-| preview_session | 返回原生渲染的 PNG |
-| save_session | 保存到绝对 PNG 路径，拒绝覆盖已有文件 |
-| close_session | 释放会话，并关闭对应预览窗口 |
-| show_session | 显示或重新打开会话预览 |
-| hide_session | 关闭预览但保留会话 |
+| `ping` | 检查连接 |
+| `get_state` | 查询进程、会话、图片尺寸、桌面原点和标注 ID |
+| `list_windows` | 枚举窗口标题及物理像素位置 |
+| `capture_screen` | 捕获全部显示器 |
+| `capture_window` | 按标题关键字捕获窗口 |
+| `add_annotation` | 添加矩形、椭圆、直线、箭头、文字、模糊或马赛克 |
+| `remove_annotation` | 按标注 ID 删除 |
+| `preview_session` | 返回带标注的 PNG 预览 |
+| `save_session` | 保存完整尺寸 PNG，拒绝覆盖已有文件 |
+| `show_session` | 显示原生会话窗口 |
+| `hide_session` | 隐藏窗口，保留会话与编辑历史 |
+| `edit_session` | 打开原生标注工具栏 |
+| `undo_session` | 撤销一次编辑 |
+| `redo_session` | 重做一次编辑 |
+| `close_session` | 关闭会话并释放资源 |
 
-`capture_screen` 默认同时打开原生预览窗口，可传 `show: false` 仅创建后台会话。预览初始适配 960×640 范围，支持拖动、滚轮缩放，右键或 Escape 关闭。AI 添加、删除标注会刷新同一窗口；手动关闭预览后会话仍保留。预览不写入普通贴图历史，不提供手工标注编辑，避免与 AI 会话产生不一致。
+## 截图与坐标
 
-坐标使用图片左上角为原点的物理像素。text 使用一个点，其余标注使用两个点。width 表示线宽或字号，strength 表示模糊/马赛克程度。最多保留四个会话，每个最多一千个标注。
+截图和预览返回真正的 PNG 图片内容，不仅是文件路径。预览长边不超过 1600 像素，响应包含 `preview.width`、`preview.height` 和 `preview.scale`。
 
-## 通信和范围
+标注始终使用原图坐标：
 
-MCP stdio → Windows 本机命名管道 PinShotAutomation-v1 → PinShot 自动化线程 → Capture::grab / pinshot-core::Shape / render::compose。
+```text
+原图坐标 = 预览坐标 ÷ preview.scale
+```
 
-只有启动参数 --automation 才启用控制接口。截图和渲染在独立线程执行，自动化会话保存在原生进程内；已接入独立原生贴图预览；当前还未与用户手工编辑的截图窗口双向同步，也未提供 OCR、翻译、普通贴图和设置控制。
+图片内坐标从图片左上角开始。多显示器的桌面 `origin` 可以为负数，不要把桌面绝对坐标直接当作标注坐标。
 
-本阶段自动化传输仅支持 Windows。保留 --capture-to <output.png> 作为独立的一次性原生截图 CLI，MCP 会话工具使用常驻接口。
+捕获指定窗口前先调用 `list_windows`。窗口标题按不区分大小写的关键字匹配，取层叠靠前的匹配窗口；默认尝试激活窗口，结果中的 `window.activated` 表示是否成功。窗口被遮挡时，捕获结果可能包含上层内容，需读取图片确认。
 
-预览临时文件调用后清理。stdout 只传 MCP 消息，日志写 stderr；客户端配置直接使用 node dist/index.js，不要使用 npm start。
+## 标注与会话
+
+- 最多同时保留 4 个会话，每个最多 1000 个标注。
+- 文字使用一个点，其他标注使用两个点；`width` 表示线宽或字号，`strength` 表示效果程度。
+- `show: false` 只建立后台会话，不弹出预览窗口。
+- 原生编辑与 AI 编辑使用稳定标注 ID 和共享撤销历史。
+- 未完成的手工操作通过 busy 状态保护；并发冲突应重新读取状态，不盲目重试覆盖。
+- 后台添加的已有标注是首次打开编辑器时的初始内容，不一定有可撤销历史。
+- 保存路径必须为绝对路径，父目录须存在；已有文件不会被覆盖。
+- 只关闭自己建立的测试会话，不清理用户已有会话。
+
+## 验证与限制
+
+`npm run smoke` 检查 15 个工具发现与 ping，不证明真实截图可用。`npm run test:workflow` 会调用运行中的完整版，测试捕获、标注、预览、导出、窗口和撤销重做。
+
+已有本机证据与未覆盖项目见[验证记录](../docs/validation.md)。手工绘制与 AI 双向同步仍需专门交互验收，不能仅凭工具返回成功认定完成。
+
+若需要操控其他应用的鼠标键盘，应另行配置并授权桌面控制工具。第三方桌面控制服务不包含在 PinShot 发布包中。
