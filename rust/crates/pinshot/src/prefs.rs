@@ -557,9 +557,11 @@ impl eframe::App for PrefsApp {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing = egui::vec2(3.0, 0.0);
                     ui.spacing_mut().button_padding = egui::vec2(3.0, 4.0);
-                    let tab_width = (ui.available_width() - (TABS.len() - 1) as f32 * 3.0)
-                        / TABS.len() as f32;
+                    let tab_count = TABS.len() - usize::from(cfg!(feature = "lite"));
+                    let tab_width = (ui.available_width() - (tab_count - 1) as f32 * 3.0)
+                        / tab_count as f32;
                     for (i, name) in TABS.iter().enumerate() {
+                        if cfg!(feature = "lite") && *name == "Translate" { continue; }
                         let selected = self.tab == i;
                         if ui
                             .add_sized(
@@ -644,6 +646,8 @@ impl PrefsApp {
                     ui.selectable_value(&mut self.draft.log_level, "trace".into(), tr("Trace"));
                     ui.selectable_value(&mut self.draft.log_level, "debug".into(), tr("Debug"));
                 });
+            #[cfg(not(feature = "lite"))]
+            {
             form_label(ui, tr("OCR mode:"));
             ui.horizontal(|ui| {
             let ocr = match self.draft.ocr_model.as_str() {
@@ -680,6 +684,7 @@ impl PrefsApp {
             }
             });
             ui.end_row();
+            }
         });
         ui.add_space(12.0);
         ui.label(RichText::new(tr("Configuration")).strong());
@@ -861,6 +866,8 @@ impl PrefsApp {
             form_hotkey(ui, tr("Pin clipboard:"), &mut self.draft.hotkey_pin);
             form_hotkey(ui, tr("Hide/show pins:"), &mut self.draft.hotkey_hide_all);
             form_hotkey(ui, tr("Restore last pin:"), &mut self.draft.hotkey_restore);
+            #[cfg(not(feature = "lite"))]
+            {
             form_hotkey(
                 ui,
                 tr("Select-text translate:"),
@@ -871,6 +878,7 @@ impl PrefsApp {
                 tr("Snip and translate:"),
                 &mut self.draft.hotkey_capture_translate,
             );
+            }
             form_hotkey(
                 ui,
                 tr("Click-through:"),

@@ -11,9 +11,19 @@
   #define InstallerAppId "{{D7F304E1-DA08-4C84-B224-3110EBD4A023}"
 #endif
 
+#ifdef Lite
+  #define AppDisplayName "PinShot Lite"
+  #define PackageSuffix "-lite"
+  #define MinimumWindows "10.0.17763"
+#else
+  #define AppDisplayName "PinShot"
+  #define PackageSuffix ""
+  #define MinimumWindows "10.0.19041"
+#endif
+
 [Setup]
 AppId={#InstallerAppId}
-AppName=PinShot
+AppName={#AppDisplayName}
 AppVersion={#AppVersion}
 AppPublisher=PinShot
 AppPublisherURL=https://github.com/Tanglj8472/pinshot
@@ -24,7 +34,7 @@ VersionInfoDescription=PinShot screen capture and annotation tool
 VersionInfoProductName=PinShot
 VersionInfoProductVersion={#AppVersion}
 VersionInfoTextVersion={#AppVersion}
-VersionInfoOriginalFileName=PinShot-{#AppVersion}-windows-x64-setup.exe
+VersionInfoOriginalFileName=PinShot-{#AppVersion}-windows-x64{#PackageSuffix}-setup.exe
 VersionInfoCopyright=Copyright (c) 2026 PinShot Project
 DefaultDirName={localappdata}\Programs\PinShot
 ; Keep all managed installs in one predictable per-user directory.
@@ -33,12 +43,12 @@ UsePreviousAppDir=no
 AlwaysShowDirOnReadyPage=yes
 DefaultGroupName=PinShot
 PrivilegesRequired=lowest
-; The linked ONNX runtime imports DXCore (Windows 10 2004 / build 19041).
-MinVersion=10.0.19041
+; Full OCR runtime needs DXCore; Lite has no inference DLLs and targets LTSC 2019.
+MinVersion={#MinimumWindows}
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir={#DistDir}
-OutputBaseFilename=PinShot-{#AppVersion}-windows-x64-setup
+OutputBaseFilename=PinShot-{#AppVersion}-windows-x64{#PackageSuffix}-setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern

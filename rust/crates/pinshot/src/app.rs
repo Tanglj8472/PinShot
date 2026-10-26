@@ -271,6 +271,7 @@ impl App {
     }
 
     fn maybe_run_scheduled_update(&mut self) {
+        if cfg!(feature = "lite") { return; }
         if self.update_inflight {
             return;
         }
@@ -328,6 +329,7 @@ impl App {
     }
 
     fn request_snip(&mut self, event_loop: &ActiveEventLoop, translate: bool) {
+        if cfg!(feature = "lite") && translate { return; }
         if self.snip_phase == SnipPhase::Overlay {
             let closing_resnip = self
                 .overlay
@@ -786,6 +788,7 @@ impl App {
     }
 
     fn start_pin_translate(&mut self, pin: WindowId) {
+        if cfg!(feature = "lite") { return; }
         let Some(p) = self.pins.iter_mut().find(|p| p.window_id() == pin) else {
             return;
         };
@@ -802,6 +805,7 @@ impl App {
     }
 
     fn selection_translate(&self) {
+        if cfg!(feature = "lite") { return; }
         #[cfg(not(windows))]
         {
             crate::logutil::log("selection_translate: unavailable on this platform");

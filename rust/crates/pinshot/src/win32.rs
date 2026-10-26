@@ -594,6 +594,7 @@ impl HotkeyHost {
             let mut failures = Vec::new();
             let mut next = 0xA000i32;
             for (seq, cmd, label) in specs {
+                if cfg!(feature = "lite") && matches!(cmd, Command::SelectionTranslate | Command::CaptureTranslate) { continue; }
                 if !seq.trim().is_empty() {
                     match register_hotkey(hwnd, next, seq) {
                         Ok(()) => {

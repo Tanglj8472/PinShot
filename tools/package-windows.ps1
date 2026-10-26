@@ -1,6 +1,7 @@
 ﻿param(
     [string]$Iscc,
     [switch]$SkipTests,
+    [switch]$Lite,
     [switch]$SkipBuild,
     [string]$ReleaseDir,
     [string]$TargetDir
@@ -39,7 +40,7 @@ function Copy-ReleaseDocument([string]$RelativePath, [string]$Destination) {
     Write-Host "Recovered unchanged document from Git: $RelativePath"
 }
 $workspace = Join-Path $repo 'rust'
-if (-not $TargetDir) { $TargetDir = Join-Path $workspace 'target\package-windows' }
+if (-not $TargetDir) { $TargetDir = Join-Path $workspace $(if ($Lite) { 'target\package-windows-lite' } else { 'target\package-windows' }) }
 $TargetDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($TargetDir)
 if ($ReleaseDir -and -not $SkipBuild) { throw '-ReleaseDir requires -SkipBuild; otherwise use -TargetDir' }
 $manifest = Get-Content -LiteralPath (Join-Path $workspace 'Cargo.toml') -Raw
@@ -58,25 +59,32 @@ if ($LASTEXITCODE -ne 0 -or "$hostInfo" -notmatch 'host: x86_64-pc-windows-msvc'
 Push-Location $workspace
 try {
     if (-not $SkipTests) {
-        & cargo test --locked --workspace
+        if ($Lite) { & cargo test --locked --workspace --features lite }
+        else { & cargo test --locked --workspace }
         if ($LASTEXITCODE -ne 0) { throw 'Tests without OCR failed' }
-        & cargo test --locked --workspace --features ocr
-        if ($LASTEXITCODE -ne 0) { throw 'OCR tests failed' }
+        if (-not $Lite) {
+            & cargo test --locked --workspace --features ocr
+            if ($LASTEXITCODE -ne 0) { throw 'OCR tests failed' }
+        }
     }
     if (-not $SkipBuild) {
-        & cargo build --locked --release --bin pinshot --features ocr --target-dir $TargetDir
+        $editionFeature = if ($Lite) { 'lite' } else { 'ocr' }
+        & cargo build --locked --release --bin pinshot --no-default-features --features $editionFeature --target-dir $TargetDir
         if ($LASTEXITCODE -ne 0) { throw 'Release build failed' }
     }
 } finally { Pop-Location }
 
 $dist = Join-Path $repo 'dist'
 $stageRoot = Join-Path $dist ('stage-' + [guid]::NewGuid().ToString('N'))
-$name = "PinShot-$version-windows-x64"
+$name = if ($Lite) { "PinShot-$version-windows-x64-lite" } else { "PinShot-$version-windows-x64" }
 $payload = Join-Path $stageRoot $name
 New-Item -ItemType Directory -Path $payload -Force | Out-Null
 $release = if ($ReleaseDir) { $ReleaseDir } else { Join-Path $TargetDir 'release' }
 Copy-Item -LiteralPath (Join-Path $release 'pinshot.exe') -Destination $payload
-Get-ChildItem -LiteralPath $release -Filter '*.dll' -File | Copy-Item -Destination $payload
+if (-not $Lite) { Get-ChildItem -LiteralPath $release -Filter '*.dll' -File | Copy-Item -Destination $payload }
+$expectedEdition = if ($Lite) { 'lite' } else { 'full' }
+$actualEdition = (& (Join-Path $payload 'pinshot.exe') --edition | Out-String).Trim()
+if ($LASTEXITCODE -ne 0 -or $actualEdition -ne $expectedEdition) { throw "Wrong edition for package: expected=$expectedEdition actual=$actualEdition" }
 # GPU DLLs are included when present; a CPU-only OCR build must also package
 # successfully from a clean target directory. Actual imports are checked below.
 # App-local redistributable CRT: users do not need Visual Studio installed.
@@ -101,11 +109,12 @@ $dumpbin = Get-ChildItem -LiteralPath (Join-Path $vsRoot 'VC\Tools\MSVC') -Direc
         Join-Path $_.FullName 'bin\Hostx64\x64\dumpbin.exe'
     } | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
 if (-not $dumpbin) { throw 'MSVC dumpbin.exe not found' }
-& (Join-Path $PSScriptRoot 'test-windows-runtime.ps1') -PayloadDir $payload -Dumpbin $dumpbin
+& (Join-Path $PSScriptRoot 'test-windows-runtime.ps1') -PayloadDir $payload -Dumpbin $dumpbin -Lite:$Lite
 Copy-Item -LiteralPath (Join-Path $repo 'assets\pinshot.ico') -Destination $payload
 @{
     product = 'PinShot'
     version = $version
+    edition = $expectedEdition
     installDirectory = '%LOCALAPPDATA%\Programs\PinShot'
     managedInstaller = 'PinShot Windows Installer'
 } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $payload 'pinshot-install.json') -Encoding utf8
@@ -176,7 +185,8 @@ $reported = (& (Join-Path $payload 'pinshot.exe') --version | Out-String).Trim()
 if ($LASTEXITCODE -ne 0 -or "$reported" -notmatch "PinShot $([regex]::Escape($version)) \(windows-rust\)") {
     throw "Version smoke failed: $reported"
 }
-& $Iscc "/DAppVersion=$version" "/DPayloadDir=$payload" "/DDistDir=$dist" (Join-Path $repo 'packaging\windows.iss')
+$editionArgs = if ($Lite) { @("/DLite=1") } else { @() }
+& $Iscc "/DAppVersion=$version" "/DPayloadDir=$payload" "/DDistDir=$dist" @editionArgs (Join-Path $repo 'packaging\windows.iss')
 if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed' }
 $zip = Join-Path $dist "$name.zip"
 Get-ChildItem -LiteralPath $payload -Recurse -File | Where-Object { $_.LastWriteTimeUtc.Year -lt 1980 } |
@@ -187,5 +197,5 @@ $sums = foreach ($artifact in $artifacts) {
     $hash = (Get-FileHash -LiteralPath $artifact -Algorithm SHA256).Hash.ToLowerInvariant()
     "$hash  $(Split-Path $artifact -Leaf)"
 }
-$sums | Set-Content -LiteralPath (Join-Path $dist 'SHA256SUMS.txt') -Encoding ascii
+$sums | Set-Content -LiteralPath (Join-Path $dist $(if ($Lite) { 'SHA256SUMS-lite.txt' } else { 'SHA256SUMS.txt' })) -Encoding ascii
 Write-Host "Release artifacts: $dist"

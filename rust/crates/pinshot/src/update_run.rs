@@ -48,6 +48,9 @@ struct GhAsset {
 }
 
 pub fn check_and_apply(auto: bool) -> Result<UpdateOutcome, String> {
+    if cfg!(feature = "lite") {
+        return Err("PinShot Lite uses manual updates; download the Lite package from GitHub Releases.".into());
+    }
     let _ = auto;
     let current = version_tuple(VERSION).ok_or("invalid current version")?;
     let release = fetch_latest_windows_release()?;

@@ -1715,7 +1715,7 @@ impl Overlay {
         match key {
             Key::Named(NamedKey::Escape) => self.request_abort(),
             Key::Named(NamedKey::F1) => self.resnip(),
-            Key::Named(NamedKey::F5) => {
+            Key::Named(NamedKey::F5) if !cfg!(feature = "lite") => {
                 if self.sel.has_sel() {
                     self.finish_ocr(true);
                 }

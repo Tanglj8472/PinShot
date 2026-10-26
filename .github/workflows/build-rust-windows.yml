@@ -99,9 +99,40 @@ jobs:
             dist/SHA256SUMS.txt
           if-no-files-found: error
 
+  lite:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test Lite
+        run: cargo test --locked --workspace --features lite
+      - name: Verify Lite excludes inference dependencies
+        shell: pwsh
+        run: |
+          $deps = cargo tree --locked -p pinshot --target x86_64-pc-windows-msvc --no-default-features --features lite
+          if ($LASTEXITCODE -ne 0) { throw 'Dependency inspection failed' }
+          if ($deps -match '(?m)\\b(ort|ort-sys|paddle-ocr-rs) v') { throw 'Lite contains inference dependencies' }
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --yes --no-progress
+      - name: Build and package Lite for Windows 10 1809
+        shell: pwsh
+        run: ../tools/package-windows.ps1 -Lite -SkipTests
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pinshot-lite-windows-x64-packages
+          path: |
+            dist/*-lite-setup.exe
+            dist/*-lite.zip
+            dist/SHA256SUMS-lite.txt
+          if-no-files-found: error
+
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: [build, lite]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -109,6 +140,10 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: pinshot-windows-x64-packages
+          path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: pinshot-lite-windows-x64-packages
           path: dist
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2

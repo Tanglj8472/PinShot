@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory = $true)][string]$PayloadDir,
-    [Parameter(Mandatory = $true)][string]$Dumpbin
+    [Parameter(Mandatory = $true)][string]$Dumpbin,
+    [switch]$Lite
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -21,6 +22,7 @@ $systemDlls = @(
 )
 $files = @(Get-ChildItem -LiteralPath $PayloadDir -File | Where-Object { $_.Extension -in '.exe', '.dll' })
 if (-not ($files | Where-Object Name -eq 'pinshot.exe')) { throw 'Payload has no pinshot.exe' }
+if ($Lite -and ($files | Where-Object { $_.Name -match '(?i)onnx|directml|dxcore|dawn|cuda|cudnn' })) { throw 'Lite package contains an inference/GPU runtime' }
 $localNames = @($files | ForEach-Object { $_.Name.ToLowerInvariant() })
 $report = foreach ($file in $files) {
     $headers = & $Dumpbin /NOLOGO /HEADERS $file.FullName 2>&1 | Out-String
@@ -32,6 +34,7 @@ $report = foreach ($file in $files) {
     $dependencies = @([regex]::Matches($imports, '(?im)^\s+([a-z0-9_.-]+\.(?:dll|drv))\s*$') |
         ForEach-Object { $_.Groups[1].Value.ToLowerInvariant() } | Sort-Object -Unique)
     foreach ($dependency in $dependencies) {
+        if ($Lite -and $dependency -match '(?i)onnx|directml|dxcore|dawn|cuda|cudnn') { throw "Lite imports an unsupported runtime: $($file.Name) -> $dependency" }
         if ($dependency -in $localNames) { $source = 'bundled' }
         elseif ($dependency -in $systemDlls -or $dependency -match '^(api|ext)-ms-win-') { $source = 'Windows' }
         else { throw "Missing non-system dependency: $($file.Name) -> $dependency" }

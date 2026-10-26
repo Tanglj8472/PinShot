@@ -1384,7 +1384,7 @@ impl PinWin {
                             self.dirty = true;
                         }
                     }
-                    Key::Named(NamedKey::F5) => {
+                    Key::Named(NamedKey::F5) if !cfg!(feature = "lite") => {
                         self.pending_translate = true;
                     }
                     Key::Character(c) if c.eq_ignore_ascii_case("c") => {

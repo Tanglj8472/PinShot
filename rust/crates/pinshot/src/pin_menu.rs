@@ -617,7 +617,9 @@ fn build_rows(state: &PinMenuState) -> Vec<Row> {
             state.annotating,
             false,
         ),
+        #[cfg(not(feature = "lite"))]
         item(tr("Recognize text"), PinMenuAction::Ocr, false, false),
+        #[cfg(not(feature = "lite"))]
         item(tr("Translate"), PinMenuAction::Translate, false, false),
         check_item(
             tr("Shadow"),
@@ -915,20 +917,20 @@ mod tests {
             _ => None,
         });
         assert_eq!(sh, Some((true, true)));
-        assert!(rows.iter().any(|r| matches!(
+        assert_eq!(rows.iter().any(|r| matches!(
             r,
             Row::Item {
                 action: Some(PinMenuAction::Ocr),
                 ..
             }
-        )));
-        assert!(rows.iter().any(|r| matches!(
+        )), !cfg!(feature = "lite"));
+        assert_eq!(rows.iter().any(|r| matches!(
             r,
             Row::Item {
                 action: Some(PinMenuAction::Translate),
                 ..
             }
-        )));
+        )), !cfg!(feature = "lite"));
         assert!(rows.iter().any(|r| matches!(
             r,
             Row::Item {

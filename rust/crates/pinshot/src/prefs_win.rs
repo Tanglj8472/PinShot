@@ -312,6 +312,7 @@ impl PrefsWin {
             }
             1 => {
                 for i in 0..7u8 {
+                    if cfg!(feature = "lite") && matches!(i, 4 | 5) { continue; }
                     push(self, 200.0, y, 280.0, Field::Hk(i));
                     y += 36.0;
                 }
@@ -427,6 +428,7 @@ impl PrefsWin {
                     (tr("Click-through:"), self.draft.hotkey_clickthrough.clone()),
                 ];
                 for (i, (lab, val)) in hks.iter().enumerate() {
+                    if cfg!(feature = "lite") && matches!(i, 4 | 5) { continue; }
                     let armed = self.armed == Some(i as u8);
                     y = row_hk(&mut pm, y, lab, val, armed, thm);
                 }
