@@ -2,6 +2,7 @@
 //! X11 on Linux. `pinshot-core` stays portable.
 
 mod app;
+#[cfg(not(feature = "lite"))]
 mod automation;
 mod cursor;
 mod event;
@@ -75,6 +76,7 @@ pub use app::run;
 pub use prefs::run_preferences;
 
 /// Capture the desktop with the application's native backend, without an overlay.
+#[cfg(not(feature = "lite"))]
 pub fn capture_to_file(path: &std::path::Path) -> Result<(), String> {
     native::init_process();
     let capture = capture::Capture::grab(false)?;

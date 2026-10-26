@@ -60,6 +60,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     let proxy = event_loop.create_proxy();
     crate::ipc::spawn_server(proxy.clone());
+    #[cfg(not(feature = "lite"))]
     if args.iter().any(|arg| arg == "--automation") {
         crate::automation::spawn_server(proxy.clone())?;
         crate::logutil::log("native automation enabled");
@@ -78,6 +79,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         fallback: None,
         overlay: None,
         pins: Vec::new(),
+        #[cfg(not(feature = "lite"))]
         automation_pins: HashMap::new(),
         closed: ClosedStack::default(),
         history: SnipHistory::new(),
@@ -181,6 +183,7 @@ struct App {
     fallback: Option<FallbackWin>,
     overlay: Option<Overlay>,
     pins: Vec<PinWin>,
+    #[cfg(not(feature = "lite"))]
     automation_pins: HashMap<u64, PinWin>,
     closed: ClosedStack,
     history: SnipHistory,
@@ -1343,6 +1346,7 @@ impl App {
 }
 
 impl App {
+    #[cfg(not(feature = "lite"))]
     fn reap_automation_pins(&mut self) {
         let closed = self.automation_pins.iter().filter(|(_, pin)| pin.closed).map(|(id, _)| *id).collect::<Vec<_>>();
         for id in closed {
@@ -1354,6 +1358,7 @@ impl App {
         }
     }
 
+    #[cfg(not(feature = "lite"))]
     fn automation_edit(&mut self, session: u64, command: serde_json::Value) -> Result<serde_json::Value, String> {
         self.reap_automation_pins();
         let Some(pin) = self.automation_pins.get_mut(&session) else { return Ok(serde_json::json!({"open": false})); };
@@ -1389,6 +1394,7 @@ impl App {
             "window_id": format!("{:?}", pin.window_id())}))
     }
 
+    #[cfg(not(feature = "lite"))]
     fn automation_view(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -1457,10 +1463,12 @@ impl App {
             }
             AppEvent::PinMenu(action) => self.apply_pin_menu(action),
             AppEvent::Ipc(cmd) => self.handle_ipc_command(cmd),
+            #[cfg(not(feature = "lite"))]
             AppEvent::AutomationEdit { session_id, command, response } => {
                 let result = self.automation_edit(session_id, command);
                 let _ = response.send(result);
             }
+            #[cfg(not(feature = "lite"))]
             AppEvent::AutomationView { action, session_id, image, shapes, response } => {
                 let result = self.automation_view(event_loop, &action, session_id, image, shapes);
                 let _ = response.send(result);
@@ -1651,6 +1659,7 @@ impl App {
 
 impl App {
     fn dispatch_window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        #[cfg(not(feature = "lite"))]
         if let Some(session) = self.automation_pins.iter().find(|(_, pin)| pin.window_id() == id).map(|(session, _)| *session) {
             if let Some(pin) = self.automation_pins.get_mut(&session) {
                 match &event {
@@ -1834,8 +1843,11 @@ impl App {
 
 impl App {
     fn maintain_windows(&mut self, event_loop: &ActiveEventLoop) {
-        for pin in self.automation_pins.values_mut() { pin.tick_glow(); pin.pump_redraw(); }
-        self.reap_automation_pins();
+        #[cfg(not(feature = "lite"))]
+        {
+            for pin in self.automation_pins.values_mut() { pin.tick_glow(); pin.pump_redraw(); }
+            self.reap_automation_pins();
+        }
 
         let mut persist = false;
         for p in &mut self.pins {

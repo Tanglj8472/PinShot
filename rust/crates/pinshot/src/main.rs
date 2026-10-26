@@ -17,7 +17,14 @@ fn main() {
         println!("{}", if cfg!(feature = "lite") { "lite" } else { "full" });
         return;
     }
+    #[cfg(feature = "lite")]
+    if args.iter().any(|a| a == "--automation" || a == "--capture-to") {
+        pinshot::logutil_ensure();
+        eprintln!("PinShot Lite does not include MCP/automation support.");
+        std::process::exit(2);
+    }
     // Run before the GUI/single-instance path so MCP also works with a resident app.
+    #[cfg(not(feature = "lite"))]
     if let Some(i) = args.iter().position(|a| a == "--capture-to") {
         pinshot::init_diagnostics(&args);
         let result = args.get(i + 1)

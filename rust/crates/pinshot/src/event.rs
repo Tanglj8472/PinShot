@@ -11,6 +11,7 @@ pub enum AppEvent {
     PrefsApplied(Config),
     RaisePrefs,
     Ipc(String),
+    #[cfg(not(feature = "lite"))]
     AutomationView {
         action: String,
         session_id: u64,
@@ -18,6 +19,7 @@ pub enum AppEvent {
         shapes: Vec<pinshot_core::annotation::Shape>,
         response: std::sync::mpsc::Sender<Result<serde_json::Value, String>>,
     },
+    #[cfg(not(feature = "lite"))]
     AutomationEdit {
         session_id: u64,
         command: serde_json::Value,

@@ -13,7 +13,6 @@ on:
       - "tools/test-windows-clean-runtime.ps1"
       - "packaging/**"
       - ".github/workflows/build-rust-windows.yml"
-      - ".github/workflows/build-rust-linux.yml"
   workflow_dispatch:
 
 jobs:
@@ -121,6 +120,17 @@ jobs:
       - name: Build and package Lite for Windows 10 1809
         shell: pwsh
         run: ../tools/package-windows.ps1 -Lite -SkipTests
+      - name: Verify Lite rejects MCP startup
+        shell: pwsh
+        run: |
+          $stage = Get-ChildItem ../dist -Directory -Filter 'stage-*' | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          $payload = (Get-ChildItem -LiteralPath $stage.FullName -Directory | Select-Object -First 1).FullName
+          $exe = Join-Path $payload 'pinshot.exe'
+          foreach ($argument in @('--automation', '--capture-to')) {
+            $process = Start-Process -FilePath $exe -ArgumentList $argument -WindowStyle Hidden -PassThru
+            if (-not $process.WaitForExit(15000)) { $process.Kill(); throw "Lite unexpectedly remained running: $argument" }
+            if ($process.ExitCode -ne 2) { throw "Lite must reject MCP startup: $argument ($($process.ExitCode))" }
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: pinshot-lite-windows-x64-packages
