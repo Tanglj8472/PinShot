@@ -12,6 +12,11 @@ fn main() {
     }
     let _diagnostics = FlushDiagnostics;
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "--edition") {
+        pinshot::logutil_ensure();
+        println!("{}", if cfg!(feature = "lite") { "lite" } else { "full" });
+        return;
+    }
     // Run before the GUI/single-instance path so MCP also works with a resident app.
     if let Some(i) = args.iter().position(|a| a == "--capture-to") {
         pinshot::init_diagnostics(&args);
