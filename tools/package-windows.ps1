@@ -121,7 +121,7 @@ Copy-Item -LiteralPath (Join-Path $repo 'assets\pinshot.ico') -Destination $payl
 $readmeZh = Join-Path $repo 'README.zh-CN.md'
 $readmeDefault = Join-Path $repo 'README.md'
 $readmeSrc = if (Test-Path -LiteralPath $readmeZh) { $readmeZh } else { $readmeDefault }
-$readmeRelative = $readmeSrc.Substring($repo.Length).TrimStart('\', '/')
+$readmeRelative = if ($Lite) { 'docs/lite-edition.md' } else { $readmeSrc.Substring($repo.Length).TrimStart('\', '/') }
 Copy-ReleaseDocument $readmeRelative (Join-Path $payload 'README.md')
 Copy-ReleaseDocument $readmeRelative (Join-Path $payload '使用说明.txt')
 Copy-ReleaseDocument 'docs/third-party.md' (Join-Path $payload 'third-party.md')
