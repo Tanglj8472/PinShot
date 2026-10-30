@@ -1,42 +1,49 @@
-# Rust 开发说明
+# Windows 开发说明
 
-功能及下载入口见 [项目 README（中文）](../README.zh-CN.md)。工作区含 `pinshot-core`（逻辑与软件渲染）和 `pinshot`（桌面应用）。
+工作区包含 `pinshot-core` 和 `pinshot`。功能入口见[项目 README](../README.md)，完整索引见[文档导航](../docs/README.md)。
 
-## Windows
+## 环境
 
-安装 Rust stable、MSVC C++ 工具链及 Windows SDK，在本目录运行：
+- Rust stable、Windows x64 MSVC 工具链、C++ 构建工具及 Windows SDK。
+- 打包需要 Inno Setup 6。
+- MCP 服务开发需要 Node.js 20 或更高版本。
+
+OCR 构建可能联网下载 ONNX Runtime 依赖；OCR 模型在运行时单独下载。
+
+## 构建与测试
+
+在 `rust` 目录执行：
 
 ```powershell
-cargo test --workspace
-cargo test --workspace --features ocr
-cargo build --release --bin pinshot --features ocr
-cargo run --release --bin pinshot --features ocr -- --debug
+# 完整版
+cargo test --locked --workspace --features ocr
+cargo build --locked --release --bin pinshot --features ocr
+
+# Lite
+cargo test --locked --workspace --features lite
+cargo build --locked --release --bin pinshot --no-default-features --features lite
+
+# 普通开发构建，不等同于 Lite
+cargo test --locked --workspace
 ```
 
-OCR 构建需要联网获取 ONNX Runtime 构建依赖。分发请使用 `../tools/package-windows.ps1` 收集 EXE 与动态库，不要只复制 EXE。
+Lite 不能与 `ocr` 或 GPU OCR feature 同时启用。`pinshot.exe --edition` 输出 `full` 或 `lite`。
 
-## Linux（X11）
+## 打包
 
-Ubuntu 24.04 构建依赖：
+在仓库根目录执行：
 
-```sh
-sudo apt-get install build-essential pkg-config libx11-dev libx11-xcb-dev \
-  libxkbcommon-dev libxkbcommon-x11-dev libxcb-xkb-dev libxcb1-dev \
-  libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxcb-randr0-dev \
-  libxcb-shm0-dev libxrandr-dev libxi-dev libxext-dev libxcursor-dev \
-  libxinerama-dev libxdo-dev libgtk-3-dev libayatana-appindicator3-dev \
-  libclang-dev libssl-dev fonts-wqy-microhei
-cargo test --workspace
-cargo build --release --bin pinshot
-./target/release/pinshot --version
+```powershell
+./tools/package-windows.ps1
+./tools/package-windows.ps1 -Lite
 ```
 
-Linux 平台默认包含 OCR；目前不提供原生 Wayland 截图。CI 的依赖列表见 `.github/workflows/build-rust-linux.yml`。
+两个版本使用独立构建目录；打包脚本验证版本身份、依赖及文档内容。分发时不能只复制开发目录中的 EXE。
 
-## 命令行与数据
+## 运行与诊断
 
-常用参数：`--snip`、`--pin-clipboard`、`--prefs`、`--translate`、`--debug`、`--version`。
+常用参数为 `--snip`、`--pin-clipboard`、`--prefs`、`--debug`、`--version`、`--edition`。
 
-Windows 使用 `%APPDATA%\PinShot`；Linux 使用 XDG 配置/数据目录，默认分别为 `~/.config/PinShot` 与 `~/.local/share/PinShot`。模型位于数据目录的 `ocr-models` 中，可用 `PINSHOT_OCR_MODELS` 指定已有模型来源目录。
+完整版支持 `--automation` 和 `--capture-to <output.png>`；Lite 拒绝这两个参数。参见[MCP 接入](../pinshot-mcp/README.md)。
 
-`PARITY.md` 与 `PROGRESS.md` 为迁移历史，不作为当前功能清单或发布检查依据。
+测试可用 `PINSHOT_CONFIG_DIR` 和 `PINSHOT_DATA_DIR` 指向独立目录，避免改动日常配置。既有 Unix/X11 源码保留，但当前只构建并发布 Windows。

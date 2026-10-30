@@ -2659,7 +2659,7 @@ mod tests {
         let sel = Rect::new(0.0, 0.0, 280.0, 160.0);
         let over = Rect::new(0.0, 0.0, 280.0, 160.0);
         let tb = Toolbar::layout_pin_hover(sel, over);
-        assert_eq!(tb.buttons.len(), 4);
+        assert_eq!(tb.buttons.len(), if cfg!(feature = "lite") { 3 } else { 4 });
         for b in &tb.buttons {
             let mut pm = Pixmap::new(280, 160).unwrap();
             pm.fill(tiny_skia::Color::from_rgba8(200, 200, 200, 255));

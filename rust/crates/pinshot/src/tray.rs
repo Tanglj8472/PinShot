@@ -32,7 +32,7 @@ impl Tray {
         let quit = MenuItem::new(tr("Quit"), true, None);
         menu.append(&snip).map_err(|e| e.to_string())?;
         menu.append(&pin).map_err(|e| e.to_string())?;
-        menu.append(&translate).map_err(|e| e.to_string())?;
+        if !cfg!(feature = "lite") { menu.append(&translate).map_err(|e| e.to_string())?; }
         menu.append(&hide).map_err(|e| e.to_string())?;
         menu.append(&restore).map_err(|e| e.to_string())?;
         let gm = Submenu::new(tr("Groups"), true);

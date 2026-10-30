@@ -1,73 +1,74 @@
 # PinShot
 
-PinShot 是一款面向 Windows 的开源截图与屏幕标注工具，使用 Rust 构建。它将区域截图、即时标注、图片贴图、文字识别和翻译整合在一个轻量工作流中。
+面向 Windows 的开源截图与屏幕标注工具，使用 Rust 构建。支持区域截图、多显示器、即时标注、桌面贴图及图片保存；完整版另提供 OCR、翻译和 MCP 自动化。
 
-## 功能
+[下载版本](https://github.com/Tanglj8472/pinshot/releases) · [文档导航](docs/README.md) · [报告问题](https://github.com/Tanglj8472/pinshot/issues)
 
-- 快捷键、托盘菜单和命令行启动截图。
-- 支持多显示器、窗口区域识别和高 DPI 屏幕。
-- 直线、箭头、矩形、椭圆、画笔、记号笔、序号、文字、橡皮擦、马赛克和模糊。
-- 标注可编辑，支持移动、调整大小、撤销和取消选择。
-- 复制到剪贴板、保存图片、历史记录和截图贴图。
-- OCR 文字识别，以及可配置的翻译服务商。
-- DXGI 优先的屏幕捕获，并在不兼容环境中自动回退到 GDI。
-- 分级运行日志和按日期保存的诊断文件。
+## 选择版本
 
-## 系统要求
+| 功能与要求 | 完整版 | Lite 精简版 |
+| --- | --- | --- |
+| 截图、标注、马赛克与模糊 | 支持 | 支持 |
+| 贴图、剪贴板、图片保存 | 支持 | 支持 |
+| OCR 与模型下载 | 支持 | 不包含 |
+| 截图翻译、划词翻译 | 支持 | 不包含 |
+| MCP 自动化 | 支持，需显式启用 | 不包含 |
+| 最低 Windows 内部版本 | 19041（Windows 10 2004） | 17763（Windows 10 1809） |
+| 更新方式 | 应用内更新或手动安装 | 手动安装对应 Lite 包 |
 
-- Windows 10 版本 2004（Build 19041）或更高版本。
-- x64 处理器。
-- OCR 功能需要下载对应模型文件。
+发布目标为 Windows x64 兼容架构。Lite 的安装门槛包含企业版 LTSC 2019；实际运行仍需按[验收清单](docs/windows-validation.md)测试。低于 17763 的系统不在当前支持范围。既有 Linux 源码保留，但不再自动构建或发布 Linux 版。
 
-## 快速开始
+## 主要功能
 
-### 使用发布版本
+- 多显示器与高 DPI 截图，支持窗口区域识别。
+- 矩形、椭圆、直线、箭头、画笔、记号笔、序号、文字及橡皮擦。
+- 马赛克与模糊的笔刷、区域模式，以及常用工具参数记忆。
+- 剪贴板复制、图片保存、截图历史和可拖动、缩放的贴图。
+- DXGI 屏幕捕获，在不兼容环境回退到 GDI。
+- 可配置快捷键、保存文件名、语言、主题与分级日志。
 
-从 GitHub Releases 下载 Windows 安装包，运行安装程序后即可通过托盘图标或快捷键开始截图。
+部分标注仅在刚创建后的编辑阶段可调整；画笔等笔迹不可选中，并非所有标注都能一直编辑。
 
-### 从源码构建
+## 安装与使用
 
-需要安装 Rust stable 工具链和 Windows MSVC 编译工具链。
+在 Releases 中按需选择版本；名称含 `-lite` 的文件属于精简版。
 
-```powershell
-cd rust
-cargo run --release --bin pinshot --features ocr -- --debug
-```
+| 文件 | 用途 |
+| --- | --- |
+| `*-setup.exe` | 当前用户安装包 |
+| 桌面应用 `*.zip` | 便携包，解压后运行并保留随包 DLL |
+| `pinshot-mcp-*.zip` | 独立 MCP 服务包，仅供完整版使用 |
 
-不需要 OCR 时可以省略 `--features ocr`。
+左键点击托盘图标开始截图，右键打开菜单。快捷键可在设置中调整。完整版首次 OCR 需要联网下载模型，模型不随安装包分发。
 
-## 常用操作
+两版共享安装目录和配置，安装时互相替换，不支持同时运行。安装、升级和卸载保留用户数据。详见[安装与升级](docs/install-upgrade.md)。
 
-截图完成后，可以使用工具栏编辑图片。左键拖动用于创建区域和笔迹；右键用于结束部分多步骤操作、取消选择或关闭当前交互。工具栏会记住常用的大小、模糊程度和其他工具参数。
+## 从源码构建
 
-截图可以复制到剪贴板、保存到图片目录或固定到桌面上。贴图窗口支持缩放和拖动。
-
-## 配置与日志
-
-设置页可以配置快捷键、保存目录、文件名格式、语言、OCR、翻译服务商和日志等级。
-
-日志文件保存在 `%APPDATA%\\PinShot`，每天生成一个 TXT 文件，默认只保留最近两天。日志等级包括关闭、普通、详细和调试；排查截图卡顿或兼容性问题时可以临时使用调试级别。
-
-## 项目结构
-
-- `rust/crates/pinshot-core/`：跨模块的数据结构、标注模型、渲染和配置逻辑。
-- `rust/crates/pinshot/`：Windows/Linux 平台集成、截图窗口、工具栏、OCR 和翻译。
-- `packaging/`：Windows 安装程序配置和安装回归测试。
-- `tools/`：构建、运行库检查和系统验证脚本。
-- `docs/`：设计说明、日志说明和验证记录。
-
-## 开发与验证
+需要 Rust stable、MSVC C++ 构建工具及 Windows SDK。以下命令在仓库根目录执行：
 
 ```powershell
-cd rust
-cargo fmt --all -- --check
-cargo test --locked --workspace
-cargo test --locked --workspace --features ocr
-cargo check --locked --workspace
+# 完整版
+cargo run --manifest-path rust/Cargo.toml --release --bin pinshot --features ocr -- --debug
+
+# Lite
+cargo run --manifest-path rust/Cargo.toml --release --bin pinshot --no-default-features --features lite -- --debug
 ```
 
-Windows 安装程序由 GitHub Actions 构建，并执行安装、升级、卸载、用户数据保留和运行库检查。
+仅省略 `ocr` 不等同于 Lite：普通开发构建仍保留翻译和 MCP。详见[开发说明](rust/README.md)。
 
-## 许可
+## 配置与诊断
 
-项目源代码和第三方依赖的许可信息请参阅仓库中的许可证及 `packaging/licenses/` 目录。
+默认配置和数据目录为 `%APPDATA%\PinShot`。日志按 UTC 日期写入 `pinshot-YYYY-MM-DD.txt`；保留规则和已知限制见[日志与诊断](rust/docs/logging.md)。
+
+报告问题时请提供应用版本、`--edition` 输出、Windows 内部版本、操作步骤及脱敏日志，不要附带 API 密钥。
+
+## 项目与许可
+
+- `main`：Rust 桌面应用、Lite 和 MCP 服务。
+- `cpp`：独立保留的 C++ 实现。
+- `rust/crates/pinshot-core`：配置、标注、渲染和通用逻辑。
+- `rust/crates/pinshot`：平台集成与桌面交互。
+- `pinshot-mcp`：完整版的 Node.js MCP 协议服务。
+
+Rust 工作区声明使用 MIT 许可证。第三方声明见[第三方组件](docs/third-party.md)，发布包中的许可证文件必须保留。参与开发前请阅读[贡献指南](CONTRIBUTING.md)。

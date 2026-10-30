@@ -12,6 +12,31 @@ fn main() {
     }
     let _diagnostics = FlushDiagnostics;
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "--edition") {
+        pinshot::logutil_ensure();
+        println!("{}", if cfg!(feature = "lite") { "lite" } else { "full" });
+        return;
+    }
+    #[cfg(feature = "lite")]
+    if args.iter().any(|a| a == "--automation" || a == "--capture-to") {
+        pinshot::logutil_ensure();
+        eprintln!("PinShot Lite does not include MCP/automation support.");
+        std::process::exit(2);
+    }
+    // Run before the GUI/single-instance path so MCP also works with a resident app.
+    #[cfg(not(feature = "lite"))]
+    if let Some(i) = args.iter().position(|a| a == "--capture-to") {
+        pinshot::init_diagnostics(&args);
+        let result = args.get(i + 1)
+            .filter(|p| !p.starts_with("--"))
+            .ok_or_else(|| "--capture-to requires an output PNG path".to_string())
+            .and_then(|p| pinshot::capture_to_file(std::path::Path::new(p)));
+        if let Err(e) = result {
+            pinshot::report_runtime_error("capture-to", &e);
+            std::process::exit(1);
+        }
+        return;
+    }
     if args.iter().any(|a| a == "--settings-window") {
         pinshot::run_preferences();
         return;
@@ -49,7 +74,7 @@ fn main() {
     if args.iter().any(|a| a == "--help" || a == "-h") {
         pinshot::logutil_ensure();
         println!(
-            "PinShot {} ({})\n  --snip  --pin-clipboard  --prefs  --translate  --debug  --version\n  --quit-for-install  --install-after-quit <setup.exe>",
+            "PinShot {} ({})\n  --capture-to <output.png>  --snip  --pin-clipboard  --prefs  --translate  --debug  --version\n  --quit-for-install  --install-after-quit <setup.exe>",
             pinshot_core::VERSION,
             pinshot::platform_tag()
         );

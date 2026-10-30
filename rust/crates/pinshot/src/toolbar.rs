@@ -257,7 +257,7 @@ impl Toolbar {
             ),
             (IconKind::Eraser, TbAction::Tool(Tool::Eraser), "Eraser"),
         ];
-        let acts: Vec<(IconKind, TbAction, &'static str)> = if for_pin {
+        let mut acts: Vec<(IconKind, TbAction, &'static str)> = if for_pin {
             vec![
                 (IconKind::Ocr, TbAction::Ocr, "Recognize text"),
                 (IconKind::Undo, TbAction::Undo, "Undo (Ctrl+Z)"),
@@ -278,6 +278,7 @@ impl Toolbar {
                 (IconKind::Copy, TbAction::Copy, "Copy (Ctrl+C / Enter)"),
             ]
         };
+        if cfg!(feature = "lite") { acts.retain(|(_, action, _)| *action != TbAction::Ocr); }
         let n_tools = tools.len() as f32;
         let n_acts = acts.len() as f32;
         let w = PAD * 2.0
@@ -619,6 +620,7 @@ impl Toolbar {
             (IconKind::Copy, TbAction::Copy, "Copy"),
             (IconKind::Close, TbAction::Close, "Close"),
         ];
+        let acts: Vec<_> = acts.into_iter().filter(|(_, action, _)| !cfg!(feature = "lite") || *action != TbAction::Ocr).collect();
         let n_acts = acts.len() as f32;
         let w = PAD * 2.0 + n_acts * CELL + (n_acts - 1.0).max(0.0) * GAP;
         let h = CELL + PAD * 2.0;
@@ -1019,12 +1021,13 @@ mod tests {
             "pen sub-panel hugs a colour swatch"
         );
         assert!(
-            tb.buttons.iter().any(|b| b.action == TbAction::Ocr),
-            "pin annotation toolbar must expose OCR"
+            tb.buttons.iter().any(|b| b.action == TbAction::Ocr) == !cfg!(feature = "lite"),
+            "OCR availability follows the edition"
         );
     }
 
     #[test]
+    #[cfg(not(feature = "lite"))]
     fn pin_hover_bar_has_ocr() {
         let sel = Rect::new(0.0, 0.0, 240.0, 120.0);
         let over = Rect::new(0.0, 0.0, 240.0, 120.0);
@@ -1236,6 +1239,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "lite"))]
     fn compact_bar_and_button_centers() {
         let sel = Rect::new(100.0, 100.0, 400.0, 240.0);
         let over = Rect::new(0.0, 0.0, 1920.0, 1200.0);
@@ -1335,5 +1339,19 @@ mod tests {
         let fill = tb.extras.iter().find(|e| e.action == TbAction::SetMode(DrawMode::Rect)).unwrap();
         assert_eq!(fill.icon, Some(IconKind::Fill));
         assert!(!fill.checked);
+    }
+}
+
+#[cfg(all(test, feature = "lite"))]
+mod lite_tests {
+    use super::*;
+    #[test]
+    fn all_lite_toolbars_exclude_ocr() {
+        let sel = Rect::new(100.0, 100.0, 400.0, 240.0);
+        let over = Rect::new(0.0, 0.0, 1920.0, 1080.0);
+        for tb in [Toolbar::layout(sel, over, None, ArrowKind::None, None), Toolbar::layout_pin(sel, over, None, ArrowKind::None, None), Toolbar::layout_pin_hover(sel, over)] {
+            assert!(tb.buttons.iter().all(|b| b.action != TbAction::Ocr));
+            assert!(tb.buttons.iter().any(|b| b.action == TbAction::Copy));
+        }
     }
 }

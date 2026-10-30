@@ -2,13 +2,23 @@
 //! X11 on Linux. `pinshot-core` stays portable.
 
 mod app;
+#[cfg(not(feature = "lite"))]
+mod automation;
 mod cursor;
 mod event;
 mod clipboard;
 mod draw;
+#[cfg(not(feature = "lite"))]
+mod ocr_run;
+#[cfg(feature = "lite")]
+#[path = "ocr_disabled.rs"]
 mod ocr_run;
 pub mod update_run;
 mod overlay;
+#[cfg(not(feature = "lite"))]
+mod translate_run;
+#[cfg(feature = "lite")]
+#[path = "translate_disabled.rs"]
 mod translate_run;
 mod translate_popup;
 mod pin;
@@ -23,6 +33,9 @@ mod fallback;
 mod countdown;
 mod logutil;
 mod native;
+
+#[cfg(all(feature = "lite", feature = "ocr"))]
+compile_error!("lite cannot be combined with OCR features");
 
 #[cfg(windows)]
 mod win32;
@@ -61,6 +74,15 @@ mod ipc;
 
 pub use app::run;
 pub use prefs::run_preferences;
+
+/// Capture the desktop with the application's native backend, without an overlay.
+#[cfg(not(feature = "lite"))]
+pub fn capture_to_file(path: &std::path::Path) -> Result<(), String> {
+    native::init_process();
+    let capture = capture::Capture::grab(false)?;
+    dialog::save_raster(&capture.composed, &path.to_string_lossy(), 92)
+}
+
 
 /// Logging entry points shared by the GUI host and installer helper binary.
 pub fn init_diagnostics(args: &[String]) {
