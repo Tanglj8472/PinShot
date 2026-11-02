@@ -4,9 +4,9 @@
 use crate::color::Rgba;
 use crate::geom::Rect;
 use crate::raster::Raster;
-use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use tiny_skia::{Pixmap, PremultipliedColorU8};
 
 /// Toolbar chips (Python `QFontComboBox` is the full list; these cover the
@@ -158,14 +158,10 @@ fn load_cjk_face(path: &Path) -> Option<fontdue::Font> {
 }
 
 struct ChromeStack {
-    cjk: Option<&'static fontdue::Font>,
-    latin: Option<&'static fontdue::Font>,
+    cjk: Option<fontdue::Font>,
+    latin: Option<fontdue::Font>,
     cjk_path: Option<PathBuf>,
     latin_path: Option<PathBuf>,
-}
-
-fn leak_font(font: fontdue::Font) -> &'static fontdue::Font {
-    &*Box::leak(Box::new(font))
 }
 
 fn chrome_stack() -> &'static ChromeStack {
@@ -175,7 +171,7 @@ fn chrome_stack() -> &'static ChromeStack {
         let mut cjk_path = None;
         for p in chrome_cjk_paths() {
             if let Some(font) = load_cjk_face(&p) {
-                cjk = Some(leak_font(font));
+                cjk = Some(font);
                 cjk_path = Some(p);
                 break;
             }
@@ -185,7 +181,7 @@ fn chrome_stack() -> &'static ChromeStack {
         for p in chrome_latin_paths() {
             if p.is_file() {
                 if let Some(font) = load_font(&p) {
-                    latin = Some(leak_font(font));
+                    latin = Some(font);
                     latin_path = Some(p);
                     break;
                 }
@@ -203,18 +199,18 @@ fn chrome_stack() -> &'static ChromeStack {
 fn pick_chrome(ch: char) -> Option<&'static fontdue::Font> {
     let s = chrome_stack();
     if ch.is_ascii() {
-        if let Some(f) = s.latin {
+        if let Some(f) = s.latin.as_ref() {
             if has_glyph(f, ch) {
                 return Some(f);
             }
         }
     }
-    if let Some(f) = s.cjk {
+    if let Some(f) = s.cjk.as_ref() {
         if has_glyph(f, ch) {
             return Some(f);
         }
     }
-    if let Some(f) = s.latin {
+    if let Some(f) = s.latin.as_ref() {
         if has_glyph(f, ch) {
             return Some(f);
         }
@@ -616,32 +612,33 @@ pub fn resolve_family_path(family: &str, bold: bool, italic: bool) -> Option<Pat
     find_family_file(family, bold, italic)
 }
 
-fn font_ex(family: &str, bold: bool, italic: bool) -> Option<&'static fontdue::Font> {
+fn font_ex(family: &str, bold: bool, italic: bool) -> Option<Arc<fontdue::Font>> {
     if family.is_empty() && !bold && !italic {
-        return font();
+        return None;
     }
-    static CACHE: OnceLock<Mutex<HashMap<(String, bool, bool), Option<&'static fontdue::Font>>>> =
+    static CACHE: OnceLock<Mutex<VecDeque<((String, bool, bool), Option<Arc<fontdue::Font>>)>>> =
         OnceLock::new();
-    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let cache = CACHE.get_or_init(|| Mutex::new(VecDeque::new()));
     let key = (family.to_string(), bold, italic);
-    if let Ok(g) = cache.lock() {
-        if let Some(hit) = g.get(&key) {
-            return *hit;
-        }
+    // Serialize loading too, so simultaneous paints cannot allocate the same face twice.
+    let mut cache = cache.lock().ok()?;
+    if let Some(index) = cache.iter().position(|(k, _)| k == &key) {
+        let entry = cache.remove(index).unwrap();
+        let font = entry.1.clone();
+        cache.push_back(entry);
+        return font;
     }
     let found = if let Some(face) = system_family_face(family, bold, italic) {
         load_font_index(&face.path, face.index)
     } else {
         find_family_file(family, bold, italic).and_then(|p| load_font(&p))
     };
-    let leaked = match found {
-        Some(f) => Some(&*Box::leak(Box::new(f))),
-        None => font(),
-    };
-    if let Ok(mut g) = cache.lock() {
-        g.insert(key, leaked);
+    let font = found.map(Arc::new);
+    if cache.len() >= 4 {
+        cache.pop_front();
     }
-    leaked
+    cache.push_back((key, font.clone()));
+    font
 }
 
 struct SystemFontFace {
@@ -756,11 +753,8 @@ pub fn measure(text: &str, px: f32) -> (f32, f32) {
 
 /// Annotation text: family face when it has the glyph, else the chrome CJK/Latin stack
 /// (参考工具: default text annotation uses the interface font).
-fn pick_annot(ch: char, family: &str, bold: bool, italic: bool) -> Option<&'static fontdue::Font> {
-    if family.trim().is_empty() && !bold && !italic {
-        return pick_chrome(ch);
-    }
-    if let Some(f) = font_ex(family, bold, italic) {
+fn pick_annot(ch: char, preferred: Option<&fontdue::Font>) -> Option<&fontdue::Font> {
+    if let Some(f) = preferred {
         if has_glyph(f, ch) {
             return Some(f);
         }
@@ -769,7 +763,8 @@ fn pick_annot(ch: char, family: &str, bold: bool, italic: bool) -> Option<&'stat
 }
 
 pub fn measure_ex(text: &str, px: f32, family: &str, bold: bool, italic: bool) -> (f32, f32) {
-    measure_picked(text, px, |ch| pick_annot(ch, family, bold, italic))
+    let face = font_ex(family, bold, italic);
+    measure_picked(text, px, |ch| pick_annot(ch, face.as_deref()))
 }
 
 /// Layout size for chrome labels (toolbar chips, menus, toasts, prefs).
@@ -1073,8 +1068,9 @@ pub fn blit_pixmap_ex(
     let tw = (tw.ceil() as u32 + extra).max(1);
     let th = (th.ceil() as u32 + 16).max(1);
     let mut rgba = vec![0u8; tw as usize * th as usize * 4];
+    let face = font_ex(family, bold, italic);
     blit_rgba_picked(
-        |ch| pick_annot(ch, family, bold, italic),
+        |ch| pick_annot(ch, face.as_deref()),
         &mut rgba,
         tw,
         tw,

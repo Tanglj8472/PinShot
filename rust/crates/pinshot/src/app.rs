@@ -1271,15 +1271,6 @@ fn decode_png(bytes: &[u8]) -> Option<Raster> {
 
 impl App {
     fn init_runtime(&mut self, event_loop: &ActiveEventLoop) {
-        #[cfg(windows)]
-        {
-            // Warm the fontdue chrome stack before the first F1. On Windows
-            // this may parse the large msyh.ttc collection; doing it here
-            // moves that one-time cost out of the screenshot hot path.
-            let t_font = Instant::now();
-            let _ = pinshot_core::font::chrome_font_paths();
-            crate::logutil::ms("chrome font prefetch", t_font);
-        }
         if self.hotkeys.is_none() {
             match native::install_hotkeys(self.proxy.clone(), &self.cfg) {
                 Ok(h) => self.hotkeys = Some(h),
@@ -2019,6 +2010,38 @@ impl ApplicationHandler<AppEvent> for App {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.dispatch_about_to_wait(event_loop);
+    }
+}
+
+#[cfg(test)]
+mod history_cache_tests {
+    use super::*;
+
+    #[test]
+    fn lazy_entries_survive_saving_the_next_capture() {
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir().join(format!("pinshot-history-{}-{nonce}", std::process::id()));
+        let mut history = SnipHistory::new();
+        let entry = |x| HistoryEntry::new(pinshot_core::geom::Rect::new(x, 0.0, 8.0, 8.0), Raster::new(8, 8));
+        history.push(entry(0.0), 2);
+        persist_history_at(&mut history, &dir).unwrap();
+        let first = history.entries[0].disk.clone().unwrap();
+        let bytes = std::fs::read(&first).unwrap();
+        history.evict_pixels();
+        history.push(entry(1.0), 2);
+        persist_history_at(&mut history, &dir).unwrap();
+        let read_manifest = || HistoryFile::from_toml(&std::fs::read_to_string(HistoryFile::path(&dir)).unwrap()).unwrap();
+        assert_eq!(read_manifest().entries.len(), 2);
+        assert_eq!(std::fs::read(&first).unwrap(), bytes);
+        assert_eq!(history.entries[0].disk.as_ref(), Some(&first));
+        assert!(!history.entries[0].resident());
+        history.evict_pixels();
+        history.push(entry(2.0), 2);
+        persist_history_at(&mut history, &dir).unwrap();
+        assert!(!first.exists());
+        assert_eq!(read_manifest().entries.len(), 2);
+        assert!(history.entries.iter().all(|e| e.disk.as_ref().unwrap().is_file()));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
 
