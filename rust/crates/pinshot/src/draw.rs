@@ -946,7 +946,7 @@ impl OverlayFront {
                 .any(|s| matches!(s.kind, Tool::Mosaic | Tool::Eraser));
             if needs_fx {
                 if self.effect_frame.is_none() || self.effect_shapes != shapes {
-                    self.effect_frame = compose(shot, &shapes).to_skia();
+                    self.effect_frame = pinshot_core::render::compose_pixmap(shot, &shapes);
                     self.effect_shapes = shapes.clone();
                 }
                 if let Some(src) = self.effect_frame.as_ref() {

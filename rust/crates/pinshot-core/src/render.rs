@@ -240,27 +240,34 @@ fn effect_strength_changes_pixels_without_changing_brush_coverage() {
 
 /// Flatten shapes onto a copy of `base` (image coordinates).
 pub fn compose(base: &Raster, shapes: &[Shape]) -> Raster {
+    with_composed(base, shapes, Raster::clone)
+}
+
+/// Convert the cached frame directly for display without cloning a desktop-sized raster.
+pub fn compose_pixmap(base: &Raster, shapes: &[Shape]) -> Option<Pixmap> {
+    with_composed(base, shapes, Raster::to_skia)
+}
+
+fn with_composed<T>(base: &Raster, shapes: &[Shape], read: impl FnOnce(&Raster) -> T) -> T {
     COMPOSE_CACHE.with(|cell| {
         let mut cache = cell.borrow_mut();
         let same_base = cache.base.as_ref() == Some(base);
         if same_base {
             if cache.last_shapes == shapes {
-                if let Some(frame) = &cache.last_frame { return frame.clone(); }
+                if let Some(frame) = &cache.last_frame { return read(frame); }
             }
             if let Some(tail) = appended_effect_stroke(&cache.last_shapes, shapes) {
                 if let Some(frame) = cache.last_frame.take() {
                     let out = compose_onto(base, &[tail], frame);
                     cache.last_shapes = shapes.to_vec();
-                    cache.last_frame = Some(out.clone());
-                    return out;
+                    return read(cache.last_frame.insert(out));
                 }
             }
             if let Some(dirty) = changed_effect_rect(&cache.last_shapes, shapes) {
                 if let Some(mut out) = cache.last_frame.take() {
                     recompose_region(base, shapes, &mut out, dirty);
                     cache.last_shapes = shapes.to_vec();
-                    cache.last_frame = Some(out.clone());
-                    return out;
+                    return read(cache.last_frame.insert(out));
                 }
             }
         }
@@ -285,9 +292,14 @@ pub fn compose(base: &Raster, shapes: &[Shape]) -> Raster {
         }
         let out = compose_onto(base, &shapes[prefix_len..], cache.frame.as_ref().unwrap().clone());
         cache.last_shapes = shapes.to_vec();
-        cache.last_frame = Some(out.clone());
-        out
+        read(cache.last_frame.insert(out))
     })
+}
+
+/// These are expendable previews. History and pin images have separate owners.
+pub fn release_preview_buffers() {
+    COMPOSE_CACHE.with(|cache| *cache.borrow_mut() = ComposeCache::default());
+    EFFECT_CACHE.with(|cache| *cache.borrow_mut() = EffectCache::default());
 }
 
 #[derive(Default)]

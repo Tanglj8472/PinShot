@@ -717,6 +717,9 @@ impl Overlay {
             return None;
         }
         self.annot.finish();
+        if self.annot.shapes.is_empty() && !self.show_cursor {
+            return Some(self.capture.composed.crop(self.sel.normalized()));
+        }
         let mut composed = compose(&self.capture.composed, &self.annot.shapes);
         if self.show_cursor {
             if let Some(mut pm) = composed.to_skia() {
@@ -2240,6 +2243,7 @@ fn keysym_to_winit(keysym: u32) -> Option<(Key, Option<String>)> {
 
 impl Drop for Overlay {
     fn drop(&mut self) {
+        pinshot_core::render::release_preview_buffers();
         native::cloak_shell_trays(false);
     }
 }

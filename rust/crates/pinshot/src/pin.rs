@@ -145,6 +145,12 @@ pub struct PinWin {
     ocr_flash_until: Option<Instant>,
 }
 
+impl Drop for PinWin {
+    fn drop(&mut self) {
+        pinshot_core::render::release_preview_buffers();
+    }
+}
+
 impl PinWin {
     pub fn create(
         event_loop: &ActiveEventLoop,
@@ -613,6 +619,9 @@ impl PinWin {
     }
 
     pub fn show_toolbar(&mut self, on: bool) {
+        if self.annotating && !on {
+            pinshot_core::render::release_preview_buffers();
+        }
         self.annotating = on;
         if on {
             if self.thumb {
