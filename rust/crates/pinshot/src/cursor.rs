@@ -35,7 +35,14 @@ pub fn brush_width(annot: &pinshot_core::Annotator, kind: CursorKind) -> Option<
 
 pub fn apply_annot(window: &Window, kind: CursorKind, annot: &pinshot_core::Annotator) {
     apply(window, kind);
-    if brush_width(annot, kind).is_some() { window.set_cursor_visible(false); }
+    if visual_width(annot, kind).is_some() { window.set_cursor_visible(false); }
+}
+
+pub fn visual_width(annot: &pinshot_core::Annotator, kind: CursorKind) -> Option<f32> {
+    use pinshot_core::annotation::Tool;
+    if !matches!(kind, CursorKind::Crosshair | CursorKind::Cell) { return None; }
+    if matches!(annot.tool?, Tool::Text | Tool::Select) { return None; }
+    Some(brush_width(annot, kind).unwrap_or(0.0))
 }
 
 #[cfg(test)]
@@ -49,7 +56,7 @@ fn eraser_brush_has_round_size_cursor_but_rect_does_not() {
     assert_eq!(brush_width(&annot, CursorKind::Cell), None);
 }
 
-pub fn paint_brush(pm: &mut tiny_skia::Pixmap, pt: pinshot_core::geom::Point, width: f32) -> pinshot_core::geom::Rect {
+pub fn paint_brush(pm: &mut tiny_skia::Pixmap, pt: pinshot_core::geom::Point, width: f32, annot: &pinshot_core::Annotator) -> pinshot_core::geom::Rect {
     use tiny_skia::{PathBuilder, Stroke, Transform, Paint};
     let radius = (width / 2.0).max(1.5);
     if let Some(rect) = tiny_skia::Rect::from_xywh(pt.x-radius, pt.y-radius, radius*2.0, radius*2.0) {
@@ -61,5 +68,23 @@ pub fn paint_brush(pm: &mut tiny_skia::Pixmap, pt: pinshot_core::geom::Point, wi
             pm.stroke_path(&path,&paint,&Stroke { width: 1.0, ..Default::default() },Transform::identity(),None);
         }
     }
-    pinshot_core::geom::Rect::new(pt.x-radius-3.0,pt.y-radius-3.0,radius*2.0+6.0,radius*2.0+6.0)
+    use pinshot_core::{annotation::{Tool, Effect}, icons::{draw_icon, IconKind}, geom::Rect, color::Rgba};
+    let ring = Rect::new(pt.x-radius-3.0,pt.y-radius-3.0,radius*2.0+6.0,radius*2.0+6.0);
+    let icon = match annot.tool {
+        Some(Tool::Pen) => IconKind::Pen,
+        Some(Tool::Marker) => IconKind::Marker,
+        Some(Tool::Eraser) => IconKind::Eraser,
+        Some(Tool::Mosaic) if annot.style(Tool::Mosaic).effect == Effect::Blur => IconKind::Blur,
+        Some(Tool::Mosaic) => IconKind::Mosaic,
+        Some(Tool::Ellipse) => IconKind::Ellipse,
+        Some(Tool::Rect) => IconKind::Rect,
+        Some(Tool::Number) => IconKind::Number,
+        Some(Tool::Line) if annot.current_line_arrow().is_arrow() => IconKind::Arrow,
+        _ => IconKind::Line,
+    };
+    let offset = (radius + 5.0).max(9.0);
+    let badge = Rect::new(pt.x+offset, pt.y+offset, 22.0, 22.0);
+    crate::draw::fill_rounded_rect(pm, badge, 4.0, Rgba::rgba(20,27,38,235));
+    draw_icon(pm, icon, badge.inflated(-2.0), Some(Rgba::WHITE));
+    ring.union(badge.inflated(1.0))
 }
