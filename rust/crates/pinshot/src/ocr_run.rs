@@ -34,10 +34,11 @@ pub fn recognize_with_progress(
 pub fn release_engine() {
     #[cfg(any(feature = "ocr", unix))]
     if let Some(cell) = ENGINE.get() {
-        if let Ok(mut guard) = cell.lock() {
-            if guard.take().is_some() {
+        if let Ok(mut guard) = cell.state.lock() {
+            if guard.session.take().is_some() {
                 crate::logutil::log("ocr engine dropped");
             }
+            cell.changed.notify_one();
         }
     }
 }
@@ -555,9 +556,42 @@ fn ocr_ep_label() -> &'static str {
 static OCR_USED_GPU: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[cfg(any(feature = "ocr", unix))]
-static ENGINE: std::sync::OnceLock<
-    std::sync::Mutex<Option<(String, paddle_ocr_rs::ocr_lite::OcrLite)>>,
-> = std::sync::OnceLock::new();
+static ENGINE: std::sync::OnceLock<EngineCache> = std::sync::OnceLock::new();
+
+#[cfg(any(feature = "ocr", unix))]
+struct EngineCache {
+    state: std::sync::Mutex<EngineState>,
+    changed: std::sync::Condvar,
+}
+
+#[cfg(any(feature = "ocr", unix))]
+struct EngineState {
+    session: Option<(String, paddle_ocr_rs::ocr_lite::OcrLite)>,
+    last_used: std::time::Instant,
+}
+
+#[cfg(any(feature = "ocr", unix))]
+fn reap_idle_engine(cache: &'static EngineCache) {
+    let idle = std::time::Duration::from_secs(120);
+    loop {
+        let Ok(mut state) = cache.state.lock() else { return };
+        while state.session.is_none() {
+            let Ok(next) = cache.changed.wait(state) else { return };
+            state = next;
+        }
+        let remaining = idle.saturating_sub(state.last_used.elapsed());
+        if !remaining.is_zero() {
+            let Ok((state, _)) = cache.changed.wait_timeout(state, remaining) else { return };
+            drop(state);
+            continue;
+        }
+        let session = state.session.take();
+        drop(state);
+        drop(session);
+        crate::logutil::log("ocr engine released after 120s idle");
+        crate::logutil::mem("ocr:idle-release");
+    }
+}
 
 #[cfg(any(feature = "ocr", unix))]
 fn session_gpu(
@@ -595,15 +629,23 @@ fn with_engine<F>(paths: &ModelPaths, f: F) -> Result<OcrPage, String>
 where
     F: FnOnce(&mut paddle_ocr_rs::ocr_lite::OcrLite) -> Result<OcrPage, String>,
 {
-    let cell = ENGINE.get_or_init(|| std::sync::Mutex::new(None));
-    let mut guard = cell.lock().map_err(|e| e.to_string())?;
+    let cell = ENGINE.get_or_init(|| EngineCache {
+        state: std::sync::Mutex::new(EngineState {
+            session: None,
+            last_used: std::time::Instant::now(),
+        }),
+        changed: std::sync::Condvar::new(),
+    });
+    static REAPER: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    REAPER.get_or_init(|| { std::thread::spawn(move || reap_idle_engine(cell)); });
+    let mut guard = cell.state.lock().map_err(|e| e.to_string())?;
     let gpu = want_ocr_gpu();
     let key = format!(
         "{}|{}",
         paths.rec.to_string_lossy(),
         if gpu { "gpu" } else { "cpu" }
     );
-    let need_init = match guard.as_ref() {
+    let need_init = match guard.session.as_ref() {
         Some((k, _)) => k != &key,
         None => true,
     };
@@ -652,13 +694,12 @@ where
             crate::logutil::log(&format!("ocr engine CPU ({threads} threads)"));
         }
         OCR_USED_GPU.store(used_gpu, std::sync::atomic::Ordering::Relaxed);
-        *guard = Some((key, ocr));
-        // The resident cost of the whole OCR stack lands here and never comes
-        // back down: ENGINE is a OnceLock, so the ONNX sessions, their optimized
-        // graphs and the CPU arena stay for the life of the process.
+        guard.session = Some((key, ocr));
+        // Retain sessions for consecutive requests. The idle reaper releases
+        // their graphs and allocator arenas after the last completed request.
         crate::logutil::mem("ocr:post-load-models");
     }
-    let ocr = &mut guard.as_mut().expect("engine").1;
+    let ocr = &mut guard.session.as_mut().expect("engine").1;
     crate::logutil::mem("ocr:pre-infer");
     let r = f(ocr);
     // WebGPU compiles shaders lazily, so a session can initialise cleanly and
@@ -685,10 +726,12 @@ where
             // than locking again (that would deadlock). GPU is opt-in, so the
             // next OCR run rebuilds on CPU unless explicitly forced again.
             drop(ocr);
-            *guard = None;
+            guard.session = None;
         }
     }
     crate::logutil::mem("ocr:post-infer");
+    guard.last_used = std::time::Instant::now();
+    cell.changed.notify_one();
     r
 }
 

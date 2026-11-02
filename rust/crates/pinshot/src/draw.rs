@@ -946,7 +946,7 @@ impl OverlayFront {
                 .any(|s| matches!(s.kind, Tool::Mosaic | Tool::Eraser));
             if needs_fx {
                 if self.effect_frame.is_none() || self.effect_shapes != shapes {
-                    self.effect_frame = compose(shot, &shapes).to_skia();
+                    self.effect_frame = pinshot_core::render::compose_pixmap(shot, &shapes);
                     self.effect_shapes = shapes.clone();
                 }
                 if let Some(src) = self.effect_frame.as_ref() {
@@ -1045,8 +1045,8 @@ impl OverlayFront {
         if confirm_dont.is_none() && picker.is_none() {
             let mut hint = annot.cursor_hint(Point::new(cursor.x * dpr, cursor.y * dpr));
             hint.over_chrome = toolbar.is_some_and(|t| t.contains(cursor));
-            if let Some(width) = crate::cursor::brush_width(annot, pinshot_core::cursor::cursor_for(hint)) {
-                chrome.push(crate::cursor::paint_brush(&mut self.frame, cursor, width / dpr.max(0.1)));
+            if let Some(width) = crate::cursor::visual_width(annot, pinshot_core::cursor::cursor_for(hint)) {
+                chrome.push(crate::cursor::paint_brush(&mut self.frame, cursor, width / dpr.max(0.1), annot));
             }
         }
 
@@ -1366,7 +1366,7 @@ pub fn paint_toolbar(pm: &mut Pixmap, tb: &Toolbar, cursor: Option<Point>) -> Re
             }
         }
         let ink = if b.checked { Rgba::WHITE } else { CHROME_ICON };
-        draw_icon(pm, b.icon, b.rect.adjusted(3.0, 3.0, -3.0, -3.0), Some(ink));
+        draw_icon(pm, b.icon, b.rect.adjusted(1.0, 1.0, -1.0, -1.0), Some(ink));
     }
     let mut dirty = tb.bar;
     if let Some(pr) = tb.panel {

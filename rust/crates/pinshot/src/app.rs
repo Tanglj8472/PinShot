@@ -554,8 +554,13 @@ impl App {
         crate::logutil::log("overlay closed");
         crate::native::release_stray_grabs();
         self.retire_pump_window();
-        self.persist_overlay_history(persist);
-        self.handle_overlay_result(event_loop, res);
+        if matches!(&res, OverlayResult::Copy(..)) {
+            self.handle_overlay_result(event_loop, res);
+            self.persist_overlay_history(persist);
+        } else {
+            self.persist_overlay_history(persist);
+            self.handle_overlay_result(event_loop, res);
+        }
         if resnip {
             self.restore.wait_after_overlay = true;
             self.restore.discard_dxgi_frame = true;
@@ -591,7 +596,10 @@ impl App {
         // DuplicateOutput on every F1 puts initialization on the hot path.
         if persist {
             let t0 = Instant::now();
-            self.persist_history();
+            if let Err(err) = persist_history_at(&mut self.history, &data_dir()) {
+                crate::logutil::error(&format!("persist history: {err}"));
+                return;
+            }
             crate::logutil::log(&format!(
                 "persist history {} entries in {}ms",
                 self.history.entries.len(),
@@ -601,7 +609,11 @@ impl App {
             crate::logutil::log("skip history persist (cancel/resnip)");
         }
         // Full-desktop history frames stay on disk; only metadata remains hot.
-        self.history.evict_pixels();
+        for entry in &mut self.history.entries {
+            if entry.disk.is_some() {
+                entry.evict_pixels();
+            }
+        }
     }
 
     fn save_overlay_image(&self, img: &Raster) {
@@ -931,43 +943,6 @@ impl App {
         }
     }
 
-    fn persist_history(&mut self) {
-        let dir = HistoryFile::dir(&data_dir());
-        let _ = std::fs::create_dir_all(&dir);
-        if let Ok(rd) = std::fs::read_dir(&dir) {
-            for e in rd.flatten() {
-                let _ = std::fs::remove_file(e.path());
-            }
-        }
-        let mut names = Vec::new();
-        let mut kept = SnipHistory::new();
-        for e in &mut self.history.entries {
-            if !e.resident() {
-                continue;
-            }
-            let name = format!("hist-{:03}.png", names.len());
-            let png = encode_png(&e.image);
-            if png.is_empty() {
-                continue;
-            }
-            let path = dir.join(&name);
-            if std::fs::write(&path, png).is_err() {
-                continue;
-            }
-            e.disk = Some(path);
-            names.push(name);
-            kept.entries.push(HistoryEntry {
-                rect: e.rect,
-                image: Raster::new(0, 0),
-                disk: e.disk.clone(),
-            });
-        }
-        let file = kept.to_file(&names);
-        if let Ok(text) = file.to_toml() {
-            let _ = std::fs::write(HistoryFile::path(&data_dir()), text);
-        }
-    }
-
     fn restore_history(&mut self) {
         let dir = data_dir();
         let Ok(text) = std::fs::read_to_string(HistoryFile::path(&dir)) else {
@@ -1222,6 +1197,62 @@ impl App {
     }
 }
 
+fn persist_history_at(history: &mut SnipHistory, data: &std::path::Path) -> std::io::Result<()> {
+    use std::fs;
+    use std::io::{Error, ErrorKind, Write};
+
+    let dir = HistoryFile::dir(data);
+    fs::create_dir_all(&dir)?;
+    let mut names = Vec::with_capacity(history.entries.len());
+    let mut slot = 0;
+    for entry in &mut history.entries {
+        if let Some(path) = &entry.disk {
+            if path.parent() == Some(dir.as_path()) && path.is_file() {
+                names.push(path.file_name().unwrap().to_string_lossy().into_owned());
+                continue;
+            }
+        }
+        if !entry.resident() {
+            return Err(Error::new(ErrorKind::NotFound, "history image unavailable"));
+        }
+        let png = encode_png(&entry.image);
+        if png.is_empty() {
+            return Err(Error::other("history PNG encoding failed"));
+        }
+        loop {
+            let name = format!("hist-{slot:03}.png");
+            slot += 1;
+            let path = dir.join(&name);
+            match fs::File::create_new(&path) {
+                Ok(mut file) => {
+                    file.write_all(&png)?;
+                    entry.disk = Some(path);
+                    names.push(name);
+                    break;
+                }
+                Err(e) if e.kind() == ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    // Publish the new manifest before reclaiming any image used by the old one.
+    let manifest = HistoryFile::path(data);
+    let temp = manifest.with_extension("toml.tmp");
+    fs::write(&temp, history.to_file(&names).to_toml().map_err(Error::other)?)?;
+    fs::rename(temp, manifest)?;
+    for item in fs::read_dir(dir)?.flatten() {
+        let name = item.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let managed = name.strip_prefix("hist-").and_then(|s| s.strip_suffix(".png"))
+            .is_some_and(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()));
+        if managed && !names.iter().any(|keep| keep == name) {
+            let _ = fs::remove_file(item.path());
+        }
+    }
+    Ok(())
+}
+
 fn encode_png(img: &Raster) -> Vec<u8> {
     let rgba = image::RgbaImage::from_raw(img.width, img.height, img.pixels.clone());
     let Some(rgba) = rgba else {
@@ -1240,15 +1271,6 @@ fn decode_png(bytes: &[u8]) -> Option<Raster> {
 
 impl App {
     fn init_runtime(&mut self, event_loop: &ActiveEventLoop) {
-        #[cfg(windows)]
-        {
-            // Warm the fontdue chrome stack before the first F1. On Windows
-            // this may parse the large msyh.ttc collection; doing it here
-            // moves that one-time cost out of the screenshot hot path.
-            let t_font = Instant::now();
-            let _ = pinshot_core::font::chrome_font_paths();
-            crate::logutil::ms("chrome font prefetch", t_font);
-        }
         if self.hotkeys.is_none() {
             match native::install_hotkeys(self.proxy.clone(), &self.cfg) {
                 Ok(h) => self.hotkeys = Some(h),
@@ -1988,6 +2010,38 @@ impl ApplicationHandler<AppEvent> for App {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.dispatch_about_to_wait(event_loop);
+    }
+}
+
+#[cfg(test)]
+mod history_cache_tests {
+    use super::*;
+
+    #[test]
+    fn lazy_entries_survive_saving_the_next_capture() {
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir().join(format!("pinshot-history-{}-{nonce}", std::process::id()));
+        let mut history = SnipHistory::new();
+        let entry = |x| HistoryEntry::new(pinshot_core::geom::Rect::new(x, 0.0, 8.0, 8.0), Raster::new(8, 8));
+        history.push(entry(0.0), 2);
+        persist_history_at(&mut history, &dir).unwrap();
+        let first = history.entries[0].disk.clone().unwrap();
+        let bytes = std::fs::read(&first).unwrap();
+        history.evict_pixels();
+        history.push(entry(1.0), 2);
+        persist_history_at(&mut history, &dir).unwrap();
+        let read_manifest = || HistoryFile::from_toml(&std::fs::read_to_string(HistoryFile::path(&dir)).unwrap()).unwrap();
+        assert_eq!(read_manifest().entries.len(), 2);
+        assert_eq!(std::fs::read(&first).unwrap(), bytes);
+        assert_eq!(history.entries[0].disk.as_ref(), Some(&first));
+        assert!(!history.entries[0].resident());
+        history.evict_pixels();
+        history.push(entry(2.0), 2);
+        persist_history_at(&mut history, &dir).unwrap();
+        assert!(!first.exists());
+        assert_eq!(read_manifest().entries.len(), 2);
+        assert!(history.entries.iter().all(|e| e.disk.as_ref().unwrap().is_file()));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
 

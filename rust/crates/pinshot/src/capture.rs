@@ -201,7 +201,20 @@ fn all_blank(frames: &[ScreenFrame]) -> bool {
     frames.iter().all(|f| f.image.is_visually_blank())
 }
 
-fn compose(frames: Vec<ScreenFrame>, backend: &str) -> Capture {
+fn compose(mut frames: Vec<ScreenFrame>, backend: &str) -> Capture {
+    if let [frame] = frames.as_slice() {
+        let (x, y, w, h) = frame.physical.to_i32();
+        if w > 0 && h > 0 && (w as u32, h as u32) == (frame.image.width, frame.image.height) {
+            let mut composed = frames.pop().unwrap().image;
+            composed.force_opaque();
+            return Capture {
+                frames: Vec::new(),
+                virtual_origin: (x, y),
+                composed,
+                backend: backend.into(),
+            };
+        }
+    }
     let mut vx = i32::MAX;
     let mut vy = i32::MAX;
     let mut vr = i32::MIN;

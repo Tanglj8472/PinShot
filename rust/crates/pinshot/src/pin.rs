@@ -145,6 +145,12 @@ pub struct PinWin {
     ocr_flash_until: Option<Instant>,
 }
 
+impl Drop for PinWin {
+    fn drop(&mut self) {
+        pinshot_core::render::release_preview_buffers();
+    }
+}
+
 impl PinWin {
     pub fn create(
         event_loop: &ActiveEventLoop,
@@ -613,6 +619,9 @@ impl PinWin {
     }
 
     pub fn show_toolbar(&mut self, on: bool) {
+        if self.annotating && !on {
+            pinshot_core::render::release_preview_buffers();
+        }
         self.annotating = on;
         if on {
             if self.thumb {
@@ -1950,8 +1959,8 @@ impl PinWin {
         if self.annotating && self.color_picker.is_none() {
             let mut hint = self.annot.cursor_hint(self.img_pt(self.last_cursor));
             hint.over_chrome = self.toolbar.as_ref().is_some_and(|t| t.contains(self.last_cursor));
-            if let Some(width) = crate::cursor::brush_width(&self.annot, cursor_for(hint)) {
-                crate::cursor::paint_brush(&mut pm, self.last_cursor, width * self.scale);
+            if let Some(width) = crate::cursor::visual_width(&self.annot, cursor_for(hint)) {
+                crate::cursor::paint_brush(&mut pm, self.last_cursor, width * self.scale, &self.annot);
             }
         }
         if let Ok(mut buf) = self.surface.buffer_mut() {

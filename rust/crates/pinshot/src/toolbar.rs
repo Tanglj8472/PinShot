@@ -241,8 +241,8 @@ impl Toolbar {
         let shape_icon = IconKind::RoundRect;
         let tools = [
             (shape_icon, TbAction::Shape, "Rectangle / Ellipse"),
-            (IconKind::LineGroup, TbAction::LineStroke, "Line / Arrow"),
             (IconKind::Pen, TbAction::Tool(Tool::Pen), "Brush"),
+            (IconKind::LineGroup, TbAction::LineStroke, "Line / Arrow"),
             (IconKind::Marker, TbAction::Tool(Tool::Marker), "Marker"),
             (
                 IconKind::Mosaic,
