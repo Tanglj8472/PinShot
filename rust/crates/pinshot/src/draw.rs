@@ -1042,13 +1042,6 @@ impl OverlayFront {
         if show_cursor {
             chrome.push(paint_pointer(&mut self.frame, cursor));
         }
-        if confirm_dont.is_none() && picker.is_none() {
-            let mut hint = annot.cursor_hint(Point::new(cursor.x * dpr, cursor.y * dpr));
-            hint.over_chrome = toolbar.is_some_and(|t| t.contains(cursor));
-            if let Some(width) = crate::cursor::visual_width(annot, pinshot_core::cursor::cursor_for(hint)) {
-                chrome.push(crate::cursor::paint_brush(&mut self.frame, cursor, width / dpr.max(0.1), annot));
-            }
-        }
 
         if let Some(dont) = confirm_dont {
             chrome.push(paint_confirm_abort(&mut self.frame, fw, fh, dont));

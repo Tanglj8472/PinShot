@@ -294,7 +294,7 @@ impl Toolbar {
             y = sel.y - h - 8.0;
         }
         if y < overlay.y {
-            y = (sel.bottom() - h - 8.0).max(overlay.y);
+            y = clamp_f32(sel.y + 8.0, overlay.y, overlay.bottom() - h);
         }
         x = clamp_f32(x, overlay.x, overlay.right() - w);
         let bar = Rect::new(x, y, w, h);

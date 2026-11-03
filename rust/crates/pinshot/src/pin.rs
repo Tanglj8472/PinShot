@@ -167,6 +167,7 @@ impl PinWin {
         scale: f32,
         shapes: Vec<pinshot_core::annotation::Shape>,
     ) -> Result<Self, String> {
+        crate::cursor::init(event_loop);
         let scale = scale.clamp(0.05, 1.0);
         let w = ((img.width as f32 * scale).round() as u32).max(8);
         let h = ((img.height as f32 * scale).round() as u32).max(8);
@@ -1955,13 +1956,6 @@ impl PinWin {
         }
         if let Some(t) = self.status.as_ref().or(self.toast.as_ref()) {
             crate::draw::paint_toast(&mut pm, t, ww, hh);
-        }
-        if self.annotating && self.color_picker.is_none() {
-            let mut hint = self.annot.cursor_hint(self.img_pt(self.last_cursor));
-            hint.over_chrome = self.toolbar.as_ref().is_some_and(|t| t.contains(self.last_cursor));
-            if let Some(width) = crate::cursor::visual_width(&self.annot, cursor_for(hint)) {
-                crate::cursor::paint_brush(&mut pm, self.last_cursor, width * self.scale, &self.annot);
-            }
         }
         if let Ok(mut buf) = self.surface.buffer_mut() {
             present_argb(&mut buf, &pm);
