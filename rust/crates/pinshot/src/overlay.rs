@@ -445,7 +445,7 @@ impl Overlay {
             }
         });
         hint.over_selection = self.sel.has_sel() && self.sel.normalized().contains(self.cursor);
-        crate::cursor::apply_annot(&self.window, cursor_for(hint), &self.annot);
+        crate::cursor::apply_annot(&self.window, cursor_for(hint), &self.annot, 1.0);
     }
 
     fn release_grab(&mut self) {
@@ -654,9 +654,19 @@ impl Overlay {
 
     fn relayout_toolbar(&mut self) {
         if self.sel.has_sel() && self.sel.state == SelState::Selected {
+            let selection = self.sel.normalized();
+            let (vx, vy) = self.capture.virtual_origin;
+            let display = self.window.available_monitors().map(|m| {
+                let p = m.position();
+                let s = m.size();
+                Rect::new((p.x-vx) as f32, (p.y-vy) as f32, s.width as f32, s.height as f32)
+                    .intersect(self.bounds())
+            }).filter(|r| !r.intersect(selection).is_empty())
+              .max_by_key(|r| (r.contains(self.cursor), r.intersect(selection).area() as u64))
+              .unwrap_or_else(|| self.bounds());
             let mut tb = Toolbar::layout(
-                self.sel.normalized(),
-                self.bounds(),
+                selection.intersect(display),
+                display,
                 self.annot.tool,
                 self.arrow_kind,
                 self.annot.option_style(),
@@ -664,14 +674,14 @@ impl Overlay {
             tb.set_width_value(self.annot.option_width());
             if self.font_menu_open && self.annot.tool == Some(Tool::Text) {
                 if let Some(st) = self.annot.option_style() {
-                    self.font_menu_offset = tb.attach_font_menu(self.bounds(), st, self.font_menu_offset);
+                    self.font_menu_offset = tb.attach_font_menu(display, st, self.font_menu_offset);
                 }
             } else {
                 self.font_menu_open = false;
             }
             if self.line_menu_open && self.annot.tool == Some(Tool::Line) {
                 if let Some(st) = self.annot.option_style() {
-                    tb.attach_line_menu(self.bounds(), st);
+                    tb.attach_line_menu(display, st);
                 }
             } else {
                 self.line_menu_open = false;

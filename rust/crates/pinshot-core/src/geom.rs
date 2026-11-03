@@ -402,12 +402,61 @@ pub fn hit_handle(r: Rect, p: Point, slop: f32) -> Option<Handle> {
     None
 }
 
-/// Overlay selection handles. `handle_points` sit on `right()+1` / `bottom()+1`,
-/// which a pointer clamped to the screen edge cannot reach. On a large rect,
-/// a grab within [`HANDLE_HIT`] of the border still resizes.
+/// Centers of the eight grips on the inset pixel border used by the snip overlay.
+/// Annotation handles use their own bounding-box positions.
+pub fn selection_handle_points(r: Rect) -> [(Handle, Point); 8] {
+    let r = r.normalized();
+    let x = r.x.floor();
+    let y = r.y.floor();
+    let w = ((r.right() - 1.0).ceil() - x).max(1.0);
+    let h = ((r.bottom() - 1.0).ceil() - y).max(1.0);
+    let inset = if w < 8.0 || h < 8.0 { 0.5 } else { 3.0 };
+    let left = x + inset;
+    let right = (x + w - inset).max(left);
+    let top = y + inset;
+    let bottom = (y + h - inset).max(top);
+    let cx = (left + right) * 0.5;
+    let cy = (top + bottom) * 0.5;
+    [
+        (Handle::Tl, Point::new(left, top)),
+        (Handle::T, Point::new(cx, top)),
+        (Handle::Tr, Point::new(right, top)),
+        (Handle::L, Point::new(left, cy)),
+        (Handle::R, Point::new(right, cy)),
+        (Handle::Bl, Point::new(left, bottom)),
+        (Handle::B, Point::new(cx, bottom)),
+        (Handle::Br, Point::new(right, bottom)),
+    ]
+}
+
+#[cfg(test)]
+#[test]
+fn snip_grips_share_the_visible_border_and_hit_positions() {
+    let r = Rect::new(0.0, 0.0, 1920.0, 1080.0);
+    let points = selection_handle_points(r);
+    assert_eq!(points[0].1, Point::new(3.0, 3.0));
+    assert_eq!(points[7].1, Point::new(1916.0, 1076.0));
+    for (handle, center) in points {
+        assert!(r.contains(center));
+        assert_eq!(hit_sel_handle(r, center), Some(handle));
+    }
+}
+
+/// Match the visible snip grips, with an additional edge grab zone on large selections.
 pub fn hit_sel_handle(r: Rect, p: Point) -> Option<Handle> {
-    if let Some(h) = hit_handle(r, p, HANDLE_HIT) {
-        return Some(h);
+    if !r.is_valid_sel() {
+        return None;
+    }
+    // Keep a move zone inside small selections after moving the grips inward.
+    let slop = if r.w.abs() < 80.0 || r.h.abs() < 80.0 {
+        HANDLE_SIZE * 0.5 + 2.0
+    } else {
+        HANDLE_HIT
+    };
+    for (h, center) in selection_handle_points(r) {
+        if (p.x - center.x).abs() <= slop && (p.y - center.y).abs() <= slop {
+            return Some(h);
+        }
     }
     let r = r.normalized();
     if r.w < 80.0 || r.h < 80.0 {

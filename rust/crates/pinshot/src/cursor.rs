@@ -1,9 +1,114 @@
-//! Map `pinshot_core::CursorKind` onto the winit window cursor.
+use pinshot_core::{
+    annotation::{Effect, Tool},
+    color::Rgba,
+    icons::{draw_icon, IconKind},
+    Annotator, CursorKind,
+};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, VecDeque},
+    rc::{Rc, Weak},
+};
+use winit::{
+    event_loop::ActiveEventLoop,
+    window::{CursorIcon, CustomCursor, Window},
+};
 
-use pinshot_core::CursorKind;
-use winit::window::{CursorIcon, Window};
+#[derive(Clone, Copy, PartialEq)]
+struct CursorKey {
+    icon: IconKind,
+    size: u16,
+}
+
+#[derive(Default)]
+struct ToolCursors {
+    cache: VecDeque<(CursorKey, CustomCursor)>,
+    pending: HashMap<winit::window::WindowId, (Weak<Window>, CursorKey)>,
+}
+
+thread_local! {
+    static TOOLS: RefCell<ToolCursors> = RefCell::default();
+}
+
+fn cursor_size(annot: &Annotator, scale: f32) -> u16 {
+    // A small readable silhouette plus the stroke width in screen pixels.
+    // Even widths 1..12 change size; effect strength is not brush width.
+    (12.0 + annot.option_width().max(1) as f32 * scale)
+        .round()
+        .clamp(12.0, 256.0) as u16
+}
+
+fn cursor_source(key: CursorKey) -> Option<winit::window::CustomCursorSource> {
+    let size = usize::from(key.size) + 4;
+    let mut pm = tiny_skia::Pixmap::new(size as u32, size as u32)?;
+    draw_icon(
+        &mut pm,
+        key.icon,
+        pinshot_core::geom::Rect::new(2.0, 2.0, key.size as f32, key.size as f32),
+        Some(Rgba::WHITE),
+    );
+    // A constant one-pixel outline stays clear at every size.
+    let alpha: Vec<_> = pm.data().chunks_exact(4).map(|p| p[3]).collect();
+    let mut rgba = vec![0; size * size * 4];
+    for y in 1..size - 1 {
+        for x in 1..size - 1 {
+            let i = y * size + x;
+            let a = alpha[i];
+            let edge = [i - 1, i + 1, i - size, i + size]
+                .into_iter()
+                .map(|j| alpha[j])
+                .max()
+                .unwrap()
+                .max(a);
+            if edge > 0 {
+                let gray = (u16::from(a) * 255 / u16::from(edge)) as u8;
+                rgba[i * 4..i * 4 + 4].copy_from_slice(&[gray, gray, gray, edge]);
+            }
+        }
+    }
+    let (hx, hy) = match key.icon {
+        IconKind::Pen | IconKind::Marker => (2 + key.size * 3 / 28, 2 + key.size * 24 / 28),
+        _ => (size as u16 / 2, size as u16 / 2),
+    };
+    CustomCursor::from_rgba(rgba, size as u16, size as u16, hx, hy).ok()
+}
+
+/// Coalesce size changes within an event batch; keep only 24 native cursors.
+/// Building happens only after a tool/size change, never on ordinary movement.
+pub fn flush(event_loop: &ActiveEventLoop) {
+    TOOLS.with(|slot| {
+        let mut tools = slot.borrow_mut();
+        let pending = std::mem::take(&mut tools.pending);
+        for (_, (window, key)) in pending {
+            let Some(window) = window.upgrade() else {
+                continue;
+            };
+            let cursor = if let Some(i) = tools.cache.iter().position(|(k, _)| *k == key) {
+                let entry = tools.cache.remove(i).unwrap();
+                let cursor = entry.1.clone();
+                tools.cache.push_back(entry);
+                cursor
+            } else {
+                let Some(source) = cursor_source(key) else {
+                    continue;
+                };
+                let cursor = event_loop.create_custom_cursor(source);
+                tools.cache.push_back((key, cursor.clone()));
+                if tools.cache.len() > 24 {
+                    tools.cache.pop_front();
+                }
+                cursor
+            };
+            window.set_cursor(cursor);
+            window.set_cursor_visible(true);
+        }
+    });
+}
 
 pub fn apply(window: &Window, kind: CursorKind) {
+    TOOLS.with(|slot| {
+        slot.borrow_mut().pending.remove(&window.id());
+    });
     window.set_cursor_visible(true);
     window.set_cursor(match kind {
         CursorKind::Arrow => CursorIcon::Default,
@@ -20,71 +125,77 @@ pub fn apply(window: &Window, kind: CursorKind) {
     });
 }
 
-pub fn brush_width(annot: &pinshot_core::Annotator, kind: CursorKind) -> Option<f32> {
-    use pinshot_core::annotation::{Tool, DrawMode};
-    if !matches!(kind, CursorKind::Crosshair | CursorKind::Cell) { return None; }
-    let tool = annot.tool?;
-    let st = annot.style(tool);
-    match tool {
-        Tool::Line | Tool::Pen => Some(st.width.max(1) as f32),
-        Tool::Marker if st.mode == DrawMode::Brush => Some(st.width.max(1) as f32),
-        Tool::Mosaic | Tool::Eraser if st.mode == DrawMode::Brush => Some(st.width.max(1) as f32),
+pub fn apply_annot(window: &Rc<Window>, kind: CursorKind, annot: &Annotator, scale: f32) {
+    let icon = match (kind, annot.tool) {
+        (CursorKind::Crosshair | CursorKind::Cell, Some(tool)) => match tool {
+            Tool::Pen => Some(IconKind::Pen),
+            Tool::Marker => Some(IconKind::Marker),
+            Tool::Eraser => Some(IconKind::Eraser),
+            Tool::Mosaic if annot.style(tool).effect == Effect::Blur => Some(IconKind::Blur),
+            Tool::Mosaic => Some(IconKind::Mosaic),
+            Tool::Line if annot.current_line_arrow().is_arrow() => Some(IconKind::Arrow),
+            Tool::Line => Some(IconKind::Line),
+            Tool::Number => Some(IconKind::Number),
+            Tool::Rect => Some(IconKind::Rect),
+            Tool::Ellipse => Some(IconKind::Ellipse),
+            _ => None,
+        },
         _ => None,
-    }
-}
-
-pub fn apply_annot(window: &Window, kind: CursorKind, annot: &pinshot_core::Annotator) {
-    apply(window, kind);
-    if visual_width(annot, kind).is_some() { window.set_cursor_visible(false); }
-}
-
-pub fn visual_width(annot: &pinshot_core::Annotator, kind: CursorKind) -> Option<f32> {
-    use pinshot_core::annotation::Tool;
-    if !matches!(kind, CursorKind::Crosshair | CursorKind::Cell) { return None; }
-    if matches!(annot.tool?, Tool::Text | Tool::Select) { return None; }
-    Some(brush_width(annot, kind).unwrap_or(0.0))
+    };
+    let Some(icon) = icon else {
+        apply(window, kind);
+        return;
+    };
+    let key = CursorKey {
+        icon,
+        size: cursor_size(annot, scale),
+    };
+    TOOLS.with(|slot| {
+        let mut tools = slot.borrow_mut();
+        if let Some(i) = tools.cache.iter().position(|(k, _)| *k == key) {
+            let entry = tools.cache.remove(i).unwrap();
+            window.set_cursor(entry.1.clone());
+            window.set_cursor_visible(true);
+            tools.cache.push_back(entry);
+            tools.pending.remove(&window.id());
+        } else {
+            tools
+                .pending
+                .insert(window.id(), (Rc::downgrade(window), key));
+        }
+    });
 }
 
 #[cfg(test)]
-#[test]
-fn eraser_brush_has_round_size_cursor_but_rect_does_not() {
-    use pinshot_core::annotation::{Annotator, DrawMode, Tool};
-    let mut annot = Annotator::new();
-    annot.set_draw_mode(Tool::Eraser, DrawMode::Brush);
-    assert_eq!(brush_width(&annot, CursorKind::Cell), Some(16.0));
-    annot.set_draw_mode(Tool::Eraser, DrawMode::Rect);
-    assert_eq!(brush_width(&annot, CursorKind::Cell), None);
-}
+mod tests {
+    use super::*;
 
-pub fn paint_brush(pm: &mut tiny_skia::Pixmap, pt: pinshot_core::geom::Point, width: f32, annot: &pinshot_core::Annotator) -> pinshot_core::geom::Rect {
-    use tiny_skia::{PathBuilder, Stroke, Transform, Paint};
-    let radius = (width / 2.0).max(1.5);
-    if let Some(rect) = tiny_skia::Rect::from_xywh(pt.x-radius, pt.y-radius, radius*2.0, radius*2.0) {
-        if let Some(path) = PathBuilder::from_oval(rect) {
-            let mut paint = Paint::default();
-            paint.set_color_rgba8(255,255,255,230);
-            pm.stroke_path(&path,&paint,&Stroke { width: 3.0, ..Default::default() },Transform::identity(),None);
-            paint.set_color_rgba8(30,30,30,255);
-            pm.stroke_path(&path,&paint,&Stroke { width: 1.0, ..Default::default() },Transform::identity(),None);
+    #[test]
+    fn cursor_tracks_width_and_pin_zoom_but_not_effect_strength() {
+        let mut annot = Annotator::default();
+        annot.set_tool(Some(Tool::Mosaic));
+        annot.style_mut(Tool::Mosaic).width = 40;
+        assert_eq!(cursor_size(&annot, 1.0), 52);
+        assert_eq!(cursor_size(&annot, 0.5), 32);
+        annot.style_mut(Tool::Mosaic).size = 60;
+        assert_eq!(cursor_size(&annot, 1.0), 52);
+        annot.style_mut(Tool::Mosaic).width = 60;
+        assert_eq!(cursor_size(&annot, 1.0), 72);
+        for width in 1..12 {
+            annot.style_mut(Tool::Mosaic).width = width;
+            assert_eq!(cursor_size(&annot, 1.0), 12 + width as u16);
         }
     }
-    use pinshot_core::{annotation::{Tool, Effect}, icons::{draw_icon, IconKind}, geom::Rect, color::Rgba};
-    let ring = Rect::new(pt.x-radius-3.0,pt.y-radius-3.0,radius*2.0+6.0,radius*2.0+6.0);
-    let icon = match annot.tool {
-        Some(Tool::Pen) => IconKind::Pen,
-        Some(Tool::Marker) => IconKind::Marker,
-        Some(Tool::Eraser) => IconKind::Eraser,
-        Some(Tool::Mosaic) if annot.style(Tool::Mosaic).effect == Effect::Blur => IconKind::Blur,
-        Some(Tool::Mosaic) => IconKind::Mosaic,
-        Some(Tool::Ellipse) => IconKind::Ellipse,
-        Some(Tool::Rect) => IconKind::Rect,
-        Some(Tool::Number) => IconKind::Number,
-        Some(Tool::Line) if annot.current_line_arrow().is_arrow() => IconKind::Arrow,
-        _ => IconKind::Line,
-    };
-    let offset = (radius + 5.0).max(9.0);
-    let badge = Rect::new(pt.x+offset, pt.y+offset, 22.0, 22.0);
-    crate::draw::fill_rounded_rect(pm, badge, 4.0, Rgba::rgba(20,27,38,235));
-    draw_icon(pm, icon, badge.inflated(-2.0), Some(Rgba::WHITE));
-    ring.union(badge.inflated(1.0))
+
+    #[test]
+    fn every_tool_cursor_has_valid_pixels_and_hotspot_at_size_limits() {
+        use IconKind::*;
+        for icon in [
+            Pen, Marker, Eraser, Mosaic, Blur, Line, Arrow, Ellipse, Rect, Number,
+        ] {
+            for size in [12, 28, 60, 256] {
+                assert!(cursor_source(CursorKey { icon, size }).is_some());
+            }
+        }
+    }
 }

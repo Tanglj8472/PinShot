@@ -881,7 +881,7 @@ impl PinWin {
         }
         let mut hint = self.annot.cursor_hint(self.img_pt(self.last_cursor));
         hint.over_chrome = over_chrome;
-        crate::cursor::apply_annot(&self.window, cursor_for(hint), &self.annot);
+        crate::cursor::apply_annot(&self.window, cursor_for(hint), &self.annot, self.scale);
     }
 
     fn apply_tb(&mut self, a: TbAction) {
@@ -1955,13 +1955,6 @@ impl PinWin {
         }
         if let Some(t) = self.status.as_ref().or(self.toast.as_ref()) {
             crate::draw::paint_toast(&mut pm, t, ww, hh);
-        }
-        if self.annotating && self.color_picker.is_none() {
-            let mut hint = self.annot.cursor_hint(self.img_pt(self.last_cursor));
-            hint.over_chrome = self.toolbar.as_ref().is_some_and(|t| t.contains(self.last_cursor));
-            if let Some(width) = crate::cursor::visual_width(&self.annot, cursor_for(hint)) {
-                crate::cursor::paint_brush(&mut pm, self.last_cursor, width * self.scale, &self.annot);
-            }
         }
         if let Ok(mut buf) = self.surface.buffer_mut() {
             present_argb(&mut buf, &pm);
