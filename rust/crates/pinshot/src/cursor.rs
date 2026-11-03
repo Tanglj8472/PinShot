@@ -1,40 +1,113 @@
-use pinshot_core::{annotation::{Effect, Tool}, color::Rgba, icons::{draw_icon, IconKind}, Annotator, CursorKind};
-use winit::{event_loop::ActiveEventLoop, window::{CursorIcon, CustomCursor, Window}};
-use std::cell::OnceCell;
+use pinshot_core::{
+    annotation::{Effect, Tool},
+    color::Rgba,
+    icons::{draw_icon, IconKind},
+    Annotator, CursorKind,
+};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, VecDeque},
+    rc::{Rc, Weak},
+};
+use winit::{
+    event_loop::ActiveEventLoop,
+    window::{CursorIcon, CustomCursor, Window},
+};
 
-thread_local! {
-    static TOOLS: OnceCell<Vec<(IconKind, CustomCursor)>> = const { OnceCell::new() };
+#[derive(Clone, Copy, PartialEq)]
+struct CursorKey {
+    icon: IconKind,
+    size: u16,
 }
 
-pub fn init(event_loop: &ActiveEventLoop) {
-    TOOLS.with(|slot| { slot.get_or_init(|| {
-        use IconKind::*;
-        [Pen, Marker, Eraser, Mosaic, Blur, Line, Arrow, Ellipse, Rect, Number]
-            .into_iter().filter_map(|icon| {
-                let mut pm = tiny_skia::Pixmap::new(32, 32)?;
-                draw_icon(&mut pm, icon, pinshot_core::geom::Rect::new(2.0, 2.0, 28.0, 28.0), Some(Rgba::WHITE));
-                // Give the silhouette a dark outer edge on bright screenshots.
-                let alpha: Vec<_> = pm.data().chunks_exact(4).map(|p| p[3]).collect();
-                let mut rgba = vec![0; 32 * 32 * 4];
-                for y in 1..31 {
-                    for x in 1..31 {
-                        let i = y * 32 + x;
-                        let a = alpha[i];
-                        let edge = [i-1, i+1, i-32, i+32].into_iter().map(|j| alpha[j]).max().unwrap().max(a);
-                        if edge > 0 {
-                            let gray = (u16::from(a) * 255 / u16::from(edge)) as u8;
-                            rgba[i*4..i*4+4].copy_from_slice(&[gray, gray, gray, edge]);
-                        }
-                    }
+#[derive(Default)]
+struct ToolCursors {
+    cache: VecDeque<(CursorKey, CustomCursor)>,
+    pending: HashMap<winit::window::WindowId, (Weak<Window>, CursorKey)>,
+}
+
+thread_local! {
+    static TOOLS: RefCell<ToolCursors> = RefCell::default();
+}
+
+fn cursor_size(annot: &Annotator, scale: f32) -> u16 {
+    // Screen pixels, including the pin's zoom. Effect strength is not brush width.
+    (annot.option_width().max(1) as f32 * scale)
+        .round()
+        .clamp(12.0, 256.0) as u16
+}
+
+fn cursor_source(key: CursorKey) -> Option<winit::window::CustomCursorSource> {
+    let size = usize::from(key.size) + 4;
+    let mut pm = tiny_skia::Pixmap::new(size as u32, size as u32)?;
+    draw_icon(
+        &mut pm,
+        key.icon,
+        pinshot_core::geom::Rect::new(2.0, 2.0, key.size as f32, key.size as f32),
+        Some(Rgba::WHITE),
+    );
+    // A constant one-pixel outline stays clear at every size.
+    let alpha: Vec<_> = pm.data().chunks_exact(4).map(|p| p[3]).collect();
+    let mut rgba = vec![0; size * size * 4];
+    for y in 1..size - 1 {
+        for x in 1..size - 1 {
+            let i = y * size + x;
+            let a = alpha[i];
+            let edge = [i - 1, i + 1, i - size, i + size]
+                .into_iter()
+                .map(|j| alpha[j])
+                .max()
+                .unwrap()
+                .max(a);
+            if edge > 0 {
+                let gray = (u16::from(a) * 255 / u16::from(edge)) as u8;
+                rgba[i * 4..i * 4 + 4].copy_from_slice(&[gray, gray, gray, edge]);
+            }
+        }
+    }
+    let (hx, hy) = match key.icon {
+        IconKind::Pen | IconKind::Marker => (2 + key.size * 3 / 28, 2 + key.size * 24 / 28),
+        _ => (size as u16 / 2, size as u16 / 2),
+    };
+    CustomCursor::from_rgba(rgba, size as u16, size as u16, hx, hy).ok()
+}
+
+/// Coalesce size changes within an event batch; keep only 24 native cursors.
+/// Building happens only after a tool/size change, never on ordinary movement.
+pub fn flush(event_loop: &ActiveEventLoop) {
+    TOOLS.with(|slot| {
+        let mut tools = slot.borrow_mut();
+        let pending = std::mem::take(&mut tools.pending);
+        for (_, (window, key)) in pending {
+            let Some(window) = window.upgrade() else {
+                continue;
+            };
+            let cursor = if let Some(i) = tools.cache.iter().position(|(k, _)| *k == key) {
+                let entry = tools.cache.remove(i).unwrap();
+                let cursor = entry.1.clone();
+                tools.cache.push_back(entry);
+                cursor
+            } else {
+                let Some(source) = cursor_source(key) else {
+                    continue;
+                };
+                let cursor = event_loop.create_custom_cursor(source);
+                tools.cache.push_back((key, cursor.clone()));
+                if tools.cache.len() > 24 {
+                    tools.cache.pop_front();
                 }
-                let (hx, hy) = match icon { Pen | Marker => (5, 26), _ => (16, 16) };
-                let source = CustomCursor::from_rgba(rgba, 32, 32, hx, hy).ok()?;
-                Some((icon, event_loop.create_custom_cursor(source)))
-            }).collect()
-    }); });
+                cursor
+            };
+            window.set_cursor(cursor);
+            window.set_cursor_visible(true);
+        }
+    });
 }
 
 pub fn apply(window: &Window, kind: CursorKind) {
+    TOOLS.with(|slot| {
+        slot.borrow_mut().pending.remove(&window.id());
+    });
     window.set_cursor_visible(true);
     window.set_cursor(match kind {
         CursorKind::Arrow => CursorIcon::Default,
@@ -51,7 +124,7 @@ pub fn apply(window: &Window, kind: CursorKind) {
     });
 }
 
-pub fn apply_annot(window: &Window, kind: CursorKind, annot: &Annotator) {
+pub fn apply_annot(window: &Rc<Window>, kind: CursorKind, annot: &Annotator, scale: f32) {
     let icon = match (kind, annot.tool) {
         (CursorKind::Crosshair | CursorKind::Cell, Some(tool)) => match tool {
             Tool::Pen => Some(IconKind::Pen),
@@ -68,11 +141,56 @@ pub fn apply_annot(window: &Window, kind: CursorKind, annot: &Annotator) {
         },
         _ => None,
     };
-    let custom = TOOLS.with(|slot| slot.get()?.iter().find(|(k, _)| Some(*k) == icon).map(|(_, c)| c.clone()));
-    if let Some(cursor) = custom {
-        window.set_cursor(cursor);
-        window.set_cursor_visible(true);
-    } else {
+    let Some(icon) = icon else {
         apply(window, kind);
+        return;
+    };
+    let key = CursorKey {
+        icon,
+        size: cursor_size(annot, scale),
+    };
+    TOOLS.with(|slot| {
+        let mut tools = slot.borrow_mut();
+        if let Some(i) = tools.cache.iter().position(|(k, _)| *k == key) {
+            let entry = tools.cache.remove(i).unwrap();
+            window.set_cursor(entry.1.clone());
+            window.set_cursor_visible(true);
+            tools.cache.push_back(entry);
+            tools.pending.remove(&window.id());
+        } else {
+            tools
+                .pending
+                .insert(window.id(), (Rc::downgrade(window), key));
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cursor_tracks_width_and_pin_zoom_but_not_effect_strength() {
+        let mut annot = Annotator::default();
+        annot.set_tool(Some(Tool::Mosaic));
+        annot.style_mut(Tool::Mosaic).width = 40;
+        assert_eq!(cursor_size(&annot, 1.0), 40);
+        assert_eq!(cursor_size(&annot, 0.5), 20);
+        annot.style_mut(Tool::Mosaic).size = 60;
+        assert_eq!(cursor_size(&annot, 1.0), 40);
+        annot.style_mut(Tool::Mosaic).width = 60;
+        assert_eq!(cursor_size(&annot, 1.0), 60);
+    }
+
+    #[test]
+    fn every_tool_cursor_has_valid_pixels_and_hotspot_at_size_limits() {
+        use IconKind::*;
+        for icon in [
+            Pen, Marker, Eraser, Mosaic, Blur, Line, Arrow, Ellipse, Rect, Number,
+        ] {
+            for size in [12, 28, 60, 256] {
+                assert!(cursor_source(CursorKey { icon, size }).is_some());
+            }
+        }
     }
 }

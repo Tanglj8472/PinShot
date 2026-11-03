@@ -1859,6 +1859,7 @@ impl App {
         }
         self.pump_overlay_and_schedule_wake(event_loop);
         self.maintain_windows(event_loop);
+        crate::cursor::flush(event_loop);
     }
 
 }

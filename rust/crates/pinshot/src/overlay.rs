@@ -217,7 +217,6 @@ impl Overlay {
         let w = capture.composed.width;
         let h = capture.composed.height;
         crate::logutil::step("before overlay window");
-        crate::cursor::init(event_loop);
         let window = overlay_window(event_loop, recycled, vx, vy, w, h)?;
         window.set_cursor(CursorIcon::Crosshair);
         // IME only while a text editor is open; a standing IME grab lets Tab
@@ -446,7 +445,7 @@ impl Overlay {
             }
         });
         hint.over_selection = self.sel.has_sel() && self.sel.normalized().contains(self.cursor);
-        crate::cursor::apply_annot(&self.window, cursor_for(hint), &self.annot);
+        crate::cursor::apply_annot(&self.window, cursor_for(hint), &self.annot, 1.0);
     }
 
     fn release_grab(&mut self) {

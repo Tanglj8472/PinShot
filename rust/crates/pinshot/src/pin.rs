@@ -167,7 +167,6 @@ impl PinWin {
         scale: f32,
         shapes: Vec<pinshot_core::annotation::Shape>,
     ) -> Result<Self, String> {
-        crate::cursor::init(event_loop);
         let scale = scale.clamp(0.05, 1.0);
         let w = ((img.width as f32 * scale).round() as u32).max(8);
         let h = ((img.height as f32 * scale).round() as u32).max(8);
@@ -882,7 +881,7 @@ impl PinWin {
         }
         let mut hint = self.annot.cursor_hint(self.img_pt(self.last_cursor));
         hint.over_chrome = over_chrome;
-        crate::cursor::apply_annot(&self.window, cursor_for(hint), &self.annot);
+        crate::cursor::apply_annot(&self.window, cursor_for(hint), &self.annot, self.scale);
     }
 
     fn apply_tb(&mut self, a: TbAction) {
