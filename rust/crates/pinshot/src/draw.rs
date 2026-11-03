@@ -11,7 +11,7 @@ use std::ffi::c_void;
 
 use pinshot_core::annotation::{Annotator, Tool};
 use pinshot_core::color::Rgba;
-use pinshot_core::geom::{handle_points, Point, Rect, HANDLE_SIZE};
+use pinshot_core::geom::{selection_handle_points, Point, Rect, HANDLE_SIZE};
 use pinshot_core::i18n::tr;
 use pinshot_core::icons::{draw_icon, IconKind};
 use pinshot_core::magnifier::{layout_magnifier, Magnifier, MAG_HINT_PX, MAG_N, MAG_ZOOM};
@@ -1022,7 +1022,7 @@ impl OverlayFront {
                 Rgba::SNIP_RING_EDGE,
             );
             if sel.has_sel() && annot.tool.is_none() && annot.selected.is_none() {
-                for (_, c) in handle_points(hole) {
+                for (_, c) in selection_handle_points(hole) {
                     paint_handle_dot(&mut self.frame, c, Rgba::SNIP_RING);
                 }
             }
@@ -2750,7 +2750,7 @@ mod tests {
     #[test]
     fn selection_handles_are_eight_discs() {
         let hole = Rect::new(20.0, 16.0, 80.0, 48.0);
-        assert_eq!(handle_points(hole).len(), 8);
+        assert_eq!(selection_handle_points(hole).len(), 8);
         let mut pm = Pixmap::new(40, 40).unwrap();
         pm.fill(tiny_skia::Color::from_rgba8(80, 80, 80, 255));
         paint_handle_dot(&mut pm, Point::new(20.0, 20.0), Rgba::SNIP_RING);
