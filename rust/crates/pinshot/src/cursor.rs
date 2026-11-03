@@ -31,8 +31,9 @@ thread_local! {
 }
 
 fn cursor_size(annot: &Annotator, scale: f32) -> u16 {
-    // Screen pixels, including the pin's zoom. Effect strength is not brush width.
-    (annot.option_width().max(1) as f32 * scale)
+    // A small readable silhouette plus the stroke width in screen pixels.
+    // Even widths 1..12 change size; effect strength is not brush width.
+    (12.0 + annot.option_width().max(1) as f32 * scale)
         .round()
         .clamp(12.0, 256.0) as u16
 }
@@ -174,12 +175,16 @@ mod tests {
         let mut annot = Annotator::default();
         annot.set_tool(Some(Tool::Mosaic));
         annot.style_mut(Tool::Mosaic).width = 40;
-        assert_eq!(cursor_size(&annot, 1.0), 40);
-        assert_eq!(cursor_size(&annot, 0.5), 20);
+        assert_eq!(cursor_size(&annot, 1.0), 52);
+        assert_eq!(cursor_size(&annot, 0.5), 32);
         annot.style_mut(Tool::Mosaic).size = 60;
-        assert_eq!(cursor_size(&annot, 1.0), 40);
+        assert_eq!(cursor_size(&annot, 1.0), 52);
         annot.style_mut(Tool::Mosaic).width = 60;
-        assert_eq!(cursor_size(&annot, 1.0), 60);
+        assert_eq!(cursor_size(&annot, 1.0), 72);
+        for width in 1..12 {
+            annot.style_mut(Tool::Mosaic).width = width;
+            assert_eq!(cursor_size(&annot, 1.0), 12 + width as u16);
+        }
     }
 
     #[test]
