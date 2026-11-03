@@ -35,11 +35,11 @@ BEGIN
     BLOCK "040904B0"
     BEGIN
       VALUE "CompanyName", "PinShot Project\0"
-      VALUE "FileDescription", "PinShot screen capture and annotation tool\0"
+      VALUE "FileDescription", "pinshot\0"
       VALUE "FileVersion", "{version}\0"
       VALUE "InternalName", "pinshot.exe\0"
       VALUE "OriginalFilename", "pinshot.exe\0"
-      VALUE "ProductName", "PinShot\0"
+      VALUE "ProductName", "pinshot\0"
       VALUE "ProductVersion", "{version}\0"
       VALUE "LegalCopyright", "Copyright (c) 2026 PinShot Project\0"
     END

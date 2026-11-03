@@ -53,6 +53,7 @@ impl Tray {
         menu.append(&quit).map_err(|e| e.to_string())?;
         let tray = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
+            .with_menu_on_left_click(false)
             .with_tooltip("PinShot")
             .with_icon(icon)
             .build()
@@ -117,6 +118,7 @@ impl Tray {
             match ev {
                 TrayIconEvent::Click {
                     button: tray_icon::MouseButton::Left,
+                    button_state: tray_icon::MouseButtonState::Up,
                     ..
                 } => {
                     return Some(TrayCmd::Snip);
