@@ -447,8 +447,14 @@ pub fn hit_sel_handle(r: Rect, p: Point) -> Option<Handle> {
     if !r.is_valid_sel() {
         return None;
     }
+    // Keep a move zone inside small selections after moving the grips inward.
+    let slop = if r.w.abs() < 80.0 || r.h.abs() < 80.0 {
+        HANDLE_SIZE * 0.5 + 2.0
+    } else {
+        HANDLE_HIT
+    };
     for (h, center) in selection_handle_points(r) {
-        if (p.x - center.x).abs() <= HANDLE_HIT && (p.y - center.y).abs() <= HANDLE_HIT {
+        if (p.x - center.x).abs() <= slop && (p.y - center.y).abs() <= slop {
             return Some(h);
         }
     }
